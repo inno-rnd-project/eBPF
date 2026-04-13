@@ -1,0 +1,14 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: netobs-agent
+  namespace: ebpf-project
+spec:
+  template:
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: gpu
+      containers:
+        - name: netobs-agent
+          image: netobs-agent:0.1.0
+          imagePullPolicy: Never

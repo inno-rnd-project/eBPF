@@ -1,0 +1,14 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: netobs-agent
+  namespace: ebpf-project
+spec:
+  template:
+    spec:
+      nodeSelector:
+        observability.gpu: "true"
+      containers:
+        - name: netobs-agent
+          image: your-registry.example.com/netobs-agent:0.1.0
+          imagePullPolicy: IfNotPresent

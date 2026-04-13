@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: netobs-agent
+  namespace: ebpf-project
+  labels:
+    app.kubernetes.io/name: netobs-agent
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: network-observer
+spec:
+  selector:
+    app.kubernetes.io/name: netobs-agent
+  ports:
+    - name: metrics
+      port: 9810
+      targetPort: metrics
+      protocol: TCP

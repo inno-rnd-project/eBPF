@@ -1,0 +1,101 @@
+# --------------------------
+# OS / Editor
+# --------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+.claude/
+
+# --------------------------
+# Logs / temp
+# --------------------------
+*.log
+*.tmp
+tmp/
+temp/
+
+# --------------------------
+# Env / secrets
+# --------------------------
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# --------------------------
+# C / eBPF build outputs
+# --------------------------
+*.o
+*.a
+*.so
+*.out
+*.d
+*.cmd
+*.ko
+
+# LLVM / Clang / BPF intermediate files
+*.bc
+*.ll
+*.i
+*.s
+
+# Generated BPF / loader artifacts
+*.skel.h
+vmlinux.h
+
+# Common build directories
+build/
+bin/
+dist/
+output/
+out/
+.release/
+.debug/
+
+# CMake / Make / autotools
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+compile_commands.json
+makedep*
+libtool
+aclocal.m4
+m4/
+autom4te.cache/
+
+# --------------------------
+# Go
+# --------------------------
+*.test
+*.prof
+*.coverprofile
+coverage.out
+vendor/
+
+# Go build outputs
+*.exe
+*.dll
+*.dylib
+
+# --------------------------
+# Test / benchmark
+# --------------------------
+coverage/
+*.gcda
+*.gcno
+*.gcov
+
+# --------------------------
+# Runtime generated files
+# --------------------------
+*.pid
+*.sock
