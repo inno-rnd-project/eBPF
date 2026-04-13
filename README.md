@@ -35,12 +35,43 @@ make image-build IMAGE=netobs-agent:0.1.0
 ```
 
 ## Deploy
-```bash
-# dev
-kubectl apply -k deploy/overlays/dev
 
-# prod
-kubectl apply -k deploy/overlays/prod
+### Overlay roles
+
+| Overlay | Purpose | Node selector | Image policy |
+|---|---|---|---|
+| `dev` | GPU canary | `accelerator=nvidia`, `observability.netobs/canary=true` | `Never` (local) |
+| `prod` | Full rollout | `observability.netobs/enabled=true` (control-plane excluded) | `IfNotPresent` |
+
+### Node labels
+
+GPU canary node:
+```bash
+kubectl label node gpu accelerator=nvidia --overwrite
+kubectl label node gpu observability.netobs/canary=true --overwrite
+kubectl label node gpu observability.netobs/enabled=true --overwrite
+```
+
+General worker nodes:
+```bash
+kubectl label node ebpf-worker1 observability.netobs/enabled=true --overwrite
+kubectl label node ebpf-worker2 observability.netobs/enabled=true --overwrite
+```
+
+### Deploy / Delete
+
+```bash
+# render manifests (dry-run)
+make render-dev
+make render-prod
+
+# apply
+make deploy-dev
+make deploy-prod
+
+# teardown
+make delete-dev
+make delete-prod
 ```
 
 ## HTTP Endpoints

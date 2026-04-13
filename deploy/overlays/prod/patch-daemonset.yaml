@@ -7,8 +7,16 @@ spec:
   template:
     spec:
       nodeSelector:
-        observability.gpu: "true"
+        observability.netobs/enabled: "true"
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
       containers:
         - name: netobs-agent
-          image: your-registry.example.com/netobs-agent:0.1.0
+          # image: your-registry.example.com/netobs-agent:v0.1.0
+          image: netobs-agent:0.1.0
           imagePullPolicy: IfNotPresent

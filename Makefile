@@ -1,6 +1,7 @@
 ARCH := $(shell uname -m)
 BPFTOOL := $(shell command -v bpftool 2>/dev/null)
 IMAGE ?= netobs-agent:0.1.0
+DEV_IMAGE ?= netobs-agent:0.1.0
 KUSTOMIZE ?= kubectl kustomize
 
 ifeq ($(ARCH),x86_64)
@@ -15,7 +16,8 @@ endif
 
 BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 
-.PHONY: deps generate build run clean tree image-build image-push deploy-dev deploy-prod
+.PHONY: deps generate build run clean tree image-build image-push \
+	render-dev render-prod deploy-dev deploy-prod delete-dev delete-prod
 
 deps:
 	go mod tidy
@@ -24,10 +26,10 @@ generate:
 	@if [ -z "$(BPFTOOL)" ]; then echo "bpftool not found"; exit 1; fi
 	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > ./bpf/vmlinux.h
 	cd internal/ebpf && GOPACKAGE=ebpfx go run github.com/cilium/ebpf/cmd/bpf2go@v0.17.1 \
-		-go-package ebpfx \
-		-cc clang \
-		-cflags "$(BPF_CFLAGS)" \
-		NetObs ../../bpf/netlat.bpf.c -- -I../../bpf
+	-go-package ebpfx \
+	-cc clang \
+	-cflags "$(BPF_CFLAGS)" \
+	NetObs ../../bpf/netlat.bpf.c -- -I../../bpf
 
 build: generate
 	go build -o ./bin/netobs-agent ./cmd/netobs-agent
@@ -41,11 +43,23 @@ image-build:
 image-push:
 	docker push $(IMAGE)
 
+render-dev:
+	$(KUSTOMIZE) deploy/overlays/dev
+
+render-prod:
+	$(KUSTOMIZE) deploy/overlays/prod
+
 deploy-dev:
 	kubectl apply -k deploy/overlays/dev
 
 deploy-prod:
 	kubectl apply -k deploy/overlays/prod
+
+delete-dev:
+	kubectl delete -k deploy/overlays/dev
+
+delete-prod:
+	kubectl delete -k deploy/overlays/prod
 
 clean:
 	rm -f ./bin/netobs-agent
