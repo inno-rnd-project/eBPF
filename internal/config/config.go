@@ -6,12 +6,16 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 )
 
 type Config struct {
-	TargetIP    string
-	ListenAddr  string
-	PrintEvents bool
+	TargetIP             string
+	ListenAddr           string
+	PrintEvents          bool
+	NodeName             string
+	MetadataRefresh      time.Duration
+	DropReasonFormatPath string
 }
 
 func getenv(key, def string) string {
@@ -30,20 +34,51 @@ func getenvBool(key string, def bool) bool {
 	return v == "1" || v == "true" || v == "yes" || v == "y"
 }
 
-func Parse() Config {
-	cfg := Config{
-		TargetIP:    getenv("TARGET_IP", ""),
-		ListenAddr:  getenv("LISTEN_ADDR", ":9810"),
-		PrintEvents: getenvBool("PRINT_EVENTS", true),
+func getenvDuration(key string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
 	}
 
-	flag.StringVar(&cfg.TargetIP, "target-ip", cfg.TargetIP, "destination Pod IPv4 to trace; empty means no filter")
-	flag.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "HTTP listen address for /metrics")
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		log.Fatalf("invalid duration for %s: %q", key, v)
+	}
+	return d
+}
+
+func hostnameOr(fallback string) string {
+	h, err := os.Hostname()
+	if err != nil || strings.TrimSpace(h) == "" {
+		return fallback
+	}
+	return h
+}
+
+func Parse() Config {
+	cfg := Config{
+		TargetIP:             getenv("TARGET_IP", ""),
+		ListenAddr:           getenv("LISTEN_ADDR", ":9810"),
+		PrintEvents:          getenvBool("PRINT_EVENTS", true),
+		NodeName:             getenv("NODE_NAME", hostnameOr("unknown-node")),
+		MetadataRefresh:      getenvDuration("KUBE_METADATA_REFRESH", 30*time.Second),
+		DropReasonFormatPath: getenv("DROP_REASON_FORMAT_PATH", "/sys/kernel/tracing/events/skb/kfree_skb/format"),
+	}
+
+	flag.StringVar(&cfg.TargetIP, "target-ip", cfg.TargetIP, "destination Pod IPv4 to trace; empty means observe all")
+	flag.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "HTTP listen address for /metrics, /healthz, /readyz")
 	flag.BoolVar(&cfg.PrintEvents, "print-events", cfg.PrintEvents, "print events to stdout")
+	flag.StringVar(&cfg.NodeName, "node-name", cfg.NodeName, "observed Kubernetes node name")
+	flag.DurationVar(&cfg.MetadataRefresh, "metadata-refresh", cfg.MetadataRefresh, "Kubernetes metadata refresh interval")
+	flag.StringVar(&cfg.DropReasonFormatPath, "drop-reason-format", cfg.DropReasonFormatPath, "skb:kfree_skb tracepoint format path")
 	flag.Parse()
 
 	if cfg.TargetIP != "" && net.ParseIP(cfg.TargetIP).To4() == nil {
 		log.Fatalf("invalid -target-ip: %s", cfg.TargetIP)
+	}
+
+	if cfg.MetadataRefresh <= 0 {
+		log.Fatalf("invalid -metadata-refresh: must be > 0")
 	}
 
 	return cfg

@@ -2,6 +2,7 @@ package types
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 )
 
@@ -28,6 +29,85 @@ type Event struct {
 	Comm      [16]byte
 	Stage     uint8
 	Pad       [3]byte
+}
+
+type PodIdentity struct {
+	Namespace    string
+	PodName      string
+	NodeName     string
+	WorkloadKind string
+	Workload     string
+	PodIP        string
+}
+
+func (p PodIdentity) Known() bool {
+	return p.Namespace != "" || p.PodName != "" || p.PodIP != ""
+}
+
+func (p PodIdentity) NamespaceLabel() string {
+	if p.Namespace == "" {
+		return "unknown"
+	}
+	return p.Namespace
+}
+
+func (p PodIdentity) WorkloadLabel() string {
+	switch {
+	case p.Workload != "":
+		return p.Workload
+	case p.PodName != "":
+		return p.PodName
+	default:
+		return "unknown"
+	}
+}
+
+func (p PodIdentity) NodeLabel() string {
+	if p.NodeName == "" {
+		return "unknown"
+	}
+	return p.NodeName
+}
+
+func (p PodIdentity) String() string {
+	switch {
+	case p.Namespace != "" && p.PodName != "":
+		return fmt.Sprintf("%s/%s", p.Namespace, p.PodName)
+	case p.PodIP != "":
+		return p.PodIP
+	default:
+		return "unknown"
+	}
+}
+
+type EnrichedEvent struct {
+	Raw            Event
+	Stage          string
+	CommText       string
+	Direction      string
+	TrafficScope   string
+	ObservedNode   string
+	SrcIPText      string
+	DstIPText      string
+	Src            PodIdentity
+	Dst            PodIdentity
+	DropReasonName string
+	DropCategory   string
+}
+
+func (e EnrichedEvent) SourceNamespaceLabel() string {
+	return e.Src.NamespaceLabel()
+}
+
+func (e EnrichedEvent) SourceWorkloadLabel() string {
+	return e.Src.WorkloadLabel()
+}
+
+func (e EnrichedEvent) ObservedNodeLabel() string {
+	if e.ObservedNode == "" {
+		return "unknown"
+	}
+	return e.ObservedNode
 }
 
 func StageName(stage uint8) string {
