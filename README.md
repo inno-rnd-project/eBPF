@@ -29,9 +29,17 @@ sudo ./bin/netobs-agent -listen :9810 -print-events=true
 | `LISTEN_ADDR` | `-listen` | `:9810` | HTTP listen address |
 | `PRINT_EVENTS` | `-print-events` | `true` | Print events to stdout |
 
-## Build image
+## Versioning
+
+Image version is managed via the `VERSION` file at the project root.
+`make bump` increments the patch version and updates both overlay manifests.
+
 ```bash
-make image-build IMAGE=netobs-agent:0.1.0
+make bump          # 0.1.0 → 0.1.1 (VERSION + kustomization.yaml)
+make image-build   # build local image (netobs-agent:0.1.1)
+make deploy-dev    # deploy to GPU canary node with local image
+make image-push    # tag & push to ghcr.io/inno-rnd-project/netobs-agent:0.1.1
+make deploy-prod   # deploy to all nodes with registry image
 ```
 
 ## Deploy
