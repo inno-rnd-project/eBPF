@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,21 +27,37 @@ type podCacheEntry struct {
 	id  types.PodIdentity
 }
 
+type serviceCacheEntry struct {
+	key string
+	id  types.PodIdentity
+}
+
 type Resolver struct {
 	localNode  string
 	client     kubernetes.Interface
 	startupErr error
 
-	mu          sync.RWMutex
+	mu sync.RWMutex
+
 	podByIP     map[string]podCacheEntry
 	podIPsByKey map[string][]string
+
+	serviceByIP     map[string]serviceCacheEntry
+	serviceIPsByKey map[string][]string
+
+	nodeByIP     map[string]string
+	nodeIPsByKey map[string][]string
 }
 
 func NewResolver(localNode string, _ time.Duration) *Resolver {
 	r := &Resolver{
-		localNode:   localNode,
-		podByIP:     make(map[string]podCacheEntry),
-		podIPsByKey: make(map[string][]string),
+		localNode:       localNode,
+		podByIP:         make(map[string]podCacheEntry),
+		podIPsByKey:     make(map[string][]string),
+		serviceByIP:     make(map[string]serviceCacheEntry),
+		serviceIPsByKey: make(map[string][]string),
+		nodeByIP:        make(map[string]string),
+		nodeIPsByKey:    make(map[string][]string),
 	}
 
 	cfg, err := kubeConfig()
@@ -86,7 +103,10 @@ func (r *Resolver) Start(ctx context.Context) {
 	}
 
 	factory := informers.NewSharedInformerFactory(r.client, 0)
+
 	podInformer := factory.Core().V1().Pods().Informer()
+	serviceInformer := factory.Core().V1().Services().Informer()
+	nodeInformer := factory.Core().V1().Nodes().Informer()
 
 	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
@@ -100,9 +120,38 @@ func (r *Resolver) Start(ctx context.Context) {
 		},
 	})
 
+	serviceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			r.onUpsertService(obj)
+		},
+		UpdateFunc: func(_, newObj interface{}) {
+			r.onUpsertService(newObj)
+		},
+		DeleteFunc: func(obj interface{}) {
+			r.onDeleteService(obj)
+		},
+	})
+
+	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			r.onUpsertNode(obj)
+		},
+		UpdateFunc: func(_, newObj interface{}) {
+			r.onUpsertNode(newObj)
+		},
+		DeleteFunc: func(obj interface{}) {
+			r.onDeleteNode(obj)
+		},
+	})
+
 	factory.Start(ctx.Done())
 
-	if !cache.WaitForCacheSync(ctx.Done(), podInformer.HasSynced) {
+	if !cache.WaitForCacheSync(
+		ctx.Done(),
+		podInformer.HasSynced,
+		serviceInformer.HasSynced,
+		nodeInformer.HasSynced,
+	) {
 		log.Printf("metadata resolver initial sync failed")
 		return
 	}
@@ -178,6 +227,128 @@ func (r *Resolver) onDeletePod(obj interface{}) {
 	}
 }
 
+func (r *Resolver) onUpsertService(obj interface{}) {
+	svc, ok := extractService(obj)
+	if !ok || svc == nil {
+		return
+	}
+
+	key := serviceKey(svc)
+	ips := serviceIPs(*svc)
+	id := serviceIdentity(*svc)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if oldIPs, exists := r.serviceIPsByKey[key]; exists {
+		for _, ip := range oldIPs {
+			if entry, ok := r.serviceByIP[ip]; ok && entry.key == key {
+				delete(r.serviceByIP, ip)
+			}
+		}
+	}
+
+	if len(ips) == 0 {
+		delete(r.serviceIPsByKey, key)
+		return
+	}
+
+	for _, ip := range ips {
+		r.serviceByIP[ip] = serviceCacheEntry{
+			key: key,
+			id:  id,
+		}
+	}
+	r.serviceIPsByKey[key] = ips
+}
+
+func (r *Resolver) onDeleteService(obj interface{}) {
+	svc, ok := extractService(obj)
+	if !ok || svc == nil {
+		return
+	}
+
+	key := serviceKey(svc)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if oldIPs, exists := r.serviceIPsByKey[key]; exists {
+		for _, ip := range oldIPs {
+			if entry, ok := r.serviceByIP[ip]; ok && entry.key == key {
+				delete(r.serviceByIP, ip)
+			}
+		}
+		delete(r.serviceIPsByKey, key)
+		return
+	}
+
+	for _, ip := range serviceIPs(*svc) {
+		if entry, ok := r.serviceByIP[ip]; ok && entry.key == key {
+			delete(r.serviceByIP, ip)
+		}
+	}
+}
+
+func (r *Resolver) onUpsertNode(obj interface{}) {
+	node, ok := extractNode(obj)
+	if !ok || node == nil {
+		return
+	}
+
+	key := nodeKey(node)
+	ips := nodeIPs(*node)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if oldIPs, exists := r.nodeIPsByKey[key]; exists {
+		for _, ip := range oldIPs {
+			if name, ok := r.nodeByIP[ip]; ok && name == node.Name {
+				delete(r.nodeByIP, ip)
+			}
+		}
+	}
+
+	if len(ips) == 0 {
+		delete(r.nodeIPsByKey, key)
+		return
+	}
+
+	for _, ip := range ips {
+		r.nodeByIP[ip] = node.Name
+	}
+	r.nodeIPsByKey[key] = ips
+}
+
+func (r *Resolver) onDeleteNode(obj interface{}) {
+	node, ok := extractNode(obj)
+	if !ok || node == nil {
+		return
+	}
+
+	key := nodeKey(node)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if oldIPs, exists := r.nodeIPsByKey[key]; exists {
+		for _, ip := range oldIPs {
+			if name, ok := r.nodeByIP[ip]; ok && name == node.Name {
+				delete(r.nodeByIP, ip)
+			}
+		}
+		delete(r.nodeIPsByKey, key)
+		return
+	}
+
+	for _, ip := range nodeIPs(*node) {
+		if name, ok := r.nodeByIP[ip]; ok && name == node.Name {
+			delete(r.nodeByIP, ip)
+		}
+	}
+}
+
 func extractPod(obj interface{}) (*corev1.Pod, bool) {
 	switch t := obj.(type) {
 	case *corev1.Pod:
@@ -190,11 +361,49 @@ func extractPod(obj interface{}) (*corev1.Pod, bool) {
 	}
 }
 
+func extractService(obj interface{}) (*corev1.Service, bool) {
+	switch t := obj.(type) {
+	case *corev1.Service:
+		return t, true
+	case cache.DeletedFinalStateUnknown:
+		svc, ok := t.Obj.(*corev1.Service)
+		return svc, ok
+	default:
+		return nil, false
+	}
+}
+
+func extractNode(obj interface{}) (*corev1.Node, bool) {
+	switch t := obj.(type) {
+	case *corev1.Node:
+		return t, true
+	case cache.DeletedFinalStateUnknown:
+		node, ok := t.Obj.(*corev1.Node)
+		return node, ok
+	default:
+		return nil, false
+	}
+}
+
 func podKey(p *corev1.Pod) string {
 	if p.UID != "" {
 		return string(p.UID)
 	}
 	return p.Namespace + "/" + p.Name
+}
+
+func serviceKey(s *corev1.Service) string {
+	if s.UID != "" {
+		return string(s.UID)
+	}
+	return s.Namespace + "/" + s.Name
+}
+
+func nodeKey(n *corev1.Node) string {
+	if n.UID != "" {
+		return string(n.UID)
+	}
+	return n.Name
 }
 
 func podIPs(p corev1.Pod) []string {
@@ -220,16 +429,96 @@ func podIPs(p corev1.Pod) []string {
 	return out
 }
 
+func serviceIPs(s corev1.Service) []string {
+	seen := make(map[string]struct{}, 1+len(s.Spec.ClusterIPs))
+	out := make([]string, 0, 1+len(s.Spec.ClusterIPs))
+
+	if s.Spec.ClusterIP != "" && s.Spec.ClusterIP != "None" {
+		seen[s.Spec.ClusterIP] = struct{}{}
+		out = append(out, s.Spec.ClusterIP)
+	}
+
+	for _, ip := range s.Spec.ClusterIPs {
+		if ip == "" || ip == "None" {
+			continue
+		}
+		if _, exists := seen[ip]; exists {
+			continue
+		}
+		seen[ip] = struct{}{}
+		out = append(out, ip)
+	}
+
+	return out
+}
+
+func nodeIPs(n corev1.Node) []string {
+	seen := make(map[string]struct{}, len(n.Status.Addresses))
+	out := make([]string, 0, len(n.Status.Addresses))
+
+	for _, addr := range n.Status.Addresses {
+		if addr.Address == "" {
+			continue
+		}
+		if _, exists := seen[addr.Address]; exists {
+			continue
+		}
+		seen[addr.Address] = struct{}{}
+		out = append(out, addr.Address)
+	}
+
+	return out
+}
+
 func podIdentity(p corev1.Pod) types.PodIdentity {
 	kind, workload := ownerInfo(p)
 
 	return types.PodIdentity{
-		Namespace:    p.Namespace,
-		PodName:      p.Name,
-		NodeName:     p.Spec.NodeName,
-		WorkloadKind: kind,
-		Workload:     workload,
-		PodIP:        p.Status.PodIP,
+		IdentityClass: types.IdentityClassPod,
+		Namespace:     p.Namespace,
+		PodName:       p.Name,
+		NodeName:      p.Spec.NodeName,
+		WorkloadKind:  kind,
+		Workload:      workload,
+		PodIP:         p.Status.PodIP,
+	}
+}
+
+func serviceIdentity(s corev1.Service) types.PodIdentity {
+	return types.PodIdentity{
+		IdentityClass: types.IdentityClassService,
+		Namespace:     s.Namespace,
+		WorkloadKind:  "Service",
+		Workload:      s.Name,
+		PodIP:         s.Spec.ClusterIP,
+	}
+}
+
+func nodeIdentity(nodeName, ip string) types.PodIdentity {
+	return types.PodIdentity{
+		IdentityClass: types.IdentityClassNode,
+		NodeName:      nodeName,
+		WorkloadKind:  "Node",
+		Workload:      nodeName,
+		PodIP:         ip,
+	}
+}
+
+func externalIdentity(ip string) types.PodIdentity {
+	return types.PodIdentity{
+		IdentityClass: types.IdentityClassExternal,
+		WorkloadKind:  "External",
+		Workload:      "external",
+		PodIP:         ip,
+	}
+}
+
+func unresolvedIdentity(ip string) types.PodIdentity {
+	return types.PodIdentity{
+		IdentityClass: types.IdentityClassUnresolved,
+		WorkloadKind:  "Unresolved",
+		Workload:      "unresolved",
+		PodIP:         ip,
 	}
 }
 
@@ -272,32 +561,109 @@ func trimReplicaSetHash(name string) string {
 }
 
 func (r *Resolver) resolveIP(ip string) types.PodIdentity {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if entry, ok := r.podByIP[ip]; ok {
-		return entry.id
+	if ip == "" {
+		return unresolvedIdentity(ip)
 	}
 
-	return types.PodIdentity{PodIP: ip}
+	r.mu.RLock()
+	if entry, ok := r.podByIP[ip]; ok {
+		r.mu.RUnlock()
+		return entry.id
+	}
+	if entry, ok := r.serviceByIP[ip]; ok {
+		r.mu.RUnlock()
+		return entry.id
+	}
+	if nodeName, ok := r.nodeByIP[ip]; ok {
+		r.mu.RUnlock()
+		return nodeIdentity(nodeName, ip)
+	}
+	r.mu.RUnlock()
+
+	return classifyFallbackIP(ip)
+}
+
+func classifyFallbackIP(ip string) types.PodIdentity {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return unresolvedIdentity(ip)
+	}
+
+	if addr.IsUnspecified() || addr.IsLoopback() || addr.IsMulticast() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() {
+		return unresolvedIdentity(ip)
+	}
+
+	// RFC1918 / ULA 등 private 주소인데 pod/service/node 어느 쪽에도 매핑되지 않음
+	// -> cluster 내부 또는 host 내부일 가능성이 높으므로 unresolved로 정리
+	if addr.IsPrivate() {
+		return unresolvedIdentity(ip)
+	}
+
+	// public IP면 external로 분류
+	return externalIdentity(ip)
 }
 
 func deriveTrafficScope(src, dst types.PodIdentity) string {
 	switch {
-	case src.Known() && dst.Known():
-		if src.NodeName != "" && dst.NodeName != "" && src.NodeName == dst.NodeName {
-			return "same_node"
-		}
-		if src.NodeName != "" && dst.NodeName != "" && src.NodeName != dst.NodeName {
+	case src.IsPod() && dst.IsPod():
+		if src.NodeName != "" && dst.NodeName != "" {
+			if src.NodeName == dst.NodeName {
+				return "same_node"
+			}
 			return "cross_node"
 		}
 		return "pod_to_pod"
-	case src.Known() && !dst.Known():
+
+	case src.IsPod() && dst.IsService():
+		return "to_service"
+
+	case src.IsService() && dst.IsPod():
+		return "from_service"
+
+	case src.IsPod() && dst.IsExternal():
 		return "to_external"
-	case !src.Known() && dst.Known():
+
+	case src.IsExternal() && dst.IsPod():
 		return "from_external"
+
+	case src.IsPod() && dst.IsNode():
+		if src.NodeName != "" && src.NodeName == dst.NodeName {
+			return "to_host_local"
+		}
+		return "to_node"
+
+	case src.IsNode() && dst.IsPod():
+		if src.NodeName != "" && src.NodeName == dst.NodeName {
+			return "from_host_local"
+		}
+		return "from_node"
+
+	case src.IsNode() && dst.IsNode():
+		if src.NodeName != "" && src.NodeName == dst.NodeName {
+			return "host_local"
+		}
+		return "node_to_node"
+
+	case src.IsService() && dst.IsExternal():
+		return "service_to_external"
+
+	case src.IsExternal() && dst.IsService():
+		return "external_to_service"
+
+	case src.IsPod() && dst.IsUnresolved():
+		return "to_unresolved"
+
+	case src.IsUnresolved() && dst.IsPod():
+		return "from_unresolved"
+
+	case src.IsService() && dst.IsUnresolved():
+		return "service_to_unresolved"
+
+	case src.IsUnresolved() && dst.IsService():
+		return "unresolved_to_service"
+
 	default:
-		return "unknown"
+		return "unresolved"
 	}
 }
 
