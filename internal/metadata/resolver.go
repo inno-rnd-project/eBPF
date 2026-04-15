@@ -11,30 +11,36 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"netobs/internal/drop"
 	"netobs/internal/types"
 )
 
+type podCacheEntry struct {
+	key string
+	id  types.PodIdentity
+}
+
 type Resolver struct {
 	localNode  string
-	refresh    time.Duration
 	client     kubernetes.Interface
 	startupErr error
 
-	mu      sync.RWMutex
-	podByIP map[string]types.PodIdentity
+	mu          sync.RWMutex
+	podByIP     map[string]podCacheEntry
+	podIPsByKey map[string][]string
 }
 
-func NewResolver(localNode string, refresh time.Duration) *Resolver {
+func NewResolver(localNode string, _ time.Duration) *Resolver {
 	r := &Resolver{
-		localNode: localNode,
-		refresh:   refresh,
-		podByIP:   make(map[string]types.PodIdentity),
+		localNode:   localNode,
+		podByIP:     make(map[string]podCacheEntry),
+		podIPsByKey: make(map[string][]string),
 	}
 
 	cfg, err := kubeConfig()
@@ -79,59 +85,139 @@ func (r *Resolver) Start(ctx context.Context) {
 		return
 	}
 
-	if err := r.refreshOnce(ctx); err != nil {
-		log.Printf("metadata resolver initial refresh failed: %v", err)
-	} else {
-		log.Printf("metadata resolver initial refresh completed")
+	factory := informers.NewSharedInformerFactory(r.client, 0)
+	podInformer := factory.Core().V1().Pods().Informer()
+
+	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			r.onUpsertPod(obj)
+		},
+		UpdateFunc: func(_, newObj interface{}) {
+			r.onUpsertPod(newObj)
+		},
+		DeleteFunc: func(obj interface{}) {
+			r.onDeletePod(obj)
+		},
+	})
+
+	factory.Start(ctx.Done())
+
+	if !cache.WaitForCacheSync(ctx.Done(), podInformer.HasSynced) {
+		log.Printf("metadata resolver initial sync failed")
+		return
 	}
 
-	ticker := time.NewTicker(r.refresh)
-	defer ticker.Stop()
+	log.Printf("metadata resolver informer sync completed")
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := r.refreshOnce(ctx); err != nil {
-				log.Printf("metadata resolver refresh failed: %v", err)
+	<-ctx.Done()
+}
+
+func (r *Resolver) onUpsertPod(obj interface{}) {
+	pod, ok := extractPod(obj)
+	if !ok || pod == nil {
+		return
+	}
+
+	key := podKey(pod)
+	ips := podIPs(*pod)
+	id := podIdentity(*pod)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// 기존 IP 매핑 제거
+	if oldIPs, exists := r.podIPsByKey[key]; exists {
+		for _, ip := range oldIPs {
+			if entry, ok := r.podByIP[ip]; ok && entry.key == key {
+				delete(r.podByIP, ip)
 			}
+		}
+	}
+
+	// 현재 Pod에 IP가 없으면 캐시만 정리하고 종료
+	if len(ips) == 0 {
+		delete(r.podIPsByKey, key)
+		return
+	}
+
+	for _, ip := range ips {
+		r.podByIP[ip] = podCacheEntry{
+			key: key,
+			id:  id,
+		}
+	}
+	r.podIPsByKey[key] = ips
+}
+
+func (r *Resolver) onDeletePod(obj interface{}) {
+	pod, ok := extractPod(obj)
+	if !ok || pod == nil {
+		return
+	}
+
+	key := podKey(pod)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if oldIPs, exists := r.podIPsByKey[key]; exists {
+		for _, ip := range oldIPs {
+			if entry, ok := r.podByIP[ip]; ok && entry.key == key {
+				delete(r.podByIP, ip)
+			}
+		}
+		delete(r.podIPsByKey, key)
+		return
+	}
+
+	// fallback: tombstone만 있고 key 캐시가 없는 경우
+	for _, ip := range podIPs(*pod) {
+		if entry, ok := r.podByIP[ip]; ok && entry.key == key {
+			delete(r.podByIP, ip)
 		}
 	}
 }
 
-func (r *Resolver) refreshOnce(ctx context.Context) error {
-	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
+func extractPod(obj interface{}) (*corev1.Pod, bool) {
+	switch t := obj.(type) {
+	case *corev1.Pod:
+		return t, true
+	case cache.DeletedFinalStateUnknown:
+		pod, ok := t.Obj.(*corev1.Pod)
+		return pod, ok
+	default:
+		return nil, false
+	}
+}
 
-	pods, err := r.client.CoreV1().Pods("").List(cctx, metav1.ListOptions{})
-	if err != nil {
-		return err
+func podKey(p *corev1.Pod) string {
+	if p.UID != "" {
+		return string(p.UID)
+	}
+	return p.Namespace + "/" + p.Name
+}
+
+func podIPs(p corev1.Pod) []string {
+	seen := make(map[string]struct{}, 1+len(p.Status.PodIPs))
+	out := make([]string, 0, 1+len(p.Status.PodIPs))
+
+	if p.Status.PodIP != "" {
+		seen[p.Status.PodIP] = struct{}{}
+		out = append(out, p.Status.PodIP)
 	}
 
-	next := make(map[string]types.PodIdentity, len(pods.Items))
-
-	for _, p := range pods.Items {
-		if p.Status.PodIP == "" && len(p.Status.PodIPs) == 0 {
+	for _, pip := range p.Status.PodIPs {
+		if pip.IP == "" {
 			continue
 		}
-
-		id := podIdentity(p)
-
-		if p.Status.PodIP != "" {
-			next[p.Status.PodIP] = id
+		if _, exists := seen[pip.IP]; exists {
+			continue
 		}
-		for _, pip := range p.Status.PodIPs {
-			if pip.IP != "" {
-				next[pip.IP] = id
-			}
-		}
+		seen[pip.IP] = struct{}{}
+		out = append(out, pip.IP)
 	}
 
-	r.mu.Lock()
-	r.podByIP = next
-	r.mu.Unlock()
-	return nil
+	return out
 }
 
 func podIdentity(p corev1.Pod) types.PodIdentity {
@@ -189,8 +275,8 @@ func (r *Resolver) resolveIP(ip string) types.PodIdentity {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	if id, ok := r.podByIP[ip]; ok {
-		return id
+	if entry, ok := r.podByIP[ip]; ok {
+		return entry.id
 	}
 
 	return types.PodIdentity{PodIP: ip}
