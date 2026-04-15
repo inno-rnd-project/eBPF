@@ -33,9 +33,10 @@ type serviceCacheEntry struct {
 }
 
 type Resolver struct {
-	localNode  string
-	client     kubernetes.Interface
-	startupErr error
+	localNode    string
+	client       kubernetes.Interface
+	startupErr   error
+	resyncPeriod time.Duration
 
 	mu sync.RWMutex
 
@@ -49,9 +50,10 @@ type Resolver struct {
 	nodeIPsByKey map[string][]string
 }
 
-func NewResolver(localNode string, _ time.Duration) *Resolver {
+func NewResolver(localNode string, resyncPeriod time.Duration) *Resolver {
 	r := &Resolver{
 		localNode:       localNode,
+		resyncPeriod:    resyncPeriod,
 		podByIP:         make(map[string]podCacheEntry),
 		podIPsByKey:     make(map[string][]string),
 		serviceByIP:     make(map[string]serviceCacheEntry),
@@ -102,7 +104,7 @@ func (r *Resolver) Start(ctx context.Context) {
 		return
 	}
 
-	factory := informers.NewSharedInformerFactory(r.client, 0)
+	factory := informers.NewSharedInformerFactory(r.client, r.resyncPeriod)
 
 	podInformer := factory.Core().V1().Pods().Informer()
 	serviceInformer := factory.Core().V1().Services().Informer()
@@ -547,17 +549,26 @@ func trimReplicaSetHash(name string) string {
 	}
 
 	last := parts[len(parts)-1]
-	if len(last) < 8 {
+	if !isHashLikeSuffix(last) {
 		return ""
 	}
 
-	for _, ch := range last {
-		if !((ch >= 'a' && ch <= 'f') || (ch >= '0' && ch <= '9')) {
-			return ""
-		}
+	return strings.Join(parts[:len(parts)-1], "-")
+}
+
+func isHashLikeSuffix(s string) bool {
+	if len(s) < 8 || len(s) > 16 {
+		return false
 	}
 
-	return strings.Join(parts[:len(parts)-1], "-")
+	for _, ch := range s {
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') {
+			continue
+		}
+		return false
+	}
+
+	return true
 }
 
 func (r *Resolver) resolveIP(ip string) types.PodIdentity {
