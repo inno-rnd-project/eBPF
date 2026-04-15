@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"strings"
 )
 
 const (
@@ -52,14 +53,59 @@ func (p PodIdentity) NamespaceLabel() string {
 }
 
 func (p PodIdentity) WorkloadLabel() string {
-	switch {
-	case p.Workload != "":
-		return p.Workload
-	case p.PodName != "":
-		return p.PodName
-	default:
+	if p.Workload == "" || p.WorkloadKind == "" || p.WorkloadKind == "Pod" {
 		return "unknown"
 	}
+
+	name := normalizeWorkloadName(p.WorkloadKind, p.Workload)
+	if name == "" {
+		return "unknown"
+	}
+	return name
+}
+
+func normalizeWorkloadName(kind, name string) string {
+	if name == "" {
+		return ""
+	}
+
+	// StatefulSet 이름은 원래 안정적이므로 그대로 둔다.
+	if kind == "StatefulSet" {
+		return name
+	}
+
+	if trimmed := trimGeneratedSuffix(name); trimmed != "" {
+		return trimmed
+	}
+	return name
+}
+
+func trimGeneratedSuffix(name string) string {
+	parts := strings.Split(name, "-")
+	if len(parts) < 2 {
+		return ""
+	}
+
+	last := parts[len(parts)-1]
+	if !isHashLikeSuffix(last) {
+		return ""
+	}
+
+	return strings.Join(parts[:len(parts)-1], "-")
+}
+
+func isHashLikeSuffix(s string) bool {
+	if len(s) < 8 || len(s) > 16 {
+		return false
+	}
+
+	for _, ch := range s {
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (p PodIdentity) NodeLabel() string {
