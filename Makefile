@@ -1,7 +1,8 @@
+VERSION := $(shell cat VERSION)
 ARCH := $(shell uname -m)
 BPFTOOL := $(shell command -v bpftool 2>/dev/null)
-IMAGE ?= netobs-agent:0.1.0
-DEV_IMAGE ?= netobs-agent:0.1.0
+IMAGE ?= netobs-agent:$(VERSION)
+REGISTRY_IMAGE ?= ghcr.io/inno-rnd-project/netobs-agent:$(VERSION)
 KUSTOMIZE ?= kubectl kustomize
 
 ifeq ($(ARCH),x86_64)
@@ -17,7 +18,7 @@ endif
 BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 
 .PHONY: deps generate build run clean tree image-build image-push \
-	render-dev render-prod deploy-dev deploy-prod delete-dev delete-prod
+	render-dev render-prod deploy-dev deploy-prod delete-dev delete-prod bump
 
 deps:
 	go mod tidy
@@ -41,7 +42,8 @@ image-build:
 	docker build -t $(IMAGE) .
 
 image-push:
-	docker push $(IMAGE)
+	docker tag $(IMAGE) $(REGISTRY_IMAGE)
+	docker push $(REGISTRY_IMAGE)
 
 render-dev:
 	$(KUSTOMIZE) deploy/overlays/dev
@@ -60,6 +62,17 @@ delete-dev:
 
 delete-prod:
 	kubectl delete -k deploy/overlays/prod
+
+bump:
+	@CUR=$$(cat VERSION); \
+	MAJOR=$$(echo $$CUR | cut -d. -f1); \
+	MINOR=$$(echo $$CUR | cut -d. -f2); \
+	PATCH=$$(echo $$CUR | cut -d. -f3); \
+	NEW="$$MAJOR.$$MINOR.$$((PATCH + 1))"; \
+	echo "$$NEW" > VERSION; \
+	sed -i 's/newTag: ".*"/newTag: "'$$NEW'"/' deploy/overlays/dev/kustomization.yaml; \
+	sed -i 's/newTag: ".*"/newTag: "'$$NEW'"/' deploy/overlays/prod/kustomization.yaml; \
+	echo "bumped $$CUR -> $$NEW"
 
 clean:
 	rm -f ./bin/netobs-agent
