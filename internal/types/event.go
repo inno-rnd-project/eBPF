@@ -2,6 +2,7 @@ package types
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"strings"
@@ -74,7 +75,7 @@ type PodIdentity struct {
 
 // --------------------- PodIdentity 관련 메서드 ---------------------
 func (p PodIdentity) Known() bool {
-	return p.IdentityClass != "" && p.IdentityClass != IdentityClassUnresolved
+	return !p.IsUnresolved()
 }
 
 func (p PodIdentity) IsPod() bool {
@@ -337,15 +338,11 @@ func CommString(comm [16]byte) string {
 	return string(comm[:n])
 }
 
-// BPF는 IP를 network byte order(big-endian)로 저장하고,
-// Go는 binary.LittleEndian으로 struct를 디코딩하므로
-// uint32 내부의 바이트가 뒤집혀 있다. 하위 바이트부터 읽어야 원래 IP 순서가 된다.
+// BPF는 network byte order 바이트를 네이티브 엔디언 uint32로 기록한다.
+// Go에서도 동일하게 NativeEndian으로 바이트를 재구성하면
+// LE/BE 양쪽에서 항상 올바른 IP 문자열이 나온다.
 func U32ToIPv4(v uint32) string {
-	ip := net.IPv4(
-		byte(v),
-		byte(v>>8),
-		byte(v>>16),
-		byte(v>>24),
-	)
-	return ip.String()
+	var b [4]byte
+	binary.NativeEndian.PutUint32(b[:], v)
+	return net.IPv4(b[0], b[1], b[2], b[3]).String()
 }

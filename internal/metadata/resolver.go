@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -48,6 +49,8 @@ type Resolver struct {
 	client       kubernetes.Interface
 	startupErr   error
 	resyncPeriod time.Duration
+
+	synced atomic.Bool
 
 	mu sync.RWMutex
 
@@ -193,9 +196,17 @@ func (r *Resolver) Start(ctx context.Context) {
 		return
 	}
 
+	r.synced.Store(true)
 	log.Printf("metadata resolver informer sync completed")
 
 	<-ctx.Done()
+}
+
+// HasSynced는 Kubernetes informer 캐시가 초기 sync를 완료했는지 반환한다.
+// client 초기화 실패로 resolver가 비활성 상태인 경우에도 false를 반환해
+// /readyz가 해당 상태를 드러내도록 한다.
+func (r *Resolver) HasSynced() bool {
+	return r.synced.Load()
 }
 
 func (r *Resolver) onUpsertPod(obj interface{}) {
@@ -578,6 +589,34 @@ func ownerInfo(p corev1.Pod) (string, string) {
 	return kind, name
 }
 
+// identityCompleteness는 식별 필드가 얼마나 채워졌는지 점수화한다.
+// 같은 IdentityClass 내에서 tiebreak 용도로만 쓰인다.
+func identityCompleteness(p types.PodIdentity) int {
+	score := 0
+	if p.Namespace != "" {
+		score++
+	}
+	if p.PodUID != "" {
+		score++
+	}
+	if p.PodName != "" {
+		score++
+	}
+	if p.NodeName != "" {
+		score++
+	}
+	if p.Workload != "" {
+		score++
+	}
+	if p.WorkloadKind != "" {
+		score++
+	}
+	if p.PodIP != "" {
+		score++
+	}
+	return score
+}
+
 func strongerIdentity(current, candidate types.PodIdentity) types.PodIdentity {
 	if candidate.Rank() > current.Rank() {
 		return candidate
@@ -586,14 +625,10 @@ func strongerIdentity(current, candidate types.PodIdentity) types.PodIdentity {
 		return current
 	}
 
-	switch {
-	case current.PodUID == "" && candidate.PodUID != "":
+	if identityCompleteness(candidate) > identityCompleteness(current) {
 		return candidate
-	case current.PodIP == "" && candidate.PodIP != "":
-		return candidate
-	default:
-		return current
 	}
+	return current
 }
 
 func withObservedIP(id types.PodIdentity, ip string) types.PodIdentity {
@@ -660,20 +695,17 @@ func (r *Resolver) resolveIP(ip string) types.PodIdentity {
 	}
 
 	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	if entry, ok := r.podByIP[ip]; ok {
-		r.mu.RUnlock()
 		return entry.id
 	}
 	if entry, ok := r.serviceByIP[ip]; ok {
-		r.mu.RUnlock()
 		return entry.id
 	}
 	if nodeName, ok := r.nodeByIP[ip]; ok {
-		r.mu.RUnlock()
 		return nodeIdentity(nodeName, ip)
 	}
-	r.mu.RUnlock()
-
 	return classifyFallbackIP(ip)
 }
 

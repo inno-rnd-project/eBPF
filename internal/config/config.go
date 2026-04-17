@@ -2,7 +2,7 @@ package config
 
 import (
 	"flag"
-	"log"
+	"fmt"
 	"net"
 	"os"
 	"strings"
@@ -34,17 +34,17 @@ func getenvBool(key string, def bool) bool {
 	return v == "1" || v == "true" || v == "yes" || v == "y"
 }
 
-func getenvDuration(key string, def time.Duration) time.Duration {
+func getenvDuration(key string, def time.Duration) (time.Duration, error) {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
-		return def
+		return def, nil
 	}
 
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		log.Fatalf("invalid duration for %s: %q", key, v)
+		return 0, fmt.Errorf("invalid duration for %s: %q", key, v)
 	}
-	return d
+	return d, nil
 }
 
 func hostnameOr(fallback string) string {
@@ -55,13 +55,18 @@ func hostnameOr(fallback string) string {
 	return h
 }
 
-func Parse() Config {
+func Parse() (Config, error) {
+	metadataRefresh, err := getenvDuration("KUBE_METADATA_REFRESH", 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		TargetIP:             getenv("TARGET_IP", ""),
 		ListenAddr:           getenv("LISTEN_ADDR", ":9810"),
 		PrintEvents:          getenvBool("PRINT_EVENTS", true),
 		NodeName:             getenv("NODE_NAME", hostnameOr("unknown-node")),
-		MetadataRefresh:      getenvDuration("KUBE_METADATA_REFRESH", 30*time.Second),
+		MetadataRefresh:      metadataRefresh,
 		DropReasonFormatPath: getenv("DROP_REASON_FORMAT_PATH", "/sys/kernel/tracing/events/skb/kfree_skb/format"),
 	}
 
@@ -74,12 +79,12 @@ func Parse() Config {
 	flag.Parse()
 
 	if cfg.TargetIP != "" && net.ParseIP(cfg.TargetIP).To4() == nil {
-		log.Fatalf("invalid -target-ip: %s", cfg.TargetIP)
+		return Config{}, fmt.Errorf("invalid -target-ip: %s", cfg.TargetIP)
 	}
 
 	if cfg.MetadataRefresh <= 0 {
-		log.Fatalf("invalid -metadata-refresh: must be > 0")
+		return Config{}, fmt.Errorf("invalid -metadata-refresh: must be > 0")
 	}
 
-	return cfg
+	return cfg, nil
 }

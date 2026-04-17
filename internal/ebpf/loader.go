@@ -21,7 +21,10 @@ func ipToU32(ipStr string) (uint32, error) {
 	if ip == nil {
 		return 0, errors.New("invalid IPv4")
 	}
-	return binary.BigEndian.Uint32(ip), nil
+	// BPF의 skc_daddr는 network byte order 바이트를
+	// native-endian u32로 읽는다. 호스트 엔디언에 맞춰 변환해야
+	// BPF 맵의 target 값과 비교가 성립한다.
+	return binary.NativeEndian.Uint32(ip), nil
 }
 
 func attachRequiredKprobe(symbol string, prog *cebpf.Program, links *[]link.Link) error {
@@ -54,7 +57,9 @@ func attachOptionalKprobe(symbol string, prog *cebpf.Program, links *[]link.Link
 	log.Printf("attached kprobe/%s", symbol)
 }
 
-func Run(ctx context.Context, targetIP string, out chan<- types.Event) error {
+// Run은 BPF 오브젝트 로드, 프로브 attach, ringbuf reader 준비가 모두 끝난 시점에
+// onReady를 호출해 상위에 readiness를 알린다. onReady가 nil이면 무시한다.
+func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady func()) error {
 	defer close(out)
 
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -111,6 +116,10 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event) error {
 		_ = rd.Close()
 	}()
 
+	if onReady != nil {
+		onReady()
+	}
+
 	for {
 		record, err := rd.Read()
 		if err != nil {
@@ -124,7 +133,7 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event) error {
 		}
 
 		var ev types.Event
-		if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &ev); err != nil {
+		if err := binary.Read(bytes.NewReader(record.RawSample), binary.NativeEndian, &ev); err != nil {
 			log.Printf("decode ringbuf event: %v", err)
 			continue
 		}
