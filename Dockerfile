@@ -1,4 +1,5 @@
 FROM golang:1.22-bookworm AS builder
+ARG TARGETARCH=amd64
 
 WORKDIR /src
 
@@ -10,7 +11,7 @@ COPY internal ./internal
 COPY bpf ./bpf
 COPY configs ./configs
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/netobs-agent ./cmd/netobs-agent
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /out/netobs-agent ./cmd/netobs-agent
 
 FROM debian:bookworm-slim
 
