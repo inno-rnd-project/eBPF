@@ -32,6 +32,17 @@ type serviceCacheEntry struct {
 	id  types.PodIdentity
 }
 
+type flowCacheEntry struct {
+	Src      types.PodIdentity
+	Dst      types.PodIdentity
+	LastSeen time.Time
+}
+
+type runtimeCacheEntry struct {
+	ID       types.PodIdentity
+	LastSeen time.Time
+}
+
 type Resolver struct {
 	localNode    string
 	client       kubernetes.Interface
@@ -48,6 +59,19 @@ type Resolver struct {
 
 	nodeByIP     map[string]string
 	nodeIPsByKey map[string][]string
+
+	// socket cookie
+	flowByCookie map[uint64]flowCacheEntry
+	flowTTL      time.Duration
+	sweepEvery   time.Duration
+	lastSweep    time.Time
+
+	// runtime cache (cgroupid, ifindex -> pod identity)
+	runtimeByCgroup   map[uint64]runtimeCacheEntry
+	runtimeByIfindex  map[uint32]runtimeCacheEntry
+	runtimeTTL        time.Duration
+	runtimeSweepEvery time.Duration
+	lastRuntimeSweep  time.Time
 }
 
 func NewResolver(localNode string, resyncPeriod time.Duration) *Resolver {
@@ -60,6 +84,17 @@ func NewResolver(localNode string, resyncPeriod time.Duration) *Resolver {
 		serviceIPsByKey: make(map[string][]string),
 		nodeByIP:        make(map[string]string),
 		nodeIPsByKey:    make(map[string][]string),
+
+		// socket cookie
+		flowByCookie: make(map[uint64]flowCacheEntry),
+		flowTTL:      10 * time.Minute,
+		sweepEvery:   1 * time.Minute,
+
+		// runtime
+		runtimeByCgroup:   make(map[uint64]runtimeCacheEntry),
+		runtimeByIfindex:  make(map[uint32]runtimeCacheEntry),
+		runtimeTTL:        2 * time.Minute,
+		runtimeSweepEvery: 30 * time.Second,
 	}
 
 	cfg, err := kubeConfig()
@@ -478,6 +513,7 @@ func podIdentity(p corev1.Pod) types.PodIdentity {
 	return types.PodIdentity{
 		IdentityClass: types.IdentityClassPod,
 		Namespace:     p.Namespace,
+		PodUID:        string(p.UID),
 		PodName:       p.Name,
 		NodeName:      p.Spec.NodeName,
 		WorkloadKind:  kind,
@@ -534,7 +570,7 @@ func ownerInfo(p corev1.Pod) (string, string) {
 	name := owner.Name
 
 	if kind == "ReplicaSet" {
-		if dep := trimReplicaSetHash(name); dep != "" {
+		if dep := types.TrimGeneratedSuffix(name); dep != "" {
 			return "Deployment", dep
 		}
 	}
@@ -542,33 +578,80 @@ func ownerInfo(p corev1.Pod) (string, string) {
 	return kind, name
 }
 
-func trimReplicaSetHash(name string) string {
-	parts := strings.Split(name, "-")
-	if len(parts) < 2 {
-		return ""
+func strongerIdentity(current, candidate types.PodIdentity) types.PodIdentity {
+	if candidate.Rank() > current.Rank() {
+		return candidate
+	}
+	if current.Rank() > candidate.Rank() {
+		return current
 	}
 
-	last := parts[len(parts)-1]
-	if !isHashLikeSuffix(last) {
-		return ""
+	switch {
+	case current.PodUID == "" && candidate.PodUID != "":
+		return candidate
+	case current.PodIP == "" && candidate.PodIP != "":
+		return candidate
+	default:
+		return current
 	}
-
-	return strings.Join(parts[:len(parts)-1], "-")
 }
 
-func isHashLikeSuffix(s string) bool {
-	if len(s) < 8 || len(s) > 16 {
-		return false
+func withObservedIP(id types.PodIdentity, ip string) types.PodIdentity {
+	if ip != "" {
+		id.PodIP = ip
+	}
+	return id
+}
+
+func (r *Resolver) lookupFlow(cookie uint64, now time.Time) (flowCacheEntry, bool) {
+	if cookie == 0 {
+		return flowCacheEntry{}, false
 	}
 
-	for _, ch := range s {
-		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') {
-			continue
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	entry, ok := r.flowByCookie[cookie]
+	if !ok {
+		return flowCacheEntry{}, false
+	}
+	if now.Sub(entry.LastSeen) > r.flowTTL {
+		return flowCacheEntry{}, false
+	}
+	return entry, true
+}
+
+func (r *Resolver) maybeSweepFlowsLocked(now time.Time) {
+	if !r.lastSweep.IsZero() && now.Sub(r.lastSweep) < r.sweepEvery {
+		return
+	}
+
+	cutoff := now.Add(-r.flowTTL)
+	for cookie, entry := range r.flowByCookie {
+		if entry.LastSeen.Before(cutoff) {
+			delete(r.flowByCookie, cookie)
 		}
-		return false
+	}
+	r.lastSweep = now
+}
+
+func (r *Resolver) rememberFlow(cookie uint64, src, dst types.PodIdentity, now time.Time) {
+	if cookie == 0 {
+		return
+	}
+	if !src.Known() {
+		return
 	}
 
-	return true
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.maybeSweepFlowsLocked(now)
+	r.flowByCookie[cookie] = flowCacheEntry{
+		Src:      src,
+		Dst:      dst,
+		LastSeen: now,
+	}
 }
 
 func (r *Resolver) resolveIP(ip string) types.PodIdentity {
@@ -592,6 +675,130 @@ func (r *Resolver) resolveIP(ip string) types.PodIdentity {
 	r.mu.RUnlock()
 
 	return classifyFallbackIP(ip)
+}
+
+func (r *Resolver) maybeSweepRuntimeLocked(now time.Time) {
+	if !r.lastRuntimeSweep.IsZero() && now.Sub(r.lastRuntimeSweep) < r.runtimeSweepEvery {
+		return
+	}
+
+	cutoff := now.Add(-r.runtimeTTL)
+
+	for k, v := range r.runtimeByCgroup {
+		if v.LastSeen.Before(cutoff) {
+			delete(r.runtimeByCgroup, k)
+		}
+	}
+	for k, v := range r.runtimeByIfindex {
+		if v.LastSeen.Before(cutoff) {
+			delete(r.runtimeByIfindex, k)
+		}
+	}
+
+	r.lastRuntimeSweep = now
+}
+
+func (r *Resolver) lookupCgroupHint(cgroupID uint64, now time.Time) (types.PodIdentity, bool) {
+	if cgroupID == 0 {
+		return types.PodIdentity{}, false
+	}
+
+	r.mu.RLock()
+	entry, ok := r.runtimeByCgroup[cgroupID]
+	r.mu.RUnlock()
+
+	if !ok || now.Sub(entry.LastSeen) > r.runtimeTTL {
+		return types.PodIdentity{}, false
+	}
+	return entry.ID, true
+}
+
+func (r *Resolver) lookupIfindexHint(ifindex uint32, now time.Time) (types.PodIdentity, bool) {
+	if ifindex == 0 {
+		return types.PodIdentity{}, false
+	}
+
+	r.mu.RLock()
+	entry, ok := r.runtimeByIfindex[ifindex]
+	r.mu.RUnlock()
+
+	if !ok || now.Sub(entry.LastSeen) > r.runtimeTTL {
+		return types.PodIdentity{}, false
+	}
+	return entry.ID, true
+}
+
+func (r *Resolver) rememberCgroupHint(cgroupID uint64, id types.PodIdentity, now time.Time) {
+	if cgroupID == 0 || !id.IsPod() {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.maybeSweepRuntimeLocked(now)
+	r.runtimeByCgroup[cgroupID] = runtimeCacheEntry{
+		ID:       id,
+		LastSeen: now,
+	}
+}
+
+func (r *Resolver) rememberIfindexHint(ifindex uint32, id types.PodIdentity, now time.Time) {
+	if ifindex == 0 || !id.IsPod() {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.maybeSweepRuntimeLocked(now)
+	r.runtimeByIfindex[ifindex] = runtimeCacheEntry{
+		ID:       id,
+		LastSeen: now,
+	}
+}
+
+func (r *Resolver) applyRuntimeHints(ev types.Event, srcIP, dstIP string, src, dst types.PodIdentity, now time.Time) (types.PodIdentity, types.PodIdentity) {
+	if !src.IsPod() {
+		if id, ok := r.lookupCgroupHint(ev.CgroupID, now); ok {
+			src = strongerIdentity(src, withObservedIP(id, srcIP))
+		}
+	}
+	if !src.IsPod() && ev.Ifindex != 0 {
+		if id, ok := r.lookupIfindexHint(ev.Ifindex, now); ok {
+			src = strongerIdentity(src, withObservedIP(id, srcIP))
+		}
+	}
+	if !dst.IsPod() && ev.SkbIif != 0 {
+		if id, ok := r.lookupIfindexHint(ev.SkbIif, now); ok {
+			dst = strongerIdentity(dst, withObservedIP(id, dstIP))
+		}
+	}
+	return src, dst
+}
+
+func (r *Resolver) rememberRuntimeHints(ev types.Event, src, dst types.PodIdentity, now time.Time) {
+	switch ev.Stage {
+	case types.StageSendmsgRet:
+		if src.IsPod() {
+			r.rememberCgroupHint(ev.CgroupID, src, now)
+		}
+
+	case types.StageToVeth, types.StageToDevQ:
+		if src.IsPod() {
+			r.rememberCgroupHint(ev.CgroupID, src, now)
+			r.rememberIfindexHint(ev.Ifindex, src, now)
+		}
+
+	case types.StageRetrans, types.StageDrop:
+		if src.IsPod() {
+			r.rememberIfindexHint(ev.Ifindex, src, now)
+		}
+	}
+
+	if dst.IsPod() && ev.SkbIif != 0 {
+		r.rememberIfindexHint(ev.SkbIif, dst, now)
+	}
 }
 
 func classifyFallbackIP(ip string) types.PodIdentity {
@@ -682,8 +889,26 @@ func (r *Resolver) Enrich(ev types.Event, mapper *drop.Mapper) types.EnrichedEve
 	srcIP := types.U32ToIPv4(ev.Saddr)
 	dstIP := types.U32ToIPv4(ev.Daddr)
 
+	now := time.Now()
+
 	src := r.resolveIP(srcIP)
 	dst := r.resolveIP(dstIP)
+
+	if cached, ok := r.lookupFlow(ev.SocketCookie, now); ok {
+		src = strongerIdentity(src, withObservedIP(cached.Src, srcIP))
+		dst = strongerIdentity(dst, withObservedIP(cached.Dst, dstIP))
+	}
+
+	src, dst = r.applyRuntimeHints(ev, srcIP, dstIP, src, dst, now)
+
+	if src.Known() {
+		switch ev.Stage {
+		case types.StageSendmsgRet, types.StageToVeth, types.StageToDevQ, types.StageRetrans, types.StageDrop:
+			r.rememberFlow(ev.SocketCookie, src, dst, now)
+		}
+	}
+
+	r.rememberRuntimeHints(ev, src, dst, now)
 
 	reasonName := ""
 	reasonCategory := ""
