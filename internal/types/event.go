@@ -24,8 +24,10 @@ const (
 )
 
 type Event struct {
-	TsNs      uint64
-	CgroupID  uint64
+	TsNs         uint64
+	CgroupID     uint64
+	SocketCookie uint64
+
 	Saddr     uint32
 	Daddr     uint32
 	Pid       uint32
@@ -33,16 +35,36 @@ type Event struct {
 	Ret       uint32
 	LatencyUs uint32
 	Reason    uint32
-	Sport     uint16
-	Dport     uint16
-	Comm      [16]byte
-	Stage     uint8
-	Pad       [3]byte
+
+	Ifindex uint32
+	SkbIif  uint32
+
+	Sport uint16
+	Dport uint16
+	Comm  [16]byte
+	Stage uint8
+	Pad   [3]byte
+}
+
+type EnrichedEvent struct {
+	Raw            Event
+	Stage          string
+	CommText       string
+	Direction      string
+	TrafficScope   string
+	ObservedNode   string
+	SrcIPText      string
+	DstIPText      string
+	Src            PodIdentity
+	Dst            PodIdentity
+	DropReasonName string
+	DropCategory   string
 }
 
 type PodIdentity struct {
 	IdentityClass string
 	Namespace     string
+	PodUID        string
 	PodName       string
 	NodeName      string
 	WorkloadKind  string
@@ -50,8 +72,9 @@ type PodIdentity struct {
 	PodIP         string
 }
 
+// --------------------- PodIdentity 관련 메서드 ---------------------
 func (p PodIdentity) Known() bool {
-	return p.IdentityClass == IdentityClassPod
+	return p.IdentityClass != "" && p.IdentityClass != IdentityClassUnresolved
 }
 
 func (p PodIdentity) IsPod() bool {
@@ -146,13 +169,13 @@ func normalizeWorkloadName(kind, name string) string {
 		return name
 	}
 
-	if trimmed := trimGeneratedSuffix(name); trimmed != "" {
+	if trimmed := TrimGeneratedSuffix(name); trimmed != "" {
 		return trimmed
 	}
 	return name
 }
 
-func trimGeneratedSuffix(name string) string {
+func TrimGeneratedSuffix(name string) string {
 	parts := strings.Split(name, "-")
 	if len(parts) < 2 {
 		return ""
@@ -235,21 +258,45 @@ func (p PodIdentity) String() string {
 	}
 }
 
-type EnrichedEvent struct {
-	Raw            Event
-	Stage          string
-	CommText       string
-	Direction      string
-	TrafficScope   string
-	ObservedNode   string
-	SrcIPText      string
-	DstIPText      string
-	Src            PodIdentity
-	Dst            PodIdentity
-	DropReasonName string
-	DropCategory   string
+func (p PodIdentity) Rank() int {
+	switch p.IdentityClass {
+	case IdentityClassPod:
+		return 5
+	case IdentityClassService:
+		return 4
+	case IdentityClassNode:
+		return 3
+	case IdentityClassExternal:
+		return 2
+	case IdentityClassUnresolved:
+		return 1
+	default:
+		return 0
+	}
 }
 
+func (p PodIdentity) WorkloadKey() string {
+	switch p.IdentityClass {
+	case IdentityClassPod:
+		kind := p.WorkloadKind
+		if kind == "" {
+			kind = "Pod"
+		}
+		return p.NamespaceLabel() + "/" + kind + "/" + p.WorkloadLabel()
+	case IdentityClassService:
+		return p.NamespaceLabel() + "/Service/" + p.WorkloadLabel()
+	case IdentityClassNode:
+		return "host/Node/" + p.WorkloadLabel()
+	case IdentityClassExternal:
+		return "external/External/external"
+	case IdentityClassUnresolved:
+		return "unresolved/Unresolved/unresolved"
+	default:
+		return "unknown/Unknown/unknown"
+	}
+}
+
+// --------------------- EnrichedEvent 관련 메서드 ---------------------
 func (e EnrichedEvent) SourceNamespaceLabel() string {
 	return e.Src.NamespaceLabel()
 }
@@ -290,12 +337,15 @@ func CommString(comm [16]byte) string {
 	return string(comm[:n])
 }
 
+// BPF는 IP를 network byte order(big-endian)로 저장하고,
+// Go는 binary.LittleEndian으로 struct를 디코딩하므로
+// uint32 내부의 바이트가 뒤집혀 있다. 하위 바이트부터 읽어야 원래 IP 순서가 된다.
 func U32ToIPv4(v uint32) string {
 	ip := net.IPv4(
-		byte(v>>24),
-		byte(v>>16),
-		byte(v>>8),
 		byte(v),
+		byte(v>>8),
+		byte(v>>16),
+		byte(v>>24),
 	)
 	return ip.String()
 }
