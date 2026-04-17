@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"os/signal"
@@ -19,16 +18,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 )
-
-func podLabel(p types.PodIdentity) string {
-	if p.Namespace != "" && p.PodName != "" {
-		return fmt.Sprintf("%s/%s", p.Namespace, p.PodName)
-	}
-	if p.PodIP != "" {
-		return p.PodIP
-	}
-	return "unknown"
-}
 
 func main() {
 	cfg := config.Parse()
@@ -82,7 +71,7 @@ func main() {
 
 			if cfg.PrintEvents {
 				log.Printf(
-					"stage=%s node=%s scope=%s dir=%s src=%s:%d(%s/%s) dst=%s:%d(%s/%s) comm=%s pid=%d tid=%d latency_us=%d ret=%d drop_reason=%s drop_category=%s cgroup=%d",
+					"stage=%s node=%s scope=%s dir=%s src=%s:%d(%s/%s uid=%s wk=%s) dst=%s:%d(%s/%s uid=%s wk=%s) comm=%s pid=%d tid=%d latency_us=%d ret=%d drop_reason=%s drop_category=%s ifindex=%d skb_iif=%d cookie=%d cgroup=%d",
 					enriched.Stage,
 					enriched.ObservedNode,
 					enriched.TrafficScope,
@@ -91,10 +80,14 @@ func main() {
 					enriched.Raw.Sport,
 					enriched.Src.NamespaceLabel(),
 					enriched.Src.WorkloadLabel(),
+					enriched.Src.PodUID,
+					enriched.Src.WorkloadKey(),
 					enriched.DstIPText,
 					enriched.Raw.Dport,
 					enriched.Dst.NamespaceLabel(),
 					enriched.Dst.WorkloadLabel(),
+					enriched.Dst.PodUID,
+					enriched.Dst.WorkloadKey(),
 					enriched.CommText,
 					enriched.Raw.Pid,
 					enriched.Raw.Tid,
@@ -102,6 +95,9 @@ func main() {
 					enriched.Raw.Ret,
 					enriched.DropReasonName,
 					enriched.DropCategory,
+					enriched.Raw.Ifindex,
+					enriched.Raw.SkbIif,
+					enriched.Raw.SocketCookie,
 					enriched.Raw.CgroupID,
 				)
 			}

@@ -66,6 +66,23 @@ var (
 		},
 		[]string{"node", "src_namespace", "src_workload", "traffic_scope", "direction"},
 	)
+
+	podStageEventsLabeled = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "netobs_pod_stage_events_labeled_total",
+			Help: "Enriched eBPF events by stage and source pod instance",
+		},
+		[]string{"stage", "node", "src_namespace", "src_pod", "src_pod_uid", "traffic_scope", "direction"},
+	)
+
+	podStageLatencyLabeled = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "netobs_pod_stage_latency_labeled_seconds",
+			Help:    "Enriched latency by stage and source pod instance",
+			Buckets: prometheus.ExponentialBuckets(1e-6, 2, 20),
+		},
+		[]string{"stage", "node", "src_namespace", "src_pod", "src_pod_uid", "traffic_scope", "direction"},
+	)
 )
 
 func Register(reg prometheus.Registerer) {
@@ -77,6 +94,8 @@ func Register(reg prometheus.Registerer) {
 		stageLatencyLabeled,
 		dropEventsLabeled,
 		retransEventsLabeled,
+		podStageEventsLabeled,
+		podStageLatencyLabeled,
 	)
 }
 
@@ -85,6 +104,20 @@ func label(v string) string {
 		return "unknown"
 	}
 	return v
+}
+
+func podNameLabel(p types.PodIdentity) string {
+	if p.PodName != "" {
+		return p.PodName
+	}
+	return "unknown"
+}
+
+func podUIDLabel(p types.PodIdentity) string {
+	if p.PodUID != "" {
+		return p.PodUID
+	}
+	return "unknown"
 }
 
 func Record(ev types.EnrichedEvent) {
@@ -102,6 +135,25 @@ func Record(ev types.EnrichedEvent) {
 	}
 
 	stageEventsLabeled.WithLabelValues(common...).Inc()
+
+	if ev.Src.IsPod() {
+		podCommon := []string{
+			stage,
+			label(ev.ObservedNodeLabel()),
+			label(ev.SourceNamespaceLabel()),
+			label(podNameLabel(ev.Src)),
+			label(podUIDLabel(ev.Src)),
+			label(ev.TrafficScope),
+			label(ev.Direction),
+		}
+		podStageEventsLabeled.WithLabelValues(podCommon...).Inc()
+
+		switch ev.Raw.Stage {
+		case types.StageSendmsgRet, types.StageToVeth, types.StageToDevQ:
+			latencySec := float64(ev.Raw.LatencyUs) / 1_000_000.0
+			podStageLatencyLabeled.WithLabelValues(podCommon...).Observe(latencySec)
+		}
+	}
 
 	switch ev.Raw.Stage {
 	case types.StageSendmsgRet, types.StageToVeth, types.StageToDevQ:
