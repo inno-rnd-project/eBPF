@@ -13,19 +13,22 @@ import (
 )
 
 type NetObsNetobsStartInfo struct {
-	TsNs     uint64
-	CgroupId uint64
-	Saddr    uint32
-	Daddr    uint32
-	Pid      uint32
-	Tid      uint32
-	Sport    uint16
-	Dport    uint16
-	Comm     [16]int8
-	SeenVeth uint8
-	SeenDevq uint8
-	RetSeen  uint8
-	Pad0     uint8
+	TsNs         uint64
+	CgroupId     uint64
+	SocketCookie uint64
+	Saddr        uint32
+	Daddr        uint32
+	Pid          uint32
+	Tid          uint32
+	Ifindex      uint32
+	SkbIif       uint32
+	Sport        uint16
+	Dport        uint16
+	Comm         [16]int8
+	SeenVeth     uint8
+	SeenDevq     uint8
+	RetSeen      uint8
+	Pad0         uint8
 }
 
 // LoadNetObs returns the embedded CollectionSpec for NetObs.
