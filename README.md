@@ -28,6 +28,9 @@ sudo ./bin/netobs-agent -listen :9810 -print-events=true
 | `TARGET_IP` | `-target-ip` | *(empty, trace all)* | Target Pod IPv4 to trace |
 | `LISTEN_ADDR` | `-listen` | `:9810` | HTTP listen address |
 | `PRINT_EVENTS` | `-print-events` | `true` | Print events to stdout |
+| `NODE_NAME` | `-node-name` | *(hostname)* | Observed Kubernetes node name |
+| `KUBE_METADATA_REFRESH` | `-metadata-refresh` | `30s` | Kubernetes informer resync interval |
+| `DROP_REASON_FORMAT_PATH` | `-drop-reason-format` | `/sys/kernel/tracing/events/skb/kfree_skb/format` | skb:kfree_skb tracepoint format path |
 
 ## Versioning
 
@@ -98,6 +101,12 @@ make delete-prod
 | `netobs_events_total` | Counter | `stage` | Total eBPF events by stage |
 | `netobs_stage_latency_seconds` | Histogram | `stage` | Kernel stage latency |
 | `netobs_drop_total` | Counter | `reason` | Drop events by kernel reason code |
+| `netobs_stage_events_labeled_total` | Counter | `stage`, `node`, `src_namespace`, `src_workload`, `traffic_scope`, `direction` | Enriched events by workload |
+| `netobs_stage_latency_labeled_seconds` | Histogram | `stage`, `node`, `src_namespace`, `src_workload`, `traffic_scope`, `direction` | Enriched latency by workload |
+| `netobs_drop_events_labeled_total` | Counter | `node`, `src_namespace`, `src_workload`, `traffic_scope`, `direction`, `drop_reason`, `drop_category` | Enriched drop events with reason |
+| `netobs_retrans_events_labeled_total` | Counter | `node`, `src_namespace`, `src_workload`, `traffic_scope`, `direction` | Enriched retransmission events |
+| `netobs_pod_stage_events_labeled_total` | Counter | `stage`, `node`, `src_namespace`, `src_pod`, `src_pod_uid`, `traffic_scope`, `direction` | Per-pod instance events |
+| `netobs_pod_stage_latency_labeled_seconds` | Histogram | `stage`, `node`, `src_namespace`, `src_pod`, `src_pod_uid`, `traffic_scope`, `direction` | Per-pod instance latency |
 
 ### Stages
 
