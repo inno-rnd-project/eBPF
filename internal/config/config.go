@@ -13,6 +13,7 @@ type Config struct {
 	TargetIP             string
 	ListenAddr           string
 	PrintEvents          bool
+	PodMetricsEnabled    bool
 	NodeName             string
 	MetadataRefresh      time.Duration
 	DropReasonFormatPath string
@@ -65,6 +66,7 @@ func Parse() (Config, error) {
 		TargetIP:             getenv("TARGET_IP", ""),
 		ListenAddr:           getenv("LISTEN_ADDR", ":9810"),
 		PrintEvents:          getenvBool("PRINT_EVENTS", true),
+		PodMetricsEnabled:    getenvBool("POD_METRICS_ENABLED", true),
 		NodeName:             getenv("NODE_NAME", hostnameOr("unknown-node")),
 		MetadataRefresh:      metadataRefresh,
 		DropReasonFormatPath: getenv("DROP_REASON_FORMAT_PATH", "/sys/kernel/tracing/events/skb/kfree_skb/format"),
@@ -73,6 +75,7 @@ func Parse() (Config, error) {
 	flag.StringVar(&cfg.TargetIP, "target-ip", cfg.TargetIP, "destination Pod IPv4 to trace; empty means observe all")
 	flag.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "HTTP listen address for /metrics, /healthz, /readyz")
 	flag.BoolVar(&cfg.PrintEvents, "print-events", cfg.PrintEvents, "print events to stdout")
+	flag.BoolVar(&cfg.PodMetricsEnabled, "pod-metrics", cfg.PodMetricsEnabled, "emit per-pod-instance metrics (netobs_pod_stage_*); disable on large clusters to cap Prometheus cardinality")
 	flag.StringVar(&cfg.NodeName, "node-name", cfg.NodeName, "observed Kubernetes node name")
 	flag.DurationVar(&cfg.MetadataRefresh, "metadata-refresh", cfg.MetadataRefresh, "Kubernetes metadata refresh interval")
 	flag.StringVar(&cfg.DropReasonFormatPath, "drop-reason-format", cfg.DropReasonFormatPath, "skb:kfree_skb tracepoint format path")

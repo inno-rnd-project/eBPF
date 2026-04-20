@@ -8,6 +8,18 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// podMetricsEnabled은 netobs_pod_stage_* 메트릭을 실제로 기록할지 결정함
+// 클러스터에서 src_pod/src_pod_uid 라벨로 인한 Prometheus 카디널리티
+// 폭증을 막기 위한 escape hatch로, 기본값은 true(기록)임
+// startup 시점에 SetPodMetricsEnabled로만 설정되며 그 이후 읽기 전용으로 쓰임
+var podMetricsEnabled = true
+
+// SetPodMetricsEnabled은 pod-instance 레벨 메트릭 기록 여부를 전환하며,
+// 반드시 Record가 호출되기 전 (main startup 단계)에 호출되어야 함
+func SetPodMetricsEnabled(v bool) {
+	podMetricsEnabled = v
+}
+
 var (
 	legacyEventsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -136,7 +148,7 @@ func Record(ev types.EnrichedEvent) {
 
 	stageEventsLabeled.WithLabelValues(common...).Inc()
 
-	if ev.Src.IsPod() {
+	if podMetricsEnabled && ev.Src.IsPod() {
 		podCommon := []string{
 			stage,
 			label(ev.ObservedNodeLabel()),

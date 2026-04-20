@@ -32,6 +32,7 @@ func main() {
 
 	reg := prometheus.NewRegistry()
 	metrics.Register(reg)
+	metrics.SetPodMetricsEnabled(cfg.PodMetricsEnabled)
 
 	var ebpfReady atomic.Bool
 	resolver := metadata.NewResolver(cfg.NodeName, cfg.MetadataRefresh)
