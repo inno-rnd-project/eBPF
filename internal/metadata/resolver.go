@@ -34,9 +34,8 @@ type serviceCacheEntry struct {
 }
 
 type flowCacheEntry struct {
-	Src      types.PodIdentity
-	Dst      types.PodIdentity
-	LastSeen time.Time
+	Src types.PodIdentity
+	Dst types.PodIdentity
 }
 
 type runtimeCacheEntry struct {
@@ -63,11 +62,17 @@ type Resolver struct {
 	nodeByIP     map[string]string
 	nodeIPsByKey map[string][]string
 
-	// socket cookie
-	flowByCookie map[uint64]flowCacheEntry
-	flowTTL      time.Duration
-	sweepEvery   time.Duration
-	lastSweep    time.Time
+	// socket cookie flow cache (two-map generational)
+	// 주기적으로 current → previous로 swap해 O(1) 만료를 수행한다.
+	// lookup은 current 먼저, miss면 previous 확인 후 promote한다.
+	// flowMaxCurrent를 두어 시간 기반 rotate 주기가 지나기 전이라도
+	// current가 커지면 조기 rotate한다. 이로써 peak 메모리는
+	// 2 × flowMaxCurrent × entry_size로 상한된다.
+	flowCurrent     map[uint64]flowCacheEntry
+	flowPrevious    map[uint64]flowCacheEntry
+	flowRotateEvery time.Duration
+	flowMaxCurrent  int
+	lastFlowRotate  time.Time
 
 	// runtime cache (cgroupid, ifindex -> pod identity)
 	runtimeByCgroup   map[uint64]runtimeCacheEntry
@@ -88,10 +93,15 @@ func NewResolver(localNode string, resyncPeriod time.Duration) *Resolver {
 		nodeByIP:        make(map[string]string),
 		nodeIPsByKey:    make(map[string][]string),
 
-		// socket cookie
-		flowByCookie: make(map[uint64]flowCacheEntry),
-		flowTTL:      10 * time.Minute,
-		sweepEvery:   1 * time.Minute,
+		// socket cookie flow cache (two-map generational).
+		// rotate 주기(2.5분)의 1~2배 범위에서 entry가 생존하므로
+		// 기존 5분 TTL을 근사하면서 sweep O(N) 블록킹을 제거한다.
+		// flowMaxCurrent 100,000 × 300B × 2 (current+previous) ≈ 60MB 메모리 상한.
+		flowCurrent:     make(map[uint64]flowCacheEntry),
+		flowPrevious:    make(map[uint64]flowCacheEntry),
+		flowRotateEvery: 2*time.Minute + 30*time.Second,
+		flowMaxCurrent:  100_000,
+		lastFlowRotate:  time.Now(),
 
 		// runtime
 		runtimeByCgroup:   make(map[uint64]runtimeCacheEntry),
@@ -638,36 +648,57 @@ func withObservedIP(id types.PodIdentity, ip string) types.PodIdentity {
 	return id
 }
 
-func (r *Resolver) lookupFlow(cookie uint64, now time.Time) (flowCacheEntry, bool) {
+// lookupFlow는 current 맵을 먼저 확인하고 miss면 previous 맵을 확인한다.
+// previous hit 시 해당 entry를 current로 promote해 다음 rotate에서
+// 만료되지 않도록 한다. promote를 위해 read lock을 write lock으로 승격한다.
+func (r *Resolver) lookupFlow(cookie uint64) (flowCacheEntry, bool) {
 	if cookie == 0 {
 		return flowCacheEntry{}, false
 	}
 
 	r.mu.RLock()
-	defer r.mu.RUnlock()
+	if entry, ok := r.flowCurrent[cookie]; ok {
+		r.mu.RUnlock()
+		return entry, true
+	}
+	entry, ok := r.flowPrevious[cookie]
+	r.mu.RUnlock()
 
-	entry, ok := r.flowByCookie[cookie]
 	if !ok {
 		return flowCacheEntry{}, false
 	}
-	if now.Sub(entry.LastSeen) > r.flowTTL {
-		return flowCacheEntry{}, false
+
+	// previous hit → current로 promote.
+	// RUnlock과 Lock 사이에 다른 goroutine이 먼저 promote했을 수 있으므로
+	// current에 이미 있다면 건너뛴다.
+	r.mu.Lock()
+	if _, already := r.flowCurrent[cookie]; !already {
+		r.flowCurrent[cookie] = entry
 	}
+	r.mu.Unlock()
+
 	return entry, true
 }
 
-func (r *Resolver) maybeSweepFlowsLocked(now time.Time) {
-	if !r.lastSweep.IsZero() && now.Sub(r.lastSweep) < r.sweepEvery {
+// maybeRotateFlowsLocked는 rotate 조건이 되면 current를 previous로 밀어내고
+// 새 current 맵을 만든다. 기존 O(N) sweep 순회를 O(1) 포인터 교체로 대체한다.
+//
+// rotate는 두 조건 중 하나만 만족해도 일어난다:
+//  1. 시간 기반: 마지막 rotate로부터 flowRotateEvery 경과
+//  2. 크기 기반: current 크기가 flowMaxCurrent 초과
+//
+// 크기 기반 조기 rotate로 arrival rate 급증 시에도 peak 메모리가
+// 2 × flowMaxCurrent × entry_size로 상한된다.
+func (r *Resolver) maybeRotateFlowsLocked(now time.Time) {
+	timeUp := now.Sub(r.lastFlowRotate) >= r.flowRotateEvery
+	sizeUp := len(r.flowCurrent) >= r.flowMaxCurrent
+	if !timeUp && !sizeUp {
 		return
 	}
 
-	cutoff := now.Add(-r.flowTTL)
-	for cookie, entry := range r.flowByCookie {
-		if entry.LastSeen.Before(cutoff) {
-			delete(r.flowByCookie, cookie)
-		}
-	}
-	r.lastSweep = now
+	r.flowPrevious = r.flowCurrent
+	r.flowCurrent = make(map[uint64]flowCacheEntry)
+	r.lastFlowRotate = now
 }
 
 func (r *Resolver) rememberFlow(cookie uint64, src, dst types.PodIdentity, now time.Time) {
@@ -681,11 +712,10 @@ func (r *Resolver) rememberFlow(cookie uint64, src, dst types.PodIdentity, now t
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.maybeSweepFlowsLocked(now)
-	r.flowByCookie[cookie] = flowCacheEntry{
-		Src:      src,
-		Dst:      dst,
-		LastSeen: now,
+	r.maybeRotateFlowsLocked(now)
+	r.flowCurrent[cookie] = flowCacheEntry{
+		Src: src,
+		Dst: dst,
 	}
 }
 
@@ -926,7 +956,7 @@ func (r *Resolver) Enrich(ev types.Event, mapper *drop.Mapper) types.EnrichedEve
 	src := r.resolveIP(srcIP)
 	dst := r.resolveIP(dstIP)
 
-	if cached, ok := r.lookupFlow(ev.SocketCookie, now); ok {
+	if cached, ok := r.lookupFlow(ev.SocketCookie); ok {
 		src = strongerIdentity(src, withObservedIP(cached.Src, srcIP))
 		dst = strongerIdentity(dst, withObservedIP(cached.Dst, dstIP))
 	}
