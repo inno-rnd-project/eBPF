@@ -37,12 +37,63 @@ static __always_inline int match_target(__u32 daddr_net)
     return daddr_net == *target;
 }
 
+static __always_inline __u64 get_socket_cookie(struct sock *sk)
+{
+    if (!sk)
+        return 0;
+
+    /* atomic64_t → .counter로 접근해야 __u64 반환 */
+    return BPF_CORE_READ(sk, __sk_common.skc_cookie.counter);
+}
+
+static __always_inline __u32 get_dev_ifindex(struct net_device *dev)
+{
+    if (!dev)
+        return 0;
+    return BPF_CORE_READ(dev, ifindex);
+}
+
+static __always_inline __u32 get_skb_ifindex(struct sk_buff *skb)
+{
+    if (!skb)
+        return 0;
+    return get_dev_ifindex(BPF_CORE_READ(skb, dev));
+}
+
+static __always_inline __u32 get_skb_iif(struct sk_buff *skb)
+{
+    if (!skb)
+        return 0;
+    return BPF_CORE_READ(skb, skb_iif);
+}
+
 static __always_inline void fill_conn_from_sock(struct sock *sk, struct netobs_start_info *s)
 {
     s->saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
     s->daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
     s->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
     s->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+    s->socket_cookie = get_socket_cookie(sk);
+
+    s->ifindex = BPF_CORE_READ(sk, __sk_common.skc_bound_dev_if);
+    s->skb_iif = 0;
+}
+
+static __always_inline void fill_dev_from_skb(struct sk_buff *skb, struct netobs_start_info *s)
+{
+    __u32 ifindex;
+    __u32 skb_iif;
+
+    if (!skb || !s)
+        return;
+
+    ifindex = get_skb_ifindex(skb);
+    skb_iif = get_skb_iif(skb);
+
+    if (ifindex)
+        s->ifindex = ifindex;
+    if (skb_iif)
+        s->skb_iif = skb_iif;
 }
 
 static __always_inline void emit_event(const struct netobs_start_info *s,
@@ -57,22 +108,27 @@ static __always_inline void emit_event(const struct netobs_start_info *s,
     if (!e)
         return;
 
-    e->ts_ns      = bpf_ktime_get_ns();
-    e->cgroup_id  = s->cgroup_id;
-    e->saddr      = s->saddr;
-    e->daddr      = s->daddr;
-    e->pid        = s->pid;
-    e->tid        = s->tid;
-    e->ret        = ret;
-    e->latency_us = latency_us;
-    e->reason     = reason;
-    e->sport      = s->sport;
-    e->dport      = s->dport;
+    e->ts_ns         = bpf_ktime_get_ns();
+    e->cgroup_id     = s->cgroup_id;
+    e->socket_cookie = s->socket_cookie;
+    e->saddr         = s->saddr;
+    e->daddr         = s->daddr;
+    e->pid           = s->pid;
+    e->tid           = s->tid;
+    e->ret           = ret;
+    e->latency_us    = latency_us;
+    e->reason        = reason;
+    e->ifindex       = s->ifindex;
+    e->skb_iif       = s->skb_iif;
+    e->sport         = s->sport;
+    e->dport         = s->dport;
+
     __builtin_memcpy(e->comm, s->comm, sizeof(e->comm));
-    e->stage      = stage;
-    e->pad[0]     = 0;
-    e->pad[1]     = 0;
-    e->pad[2]     = 0;
+
+    e->stage         = stage;
+    e->pad[0]        = 0;
+    e->pad[1]        = 0;
+    e->pad[2]        = 0;
 
     bpf_ringbuf_submit(e, 0);
 }
@@ -133,6 +189,8 @@ int BPF_KPROBE(handle_veth_xmit, struct sk_buff *skb)
     if (!s || s->seen_veth)
         return 0;
 
+    fill_dev_from_skb(skb, s);
+
     now = bpf_ktime_get_ns();
     latency_us = (__u32)((now - s->ts_ns) / 1000);
 
@@ -156,6 +214,8 @@ int BPF_KPROBE(handle_dev_queue_xmit, struct sk_buff *skb)
     s = bpf_map_lookup_elem(&starts, &tid);
     if (!s || s->seen_devq)
         return 0;
+
+    fill_dev_from_skb(skb, s);
 
     now = bpf_ktime_get_ns();
     latency_us = (__u32)((now - s->ts_ns) / 1000);
@@ -181,6 +241,8 @@ int BPF_KPROBE(handle_tcp_retransmit_skb, struct sock *sk, struct sk_buff *skb, 
     s.tid       = (__u32)pid_tgid;
 
     fill_conn_from_sock(sk, &s);
+    fill_dev_from_skb(skb, &s);
+
     if (!match_target(s.daddr))
         return 0;
 
@@ -206,6 +268,8 @@ int BPF_KPROBE(handle_kfree_skb_reason, struct sk_buff *skb, int reason)
     s.tid       = (__u32)pid_tgid;
 
     fill_conn_from_sock(sk, &s);
+    fill_dev_from_skb(skb, &s);
+
     if (!match_target(s.daddr))
         return 0;
 

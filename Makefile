@@ -25,7 +25,7 @@ deps:
 
 generate:
 	@if [ -z "$(BPFTOOL)" ]; then echo "bpftool not found"; exit 1; fi
-	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > ./bpf/vmlinux.h
+	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > ./bpf/vmlinux.h && \
 	cd internal/ebpf && GOPACKAGE=ebpfx go run github.com/cilium/ebpf/cmd/bpf2go@v0.17.1 \
 	-go-package ebpfx \
 	-cc clang \
@@ -33,6 +33,7 @@ generate:
 	NetObs ../../bpf/netlat.bpf.c -- -I../../bpf
 
 build: generate
+	go fmt ./...
 	go build -o ./bin/netobs-agent ./cmd/netobs-agent
 
 run:

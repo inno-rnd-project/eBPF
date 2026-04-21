@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -32,11 +33,23 @@ type serviceCacheEntry struct {
 	id  types.PodIdentity
 }
 
+type flowCacheEntry struct {
+	Src types.PodIdentity
+	Dst types.PodIdentity
+}
+
+type runtimeCacheEntry struct {
+	ID       types.PodIdentity
+	LastSeen time.Time
+}
+
 type Resolver struct {
 	localNode    string
 	client       kubernetes.Interface
 	startupErr   error
 	resyncPeriod time.Duration
+
+	synced atomic.Bool
 
 	mu sync.RWMutex
 
@@ -48,6 +61,25 @@ type Resolver struct {
 
 	nodeByIP     map[string]string
 	nodeIPsByKey map[string][]string
+
+	// socket cookie flow cache (two-map generational)
+	// 주기적으로 current → previous로 swap해 O(1) 만료를 수행한다.
+	// lookup은 current 먼저, miss면 previous 확인 후 promote한다.
+	// flowMaxCurrent를 두어 시간 기반 rotate 주기가 지나기 전이라도
+	// current가 커지면 조기 rotate한다. 이로써 peak 메모리는
+	// 2 × flowMaxCurrent × entry_size로 상한된다.
+	flowCurrent     map[uint64]flowCacheEntry
+	flowPrevious    map[uint64]flowCacheEntry
+	flowRotateEvery time.Duration
+	flowMaxCurrent  int
+	lastFlowRotate  time.Time
+
+	// runtime cache (cgroupid, ifindex -> pod identity)
+	runtimeByCgroup   map[uint64]runtimeCacheEntry
+	runtimeByIfindex  map[uint32]runtimeCacheEntry
+	runtimeTTL        time.Duration
+	runtimeSweepEvery time.Duration
+	lastRuntimeSweep  time.Time
 }
 
 func NewResolver(localNode string, resyncPeriod time.Duration) *Resolver {
@@ -60,6 +92,23 @@ func NewResolver(localNode string, resyncPeriod time.Duration) *Resolver {
 		serviceIPsByKey: make(map[string][]string),
 		nodeByIP:        make(map[string]string),
 		nodeIPsByKey:    make(map[string][]string),
+
+		// socket cookie flow cache (two-map generational).
+		// rotate 주기(2.5분)의 1~2배 범위에서 entry가 생존하므로
+		// 기존 5분 TTL을 근사하면서 sweep O(N) 블록킹을 제거한다.
+		// flowCacheEntry는 Src/Dst 각 PodIdentity (string 8개 필드) 구성으로 ~0.8~1KB 수준,
+		// Go map 오버헤드 포함 시 100,000 × ~1KB × 2 (current+previous) 기준 peak ≈ ~200MB.
+		flowCurrent:     make(map[uint64]flowCacheEntry),
+		flowPrevious:    make(map[uint64]flowCacheEntry),
+		flowRotateEvery: 2*time.Minute + 30*time.Second,
+		flowMaxCurrent:  100_000,
+		lastFlowRotate:  time.Now(),
+
+		// runtime
+		runtimeByCgroup:   make(map[uint64]runtimeCacheEntry),
+		runtimeByIfindex:  make(map[uint32]runtimeCacheEntry),
+		runtimeTTL:        2 * time.Minute,
+		runtimeSweepEvery: 30 * time.Second,
 	}
 
 	cfg, err := kubeConfig()
@@ -158,9 +207,17 @@ func (r *Resolver) Start(ctx context.Context) {
 		return
 	}
 
+	r.synced.Store(true)
 	log.Printf("metadata resolver informer sync completed")
 
 	<-ctx.Done()
+}
+
+// HasSynced는 Kubernetes informer 캐시가 초기 sync를 완료했는지 반환한다.
+// client 초기화 실패로 resolver가 비활성 상태인 경우에도 false를 반환해
+// /readyz가 해당 상태를 드러내도록 한다.
+func (r *Resolver) HasSynced() bool {
+	return r.synced.Load()
 }
 
 func (r *Resolver) onUpsertPod(obj interface{}) {
@@ -478,6 +535,7 @@ func podIdentity(p corev1.Pod) types.PodIdentity {
 	return types.PodIdentity{
 		IdentityClass: types.IdentityClassPod,
 		Namespace:     p.Namespace,
+		PodUID:        string(p.UID),
 		PodName:       p.Name,
 		NodeName:      p.Spec.NodeName,
 		WorkloadKind:  kind,
@@ -534,7 +592,7 @@ func ownerInfo(p corev1.Pod) (string, string) {
 	name := owner.Name
 
 	if kind == "ReplicaSet" {
-		if dep := trimReplicaSetHash(name); dep != "" {
+		if dep := types.TrimGeneratedSuffix(name); dep != "" {
 			return "Deployment", dep
 		}
 	}
@@ -542,33 +600,124 @@ func ownerInfo(p corev1.Pod) (string, string) {
 	return kind, name
 }
 
-func trimReplicaSetHash(name string) string {
-	parts := strings.Split(name, "-")
-	if len(parts) < 2 {
-		return ""
+// identityCompleteness는 식별 필드가 얼마나 채워졌는지 점수화한다.
+// 같은 IdentityClass 내에서 tiebreak 용도로만 쓰인다.
+func identityCompleteness(p types.PodIdentity) int {
+	score := 0
+	if p.Namespace != "" {
+		score++
 	}
-
-	last := parts[len(parts)-1]
-	if !isHashLikeSuffix(last) {
-		return ""
+	if p.PodUID != "" {
+		score++
 	}
-
-	return strings.Join(parts[:len(parts)-1], "-")
+	if p.PodName != "" {
+		score++
+	}
+	if p.NodeName != "" {
+		score++
+	}
+	if p.Workload != "" {
+		score++
+	}
+	if p.WorkloadKind != "" {
+		score++
+	}
+	if p.PodIP != "" {
+		score++
+	}
+	return score
 }
 
-func isHashLikeSuffix(s string) bool {
-	if len(s) < 8 || len(s) > 16 {
-		return false
+func strongerIdentity(current, candidate types.PodIdentity) types.PodIdentity {
+	if candidate.Rank() > current.Rank() {
+		return candidate
+	}
+	if current.Rank() > candidate.Rank() {
+		return current
 	}
 
-	for _, ch := range s {
-		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') {
-			continue
-		}
-		return false
+	if identityCompleteness(candidate) > identityCompleteness(current) {
+		return candidate
+	}
+	return current
+}
+
+func withObservedIP(id types.PodIdentity, ip string) types.PodIdentity {
+	if ip != "" {
+		id.PodIP = ip
+	}
+	return id
+}
+
+// lookupFlow는 current 맵을 먼저 확인하고 miss면 previous 맵을 확인한다.
+// previous hit 시 해당 entry를 current로 promote해 다음 rotate에서
+// 만료되지 않도록 한다. promote를 위해 read lock을 write lock으로 승격한다.
+func (r *Resolver) lookupFlow(cookie uint64) (flowCacheEntry, bool) {
+	if cookie == 0 {
+		return flowCacheEntry{}, false
 	}
 
-	return true
+	r.mu.RLock()
+	if entry, ok := r.flowCurrent[cookie]; ok {
+		r.mu.RUnlock()
+		return entry, true
+	}
+	entry, ok := r.flowPrevious[cookie]
+	r.mu.RUnlock()
+
+	if !ok {
+		return flowCacheEntry{}, false
+	}
+
+	// previous hit → current로 promote.
+	// RUnlock과 Lock 사이에 다른 goroutine이 먼저 promote했을 수 있으므로
+	// current에 이미 있다면 건너뛴다.
+	r.mu.Lock()
+	if _, already := r.flowCurrent[cookie]; !already {
+		r.flowCurrent[cookie] = entry
+	}
+	r.mu.Unlock()
+
+	return entry, true
+}
+
+// maybeRotateFlowsLocked는 rotate 조건이 되면 current를 previous로 밀어내고
+// 새 current 맵을 만든다. 기존 O(N) sweep 순회를 O(1) 포인터 교체로 대체한다.
+//
+// rotate는 두 조건 중 하나만 만족해도 일어난다:
+//  1. 시간 기반: 마지막 rotate로부터 flowRotateEvery 경과
+//  2. 크기 기반: current 크기가 flowMaxCurrent 초과
+//
+// 크기 기반 조기 rotate로 arrival rate 급증 시에도 peak 메모리가
+// 2 × flowMaxCurrent × entry_size로 상한된다.
+func (r *Resolver) maybeRotateFlowsLocked(now time.Time) {
+	timeUp := now.Sub(r.lastFlowRotate) >= r.flowRotateEvery
+	sizeUp := len(r.flowCurrent) >= r.flowMaxCurrent
+	if !timeUp && !sizeUp {
+		return
+	}
+
+	r.flowPrevious = r.flowCurrent
+	r.flowCurrent = make(map[uint64]flowCacheEntry)
+	r.lastFlowRotate = now
+}
+
+func (r *Resolver) rememberFlow(cookie uint64, src, dst types.PodIdentity, now time.Time) {
+	if cookie == 0 {
+		return
+	}
+	if !src.Known() {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.maybeRotateFlowsLocked(now)
+	r.flowCurrent[cookie] = flowCacheEntry{
+		Src: src,
+		Dst: dst,
+	}
 }
 
 func (r *Resolver) resolveIP(ip string) types.PodIdentity {
@@ -577,21 +726,142 @@ func (r *Resolver) resolveIP(ip string) types.PodIdentity {
 	}
 
 	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	if entry, ok := r.podByIP[ip]; ok {
-		r.mu.RUnlock()
 		return entry.id
 	}
 	if entry, ok := r.serviceByIP[ip]; ok {
-		r.mu.RUnlock()
 		return entry.id
 	}
 	if nodeName, ok := r.nodeByIP[ip]; ok {
-		r.mu.RUnlock()
 		return nodeIdentity(nodeName, ip)
 	}
+	return classifyFallbackIP(ip)
+}
+
+func (r *Resolver) maybeSweepRuntimeLocked(now time.Time) {
+	if !r.lastRuntimeSweep.IsZero() && now.Sub(r.lastRuntimeSweep) < r.runtimeSweepEvery {
+		return
+	}
+
+	cutoff := now.Add(-r.runtimeTTL)
+
+	for k, v := range r.runtimeByCgroup {
+		if v.LastSeen.Before(cutoff) {
+			delete(r.runtimeByCgroup, k)
+		}
+	}
+	for k, v := range r.runtimeByIfindex {
+		if v.LastSeen.Before(cutoff) {
+			delete(r.runtimeByIfindex, k)
+		}
+	}
+
+	r.lastRuntimeSweep = now
+}
+
+func (r *Resolver) lookupCgroupHint(cgroupID uint64, now time.Time) (types.PodIdentity, bool) {
+	if cgroupID == 0 {
+		return types.PodIdentity{}, false
+	}
+
+	r.mu.RLock()
+	entry, ok := r.runtimeByCgroup[cgroupID]
 	r.mu.RUnlock()
 
-	return classifyFallbackIP(ip)
+	if !ok || now.Sub(entry.LastSeen) > r.runtimeTTL {
+		return types.PodIdentity{}, false
+	}
+	return entry.ID, true
+}
+
+func (r *Resolver) lookupIfindexHint(ifindex uint32, now time.Time) (types.PodIdentity, bool) {
+	if ifindex == 0 {
+		return types.PodIdentity{}, false
+	}
+
+	r.mu.RLock()
+	entry, ok := r.runtimeByIfindex[ifindex]
+	r.mu.RUnlock()
+
+	if !ok || now.Sub(entry.LastSeen) > r.runtimeTTL {
+		return types.PodIdentity{}, false
+	}
+	return entry.ID, true
+}
+
+func (r *Resolver) rememberCgroupHint(cgroupID uint64, id types.PodIdentity, now time.Time) {
+	if cgroupID == 0 || !id.IsPod() {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.maybeSweepRuntimeLocked(now)
+	r.runtimeByCgroup[cgroupID] = runtimeCacheEntry{
+		ID:       id,
+		LastSeen: now,
+	}
+}
+
+func (r *Resolver) rememberIfindexHint(ifindex uint32, id types.PodIdentity, now time.Time) {
+	if ifindex == 0 || !id.IsPod() {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.maybeSweepRuntimeLocked(now)
+	r.runtimeByIfindex[ifindex] = runtimeCacheEntry{
+		ID:       id,
+		LastSeen: now,
+	}
+}
+
+func (r *Resolver) applyRuntimeHints(ev types.Event, srcIP, dstIP string, src, dst types.PodIdentity, now time.Time) (types.PodIdentity, types.PodIdentity) {
+	if !src.IsPod() {
+		if id, ok := r.lookupCgroupHint(ev.CgroupID, now); ok {
+			src = strongerIdentity(src, withObservedIP(id, srcIP))
+		}
+	}
+	if !src.IsPod() && ev.Ifindex != 0 {
+		if id, ok := r.lookupIfindexHint(ev.Ifindex, now); ok {
+			src = strongerIdentity(src, withObservedIP(id, srcIP))
+		}
+	}
+	if !dst.IsPod() && ev.SkbIif != 0 {
+		if id, ok := r.lookupIfindexHint(ev.SkbIif, now); ok {
+			dst = strongerIdentity(dst, withObservedIP(id, dstIP))
+		}
+	}
+	return src, dst
+}
+
+func (r *Resolver) rememberRuntimeHints(ev types.Event, src, dst types.PodIdentity, now time.Time) {
+	switch ev.Stage {
+	case types.StageSendmsgRet:
+		if src.IsPod() {
+			r.rememberCgroupHint(ev.CgroupID, src, now)
+		}
+
+	case types.StageToVeth, types.StageToDevQ:
+		if src.IsPod() {
+			r.rememberCgroupHint(ev.CgroupID, src, now)
+			r.rememberIfindexHint(ev.Ifindex, src, now)
+		}
+
+	case types.StageRetrans, types.StageDrop:
+		if src.IsPod() {
+			r.rememberIfindexHint(ev.Ifindex, src, now)
+		}
+	}
+
+	if dst.IsPod() && ev.SkbIif != 0 {
+		r.rememberIfindexHint(ev.SkbIif, dst, now)
+	}
 }
 
 func classifyFallbackIP(ip string) types.PodIdentity {
@@ -682,8 +952,26 @@ func (r *Resolver) Enrich(ev types.Event, mapper *drop.Mapper) types.EnrichedEve
 	srcIP := types.U32ToIPv4(ev.Saddr)
 	dstIP := types.U32ToIPv4(ev.Daddr)
 
+	now := time.Now()
+
 	src := r.resolveIP(srcIP)
 	dst := r.resolveIP(dstIP)
+
+	if cached, ok := r.lookupFlow(ev.SocketCookie); ok {
+		src = strongerIdentity(src, withObservedIP(cached.Src, srcIP))
+		dst = strongerIdentity(dst, withObservedIP(cached.Dst, dstIP))
+	}
+
+	src, dst = r.applyRuntimeHints(ev, srcIP, dstIP, src, dst, now)
+
+	if src.Known() {
+		switch ev.Stage {
+		case types.StageSendmsgRet, types.StageToVeth, types.StageToDevQ, types.StageRetrans, types.StageDrop:
+			r.rememberFlow(ev.SocketCookie, src, dst, now)
+		}
+	}
+
+	r.rememberRuntimeHints(ev, src, dst, now)
 
 	reasonName := ""
 	reasonCategory := ""

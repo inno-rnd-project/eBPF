@@ -14,14 +14,18 @@ enum netobs_event_stage {
 struct netobs_start_info {
     __u64 ts_ns;
     __u64 cgroup_id;
+    __u64 socket_cookie;    /* sock->sk_cookie */
 
-    __u32 saddr;   /* network byte order */
-    __u32 daddr;   /* network byte order */
+    __u32 saddr;            /* network byte order */
+    __u32 daddr;            /* network byte order */
     __u32 pid;
     __u32 tid;
 
-    __u16 sport;   /* host byte order */
-    __u16 dport;   /* host byte order */
+    __u32 ifindex;          /* skb->dev->ifindex or sk_bound_dev_if */
+    __u32 skb_iif;          /* skb ingress ifindex */
+
+    __u16 sport;            /* host byte order */
+    __u16 dport;            /* host byte order */
 
     char  comm[NETOBS_COMM_LEN];
 
@@ -34,14 +38,18 @@ struct netobs_start_info {
 struct netobs_event {
     __u64 ts_ns;
     __u64 cgroup_id;
+    __u64 socket_cookie;    /* sock->sk_cookie */
 
-    __u32 saddr;   /* network byte order */
-    __u32 daddr;   /* network byte order */
+    __u32 saddr;            /* network byte order */
+    __u32 daddr;            /* network byte order */
     __u32 pid;
     __u32 tid;
     __u32 ret;
     __u32 latency_us;
     __u32 reason;
+
+    __u32 ifindex;          /* skb->dev->ifindex or sk_bound_dev_if */
+    __u32 skb_iif;          /* skb ingress ifindex */
 
     __u16 sport;
     __u16 dport;
