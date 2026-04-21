@@ -65,7 +65,7 @@ func Parse() (Config, error) {
 	cfg := Config{
 		TargetIP:             getenv("TARGET_IP", ""),
 		ListenAddr:           getenv("LISTEN_ADDR", ":9810"),
-		PrintEvents:          getenvBool("PRINT_EVENTS", true),
+		PrintEvents:          getenvBool("PRINT_EVENTS", false),
 		PodMetricsEnabled:    getenvBool("POD_METRICS_ENABLED", true),
 		NodeName:             getenv("NODE_NAME", hostnameOr("unknown-node")),
 		MetadataRefresh:      metadataRefresh,

@@ -96,7 +96,8 @@ func NewResolver(localNode string, resyncPeriod time.Duration) *Resolver {
 		// socket cookie flow cache (two-map generational).
 		// rotate 주기(2.5분)의 1~2배 범위에서 entry가 생존하므로
 		// 기존 5분 TTL을 근사하면서 sweep O(N) 블록킹을 제거한다.
-		// flowMaxCurrent 100,000 × 300B × 2 (current+previous) ≈ 60MB 메모리 상한.
+		// flowCacheEntry는 Src/Dst 각 PodIdentity (string 8개 필드) 구성으로 ~0.8~1KB 수준,
+		// Go map 오버헤드 포함 시 100,000 × ~1KB × 2 (current+previous) 기준 peak ≈ ~200MB.
 		flowCurrent:     make(map[uint64]flowCacheEntry),
 		flowPrevious:    make(map[uint64]flowCacheEntry),
 		flowRotateEvery: 2*time.Minute + 30*time.Second,
