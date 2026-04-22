@@ -27,7 +27,7 @@ sudo ./bin/netobs-agent -listen :9810 -print-events=true
 |---|---|---|---|
 | `TARGET_IP` | `-target-ip` | *(empty, trace all)* | Target Pod IPv4 to trace |
 | `LISTEN_ADDR` | `-listen` | `:9810` | HTTP listen address |
-| `PRINT_EVENTS` | `-print-events` | `true` | Print events to stdout |
+| `PRINT_EVENTS` | `-print-events` | `false` | Print events to stdout |
 | `POD_METRICS_ENABLED` | `-pod-metrics` | `true` | Emit per-pod-instance metrics (`netobs_pod_stage_*`); disable on large clusters to cap Prometheus cardinality |
 | `NODE_NAME` | `-node-name` | *(hostname)* | Observed Kubernetes node name |
 | `KUBE_METADATA_REFRESH` | `-metadata-refresh` | `30s` | Kubernetes informer resync interval |
