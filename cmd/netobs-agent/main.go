@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"netobs/internal/config"
 	"netobs/internal/drop"
 	ebpfx "netobs/internal/ebpf"
@@ -17,8 +19,6 @@ import (
 	"netobs/internal/metrics"
 	"netobs/internal/server"
 	"netobs/internal/types"
-
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 func main() {
