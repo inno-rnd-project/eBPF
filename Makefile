@@ -69,7 +69,10 @@ bump:
 	MAJOR=$$(echo $$CUR | cut -d. -f1); \
 	MINOR=$$(echo $$CUR | cut -d. -f2); \
 	PATCH=$$(echo $$CUR | cut -d. -f3); \
-	NEW="$$MAJOR.$$MINOR.$$((PATCH + 1))"; \
+	PATCH=$$((PATCH + 1)); \
+	if [ "$$PATCH" -ge 10 ]; then PATCH=0; MINOR=$$((MINOR + 1)); fi; \
+	if [ "$$MINOR" -ge 10 ]; then MINOR=0; MAJOR=$$((MAJOR + 1)); fi; \
+	NEW="$$MAJOR.$$MINOR.$$PATCH"; \
 	echo "$$NEW" > VERSION; \
 	sed -i 's/newTag: ".*"/newTag: "'$$NEW'"/' deploy/overlays/dev/kustomization.yaml; \
 	sed -i 's/newTag: ".*"/newTag: "'$$NEW'"/' deploy/overlays/prod/kustomization.yaml; \
