@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -81,6 +82,11 @@ func Parse() (Config, error) {
 	fs.DurationVar(&cfg.MetadataRefresh, "metadata-refresh", cfg.MetadataRefresh, "Kubernetes metadata refresh interval")
 	fs.StringVar(&cfg.DropReasonFormatPath, "drop-reason-format", cfg.DropReasonFormatPath, "skb:kfree_skb tracepoint format path")
 	if err := fs.Parse(os.Args[1:]); err != nil {
+		// -h/-help 요청은 flag 패키지가 usage를 출력한 뒤 ErrHelp를 반환한다.
+		// 사용자 의도된 정상 경로이므로 exit 0으로 종료한다.
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
 		return Config{}, err
 	}
 

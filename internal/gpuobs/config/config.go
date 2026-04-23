@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -26,6 +27,11 @@ func Parse() (Config, error) {
 	fs.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "HTTP listen address for metrics and health endpoints")
 	fs.StringVar(&cfg.NodeName, "node-name", cfg.NodeName, "observed Kubernetes node name (defaults to hostname when empty)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
+		// -h/-help 요청은 flag 패키지가 usage를 출력한 뒤 ErrHelp를 반환한다.
+		// 사용자 의도된 정상 경로이므로 exit 0으로 종료한다.
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
 		return Config{}, err
 	}
 
