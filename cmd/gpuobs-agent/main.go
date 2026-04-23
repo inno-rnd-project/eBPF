@@ -54,14 +54,17 @@ func main() {
 		}
 	}()
 
-	// NVML 초기화. non-GPU 노드나 driver 미설치 환경에서는 실패할 수 있으며, 그 경우
-	// warn 로그만 남기고 nil 핸들을 주입한다. collector가 graceful disable 경로로
-	// 분기해 /healthz·/readyz=200을 유지한 채 바이너리 기동을 이어간다.
+	// NVML 초기화는 수집이 활성화된 경우에만 시도한다. GPU_METRICS_ENABLED=false 환경에서는
+	// libnvidia-ml.so.1 로드 자체를 건너뛰어 불필요한 초기화 비용과 실패 로그를 제거한다.
+	// 활성화된 상태에서 non-GPU 노드나 driver 미설치로 Init이 실패하면 warn 로그만 남기고
+	// nil 핸들을 주입해, collector가 graceful disable 경로로 분기하도록 한다.
 	var nv nvml.NVML
-	if n, err := nvml.Init(); err != nil {
-		log.Printf("warn: nvml init failed, gpuobs collector disabled: %v", err)
-	} else {
-		nv = n
+	if cfg.GPUMetricsEnabled {
+		if n, err := nvml.Init(); err != nil {
+			log.Printf("warn: nvml init failed, gpuobs collector disabled: %v", err)
+		} else {
+			nv = n
+		}
 	}
 
 	col := collector.New(nv, cfg)

@@ -131,8 +131,9 @@ func TestRun_FlagDisabledSkipsPolling(t *testing.T) {
 	if got := dev.snapCallCount(); got != 0 {
 		t.Fatalf("disabled path must not poll; got %d snapshot calls", got)
 	}
-	if got := fake.shutdownCallCount(); got != 0 {
-		t.Fatalf("disabled path must not call Shutdown; got %d", got)
+	// non-nil NVML 핸들을 받은 이상 disable 경로에서도 collector가 Shutdown을 보장해야 한다.
+	if got := fake.shutdownCallCount(); got != 1 {
+		t.Fatalf("disabled path must still release NVML; expected 1 Shutdown call, got %d", got)
 	}
 }
 

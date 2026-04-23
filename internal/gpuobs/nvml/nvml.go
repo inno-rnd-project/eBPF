@@ -58,7 +58,22 @@ func (n *nvmlImpl) Device(index uint) (Device, error) {
 	if err := nvmlErr(fmt.Sprintf("device handle idx=%d", index), ret); err != nil {
 		return nil, err
 	}
-	return &deviceImpl{handle: handle, index: index}, nil
+
+	d := &deviceImpl{handle: handle, index: index}
+
+	// UUID와 모델명은 device 수명 동안 불변이므로 최초 1회 조회해 `info`에 캐싱한다.
+	// 이후 Snapshot은 NVML 재조회 없이 캐시된 값을 그대로 재사용한다.
+	uuid, ret := handle.GetUUID()
+	if err := d.wrapErr("device uuid", ret); err != nil {
+		return nil, err
+	}
+	name, ret := handle.GetName()
+	if err := d.wrapErr("device name", ret); err != nil {
+		return nil, err
+	}
+	d.info = types.GPUDevice{Index: index, UUID: uuid, Model: name}
+
+	return d, nil
 }
 
 func (n *nvmlImpl) Shutdown() error {
@@ -68,6 +83,7 @@ func (n *nvmlImpl) Shutdown() error {
 type deviceImpl struct {
 	handle gonvml.Device
 	index  uint
+	info   types.GPUDevice
 }
 
 // wrapErr는 device 호출 에러에 device index 컨텍스트를 덧붙여 래핑한다.
@@ -78,28 +94,14 @@ func (d *deviceImpl) wrapErr(op string, ret gonvml.Return) error {
 	return fmt.Errorf("%s idx=%d: %s", op, d.index, gonvml.ErrorString(ret))
 }
 
+// Info는 Device 생성 시 캐싱된 정적 정보를 그대로 반환한다.
+// 현재 구현에서는 에러를 돌려줄 경로가 없지만, 다른 백엔드에서의 재조회 패턴을 허용하기 위해
+// 인터페이스 시그니처는 그대로 유지한다.
 func (d *deviceImpl) Info() (types.GPUDevice, error) {
-	uuid, ret := d.handle.GetUUID()
-	if err := d.wrapErr("device uuid", ret); err != nil {
-		return types.GPUDevice{}, err
-	}
-	name, ret := d.handle.GetName()
-	if err := d.wrapErr("device name", ret); err != nil {
-		return types.GPUDevice{}, err
-	}
-	return types.GPUDevice{
-		Index: d.index,
-		UUID:  uuid,
-		Model: name,
-	}, nil
+	return d.info, nil
 }
 
 func (d *deviceImpl) Snapshot() (types.GPUSnapshot, error) {
-	info, err := d.Info()
-	if err != nil {
-		return types.GPUSnapshot{}, err
-	}
-
 	util, ret := d.handle.GetUtilizationRates()
 	if err := d.wrapErr("utilization", ret); err != nil {
 		return types.GPUSnapshot{}, err
@@ -122,7 +124,7 @@ func (d *deviceImpl) Snapshot() (types.GPUSnapshot, error) {
 	}
 
 	return types.GPUSnapshot{
-		Device:           info,
+		Device:           d.info,
 		UtilizationPct:   uint(util.Gpu),
 		MemoryUsedBytes:  mem.Used,
 		MemoryTotalBytes: mem.Total,

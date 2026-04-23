@@ -82,18 +82,17 @@ func Register(reg prometheus.Registerer) {
 }
 
 // Record는 한 device의 현재 스냅샷을 모든 device gauge에 기록한다.
+// 인자 순서는 deviceLabels({node, gpu_uuid, gpu_index, gpu_model})와 정확히 일치해야 하며,
+// 매 호출 시 `prometheus.Labels` 맵 할당을 피하기 위해 `WithLabelValues`를 사용한다.
 // 라벨 카디널리티는 노드당 device 수(통상 ≤8)로 제한되어 별도 escape hatch는 두지 않는다.
 func Record(node string, snap types.GPUSnapshot) {
-	labels := prometheus.Labels{
-		"node":      node,
-		"gpu_uuid":  snap.Device.UUID,
-		"gpu_index": strconv.FormatUint(uint64(snap.Device.Index), 10),
-		"gpu_model": snap.Device.Model,
-	}
+	idx := strconv.FormatUint(uint64(snap.Device.Index), 10)
+	uuid := snap.Device.UUID
+	model := snap.Device.Model
 
-	deviceUtilization.With(labels).Set(float64(snap.UtilizationPct))
-	deviceMemoryUsed.With(labels).Set(float64(snap.MemoryUsedBytes))
-	deviceMemoryTotal.With(labels).Set(float64(snap.MemoryTotalBytes))
-	deviceTemperature.With(labels).Set(float64(snap.TemperatureC))
-	devicePower.With(labels).Set(snap.PowerUsageWatts)
+	deviceUtilization.WithLabelValues(node, uuid, idx, model).Set(float64(snap.UtilizationPct))
+	deviceMemoryUsed.WithLabelValues(node, uuid, idx, model).Set(float64(snap.MemoryUsedBytes))
+	deviceMemoryTotal.WithLabelValues(node, uuid, idx, model).Set(float64(snap.MemoryTotalBytes))
+	deviceTemperature.WithLabelValues(node, uuid, idx, model).Set(float64(snap.TemperatureC))
+	devicePower.WithLabelValues(node, uuid, idx, model).Set(snap.PowerUsageWatts)
 }

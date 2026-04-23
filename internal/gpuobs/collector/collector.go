@@ -37,18 +37,21 @@ func (c *Collector) Run(ctx context.Context, onReady func()) error {
 		<-ctx.Done()
 		return nil
 	}
+
+	// non-nil NVML 핸들을 받은 이상 lifecycle은 collector가 소유한다.
+	// flag 기반 disable 경로에서도 defer가 먼저 등록되어 Shutdown이 보장된다.
+	defer func() {
+		if err := c.nvml.Shutdown(); err != nil {
+			log.Printf("nvml shutdown: %v", err)
+		}
+	}()
+
 	if !c.cfg.GPUMetricsEnabled {
 		log.Printf("gpuobs collector disabled: GPU_METRICS_ENABLED=false")
 		signalReady(onReady)
 		<-ctx.Done()
 		return nil
 	}
-
-	defer func() {
-		if err := c.nvml.Shutdown(); err != nil {
-			log.Printf("nvml shutdown: %v", err)
-		}
-	}()
 
 	// 초기 1회 폴링으로 기동 직후 /metrics를 채운 뒤 readiness를 올린다.
 	c.pollOnce()
