@@ -47,22 +47,22 @@ image-push:
 	docker push $(REGISTRY_IMAGE)
 
 render-dev:
-	$(KUSTOMIZE) deploy/overlays/dev
+	$(KUSTOMIZE) deploy/netobs/overlays/dev
 
 render-prod:
-	$(KUSTOMIZE) deploy/overlays/prod
+	$(KUSTOMIZE) deploy/netobs/overlays/prod
 
 deploy-dev:
-	kubectl apply -k deploy/overlays/dev
+	kubectl apply -k deploy/netobs/overlays/dev
 
 deploy-prod:
-	kubectl apply -k deploy/overlays/prod
+	kubectl apply -k deploy/netobs/overlays/prod
 
 delete-dev:
-	kubectl delete -k deploy/overlays/dev
+	kubectl delete -k deploy/netobs/overlays/dev
 
 delete-prod:
-	kubectl delete -k deploy/overlays/prod
+	kubectl delete -k deploy/netobs/overlays/prod
 
 bump:
 	@CUR=$$(cat VERSION); \
@@ -74,8 +74,8 @@ bump:
 	if [ "$$MINOR" -ge 10 ]; then MINOR=0; MAJOR=$$((MAJOR + 1)); fi; \
 	NEW="$$MAJOR.$$MINOR.$$PATCH"; \
 	echo "$$NEW" > VERSION; \
-	sed -i 's/newTag: ".*"/newTag: "'$$NEW'"/' deploy/overlays/dev/kustomization.yaml; \
-	sed -i 's/newTag: ".*"/newTag: "'$$NEW'"/' deploy/overlays/prod/kustomization.yaml; \
+	sed -i 's/newTag: ".*"/newTag: "'$$NEW'"/' deploy/netobs/overlays/dev/kustomization.yaml; \
+	sed -i 's/newTag: ".*"/newTag: "'$$NEW'"/' deploy/netobs/overlays/prod/kustomization.yaml; \
 	echo "bumped $$CUR -> $$NEW"
 
 clean:

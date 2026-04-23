@@ -140,17 +140,17 @@ import (
 
 ## Kubernetes 배포 자원
 
-`deploy/base/`와 `deploy/overlays/`의 Kustomize 구조를 따른다.
+각 에이전트의 배포 자원은 `deploy/<agent-domain>/{base,overlays}/` Kustomize 구조를 따른다 (예: netobs는 `deploy/netobs/{base,overlays}/`, gpuobs는 `deploy/gpuobs/{base,overlays}/`).
 
-- 공통 자원은 `base/`에, 환경별 차이는 `overlays/<env>/`에 patch로 둔다
+- 공통 자원은 에이전트 도메인별 `base/`에, 롤아웃 단계별 차이는 `overlays/<stage>/`에 patch로 둔다 (stage는 canary 성격의 `dev`와 fleet 성격의 `prod`로 나눈다)
 - `NodeSelector`, `hostPID`, `privileged` 설정은 eBPF 로딩에 필요한 조합이며, 프로덕션 overlay에서는 `accelerator`/`observability.netobs/*` 라벨 등 대상 노드가 제한되어 있는지 확인한다
-- 새 env 변수를 추가할 때는 `internal/netobs/config/config.go`, `deploy/base/daemonset.yaml`, `README.md`의 Configuration 표를 함께 갱신한다
+- 새 env 변수를 추가할 때는 해당 에이전트의 `internal/<agent>/config/config.go`, `deploy/<agent>/base/daemonset.yaml`, `README.md`의 Configuration 표를 함께 갱신한다
 
 ## 버전 관리
 
 버전은 프로젝트 루트의 `VERSION` 파일을 단일 진실원(single source of truth)으로 사용한다.
 
-- 버전은 `make bump`으로만 증가시키며, 이 명령은 `VERSION`과 `deploy/overlays/*/kustomization.yaml`의 image tag를 함께 갱신한다
+- 버전은 `make bump`으로만 증가시키며, 이 명령은 `VERSION`과 `deploy/*/overlays/*/kustomization.yaml`의 image tag를 함께 갱신한다
 - 버전 변경은 별도 커밋으로 분리하고, 메시지는 `build(release): bump version to X.Y.Z` 형식을 유지한다
 
 ## Pull Request 절차
