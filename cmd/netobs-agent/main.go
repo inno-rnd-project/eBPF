@@ -49,14 +49,16 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: server.NewHandler(reg, ready),
+		Handler: server.NewHandler("netobs-agent", reg, ready),
 	}
 
-	// HTTP server: ListenAndServe는 shutdown 전까지 블록되어야 정상 동작.
+	// HTTP server: ListenAndServe는 shutdown 전까지 블록되어야 정상 동작이며,
+	// 포트 바인드 실패 등 비정상 종료 시에는 fail-fast로 프로세스를 내려 메트릭 없이
+	// 좀비 상태로 살아남는 상황을 막는다.
 	go func() {
 		log.Printf("serving metrics on %s", cfg.ListenAddr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("metrics server error: %v", err)
+			log.Fatalf("metrics server error: %v", err)
 		}
 	}()
 

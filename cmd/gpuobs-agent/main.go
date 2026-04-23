@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"os/signal"
@@ -13,11 +11,11 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"netobs/internal/gpuobs/collector"
 	"netobs/internal/gpuobs/config"
 	"netobs/internal/gpuobs/metrics"
+	"netobs/internal/server"
 )
 
 func main() {
@@ -42,14 +40,16 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: newHandler(reg, ready),
+		Handler: server.NewHandler("gpuobs-agent", reg, ready),
 	}
 
-	// HTTP 서버. ListenAndServe는 Shutdown 전까지 블록되는 것이 정상 동작이다.
+	// HTTP 서버. ListenAndServe는 Shutdown 전까지 블록되는 것이 정상 동작이며,
+	// 포트 바인드 실패 등 비정상 종료 시에는 fail-fast로 프로세스를 내려 메트릭 없이
+	// 좀비 상태로 살아남는 상황을 막는다.
 	go func() {
 		log.Printf("serving gpuobs metrics on %s (node=%s)", cfg.ListenAddr, cfg.NodeName)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("metrics server error: %v", err)
+			log.Fatalf("metrics server error: %v", err)
 		}
 	}()
 
@@ -90,43 +90,4 @@ func main() {
 	}
 
 	log.Printf("exiting")
-}
-
-// newHandler는 gpuobs 전용 HTTP 핸들러를 구성한다.
-// netobs의 internal/server 패키지는 `/` 응답에 "netobs-agent" 이름이 박혀 있어
-// gpuobs가 재사용하면 정체성이 잘못 표현된다. 경로 분리를 확실히 하기 위해
-// gpuobs는 자체 핸들러를 이 파일 안에 둔다.
-func newHandler(reg *prometheus.Registry, ready func() (bool, string)) http.Handler {
-	mux := http.NewServeMux()
-
-	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
-	})
-
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		if ok, reason := ready(); !ok {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = fmt.Fprintf(w, "not ready: %s\n", reason)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ready\n"))
-	})
-
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]any{
-			"name":    "gpuobs-agent",
-			"metrics": "/metrics",
-			"health":  "/healthz",
-			"ready":   "/readyz",
-		}); err != nil {
-			log.Printf("root handler encode error: %v", err)
-		}
-	})
-
-	return mux
 }

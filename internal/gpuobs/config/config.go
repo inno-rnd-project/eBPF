@@ -22,9 +22,12 @@ func Parse() (Config, error) {
 		NodeName:   getenvDefault("NODE_NAME", ""),
 	}
 
-	flag.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "HTTP listen address for metrics and health endpoints")
-	flag.StringVar(&cfg.NodeName, "node-name", cfg.NodeName, "observed Kubernetes node name (defaults to hostname when empty)")
-	flag.Parse()
+	fs := flag.NewFlagSet("gpuobs-agent", flag.ExitOnError)
+	fs.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "HTTP listen address for metrics and health endpoints")
+	fs.StringVar(&cfg.NodeName, "node-name", cfg.NodeName, "observed Kubernetes node name (defaults to hostname when empty)")
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		return Config{}, err
+	}
 
 	if strings.TrimSpace(cfg.ListenAddr) == "" {
 		return Config{}, fmt.Errorf("listen address must not be empty")
