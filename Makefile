@@ -26,11 +26,11 @@ deps:
 generate:
 	@if [ -z "$(BPFTOOL)" ]; then echo "bpftool not found"; exit 1; fi
 	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > ./bpf/vmlinux.h && \
-	cd internal/ebpf && GOPACKAGE=ebpfx go run github.com/cilium/ebpf/cmd/bpf2go@v0.17.1 \
+	cd internal/netobs/ebpf && GOPACKAGE=ebpfx go run github.com/cilium/ebpf/cmd/bpf2go@v0.17.1 \
 	-go-package ebpfx \
 	-cc clang \
 	-cflags "$(BPF_CFLAGS)" \
-	NetObs ../../bpf/netlat.bpf.c -- -I../../bpf
+	NetObs ../../../bpf/netlat.bpf.c -- -I../../../bpf
 
 build: generate
 	go fmt ./...
@@ -80,8 +80,8 @@ bump:
 
 clean:
 	rm -f ./bin/netobs-agent
-	rm -f ./internal/ebpf/netobs_bpfel.go ./internal/ebpf/netobs_bpfeb.go
-	rm -f ./internal/ebpf/netobs_bpfel.o  ./internal/ebpf/netobs_bpfeb.o
+	rm -f ./internal/netobs/ebpf/netobs_bpfel.go ./internal/netobs/ebpf/netobs_bpfeb.go
+	rm -f ./internal/netobs/ebpf/netobs_bpfel.o  ./internal/netobs/ebpf/netobs_bpfeb.o
 
 tree:
 	find . -maxdepth 4 -type f | sort

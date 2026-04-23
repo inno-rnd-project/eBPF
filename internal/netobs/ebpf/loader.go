@@ -13,7 +13,7 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 
-	"netobs/internal/types"
+	"netobs/internal/netobs/types"
 )
 
 func ipToU32(ipStr string) (uint32, error) {

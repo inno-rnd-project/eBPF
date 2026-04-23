@@ -12,13 +12,13 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"netobs/internal/config"
-	"netobs/internal/drop"
-	ebpfx "netobs/internal/ebpf"
-	"netobs/internal/metadata"
-	"netobs/internal/metrics"
+	"netobs/internal/netobs/config"
+	"netobs/internal/netobs/drop"
+	ebpfx "netobs/internal/netobs/ebpf"
+	"netobs/internal/netobs/metadata"
+	"netobs/internal/netobs/metrics"
+	"netobs/internal/netobs/types"
 	"netobs/internal/server"
-	"netobs/internal/types"
 )
 
 func main() {

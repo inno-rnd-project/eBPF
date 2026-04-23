@@ -5,7 +5,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"netobs/internal/types"
+	"netobs/internal/netobs/types"
 )
 
 // podMetricsEnabled은 netobs_pod_stage_* 메트릭을 실제로 기록할지 결정함
