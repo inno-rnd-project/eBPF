@@ -26,7 +26,7 @@
 
 ## 커밋 메시지 규약
 
-커밋 메시지는 [Conventional Commits](https://www.conventionalcommits.org/) 형식을 따른다. 헤더는 `type(scope): subject` 구조이며, 한 커밋에 여러 영역이 걸치는 경우 scope는 생략할 수 있다.
+커밋 메시지는 [Conventional Commits](https://www.conventionalcommits.org/) 형식을 따른다. 헤더는 `type(scope): subject` 구조이며, 한 커밋에 여러 영역이 걸치는 경우 scope는 생략할 수 있다. 주로 쓰는 scope는 에이전트 도메인(`netobs`, `gpuobs`), 공용 코드(`server`, `correlation`), 빌드 영역(`make`, `docker`), 배포(`deploy`) 등이다.
 
 사용하는 type은 다음과 같다.
 

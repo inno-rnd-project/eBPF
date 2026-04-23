@@ -1,27 +1,43 @@
 # observability-agent
 
-Custom eBPF-based observability agent for Kubernetes GPU nodes.
-Currently supports network latency tracing; additional observation targets will be added in future releases.
+Kubernetes observability agent suite combining eBPF-based network latency tracing (`netobs`) and NVML-based GPU state collection (`gpuobs`). Both agents are built and deployed from a single repository with symmetric structure and each runs as an independent DaemonSet.
 
 ## Prerequisites
 
+Shared:
 - Go 1.22+
+- Linux kernel with BTF support (required by netobs)
+
+For netobs (network observer):
 - clang (BPF compilation)
 - bpftool (vmlinux.h generation)
-- Linux kernel with BTF support
+
+For gpuobs (GPU observer):
+- Target node has NVIDIA GPU Operator or `nvidia-container-runtime` installed
+- `libnvidia-ml.so.1` injectable at runtime (triggered by `NVIDIA_VISIBLE_DEVICES` env)
 
 ## Local build
+
 ```bash
 make deps
-make build
+make build-netobs-agent     # netobs-agent binary (runs BPF regeneration first)
+make build-gpuobs-agent     # gpuobs-agent binary
+make build-all              # both agents
 ```
 
 ## Local run
+
 ```bash
+# netobs needs root for BPF loading
 sudo ./bin/netobs-agent -listen :9810 -print-events=true
+
+# gpuobs does not need root
+./bin/gpuobs-agent -listen :9820
 ```
 
 ## Configuration
+
+### netobs-agent
 
 | Environment Variable | CLI Flag | Default | Description |
 |---|---|---|---|
@@ -33,69 +49,97 @@ sudo ./bin/netobs-agent -listen :9810 -print-events=true
 | `KUBE_METADATA_REFRESH` | `-metadata-refresh` | `30s` | Kubernetes informer resync interval |
 | `DROP_REASON_FORMAT_PATH` | `-drop-reason-format` | `/sys/kernel/tracing/events/skb/kfree_skb/format` | skb:kfree_skb tracepoint format path |
 
+### gpuobs-agent
+
+| Environment Variable | CLI Flag | Default | Description |
+|---|---|---|---|
+| `LISTEN_ADDR` | `-listen` | `:9820` | HTTP listen address |
+| `NODE_NAME` | `-node-name` | *(hostname)* | Observed Kubernetes node name |
+
+Additional variables (`GPU_POLL_INTERVAL`, `GPU_METRICS_ENABLED`) arrive in Phase 2 when NVML polling is introduced.
+
 ## Versioning
 
-Image version is managed via the `VERSION` file at the project root.
-`make bump` increments the patch version and updates both overlay manifests.
+The `VERSION` file at the repository root is the single source of truth for every agent image tag. `make bump` increments VERSION with **decimal carry** (`0.1.9` → `0.2.0`, `0.9.9` → `1.0.0`) and rewrites every `deploy/*/overlays/*/kustomization.yaml` image tag it discovers via `find`, so newly added agent overlays are picked up automatically without editing the bump rule.
 
 ```bash
-make bump          # 0.1.0 → 0.1.1 (VERSION + kustomization.yaml)
-make image-build   # build local image (netobs-agent:0.1.1)
-make deploy-dev    # deploy to GPU canary node with local image
-make image-push    # tag & push to ghcr.io/inno-rnd-project/netobs-agent:0.1.1
-make deploy-prod   # deploy to all nodes with registry image
+make bump    # bump VERSION + update every overlay image tag in one step
 ```
 
 ## Deploy
 
-### Overlay roles
+### Overlay matrix
 
-| Overlay | Purpose | Node selector | Image policy |
-|---|---|---|---|
-| `dev` | GPU canary | `accelerator=nvidia`, `observability.netobs/canary=true` | `Never` (local) |
-| `prod` | Full rollout | `observability.netobs/enabled=true` (control-plane excluded) | `IfNotPresent` |
+Each agent × each rollout stage gives four overlays. Commands follow the `make <action>-<agent>-<stage>` pattern.
+
+| Overlay | Agent | Stage | Node selector | Image policy |
+|---|---|---|---|---|
+| `netobs-dev` | netobs | canary | `accelerator=nvidia`, `observability.netobs/canary=true` | `Never` (local image) |
+| `netobs-prod` | netobs | fleet | `observability.netobs/enabled=true` (control-plane excluded) | `IfNotPresent` |
+| `gpuobs-dev` | gpuobs | canary | `accelerator=nvidia`, `observability.netobs/canary=true` | `Never` (local image) |
+| `gpuobs-prod` | gpuobs | fleet | `accelerator=nvidia`, `observability.netobs/enabled=true` | `IfNotPresent` |
 
 ### Node labels
 
-GPU canary node:
+GPU canary node (hosts both `netobs-dev` and `gpuobs-dev`):
 ```bash
-kubectl label node gpu accelerator=nvidia --overwrite
-kubectl label node gpu observability.netobs/canary=true --overwrite
-kubectl label node gpu observability.netobs/enabled=true --overwrite
+kubectl label node gpu \
+  accelerator=nvidia \
+  observability.netobs/canary=true \
+  observability.netobs/enabled=true \
+  --overwrite
 ```
 
-General worker nodes:
+General worker nodes (targets of `netobs-prod`):
 ```bash
 kubectl label node ebpf-worker1 observability.netobs/enabled=true --overwrite
 kubectl label node ebpf-worker2 observability.netobs/enabled=true --overwrite
 ```
 
-### Deploy / Delete
+### Dev canary workflow
+
+Replace `<agent>` with `netobs` or `gpuobs`:
+```bash
+make build-<agent>-agent          # local binary
+make image-build-<agent>-agent    # local image at <agent>-agent:<VERSION>
+make render-<agent>-dev           # kustomize dry-run
+make deploy-<agent>-dev           # apply to canary node
+make delete-<agent>-dev           # teardown
+```
+
+### Prod fleet workflow
 
 ```bash
-# render manifests (dry-run)
-make render-dev
-make render-prod
+make image-build-<agent>-agent    # build image
+make image-push-<agent>-agent     # push to ghcr.io/inno-rnd-project/<agent>-agent
+make render-<agent>-prod          # kustomize dry-run
+make deploy-<agent>-prod          # apply to fleet
+make delete-<agent>-prod          # teardown
+```
 
-# apply
-make deploy-dev
-make deploy-prod
+### Umbrella targets
 
-# teardown
-make delete-dev
-make delete-prod
+Operate on every agent at once:
+```bash
+make build-all           # every agent binary
+make image-build-all     # every agent image
+make image-push-all      # push every agent image
 ```
 
 ## HTTP Endpoints
+
+Both agents expose the same endpoints (netobs: `:9810`, gpuobs: `:9820`).
 
 | Path | Description |
 |---|---|
 | `/metrics` | Prometheus metrics |
 | `/healthz` | Liveness probe |
 | `/readyz` | Readiness probe |
-| `/` | JSON service info |
+| `/` | JSON service info (includes agent name) |
 
 ## Prometheus Metrics
+
+### netobs
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
@@ -111,7 +155,7 @@ make delete-prod
 
 > **Cardinality note**: `netobs_pod_stage_*` metrics carry `src_pod` and `src_pod_uid` labels, so each pod redeployment creates a new time series. On large clusters or with frequent pod churn this can inflate Prometheus memory. Set `POD_METRICS_ENABLED=false` (or `-pod-metrics=false`) to opt out.
 
-### Stages
+#### Stages (netobs)
 
 | Stage | Description |
 |---|---|
@@ -121,8 +165,17 @@ make delete-prod
 | `retrans` | TCP retransmission |
 | `drop` | Packet drop |
 
+### gpuobs
+
+Phase 1 exposes only a build-info gauge. Device-level gauges (utilization, memory, temperature, power) arrive in Phase 2 and per-pod attribution in Phase 3.
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `gpuobs_agent_info` | Gauge | `version` | Static agent info, value always 1 |
+
 ## Notes
-- If `bpf/netlat.bpf.c` changes, regenerate embedded BPF artifacts first:
-```bash
-make generate
-```
+
+- If `bpf/netlat.bpf.c` changes, regenerate the embedded BPF artifacts first:
+  ```bash
+  make generate
+  ```
