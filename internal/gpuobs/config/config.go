@@ -1,3 +1,4 @@
+// env가 기본값이 되고 CLI flag가 지정되면 그 값이 env를 덮어쓰는 순서를 따른다.
 package config
 
 import (
