@@ -72,7 +72,7 @@ func Parse() (Config, error) {
 		DropReasonFormatPath: getenv("DROP_REASON_FORMAT_PATH", "/sys/kernel/tracing/events/skb/kfree_skb/format"),
 	}
 
-	fs := flag.NewFlagSet("netobs-agent", flag.ExitOnError)
+	fs := flag.NewFlagSet("netobs-agent", flag.ContinueOnError)
 	fs.StringVar(&cfg.TargetIP, "target-ip", cfg.TargetIP, "destination Pod IPv4 to trace; empty means observe all")
 	fs.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "HTTP listen address for /metrics, /healthz, /readyz")
 	fs.BoolVar(&cfg.PrintEvents, "print-events", cfg.PrintEvents, "print events to stdout")
