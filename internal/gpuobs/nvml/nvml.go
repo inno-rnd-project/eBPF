@@ -26,8 +26,9 @@ type Device interface {
 }
 
 // Init은 NVML 라이브러리(libnvidia-ml.so.1)를 런타임에 dlopen하고 초기화한다.
-// 실패 시 에러를 반환하므로 호출자(collector)가 warn 로그 후 graceful disable을
-// 선택할 수 있으며, non-GPU 노드에서도 바이너리가 기동을 멈추지 않는다.
+// 실패 시 에러를 반환하며, 상위 초기화 경로(현재 `cmd/gpuobs-agent/main.go`)가 이를 기록한 뒤
+// collector에 nil 핸들을 주입해 graceful disable을 구성한다.
+// 그 결과 non-GPU 노드에서도 바이너리가 기동을 멈추지 않는다.
 func Init() (NVML, error) {
 	if err := nvmlErr("nvml init", gonvml.Init()); err != nil {
 		return nil, err
