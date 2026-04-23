@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gpuobs-agent
+  namespace: ebpf-project
+spec:
+  template:
+    spec:
+      # GPU 노드 중 observability 활성화 라벨이 있는 전체 fleet에 배포한다.
+      # `accelerator=nvidia`가 이미 control-plane을 자연 제외하므로 별도 affinity는 두지 않는다.
+      nodeSelector:
+        accelerator: nvidia
+        observability.netobs/enabled: "true"
+      containers:
+        - name: gpuobs-agent
+          imagePullPolicy: IfNotPresent

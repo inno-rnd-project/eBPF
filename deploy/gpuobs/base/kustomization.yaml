@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# namespace는 netobs base가 생성하는 `ebpf-project`를 공유하므로 여기서는 생성하지 않는다.
+# 두 에이전트를 동일 네임스페이스에 두어 ServiceMonitor 라벨 셀렉터와
+# kube-prometheus-stack scrape 규칙을 일원화한다.
+resources:
+  # RBAC
+  - serviceaccount.yaml
+  - clusterrole.yaml
+  - clusterrolebinding.yaml
+  # Runtime
+  - daemonset.yaml
+  # Network
+  - service.yaml
+  # Monitoring
+  - servicemonitor.yaml
