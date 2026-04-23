@@ -19,8 +19,8 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"netobs/internal/drop"
-	"netobs/internal/types"
+	"netobs/internal/netobs/drop"
+	"netobs/internal/netobs/types"
 )
 
 type podCacheEntry struct {

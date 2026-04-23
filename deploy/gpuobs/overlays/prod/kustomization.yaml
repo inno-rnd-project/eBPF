@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ebpf-project
+
+resources:
+  - ../../base
+
+# prod overlay는 레지스트리에 푸시된 이미지를 pull해 사용한다.
+# 이미지 태그는 `make bump`이 VERSION과 동기화해 갱신한다.
+images:
+  - name: gpuobs-agent
+    newName: ghcr.io/inno-rnd-project/gpuobs-agent
+    newTag: "0.1.6"
+
+patches:
+  - path: patch-daemonset.yaml

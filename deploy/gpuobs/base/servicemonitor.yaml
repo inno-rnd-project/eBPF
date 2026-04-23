@@ -1,0 +1,21 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: gpuobs-agent
+  namespace: ebpf-project
+  labels:
+    release: kube-prometheus-stack
+    app.kubernetes.io/name: gpuobs-agent
+    app.kubernetes.io/part-of: ebpf-project
+spec:
+  namespaceSelector:
+    matchNames:
+      - ebpf-project
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gpuobs-agent
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s

@@ -1,0 +1,58 @@
+package config
+
+import (
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"strings"
+)
+
+// Config는 gpuobs 에이전트의 실행 시 설정을 담는다.
+type Config struct {
+	ListenAddr string
+	NodeName   string
+}
+
+// Parse는 env와 CLI flag를 읽어 Config를 구성해 반환한다.
+// env가 기본값으로 들어가고 flag가 지정되면 그 값이 최종 값이 된다.
+// NodeName이 비어 있으면 os.Hostname 결과로 채워진다.
+func Parse() (Config, error) {
+	cfg := Config{
+		ListenAddr: getenvDefault("LISTEN_ADDR", ":9820"),
+		NodeName:   getenvDefault("NODE_NAME", ""),
+	}
+
+	fs := flag.NewFlagSet("gpuobs-agent", flag.ContinueOnError)
+	fs.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "HTTP listen address for metrics and health endpoints")
+	fs.StringVar(&cfg.NodeName, "node-name", cfg.NodeName, "observed Kubernetes node name (defaults to hostname when empty)")
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		// -h/-help 요청은 flag 패키지가 usage를 출력한 뒤 ErrHelp를 반환한다.
+		// 사용자 의도된 정상 경로이므로 exit 0으로 종료한다.
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		return Config{}, err
+	}
+
+	if strings.TrimSpace(cfg.ListenAddr) == "" {
+		return Config{}, fmt.Errorf("listen address must not be empty")
+	}
+
+	if strings.TrimSpace(cfg.NodeName) == "" {
+		host, err := os.Hostname()
+		if err != nil {
+			return Config{}, fmt.Errorf("node name empty and hostname unavailable: %w", err)
+		}
+		cfg.NodeName = host
+	}
+
+	return cfg, nil
+}
+
+func getenvDefault(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		return v
+	}
+	return def
+}

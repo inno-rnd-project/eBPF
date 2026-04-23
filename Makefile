@@ -1,10 +1,41 @@
 VERSION := $(shell cat VERSION)
 ARCH := $(shell uname -m)
 BPFTOOL := $(shell command -v bpftool 2>/dev/null)
-IMAGE ?= netobs-agent:$(VERSION)
-REGISTRY_IMAGE ?= ghcr.io/inno-rnd-project/netobs-agent:$(VERSION)
+REGISTRY_BASE ?= ghcr.io/inno-rnd-project
 KUSTOMIZE ?= kubectl kustomize
 
+# ============================================================================
+# Agent registry
+# 새 에이전트 추가 시:
+#   1) AGENTS에 이름 추가
+#   2) PORT_<name>에 기본 포트 할당
+#   3) 선행 태스크(BPF 재생성 등)가 필요하면 PREREQS_<name>에 타깃명 기입
+# 이후 build-<name>, image-build-<name>, image-push-<name>이 자동으로 매치된다.
+# ============================================================================
+AGENTS := netobs-agent gpuobs-agent
+
+PORT_netobs-agent := 9810
+PORT_gpuobs-agent := 9820
+
+PREREQS_netobs-agent := generate
+
+# ============================================================================
+# Overlay registry — <agent-domain>-<rollout-stage> 형식
+# 새 overlay 추가 시:
+#   1) OVERLAYS에 이름 추가
+#   2) OVERLAY_PATH_<name>에 kustomize 경로 지정
+# 이후 render-<name>, deploy-<name>, delete-<name>이 자동으로 매치된다.
+# ============================================================================
+OVERLAYS := netobs-dev netobs-prod gpuobs-dev gpuobs-prod
+
+OVERLAY_PATH_netobs-dev  := deploy/netobs/overlays/dev
+OVERLAY_PATH_netobs-prod := deploy/netobs/overlays/prod
+OVERLAY_PATH_gpuobs-dev  := deploy/gpuobs/overlays/dev
+OVERLAY_PATH_gpuobs-prod := deploy/gpuobs/overlays/prod
+
+# ============================================================================
+# Architecture detection (netobs BPF 컴파일용)
+# ============================================================================
 ifeq ($(ARCH),x86_64)
 TARGET_ARCH := x86
 else ifeq ($(ARCH),aarch64)
@@ -17,53 +48,73 @@ endif
 
 BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 
-.PHONY: deps generate build run clean tree image-build image-push \
-	render-dev render-prod deploy-dev deploy-prod delete-dev delete-prod bump
+# pattern rule(build-%-agent, image-*-%-agent, render/deploy/delete-%)로 매치되는 타깃은
+# .PHONY에 넣지 않는다. GNU make는 .PHONY 타깃에 대해 implicit rule(pattern rule 포함)
+# 탐색을 건너뛰므로 매치가 일어나지 않는다. 해당 타깃들은 동일 이름의 실제 파일이
+# 없어 매 호출마다 recipe가 재실행되므로 phony와 동등 동작이다.
+.PHONY: deps generate clean tree bump \
+	build-all image-build-all image-push-all
 
+# ============================================================================
+# Core utilities
+# ============================================================================
 deps:
 	go mod tidy
 
 generate:
 	@if [ -z "$(BPFTOOL)" ]; then echo "bpftool not found"; exit 1; fi
 	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > ./bpf/vmlinux.h && \
-	cd internal/ebpf && GOPACKAGE=ebpfx go run github.com/cilium/ebpf/cmd/bpf2go@v0.17.1 \
+	cd internal/netobs/ebpf && GOPACKAGE=ebpfx go run github.com/cilium/ebpf/cmd/bpf2go@v0.17.1 \
 	-go-package ebpfx \
 	-cc clang \
 	-cflags "$(BPF_CFLAGS)" \
-	NetObs ../../bpf/netlat.bpf.c -- -I../../bpf
+	NetObs ../../../bpf/netlat.bpf.c -- -I../../../bpf
 
-build: generate
+# ============================================================================
+# Agent build / image pipeline (pattern rule driven)
+# .SECONDEXPANSION 덕분에 prerequisite에서 $$(PREREQS_$$*-agent)가 pattern 매치 이후에 평가되어
+# 각 에이전트별 PREREQS_<name> 선언이 자동으로 선행 타깃으로 연결된다.
+# netobs-agent처럼 BPF 재생성이 필요한 경우는 PREREQS_netobs-agent := generate 한 줄로 처리된다.
+# ============================================================================
+.SECONDEXPANSION:
+
+build-%-agent: $$(PREREQS_$$*-agent)
 	go fmt ./...
-	go build -o ./bin/netobs-agent ./cmd/netobs-agent
+	go build -o ./bin/$*-agent ./cmd/$*-agent
 
-run:
-	sudo ./bin/netobs-agent -listen :9810 -print-events=true
+image-build-%-agent:
+	docker build \
+		--build-arg TARGET_AGENT=$*-agent \
+		--build-arg AGENT_PORT=$(PORT_$*-agent) \
+		-t $*-agent:$(VERSION) .
 
-image-build:
-	docker build -t $(IMAGE) .
+image-push-%-agent: image-build-%-agent
+	docker tag $*-agent:$(VERSION) $(REGISTRY_BASE)/$*-agent:$(VERSION)
+	docker push $(REGISTRY_BASE)/$*-agent:$(VERSION)
 
-image-push:
-	docker tag $(IMAGE) $(REGISTRY_IMAGE)
-	docker push $(REGISTRY_IMAGE)
+# 우산 타깃. AGENTS 리스트를 순회해 모든 에이전트에 동일 작업을 일괄 수행한다.
+build-all:       $(addprefix build-,$(AGENTS))
+image-build-all: $(addprefix image-build-,$(AGENTS))
+image-push-all:  $(addprefix image-push-,$(AGENTS))
 
-render-dev:
-	$(KUSTOMIZE) deploy/overlays/dev
+# ============================================================================
+# Overlay render / deploy / delete
+# OVERLAY_PATH_<name> 변수를 lookup해 kustomize 경로를 주입한다.
+# ============================================================================
+render-%:
+	$(KUSTOMIZE) $(OVERLAY_PATH_$*)
 
-render-prod:
-	$(KUSTOMIZE) deploy/overlays/prod
+deploy-%:
+	kubectl apply -k $(OVERLAY_PATH_$*)
 
-deploy-dev:
-	kubectl apply -k deploy/overlays/dev
+delete-%:
+	kubectl delete -k $(OVERLAY_PATH_$*)
 
-deploy-prod:
-	kubectl apply -k deploy/overlays/prod
-
-delete-dev:
-	kubectl delete -k deploy/overlays/dev
-
-delete-prod:
-	kubectl delete -k deploy/overlays/prod
-
+# ============================================================================
+# Version management
+# deploy 하위 임의 경로의 overlay kustomization을 find로 자동 수집해 image tag를 갱신한다.
+# 새 agent의 overlay가 추가돼도 bump 규칙 수정이 필요하지 않다.
+# ============================================================================
 bump:
 	@CUR=$$(cat VERSION); \
 	MAJOR=$$(echo $$CUR | cut -d. -f1); \
@@ -74,14 +125,18 @@ bump:
 	if [ "$$MINOR" -ge 10 ]; then MINOR=0; MAJOR=$$((MAJOR + 1)); fi; \
 	NEW="$$MAJOR.$$MINOR.$$PATCH"; \
 	echo "$$NEW" > VERSION; \
-	sed -i 's/newTag: ".*"/newTag: "'$$NEW'"/' deploy/overlays/dev/kustomization.yaml; \
-	sed -i 's/newTag: ".*"/newTag: "'$$NEW'"/' deploy/overlays/prod/kustomization.yaml; \
+	for f in $$(find deploy -type f -name kustomization.yaml -path '*/overlays/*' 2>/dev/null); do \
+		sed -i 's/newTag: ".*"/newTag: "'$$NEW'"/' "$$f"; \
+	done; \
 	echo "bumped $$CUR -> $$NEW"
 
+# ============================================================================
+# Housekeeping
+# ============================================================================
 clean:
-	rm -f ./bin/netobs-agent
-	rm -f ./internal/ebpf/netobs_bpfel.go ./internal/ebpf/netobs_bpfeb.go
-	rm -f ./internal/ebpf/netobs_bpfel.o  ./internal/ebpf/netobs_bpfeb.o
+	rm -f ./bin/*
+	rm -f ./internal/netobs/ebpf/netobs_bpfel.go ./internal/netobs/ebpf/netobs_bpfeb.go
+	rm -f ./internal/netobs/ebpf/netobs_bpfel.o  ./internal/netobs/ebpf/netobs_bpfeb.o
 
 tree:
 	find . -maxdepth 4 -type f | sort

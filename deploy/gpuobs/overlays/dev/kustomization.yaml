@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ebpf-project
+
+resources:
+  - ../../base
+
+# dev overlay는 canary 배포용이며 로컬에서 `make image-build-gpuobs-agent`로 만든
+# 태그를 사용하는 것을 기본 동작으로 삼는다. `make bump`가 이 값을 갱신한다.
+images:
+  - name: gpuobs-agent
+    newTag: "0.1.6"
+
+patches:
+  - path: patch-daemonset.yaml
