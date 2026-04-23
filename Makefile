@@ -10,6 +10,7 @@ KUSTOMIZE ?= kubectl kustomize
 #   1) AGENTS에 이름 추가
 #   2) PORT_<name>에 기본 포트 할당
 #   3) 선행 태스크(BPF 재생성 등)가 필요하면 PREREQS_<name>에 타깃명 기입
+#   4) CGO_<name>에 0(정적 바이너리) 또는 1(CGO 의존성 존재) 할당
 # 이후 build-<name>, image-build-<name>, image-push-<name>이 자동으로 매치된다.
 # ============================================================================
 AGENTS := netobs-agent gpuobs-agent
@@ -18,6 +19,11 @@ PORT_netobs-agent := 9810
 PORT_gpuobs-agent := 9820
 
 PREREQS_netobs-agent := generate
+
+# go-nvml v0.13.x는 NVML 호출을 CGO `import "C"`로 구현해 CGO 비활성 빌드에서 심볼이
+# 해석되지 않는다. gpuobs-agent만 CGO=1로, netobs-agent는 기존 정적 바이너리 속성을 유지한다.
+CGO_netobs-agent := 0
+CGO_gpuobs-agent := 1
 
 # ============================================================================
 # Overlay registry — <agent-domain>-<rollout-stage> 형식
@@ -80,12 +86,13 @@ generate:
 
 build-%-agent: $$(PREREQS_$$*-agent)
 	go fmt ./...
-	go build -o ./bin/$*-agent ./cmd/$*-agent
+	CGO_ENABLED=$(CGO_$*-agent) go build -o ./bin/$*-agent ./cmd/$*-agent
 
 image-build-%-agent:
 	docker build \
 		--build-arg TARGET_AGENT=$*-agent \
 		--build-arg AGENT_PORT=$(PORT_$*-agent) \
+		--build-arg CGO_ENABLED=$(CGO_$*-agent) \
 		-t $*-agent:$(VERSION) .
 
 image-push-%-agent: image-build-%-agent
