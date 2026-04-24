@@ -9,6 +9,9 @@
 FROM golang:1.22-bookworm AS builder
 ARG TARGETARCH=amd64
 ARG TARGET_AGENT=netobs-agent
+# CGO_ENABLED 기본값은 0(정적 바이너리). go-nvml처럼 CGO `import "C"` 경로로 구현된
+# 의존성을 쓰는 에이전트(gpuobs-agent)는 Makefile의 CGO_<agent> 매핑에서 1을 전달한다.
+ARG CGO_ENABLED=0
 
 WORKDIR /src
 
@@ -20,7 +23,7 @@ COPY internal ./internal
 COPY bpf ./bpf
 COPY configs ./configs
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
+RUN CGO_ENABLED=${CGO_ENABLED} GOOS=linux GOARCH=${TARGETARCH} \
     go build -o /out/${TARGET_AGENT} ./cmd/${TARGET_AGENT}
 
 # ============================================================================

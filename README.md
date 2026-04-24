@@ -55,8 +55,8 @@ sudo ./bin/netobs-agent -listen :9810 -print-events=true
 |---|---|---|---|
 | `LISTEN_ADDR` | `-listen` | `:9820` | HTTP listen address |
 | `NODE_NAME` | `-node-name` | *(hostname)* | Observed Kubernetes node name |
-
-Additional variables (`GPU_POLL_INTERVAL`, `GPU_METRICS_ENABLED`) arrive in Phase 2 when NVML polling is introduced.
+| `GPU_POLL_INTERVAL` | `-poll-interval` | `5s` | NVML device polling interval; must be > 0 |
+| `GPU_METRICS_ENABLED` | `-gpu-metrics` | `true` | Emit `gpuobs_device_*` metrics; set false to skip device polling entirely |
 
 ## Versioning
 
@@ -167,11 +167,18 @@ Both agents expose the same endpoints (netobs: `:9810`, gpuobs: `:9820`).
 
 ### gpuobs
 
-Phase 1 exposes only a build-info gauge. Device-level gauges (utilization, memory, temperature, power) arrive in Phase 2 and per-pod attribution in Phase 3.
+Device-level gauges are sampled from NVML every `GPU_POLL_INTERVAL` (default 5s). Per-pod attribution arrives in Phase 3.
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
 | `gpuobs_agent_info` | Gauge | `version` | Static agent info, value always 1 |
+| `gpuobs_device_utilization_percent` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | GPU compute utilization (0-100) |
+| `gpuobs_device_memory_used_bytes` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | GPU memory used (bytes) |
+| `gpuobs_device_memory_total_bytes` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | GPU memory total capacity (bytes) |
+| `gpuobs_device_temperature_celsius` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | GPU temperature (°C) |
+| `gpuobs_device_power_usage_watts` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | GPU power draw (watts) |
+
+On NVML initialization failure (non-GPU node, driver missing) or when `GPU_METRICS_ENABLED=false`, the collector logs a warning and skips device polling; `gpuobs_device_*` series are not emitted, and `/healthz`·`/readyz` continue to return 200.
 
 ## Notes
 
