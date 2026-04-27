@@ -9,6 +9,7 @@ func newSeededResolver() *Resolver {
 	return &Resolver{
 		podByIP:         make(map[string]podCacheEntry),
 		podIPsByKey:     make(map[string][]string),
+		podByUID:        make(map[string]PodIdentity),
 		serviceByIP:     make(map[string]serviceCacheEntry),
 		serviceIPsByKey: make(map[string][]string),
 		nodeByIP:        make(map[string]string),
@@ -132,6 +133,68 @@ func TestWithObservedIP(t *testing.T) {
 	idWithIP := PodIdentity{IdentityClass: IdentityClassPod, PodIP: "10.0.0.5"}
 	if got := WithObservedIP(idWithIP, ""); got.PodIP != "10.0.0.5" {
 		t.Errorf("empty IP must not clear existing PodIP; got %q", got.PodIP)
+	}
+}
+
+func TestResolvePID_PodHit(t *testing.T) {
+	r := newSeededResolver()
+	want := PodIdentity{
+		IdentityClass: IdentityClassPod,
+		Namespace:     "default",
+		PodUID:        canonicalUID,
+		PodName:       "gpu-job-0",
+		WorkloadKind:  "StatefulSet",
+		Workload:      "gpu-job",
+	}
+	r.podByUID[canonicalUID] = want
+
+	lines := []string{
+		"0::/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod" +
+			"d5e3a8f0_4d51_4b0e_8e3d_2a1c4f5a8b9c.slice/cri-containerd-abc.scope",
+	}
+	got := r.resolveFromCgroupLines(lines)
+	if got != want {
+		t.Fatalf("resolveFromCgroupLines=%+v want %+v", got, want)
+	}
+}
+
+func TestResolvePID_UIDNotInIndex(t *testing.T) {
+	// cgroup 파싱은 성공하지만 informer 캐시에 아직 sync되지 않은 Pod인 경우 unresolved를 돌려준다.
+	r := newSeededResolver()
+
+	lines := []string{
+		"0::/kubepods.slice/kubepods-besteffort-pod" +
+			"d5e3a8f0_4d51_4b0e_8e3d_2a1c4f5a8b9c.slice/cri-containerd-abc.scope",
+	}
+	got := r.resolveFromCgroupLines(lines)
+	if !got.IsUnresolved() {
+		t.Fatalf("expected unresolved for unknown UID; got class=%q", got.IdentityClass)
+	}
+}
+
+func TestResolvePID_HostProcess(t *testing.T) {
+	// kubepods에 속하지 않는 host 프로세스(예: sshd)는 unresolved여야 한다.
+	r := newSeededResolver()
+	lines := []string{
+		"0::/system.slice/sshd.service",
+	}
+	got := r.resolveFromCgroupLines(lines)
+	if !got.IsUnresolved() {
+		t.Fatalf("expected unresolved for host process; got class=%q", got.IdentityClass)
+	}
+}
+
+func TestResolvePID_MissingProcFile(t *testing.T) {
+	// /proc/<pid>/cgroup 자체가 없으면(프로세스 종료 등) unresolved를 돌려준다.
+	// 호스트 PID 공간에 의존하지 않도록 procCgroupPathFmt를 비존재 경로로 오버라이드해 격리한다.
+	prev := procCgroupPathFmt
+	procCgroupPathFmt = "/nonexistent-test-path/%d/cgroup"
+	defer func() { procCgroupPathFmt = prev }()
+
+	r := newSeededResolver()
+	got := r.ResolvePID(1)
+	if !got.IsUnresolved() {
+		t.Fatalf("expected unresolved for missing proc file; got class=%q", got.IdentityClass)
 	}
 }
 
