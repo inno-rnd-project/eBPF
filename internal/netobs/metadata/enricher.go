@@ -113,7 +113,7 @@ func (e *Enricher) lookupFlow(cookie uint64) (flowCacheEntry, bool) {
 //
 // rotate는 두 조건 중 하나만 만족해도 일어난다:
 //  1. 시간 기반: 마지막 rotate로부터 flowRotateEvery 경과
-//  2. 크기 기반: current 크기가 flowMaxCurrent 초과
+//  2. 크기 기반: current 크기가 flowMaxCurrent 이상
 //
 // 크기 기반 조기 rotate로 arrival rate 급증 시에도 peak 메모리가
 // 2 × flowMaxCurrent × entry_size로 상한된다.

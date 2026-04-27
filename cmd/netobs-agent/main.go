@@ -41,7 +41,7 @@ func main() {
 
 	ready := func() (bool, string) {
 		if !kr.HasSynced() {
-			return false, "metadata informer not synced"
+			return false, "kube resolver informer not synced"
 		}
 		if !ebpfReady.Load() {
 			return false, "ebpf not attached"

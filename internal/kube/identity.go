@@ -122,14 +122,16 @@ func (p PodIdentity) WorkloadLabel() string {
 	}
 }
 
-// normalizeWorkloadName은 ReplicaSet 등 generated suffix가 붙은 owner 이름을 부모 워크로드 이름으로 정규화한다.
-// StatefulSet은 안정 이름이라 그대로 둔다.
+// normalizeWorkloadName은 ReplicaSet의 generated hash suffix를 제거해 부모 Deployment 이름을 복원한다.
+// hashlike 휴리스틱은 길이만 보고 영숫자 suffix를 자르므로 ReplicaSet 외 워크로드(예: DaemonSet "node-exporter",
+// 안정 이름 Job 등)에 적용하면 false-positive로 의미 있는 이름까지 잘려나간다. 이를 방지하기 위해
+// ReplicaSet에만 trim을 시도하고 그 외에는 입력 이름을 그대로 보존한다.
 func normalizeWorkloadName(kind, name string) string {
 	if name == "" {
 		return ""
 	}
 
-	if kind == "StatefulSet" {
+	if kind != "ReplicaSet" {
 		return name
 	}
 

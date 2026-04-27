@@ -237,9 +237,8 @@ func TestTrimGeneratedSuffix(t *testing.T) {
 }
 
 func TestNormalizeWorkloadName(t *testing.T) {
-	// hashlike 휴리스틱은 length 8~16의 lowercase 영숫자 suffix면 모두 trim하므로
-	// "node-exporter"처럼 8자 영문자 suffix가 붙은 이름은 의도와 무관하게 잘려나간다.
-	// 본 테스트는 그런 false-positive를 우회하는 짧은 suffix(5자) 이름으로 통과 동작을 검증한다.
+	// trim은 ReplicaSet에 한해 적용되며, DaemonSet/Job/StatefulSet 등 다른 kind는
+	// hashlike suffix가 붙어 있어도 보존되어야 한다. (false-positive 방지)
 	cases := []struct {
 		name string
 		kind string
@@ -247,9 +246,12 @@ func TestNormalizeWorkloadName(t *testing.T) {
 		want string
 	}{
 		{"replicaset-trimmed", "ReplicaSet", "frontend-7d4f9b8c5", "frontend"},
+		{"replicaset-empty-name", "ReplicaSet", "", ""},
+		{"replicaset-no-hash-passthrough", "ReplicaSet", "frontend", "frontend"},
 		{"statefulset-untouched", "StatefulSet", "redis-0", "redis-0"},
-		{"daemonset-short-suffix-passthrough", "DaemonSet", "kube-proxy", "kube-proxy"},
-		{"empty-name", "ReplicaSet", "", ""},
+		{"daemonset-hashlike-suffix-preserved", "DaemonSet", "node-exporter", "node-exporter"},
+		{"job-hashlike-suffix-preserved", "Job", "backup-snapshot", "backup-snapshot"},
+		{"deployment-direct-untouched", "Deployment", "api-server", "api-server"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
