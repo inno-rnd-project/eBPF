@@ -1,6 +1,6 @@
-// Package metadata는 netobs eBPF Event를 enrichment하기 위한 캐시 계층을 제공한다.
+// Package metadata는 netobs eBPF Event를 EnrichedEvent로 보강하는 캐시 계층을 제공한다.
 // IP→PodIdentity 인덱스와 informer는 internal/kube로 승격되어 있고, 본 패키지는 그 위에
-// netobs 고유의 socket-cookie flow 캐시와 cgroup/ifindex 런타임 hint 캐시를 얹는다.
+// netobs 고유의 socket-cookie flow 캐시와 cgroup/ifindex 런타임 hint 캐시를 얹어 Enrich 파이프라인을 구성한다.
 // 두 캐시는 eBPF 이벤트 stage 흐름과 결합되어 있어 공용 패키지로 옮기지 않는다.
 package metadata
 
@@ -23,12 +23,11 @@ type runtimeCacheEntry struct {
 	LastSeen time.Time
 }
 
-// Resolver는 *kube.Resolver를 embed해 IP→PodIdentity 해석을 위임하고,
+// Enricher는 *kube.Resolver를 명시 DI로 받아 IP→PodIdentity 해석을 위임하고,
 // 그 위에 netobs 고유의 flow / runtime hint 캐시와 Enrich 파이프라인을 보유한다.
-// embed된 kube.Resolver의 mu는 IP 인덱스만 보호하며, 본 구조체의 mu는 flow/runtime 캐시를 보호한다.
-// 두 mu가 분리되어 있어 IP 인덱스 갱신과 flow 캐시 lookup이 서로 블록되지 않는다.
-type Resolver struct {
-	*kube.Resolver
+// kube.Resolver의 lock과 본 구조체의 mu는 분리되어 IP 인덱스 갱신과 flow 캐시 lookup이 서로 블록되지 않는다.
+type Enricher struct {
+	kr *kube.Resolver
 
 	mu sync.RWMutex
 
@@ -52,12 +51,11 @@ type Resolver struct {
 	lastRuntimeSweep  time.Time
 }
 
-// NewResolver는 kube.Resolver를 구성한 뒤 netobs 전용 캐시를 함께 초기화한 metadata.Resolver를 반환한다.
-// 본 생성자는 호환성을 위해 기존 시그니처(localNode, resyncPeriod)를 유지하지만,
-// 호출부가 *kube.Resolver를 별도로 보유해야 한다면 다음 단계 refactor에서 명시 DI로 교체될 수 있다.
-func NewResolver(localNode string, resyncPeriod time.Duration) *Resolver {
-	return &Resolver{
-		Resolver: kube.NewResolver(localNode, resyncPeriod),
+// NewEnricher는 외부에서 구성된 *kube.Resolver를 받아 netobs 전용 캐시와 함께 Enricher를 구성한다.
+// IP→PodIdentity 인덱스의 lifecycle(Start/HasSynced)은 호출자가 kube.Resolver 측에서 관리한다.
+func NewEnricher(kr *kube.Resolver) *Enricher {
+	return &Enricher{
+		kr: kr,
 
 		// socket cookie flow cache (two-map generational).
 		// rotate 주기(2.5분)의 1~2배 범위에서 entry가 생존하므로
@@ -81,18 +79,18 @@ func NewResolver(localNode string, resyncPeriod time.Duration) *Resolver {
 // lookupFlow는 current 맵을 먼저 확인하고 miss면 previous 맵을 확인한다.
 // previous hit 시 해당 entry를 current로 promote해 다음 rotate에서
 // 만료되지 않도록 한다. promote를 위해 read lock을 write lock으로 승격한다.
-func (r *Resolver) lookupFlow(cookie uint64) (flowCacheEntry, bool) {
+func (e *Enricher) lookupFlow(cookie uint64) (flowCacheEntry, bool) {
 	if cookie == 0 {
 		return flowCacheEntry{}, false
 	}
 
-	r.mu.RLock()
-	if entry, ok := r.flowCurrent[cookie]; ok {
-		r.mu.RUnlock()
+	e.mu.RLock()
+	if entry, ok := e.flowCurrent[cookie]; ok {
+		e.mu.RUnlock()
 		return entry, true
 	}
-	entry, ok := r.flowPrevious[cookie]
-	r.mu.RUnlock()
+	entry, ok := e.flowPrevious[cookie]
+	e.mu.RUnlock()
 
 	if !ok {
 		return flowCacheEntry{}, false
@@ -101,11 +99,11 @@ func (r *Resolver) lookupFlow(cookie uint64) (flowCacheEntry, bool) {
 	// previous hit → current로 promote.
 	// RUnlock과 Lock 사이에 다른 goroutine이 먼저 promote했을 수 있으므로
 	// current에 이미 있다면 건너뛴다.
-	r.mu.Lock()
-	if _, already := r.flowCurrent[cookie]; !already {
-		r.flowCurrent[cookie] = entry
+	e.mu.Lock()
+	if _, already := e.flowCurrent[cookie]; !already {
+		e.flowCurrent[cookie] = entry
 	}
-	r.mu.Unlock()
+	e.mu.Unlock()
 
 	return entry, true
 }
@@ -119,19 +117,19 @@ func (r *Resolver) lookupFlow(cookie uint64) (flowCacheEntry, bool) {
 //
 // 크기 기반 조기 rotate로 arrival rate 급증 시에도 peak 메모리가
 // 2 × flowMaxCurrent × entry_size로 상한된다.
-func (r *Resolver) maybeRotateFlowsLocked(now time.Time) {
-	timeUp := now.Sub(r.lastFlowRotate) >= r.flowRotateEvery
-	sizeUp := len(r.flowCurrent) >= r.flowMaxCurrent
+func (e *Enricher) maybeRotateFlowsLocked(now time.Time) {
+	timeUp := now.Sub(e.lastFlowRotate) >= e.flowRotateEvery
+	sizeUp := len(e.flowCurrent) >= e.flowMaxCurrent
 	if !timeUp && !sizeUp {
 		return
 	}
 
-	r.flowPrevious = r.flowCurrent
-	r.flowCurrent = make(map[uint64]flowCacheEntry)
-	r.lastFlowRotate = now
+	e.flowPrevious = e.flowCurrent
+	e.flowCurrent = make(map[uint64]flowCacheEntry)
+	e.lastFlowRotate = now
 }
 
-func (r *Resolver) rememberFlow(cookie uint64, src, dst kube.PodIdentity, now time.Time) {
+func (e *Enricher) rememberFlow(cookie uint64, src, dst kube.PodIdentity, now time.Time) {
 	if cookie == 0 {
 		return
 	}
@@ -139,137 +137,137 @@ func (r *Resolver) rememberFlow(cookie uint64, src, dst kube.PodIdentity, now ti
 		return
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
-	r.maybeRotateFlowsLocked(now)
-	r.flowCurrent[cookie] = flowCacheEntry{
+	e.maybeRotateFlowsLocked(now)
+	e.flowCurrent[cookie] = flowCacheEntry{
 		Src: src,
 		Dst: dst,
 	}
 }
 
-func (r *Resolver) maybeSweepRuntimeLocked(now time.Time) {
-	if !r.lastRuntimeSweep.IsZero() && now.Sub(r.lastRuntimeSweep) < r.runtimeSweepEvery {
+func (e *Enricher) maybeSweepRuntimeLocked(now time.Time) {
+	if !e.lastRuntimeSweep.IsZero() && now.Sub(e.lastRuntimeSweep) < e.runtimeSweepEvery {
 		return
 	}
 
-	cutoff := now.Add(-r.runtimeTTL)
+	cutoff := now.Add(-e.runtimeTTL)
 
-	for k, v := range r.runtimeByCgroup {
+	for k, v := range e.runtimeByCgroup {
 		if v.LastSeen.Before(cutoff) {
-			delete(r.runtimeByCgroup, k)
+			delete(e.runtimeByCgroup, k)
 		}
 	}
-	for k, v := range r.runtimeByIfindex {
+	for k, v := range e.runtimeByIfindex {
 		if v.LastSeen.Before(cutoff) {
-			delete(r.runtimeByIfindex, k)
+			delete(e.runtimeByIfindex, k)
 		}
 	}
 
-	r.lastRuntimeSweep = now
+	e.lastRuntimeSweep = now
 }
 
-func (r *Resolver) lookupCgroupHint(cgroupID uint64, now time.Time) (kube.PodIdentity, bool) {
+func (e *Enricher) lookupCgroupHint(cgroupID uint64, now time.Time) (kube.PodIdentity, bool) {
 	if cgroupID == 0 {
 		return kube.PodIdentity{}, false
 	}
 
-	r.mu.RLock()
-	entry, ok := r.runtimeByCgroup[cgroupID]
-	r.mu.RUnlock()
+	e.mu.RLock()
+	entry, ok := e.runtimeByCgroup[cgroupID]
+	e.mu.RUnlock()
 
-	if !ok || now.Sub(entry.LastSeen) > r.runtimeTTL {
+	if !ok || now.Sub(entry.LastSeen) > e.runtimeTTL {
 		return kube.PodIdentity{}, false
 	}
 	return entry.ID, true
 }
 
-func (r *Resolver) lookupIfindexHint(ifindex uint32, now time.Time) (kube.PodIdentity, bool) {
+func (e *Enricher) lookupIfindexHint(ifindex uint32, now time.Time) (kube.PodIdentity, bool) {
 	if ifindex == 0 {
 		return kube.PodIdentity{}, false
 	}
 
-	r.mu.RLock()
-	entry, ok := r.runtimeByIfindex[ifindex]
-	r.mu.RUnlock()
+	e.mu.RLock()
+	entry, ok := e.runtimeByIfindex[ifindex]
+	e.mu.RUnlock()
 
-	if !ok || now.Sub(entry.LastSeen) > r.runtimeTTL {
+	if !ok || now.Sub(entry.LastSeen) > e.runtimeTTL {
 		return kube.PodIdentity{}, false
 	}
 	return entry.ID, true
 }
 
-func (r *Resolver) rememberCgroupHint(cgroupID uint64, id kube.PodIdentity, now time.Time) {
+func (e *Enricher) rememberCgroupHint(cgroupID uint64, id kube.PodIdentity, now time.Time) {
 	if cgroupID == 0 || !id.IsPod() {
 		return
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
-	r.maybeSweepRuntimeLocked(now)
-	r.runtimeByCgroup[cgroupID] = runtimeCacheEntry{
+	e.maybeSweepRuntimeLocked(now)
+	e.runtimeByCgroup[cgroupID] = runtimeCacheEntry{
 		ID:       id,
 		LastSeen: now,
 	}
 }
 
-func (r *Resolver) rememberIfindexHint(ifindex uint32, id kube.PodIdentity, now time.Time) {
+func (e *Enricher) rememberIfindexHint(ifindex uint32, id kube.PodIdentity, now time.Time) {
 	if ifindex == 0 || !id.IsPod() {
 		return
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
-	r.maybeSweepRuntimeLocked(now)
-	r.runtimeByIfindex[ifindex] = runtimeCacheEntry{
+	e.maybeSweepRuntimeLocked(now)
+	e.runtimeByIfindex[ifindex] = runtimeCacheEntry{
 		ID:       id,
 		LastSeen: now,
 	}
 }
 
-func (r *Resolver) applyRuntimeHints(ev types.Event, srcIP, dstIP string, src, dst kube.PodIdentity, now time.Time) (kube.PodIdentity, kube.PodIdentity) {
+func (e *Enricher) applyRuntimeHints(ev types.Event, srcIP, dstIP string, src, dst kube.PodIdentity, now time.Time) (kube.PodIdentity, kube.PodIdentity) {
 	if !src.IsPod() {
-		if id, ok := r.lookupCgroupHint(ev.CgroupID, now); ok {
+		if id, ok := e.lookupCgroupHint(ev.CgroupID, now); ok {
 			src = kube.StrongerIdentity(src, kube.WithObservedIP(id, srcIP))
 		}
 	}
 	if !src.IsPod() && ev.Ifindex != 0 {
-		if id, ok := r.lookupIfindexHint(ev.Ifindex, now); ok {
+		if id, ok := e.lookupIfindexHint(ev.Ifindex, now); ok {
 			src = kube.StrongerIdentity(src, kube.WithObservedIP(id, srcIP))
 		}
 	}
 	if !dst.IsPod() && ev.SkbIif != 0 {
-		if id, ok := r.lookupIfindexHint(ev.SkbIif, now); ok {
+		if id, ok := e.lookupIfindexHint(ev.SkbIif, now); ok {
 			dst = kube.StrongerIdentity(dst, kube.WithObservedIP(id, dstIP))
 		}
 	}
 	return src, dst
 }
 
-func (r *Resolver) rememberRuntimeHints(ev types.Event, src, dst kube.PodIdentity, now time.Time) {
+func (e *Enricher) rememberRuntimeHints(ev types.Event, src, dst kube.PodIdentity, now time.Time) {
 	switch ev.Stage {
 	case types.StageSendmsgRet:
 		if src.IsPod() {
-			r.rememberCgroupHint(ev.CgroupID, src, now)
+			e.rememberCgroupHint(ev.CgroupID, src, now)
 		}
 
 	case types.StageToVeth, types.StageToDevQ:
 		if src.IsPod() {
-			r.rememberCgroupHint(ev.CgroupID, src, now)
-			r.rememberIfindexHint(ev.Ifindex, src, now)
+			e.rememberCgroupHint(ev.CgroupID, src, now)
+			e.rememberIfindexHint(ev.Ifindex, src, now)
 		}
 
 	case types.StageRetrans, types.StageDrop:
 		if src.IsPod() {
-			r.rememberIfindexHint(ev.Ifindex, src, now)
+			e.rememberIfindexHint(ev.Ifindex, src, now)
 		}
 	}
 
 	if dst.IsPod() && ev.SkbIif != 0 {
-		r.rememberIfindexHint(ev.SkbIif, dst, now)
+		e.rememberIfindexHint(ev.SkbIif, dst, now)
 	}
 }
 
@@ -338,32 +336,32 @@ func deriveTrafficScope(src, dst kube.PodIdentity) string {
 }
 
 // Enrich는 raw eBPF Event를 EnrichedEvent로 보강한다.
-// IP 해석은 embed된 kube.Resolver에 위임하고, 그 결과에 socket-cookie flow 캐시 hit과
+// IP 해석은 주입된 *kube.Resolver에 위임하고, 그 결과에 socket-cookie flow 캐시 hit과
 // cgroup/ifindex runtime hint를 합쳐 양 끝의 식별을 가능한 강하게 만든다.
-func (r *Resolver) Enrich(ev types.Event, mapper *drop.Mapper) types.EnrichedEvent {
+func (e *Enricher) Enrich(ev types.Event, mapper *drop.Mapper) types.EnrichedEvent {
 	srcIP := types.U32ToIPv4(ev.Saddr)
 	dstIP := types.U32ToIPv4(ev.Daddr)
 
 	now := time.Now()
 
-	src := r.ResolveIP(srcIP)
-	dst := r.ResolveIP(dstIP)
+	src := e.kr.ResolveIP(srcIP)
+	dst := e.kr.ResolveIP(dstIP)
 
-	if cached, ok := r.lookupFlow(ev.SocketCookie); ok {
+	if cached, ok := e.lookupFlow(ev.SocketCookie); ok {
 		src = kube.StrongerIdentity(src, kube.WithObservedIP(cached.Src, srcIP))
 		dst = kube.StrongerIdentity(dst, kube.WithObservedIP(cached.Dst, dstIP))
 	}
 
-	src, dst = r.applyRuntimeHints(ev, srcIP, dstIP, src, dst, now)
+	src, dst = e.applyRuntimeHints(ev, srcIP, dstIP, src, dst, now)
 
 	if src.Known() {
 		switch ev.Stage {
 		case types.StageSendmsgRet, types.StageToVeth, types.StageToDevQ, types.StageRetrans, types.StageDrop:
-			r.rememberFlow(ev.SocketCookie, src, dst, now)
+			e.rememberFlow(ev.SocketCookie, src, dst, now)
 		}
 	}
 
-	r.rememberRuntimeHints(ev, src, dst, now)
+	e.rememberRuntimeHints(ev, src, dst, now)
 
 	reasonName := ""
 	reasonCategory := ""
@@ -377,7 +375,7 @@ func (r *Resolver) Enrich(ev types.Event, mapper *drop.Mapper) types.EnrichedEve
 		CommText:       types.CommString(ev.Comm),
 		Direction:      "egress",
 		TrafficScope:   deriveTrafficScope(src, dst),
-		ObservedNode:   r.LocalNode(),
+		ObservedNode:   e.kr.LocalNode(),
 		SrcIPText:      srcIP,
 		DstIPText:      dstIP,
 		Src:            src,

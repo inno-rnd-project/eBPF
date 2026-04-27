@@ -12,6 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"netobs/internal/kube"
 	"netobs/internal/netobs/config"
 	"netobs/internal/netobs/drop"
 	ebpfx "netobs/internal/netobs/ebpf"
@@ -35,10 +36,11 @@ func main() {
 	metrics.SetPodMetricsEnabled(cfg.PodMetricsEnabled)
 
 	var ebpfReady atomic.Bool
-	resolver := metadata.NewResolver(cfg.NodeName, cfg.MetadataRefresh)
+	kr := kube.NewResolver(cfg.NodeName, cfg.MetadataRefresh)
+	enricher := metadata.NewEnricher(kr)
 
 	ready := func() (bool, string) {
-		if !resolver.HasSynced() {
+		if !kr.HasSynced() {
 			return false, "metadata informer not synced"
 		}
 		if !ebpfReady.Load() {
@@ -63,7 +65,7 @@ func main() {
 	}()
 
 	// Kubernetes metadata informer.
-	go resolver.Start(ctx)
+	go kr.Start(ctx)
 
 	mapper := drop.NewMapper(drop.DefaultPaths(cfg.DropReasonFormatPath))
 
@@ -92,7 +94,7 @@ func main() {
 				continue
 			}
 
-			enriched := resolver.Enrich(ev, mapper)
+			enriched := enricher.Enrich(ev, mapper)
 			metrics.Record(enriched)
 
 			if cfg.PrintEvents {
