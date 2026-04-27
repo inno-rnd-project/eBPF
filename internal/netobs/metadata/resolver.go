@@ -1,38 +1,17 @@
+// Package metadata는 netobs eBPF Event를 enrichment하기 위한 캐시 계층을 제공한다.
+// IP→PodIdentity 인덱스와 informer는 internal/kube로 승격되어 있고, 본 패키지는 그 위에
+// netobs 고유의 socket-cookie flow 캐시와 cgroup/ifindex 런타임 hint 캐시를 얹는다.
+// 두 캐시는 eBPF 이벤트 stage 흐름과 결합되어 있어 공용 패키지로 옮기지 않는다.
 package metadata
 
 import (
-	"context"
-	"errors"
-	"log"
-	"net/netip"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
-
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/tools/clientcmd"
 
 	"netobs/internal/kube"
 	"netobs/internal/netobs/drop"
 	"netobs/internal/netobs/types"
 )
-
-type podCacheEntry struct {
-	key string
-	id  kube.PodIdentity
-}
-
-type serviceCacheEntry struct {
-	key string
-	id  kube.PodIdentity
-}
 
 type flowCacheEntry struct {
 	Src kube.PodIdentity
@@ -44,24 +23,14 @@ type runtimeCacheEntry struct {
 	LastSeen time.Time
 }
 
+// Resolver는 *kube.Resolver를 embed해 IP→PodIdentity 해석을 위임하고,
+// 그 위에 netobs 고유의 flow / runtime hint 캐시와 Enrich 파이프라인을 보유한다.
+// embed된 kube.Resolver의 mu는 IP 인덱스만 보호하며, 본 구조체의 mu는 flow/runtime 캐시를 보호한다.
+// 두 mu가 분리되어 있어 IP 인덱스 갱신과 flow 캐시 lookup이 서로 블록되지 않는다.
 type Resolver struct {
-	localNode    string
-	client       kubernetes.Interface
-	startupErr   error
-	resyncPeriod time.Duration
-
-	synced atomic.Bool
+	*kube.Resolver
 
 	mu sync.RWMutex
-
-	podByIP     map[string]podCacheEntry
-	podIPsByKey map[string][]string
-
-	serviceByIP     map[string]serviceCacheEntry
-	serviceIPsByKey map[string][]string
-
-	nodeByIP     map[string]string
-	nodeIPsByKey map[string][]string
 
 	// socket cookie flow cache (two-map generational)
 	// 주기적으로 current → previous로 swap해 O(1) 만료를 수행한다.
@@ -83,16 +52,12 @@ type Resolver struct {
 	lastRuntimeSweep  time.Time
 }
 
+// NewResolver는 kube.Resolver를 구성한 뒤 netobs 전용 캐시를 함께 초기화한 metadata.Resolver를 반환한다.
+// 본 생성자는 호환성을 위해 기존 시그니처(localNode, resyncPeriod)를 유지하지만,
+// 호출부가 *kube.Resolver를 별도로 보유해야 한다면 다음 단계 refactor에서 명시 DI로 교체될 수 있다.
 func NewResolver(localNode string, resyncPeriod time.Duration) *Resolver {
-	r := &Resolver{
-		localNode:       localNode,
-		resyncPeriod:    resyncPeriod,
-		podByIP:         make(map[string]podCacheEntry),
-		podIPsByKey:     make(map[string][]string),
-		serviceByIP:     make(map[string]serviceCacheEntry),
-		serviceIPsByKey: make(map[string][]string),
-		nodeByIP:        make(map[string]string),
-		nodeIPsByKey:    make(map[string][]string),
+	return &Resolver{
+		Resolver: kube.NewResolver(localNode, resyncPeriod),
 
 		// socket cookie flow cache (two-map generational).
 		// rotate 주기(2.5분)의 1~2배 범위에서 entry가 생존하므로
@@ -111,543 +76,6 @@ func NewResolver(localNode string, resyncPeriod time.Duration) *Resolver {
 		runtimeTTL:        2 * time.Minute,
 		runtimeSweepEvery: 30 * time.Second,
 	}
-
-	cfg, err := kubeConfig()
-	if err != nil {
-		r.startupErr = err
-		return r
-	}
-
-	clientset, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		r.startupErr = err
-		return r
-	}
-
-	r.client = clientset
-	return r
-}
-
-func kubeConfig() (*rest.Config, error) {
-	if cfg, err := rest.InClusterConfig(); err == nil {
-		return cfg, nil
-	}
-
-	if kubeconfig := strings.TrimSpace(os.Getenv("KUBECONFIG")); kubeconfig != "" {
-		return clientcmd.BuildConfigFromFlags("", kubeconfig)
-	}
-
-	home, err := os.UserHomeDir()
-	if err == nil {
-		path := filepath.Join(home, ".kube", "config")
-		if _, statErr := os.Stat(path); statErr == nil {
-			return clientcmd.BuildConfigFromFlags("", path)
-		}
-	}
-
-	return nil, errors.New("no in-cluster config and no kubeconfig found")
-}
-
-func (r *Resolver) Start(ctx context.Context) {
-	if r.client == nil {
-		log.Printf("metadata resolver disabled: %v", r.startupErr)
-		return
-	}
-
-	factory := informers.NewSharedInformerFactory(r.client, r.resyncPeriod)
-
-	podInformer := factory.Core().V1().Pods().Informer()
-	serviceInformer := factory.Core().V1().Services().Informer()
-	nodeInformer := factory.Core().V1().Nodes().Informer()
-
-	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			r.onUpsertPod(obj)
-		},
-		UpdateFunc: func(_, newObj interface{}) {
-			r.onUpsertPod(newObj)
-		},
-		DeleteFunc: func(obj interface{}) {
-			r.onDeletePod(obj)
-		},
-	})
-
-	serviceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			r.onUpsertService(obj)
-		},
-		UpdateFunc: func(_, newObj interface{}) {
-			r.onUpsertService(newObj)
-		},
-		DeleteFunc: func(obj interface{}) {
-			r.onDeleteService(obj)
-		},
-	})
-
-	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			r.onUpsertNode(obj)
-		},
-		UpdateFunc: func(_, newObj interface{}) {
-			r.onUpsertNode(newObj)
-		},
-		DeleteFunc: func(obj interface{}) {
-			r.onDeleteNode(obj)
-		},
-	})
-
-	factory.Start(ctx.Done())
-
-	if !cache.WaitForCacheSync(
-		ctx.Done(),
-		podInformer.HasSynced,
-		serviceInformer.HasSynced,
-		nodeInformer.HasSynced,
-	) {
-		log.Printf("metadata resolver initial sync failed")
-		return
-	}
-
-	r.synced.Store(true)
-	log.Printf("metadata resolver informer sync completed")
-
-	<-ctx.Done()
-}
-
-// HasSynced는 Kubernetes informer 캐시가 초기 sync를 완료했는지 반환한다.
-// client 초기화 실패로 resolver가 비활성 상태인 경우에도 false를 반환해
-// /readyz가 해당 상태를 드러내도록 한다.
-func (r *Resolver) HasSynced() bool {
-	return r.synced.Load()
-}
-
-func (r *Resolver) onUpsertPod(obj interface{}) {
-	pod, ok := extractPod(obj)
-	if !ok || pod == nil {
-		return
-	}
-
-	key := podKey(pod)
-	ips := podIPs(*pod)
-	id := podIdentity(*pod)
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// 기존 IP 매핑 제거
-	if oldIPs, exists := r.podIPsByKey[key]; exists {
-		for _, ip := range oldIPs {
-			if entry, ok := r.podByIP[ip]; ok && entry.key == key {
-				delete(r.podByIP, ip)
-			}
-		}
-	}
-
-	// 현재 Pod에 IP가 없으면 캐시만 정리하고 종료
-	if len(ips) == 0 {
-		delete(r.podIPsByKey, key)
-		return
-	}
-
-	for _, ip := range ips {
-		r.podByIP[ip] = podCacheEntry{
-			key: key,
-			id:  id,
-		}
-	}
-	r.podIPsByKey[key] = ips
-}
-
-func (r *Resolver) onDeletePod(obj interface{}) {
-	pod, ok := extractPod(obj)
-	if !ok || pod == nil {
-		return
-	}
-
-	key := podKey(pod)
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if oldIPs, exists := r.podIPsByKey[key]; exists {
-		for _, ip := range oldIPs {
-			if entry, ok := r.podByIP[ip]; ok && entry.key == key {
-				delete(r.podByIP, ip)
-			}
-		}
-		delete(r.podIPsByKey, key)
-		return
-	}
-
-	// fallback: tombstone만 있고 key 캐시가 없는 경우
-	for _, ip := range podIPs(*pod) {
-		if entry, ok := r.podByIP[ip]; ok && entry.key == key {
-			delete(r.podByIP, ip)
-		}
-	}
-}
-
-func (r *Resolver) onUpsertService(obj interface{}) {
-	svc, ok := extractService(obj)
-	if !ok || svc == nil {
-		return
-	}
-
-	key := serviceKey(svc)
-	ips := serviceIPs(*svc)
-	id := serviceIdentity(*svc)
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if oldIPs, exists := r.serviceIPsByKey[key]; exists {
-		for _, ip := range oldIPs {
-			if entry, ok := r.serviceByIP[ip]; ok && entry.key == key {
-				delete(r.serviceByIP, ip)
-			}
-		}
-	}
-
-	if len(ips) == 0 {
-		delete(r.serviceIPsByKey, key)
-		return
-	}
-
-	for _, ip := range ips {
-		r.serviceByIP[ip] = serviceCacheEntry{
-			key: key,
-			id:  id,
-		}
-	}
-	r.serviceIPsByKey[key] = ips
-}
-
-func (r *Resolver) onDeleteService(obj interface{}) {
-	svc, ok := extractService(obj)
-	if !ok || svc == nil {
-		return
-	}
-
-	key := serviceKey(svc)
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if oldIPs, exists := r.serviceIPsByKey[key]; exists {
-		for _, ip := range oldIPs {
-			if entry, ok := r.serviceByIP[ip]; ok && entry.key == key {
-				delete(r.serviceByIP, ip)
-			}
-		}
-		delete(r.serviceIPsByKey, key)
-		return
-	}
-
-	for _, ip := range serviceIPs(*svc) {
-		if entry, ok := r.serviceByIP[ip]; ok && entry.key == key {
-			delete(r.serviceByIP, ip)
-		}
-	}
-}
-
-func (r *Resolver) onUpsertNode(obj interface{}) {
-	node, ok := extractNode(obj)
-	if !ok || node == nil {
-		return
-	}
-
-	key := nodeKey(node)
-	ips := nodeIPs(*node)
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if oldIPs, exists := r.nodeIPsByKey[key]; exists {
-		for _, ip := range oldIPs {
-			if name, ok := r.nodeByIP[ip]; ok && name == node.Name {
-				delete(r.nodeByIP, ip)
-			}
-		}
-	}
-
-	if len(ips) == 0 {
-		delete(r.nodeIPsByKey, key)
-		return
-	}
-
-	for _, ip := range ips {
-		r.nodeByIP[ip] = node.Name
-	}
-	r.nodeIPsByKey[key] = ips
-}
-
-func (r *Resolver) onDeleteNode(obj interface{}) {
-	node, ok := extractNode(obj)
-	if !ok || node == nil {
-		return
-	}
-
-	key := nodeKey(node)
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if oldIPs, exists := r.nodeIPsByKey[key]; exists {
-		for _, ip := range oldIPs {
-			if name, ok := r.nodeByIP[ip]; ok && name == node.Name {
-				delete(r.nodeByIP, ip)
-			}
-		}
-		delete(r.nodeIPsByKey, key)
-		return
-	}
-
-	for _, ip := range nodeIPs(*node) {
-		if name, ok := r.nodeByIP[ip]; ok && name == node.Name {
-			delete(r.nodeByIP, ip)
-		}
-	}
-}
-
-func extractPod(obj interface{}) (*corev1.Pod, bool) {
-	switch t := obj.(type) {
-	case *corev1.Pod:
-		return t, true
-	case cache.DeletedFinalStateUnknown:
-		pod, ok := t.Obj.(*corev1.Pod)
-		return pod, ok
-	default:
-		return nil, false
-	}
-}
-
-func extractService(obj interface{}) (*corev1.Service, bool) {
-	switch t := obj.(type) {
-	case *corev1.Service:
-		return t, true
-	case cache.DeletedFinalStateUnknown:
-		svc, ok := t.Obj.(*corev1.Service)
-		return svc, ok
-	default:
-		return nil, false
-	}
-}
-
-func extractNode(obj interface{}) (*corev1.Node, bool) {
-	switch t := obj.(type) {
-	case *corev1.Node:
-		return t, true
-	case cache.DeletedFinalStateUnknown:
-		node, ok := t.Obj.(*corev1.Node)
-		return node, ok
-	default:
-		return nil, false
-	}
-}
-
-func podKey(p *corev1.Pod) string {
-	if p.UID != "" {
-		return string(p.UID)
-	}
-	return p.Namespace + "/" + p.Name
-}
-
-func serviceKey(s *corev1.Service) string {
-	if s.UID != "" {
-		return string(s.UID)
-	}
-	return s.Namespace + "/" + s.Name
-}
-
-func nodeKey(n *corev1.Node) string {
-	if n.UID != "" {
-		return string(n.UID)
-	}
-	return n.Name
-}
-
-func podIPs(p corev1.Pod) []string {
-	seen := make(map[string]struct{}, 1+len(p.Status.PodIPs))
-	out := make([]string, 0, 1+len(p.Status.PodIPs))
-
-	if p.Status.PodIP != "" {
-		seen[p.Status.PodIP] = struct{}{}
-		out = append(out, p.Status.PodIP)
-	}
-
-	for _, pip := range p.Status.PodIPs {
-		if pip.IP == "" {
-			continue
-		}
-		if _, exists := seen[pip.IP]; exists {
-			continue
-		}
-		seen[pip.IP] = struct{}{}
-		out = append(out, pip.IP)
-	}
-
-	return out
-}
-
-func serviceIPs(s corev1.Service) []string {
-	seen := make(map[string]struct{}, 1+len(s.Spec.ClusterIPs))
-	out := make([]string, 0, 1+len(s.Spec.ClusterIPs))
-
-	if s.Spec.ClusterIP != "" && s.Spec.ClusterIP != "None" {
-		seen[s.Spec.ClusterIP] = struct{}{}
-		out = append(out, s.Spec.ClusterIP)
-	}
-
-	for _, ip := range s.Spec.ClusterIPs {
-		if ip == "" || ip == "None" {
-			continue
-		}
-		if _, exists := seen[ip]; exists {
-			continue
-		}
-		seen[ip] = struct{}{}
-		out = append(out, ip)
-	}
-
-	return out
-}
-
-func nodeIPs(n corev1.Node) []string {
-	seen := make(map[string]struct{}, len(n.Status.Addresses))
-	out := make([]string, 0, len(n.Status.Addresses))
-
-	for _, addr := range n.Status.Addresses {
-		if addr.Address == "" {
-			continue
-		}
-		if _, exists := seen[addr.Address]; exists {
-			continue
-		}
-		seen[addr.Address] = struct{}{}
-		out = append(out, addr.Address)
-	}
-
-	return out
-}
-
-func podIdentity(p corev1.Pod) kube.PodIdentity {
-	kind, workload := ownerInfo(p)
-
-	return kube.PodIdentity{
-		IdentityClass: kube.IdentityClassPod,
-		Namespace:     p.Namespace,
-		PodUID:        string(p.UID),
-		PodName:       p.Name,
-		NodeName:      p.Spec.NodeName,
-		WorkloadKind:  kind,
-		Workload:      workload,
-		PodIP:         p.Status.PodIP,
-	}
-}
-
-func serviceIdentity(s corev1.Service) kube.PodIdentity {
-	return kube.PodIdentity{
-		IdentityClass: kube.IdentityClassService,
-		Namespace:     s.Namespace,
-		WorkloadKind:  "Service",
-		Workload:      s.Name,
-		PodIP:         s.Spec.ClusterIP,
-	}
-}
-
-func nodeIdentity(nodeName, ip string) kube.PodIdentity {
-	return kube.PodIdentity{
-		IdentityClass: kube.IdentityClassNode,
-		NodeName:      nodeName,
-		WorkloadKind:  "Node",
-		Workload:      nodeName,
-		PodIP:         ip,
-	}
-}
-
-func externalIdentity(ip string) kube.PodIdentity {
-	return kube.PodIdentity{
-		IdentityClass: kube.IdentityClassExternal,
-		WorkloadKind:  "External",
-		Workload:      "external",
-		PodIP:         ip,
-	}
-}
-
-func unresolvedIdentity(ip string) kube.PodIdentity {
-	return kube.PodIdentity{
-		IdentityClass: kube.IdentityClassUnresolved,
-		WorkloadKind:  "Unresolved",
-		Workload:      "unresolved",
-		PodIP:         ip,
-	}
-}
-
-func ownerInfo(p corev1.Pod) (string, string) {
-	if len(p.OwnerReferences) == 0 {
-		return "Pod", p.Name
-	}
-
-	owner := p.OwnerReferences[0]
-	kind := owner.Kind
-	name := owner.Name
-
-	if kind == "ReplicaSet" {
-		if dep := kube.TrimGeneratedSuffix(name); dep != "" {
-			return "Deployment", dep
-		}
-	}
-
-	return kind, name
-}
-
-// identityCompleteness는 식별 필드가 얼마나 채워졌는지 점수화한다.
-// 같은 IdentityClass 내에서 tiebreak 용도로만 쓰인다.
-func identityCompleteness(p kube.PodIdentity) int {
-	score := 0
-	if p.Namespace != "" {
-		score++
-	}
-	if p.PodUID != "" {
-		score++
-	}
-	if p.PodName != "" {
-		score++
-	}
-	if p.NodeName != "" {
-		score++
-	}
-	if p.Workload != "" {
-		score++
-	}
-	if p.WorkloadKind != "" {
-		score++
-	}
-	if p.PodIP != "" {
-		score++
-	}
-	return score
-}
-
-func strongerIdentity(current, candidate kube.PodIdentity) kube.PodIdentity {
-	if candidate.Rank() > current.Rank() {
-		return candidate
-	}
-	if current.Rank() > candidate.Rank() {
-		return current
-	}
-
-	if identityCompleteness(candidate) > identityCompleteness(current) {
-		return candidate
-	}
-	return current
-}
-
-func withObservedIP(id kube.PodIdentity, ip string) kube.PodIdentity {
-	if ip != "" {
-		id.PodIP = ip
-	}
-	return id
 }
 
 // lookupFlow는 current 맵을 먼저 확인하고 miss면 previous 맵을 확인한다.
@@ -719,26 +147,6 @@ func (r *Resolver) rememberFlow(cookie uint64, src, dst kube.PodIdentity, now ti
 		Src: src,
 		Dst: dst,
 	}
-}
-
-func (r *Resolver) resolveIP(ip string) kube.PodIdentity {
-	if ip == "" {
-		return unresolvedIdentity(ip)
-	}
-
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if entry, ok := r.podByIP[ip]; ok {
-		return entry.id
-	}
-	if entry, ok := r.serviceByIP[ip]; ok {
-		return entry.id
-	}
-	if nodeName, ok := r.nodeByIP[ip]; ok {
-		return nodeIdentity(nodeName, ip)
-	}
-	return classifyFallbackIP(ip)
 }
 
 func (r *Resolver) maybeSweepRuntimeLocked(now time.Time) {
@@ -825,17 +233,17 @@ func (r *Resolver) rememberIfindexHint(ifindex uint32, id kube.PodIdentity, now 
 func (r *Resolver) applyRuntimeHints(ev types.Event, srcIP, dstIP string, src, dst kube.PodIdentity, now time.Time) (kube.PodIdentity, kube.PodIdentity) {
 	if !src.IsPod() {
 		if id, ok := r.lookupCgroupHint(ev.CgroupID, now); ok {
-			src = strongerIdentity(src, withObservedIP(id, srcIP))
+			src = kube.StrongerIdentity(src, kube.WithObservedIP(id, srcIP))
 		}
 	}
 	if !src.IsPod() && ev.Ifindex != 0 {
 		if id, ok := r.lookupIfindexHint(ev.Ifindex, now); ok {
-			src = strongerIdentity(src, withObservedIP(id, srcIP))
+			src = kube.StrongerIdentity(src, kube.WithObservedIP(id, srcIP))
 		}
 	}
 	if !dst.IsPod() && ev.SkbIif != 0 {
 		if id, ok := r.lookupIfindexHint(ev.SkbIif, now); ok {
-			dst = strongerIdentity(dst, withObservedIP(id, dstIP))
+			dst = kube.StrongerIdentity(dst, kube.WithObservedIP(id, dstIP))
 		}
 	}
 	return src, dst
@@ -863,26 +271,6 @@ func (r *Resolver) rememberRuntimeHints(ev types.Event, src, dst kube.PodIdentit
 	if dst.IsPod() && ev.SkbIif != 0 {
 		r.rememberIfindexHint(ev.SkbIif, dst, now)
 	}
-}
-
-func classifyFallbackIP(ip string) kube.PodIdentity {
-	addr, err := netip.ParseAddr(ip)
-	if err != nil {
-		return unresolvedIdentity(ip)
-	}
-
-	if addr.IsUnspecified() || addr.IsLoopback() || addr.IsMulticast() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() {
-		return unresolvedIdentity(ip)
-	}
-
-	// RFC1918 / ULA 등 private 주소인데 pod/service/node 어느 쪽에도 매핑되지 않음
-	// -> cluster 내부 또는 host 내부일 가능성이 높으므로 unresolved로 정리
-	if addr.IsPrivate() {
-		return unresolvedIdentity(ip)
-	}
-
-	// public IP면 external로 분류
-	return externalIdentity(ip)
 }
 
 func deriveTrafficScope(src, dst kube.PodIdentity) string {
@@ -949,18 +337,21 @@ func deriveTrafficScope(src, dst kube.PodIdentity) string {
 	}
 }
 
+// Enrich는 raw eBPF Event를 EnrichedEvent로 보강한다.
+// IP 해석은 embed된 kube.Resolver에 위임하고, 그 결과에 socket-cookie flow 캐시 hit과
+// cgroup/ifindex runtime hint를 합쳐 양 끝의 식별을 가능한 강하게 만든다.
 func (r *Resolver) Enrich(ev types.Event, mapper *drop.Mapper) types.EnrichedEvent {
 	srcIP := types.U32ToIPv4(ev.Saddr)
 	dstIP := types.U32ToIPv4(ev.Daddr)
 
 	now := time.Now()
 
-	src := r.resolveIP(srcIP)
-	dst := r.resolveIP(dstIP)
+	src := r.ResolveIP(srcIP)
+	dst := r.ResolveIP(dstIP)
 
 	if cached, ok := r.lookupFlow(ev.SocketCookie); ok {
-		src = strongerIdentity(src, withObservedIP(cached.Src, srcIP))
-		dst = strongerIdentity(dst, withObservedIP(cached.Dst, dstIP))
+		src = kube.StrongerIdentity(src, kube.WithObservedIP(cached.Src, srcIP))
+		dst = kube.StrongerIdentity(dst, kube.WithObservedIP(cached.Dst, dstIP))
 	}
 
 	src, dst = r.applyRuntimeHints(ev, srcIP, dstIP, src, dst, now)
@@ -986,7 +377,7 @@ func (r *Resolver) Enrich(ev types.Event, mapper *drop.Mapper) types.EnrichedEve
 		CommText:       types.CommString(ev.Comm),
 		Direction:      "egress",
 		TrafficScope:   deriveTrafficScope(src, dst),
-		ObservedNode:   r.localNode,
+		ObservedNode:   r.LocalNode(),
 		SrcIPText:      srcIP,
 		DstIPText:      dstIP,
 		Src:            src,
