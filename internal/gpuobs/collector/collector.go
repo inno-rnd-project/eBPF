@@ -11,19 +11,30 @@ import (
 	"netobs/internal/gpuobs/config"
 	"netobs/internal/gpuobs/metrics"
 	"netobs/internal/gpuobs/nvml"
+	"netobs/internal/kube"
 )
+
+// PodResolver는 collector가 PID → PodIdentity 해석을 위해 의존하는 최소 인터페이스다.
+// 운영에서는 *kube.Resolver가 자연스럽게 만족하며, 단위 테스트에서는 fake로 주입한다.
+type PodResolver interface {
+	ResolvePID(pid uint32) kube.PodIdentity
+}
 
 // Collector는 NVML 폴링 루프를 소유한다.
 type Collector struct {
-	nvml    nvml.NVML
-	cfg     config.Config
-	devices []nvml.Device
+	nvml     nvml.NVML
+	cfg      config.Config
+	resolver PodResolver
+	devices  []nvml.Device
 }
 
-// New는 NVML 핸들과 Config를 받아 Collector를 구성한다.
-// nvml이 nil이어도 생성은 성공하며, Run 시점에 graceful disable 경로로 분기된다.
-func New(nv nvml.NVML, cfg config.Config) *Collector {
-	return &Collector{nvml: nv, cfg: cfg}
+// New는 NVML 핸들과 Config, 그리고 선택적 PodResolver를 받아 Collector를 구성한다.
+// nvml이 nil이거나 resolver가 nil이어도 생성은 성공한다. nvml nil은 device 폴링 자체를 비활성화하고,
+// resolver nil은 device 폴링은 유지하되 per-pod 귀속 단계만 건너뛴다.
+// resolver가 주입되더라도 cfg.PodMetricsEnabled가 false이면 ResolvePID 호출 자체를 건너뛰어
+// /proc/<pid>/cgroup 읽기 비용을 발생시키지 않는다.
+func New(nv nvml.NVML, cfg config.Config, resolver PodResolver) *Collector {
+	return &Collector{nvml: nv, cfg: cfg, resolver: resolver}
 }
 
 // Run은 수집 루프를 실행한다.
@@ -97,9 +108,12 @@ func (c *Collector) discover() []nvml.Device {
 	return devices
 }
 
-// pollOnce는 캐시된 device 핸들마다 Snapshot을 읽어 metrics로 전달한다.
-// 한 device에서 실패해도 나머지 device 폴링은 계속한다.
+// pollOnce는 캐시된 device 핸들마다 Snapshot과 RunningProcesses를 읽어 metrics로 전달한다.
+// 한 device에서 실패해도 나머지 device 폴링은 계속한다. per-pod 귀속은 resolver 주입 + cfg
+// 토글이 모두 활성화된 경우에만 시도하며, 그 외에는 device-level 폴링만 수행한다.
 func (c *Collector) pollOnce() {
+	perPodEnabled := c.resolver != nil && c.cfg.PodMetricsEnabled
+
 	for _, dev := range c.devices {
 		snap, err := dev.Snapshot()
 		if err != nil {
@@ -108,6 +122,21 @@ func (c *Collector) pollOnce() {
 			continue
 		}
 		metrics.Record(c.cfg.NodeName, snap)
+
+		if !perPodEnabled {
+			continue
+		}
+
+		procs, err := dev.RunningProcesses()
+		if err != nil {
+			log.Printf("gpuobs: running processes: %v", err)
+			continue
+		}
+		for _, p := range procs {
+			id := c.resolver.ResolvePID(p.PID)
+			// RecordPod 내부에서 IsPod()와 podMetricsEnabled를 다시 검사해 unresolved/host PID는 무시된다.
+			metrics.RecordPod(c.cfg.NodeName, snap.Device, id, p.MemoryUsedBytes)
+		}
 	}
 }
 

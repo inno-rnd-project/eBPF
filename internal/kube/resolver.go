@@ -35,6 +35,9 @@ type Resolver struct {
 
 	podByIP     map[string]podCacheEntry
 	podIPsByKey map[string][]string
+	// podByUID는 Pod UID로 PodIdentity를 직접 찾기 위한 보조 인덱스다.
+	// gpuobs ResolvePID 경로에서 cgroup으로부터 추출한 UID로 O(1) 조회한다.
+	podByUID map[string]PodIdentity
 
 	serviceByIP     map[string]serviceCacheEntry
 	serviceIPsByKey map[string][]string
@@ -62,6 +65,7 @@ func NewResolver(localNode string, resyncPeriod time.Duration) *Resolver {
 		resyncPeriod:    resyncPeriod,
 		podByIP:         make(map[string]podCacheEntry),
 		podIPsByKey:     make(map[string][]string),
+		podByUID:        make(map[string]PodIdentity),
 		serviceByIP:     make(map[string]serviceCacheEntry),
 		serviceIPsByKey: make(map[string][]string),
 		nodeByIP:        make(map[string]string),
@@ -205,6 +209,12 @@ func (r *Resolver) onUpsertPod(obj interface{}) {
 		}
 	}
 
+	// podByUID는 IP 유무와 무관하게 갱신한다. Pod이 IP를 받기 전 단계의 PID도
+	// gpuobs ResolvePID 경로에서 매칭 가능해야 한다.
+	if pod.UID != "" {
+		r.podByUID[string(pod.UID)] = id
+	}
+
 	if len(ips) == 0 {
 		delete(r.podIPsByKey, key)
 		return
@@ -229,6 +239,10 @@ func (r *Resolver) onDeletePod(obj interface{}) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if pod.UID != "" {
+		delete(r.podByUID, string(pod.UID))
+	}
 
 	if oldIPs, exists := r.podIPsByKey[key]; exists {
 		for _, ip := range oldIPs {
@@ -636,6 +650,39 @@ func (r *Resolver) ResolveIP(ip string) PodIdentity {
 		return nodeIdentity(nodeName, ip)
 	}
 	return classifyFallbackIP(ip)
+}
+
+// ResolvePID는 host PID를 /proc/<pid>/cgroup 경로 파싱 → Pod UID → informer 인덱스 조회로
+// PodIdentity로 해석한다. 다음 경우에는 unresolved를 반환한다.
+//   - 프로세스가 이미 종료되어 /proc/<pid>/cgroup 읽기 실패
+//   - kubepods 외 host 프로세스 (cgroup path에 "kubepods" 미포함)
+//   - cgroup driver/runtime 변경으로 패턴 매칭 실패
+//   - informer 캐시에 아직 sync되지 않은 Pod
+//
+// 호출자(gpuobs collector)는 unresolved 결과를 per-pod 지표 발행에서 그대로 건너뛰면 된다.
+func (r *Resolver) ResolvePID(pid uint32) PodIdentity {
+	lines, err := readPIDCgroup(pid)
+	if err != nil {
+		return unresolvedIdentity("")
+	}
+	return r.resolveFromCgroupLines(lines)
+}
+
+// resolveFromCgroupLines는 cgroup 라인을 파싱해 Pod UID를 얻고 podByUID 인덱스에서 PodIdentity를 찾는다.
+// 파일 I/O를 분리해 단위 테스트가 임의 cgroup 라인 입력으로 ResolvePID 동작을 검증할 수 있도록 한다.
+func (r *Resolver) resolveFromCgroupLines(lines []string) PodIdentity {
+	uid := extractPodUID(lines)
+	if uid == "" {
+		return unresolvedIdentity("")
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if id, ok := r.podByUID[uid]; ok {
+		return id
+	}
+	return unresolvedIdentity("")
 }
 
 // classifyFallbackIP는 인덱스에서 매칭이 없는 IP를 분류한다.

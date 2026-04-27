@@ -19,6 +19,13 @@ type Config struct {
 	NodeName          string
 	GPUPollInterval   time.Duration
 	GPUMetricsEnabled bool
+	// PodMetricsEnabled는 per-pod gauge(`gpuobs_pod_*`) 발행 여부를 결정한다.
+	// 대규모 클러스터에서 src_pod / src_pod_uid 라벨 카디널리티 폭증을 막기 위한 escape hatch이며,
+	// startup 시점에만 metrics 패키지로 전달되고 그 이후에는 읽기 전용으로 쓴다.
+	PodMetricsEnabled bool
+	// MetadataRefresh는 kube.Resolver의 informer resync 주기다.
+	// 0 이하 값은 의미 없으므로 검증에서 거부된다. netobs와 동일하게 기본값 30s를 쓴다.
+	MetadataRefresh time.Duration
 }
 
 // Parse는 env와 CLI flag를 읽어 Config를 구성해 반환한다.
@@ -35,11 +42,18 @@ func Parse() (Config, error) {
 		log.Printf("warn: %v; using default %v", err, pollInterval)
 	}
 
+	metadataRefresh, err := getenvDuration("KUBE_METADATA_REFRESH", 30*time.Second)
+	if err != nil {
+		log.Printf("warn: %v; using default %v", err, metadataRefresh)
+	}
+
 	cfg := Config{
 		ListenAddr:        getenvDefault("LISTEN_ADDR", ":9820"),
 		NodeName:          getenvDefault("NODE_NAME", ""),
 		GPUPollInterval:   pollInterval,
 		GPUMetricsEnabled: getenvBool("GPU_METRICS_ENABLED", true),
+		PodMetricsEnabled: getenvBool("GPUOBS_POD_METRICS_ENABLED", true),
+		MetadataRefresh:   metadataRefresh,
 	}
 
 	fs := flag.NewFlagSet("gpuobs-agent", flag.ContinueOnError)
@@ -47,6 +61,8 @@ func Parse() (Config, error) {
 	fs.StringVar(&cfg.NodeName, "node-name", cfg.NodeName, "observed Kubernetes node name (defaults to hostname when empty)")
 	fs.DurationVar(&cfg.GPUPollInterval, "poll-interval", cfg.GPUPollInterval, "NVML polling interval for device snapshots")
 	fs.BoolVar(&cfg.GPUMetricsEnabled, "gpu-metrics", cfg.GPUMetricsEnabled, "emit per-device gpuobs_device_* metrics; disable to suppress device-level collection")
+	fs.BoolVar(&cfg.PodMetricsEnabled, "pod-metrics", cfg.PodMetricsEnabled, "emit per-pod gpuobs_pod_* metrics; disable on large clusters to cap Prometheus cardinality")
+	fs.DurationVar(&cfg.MetadataRefresh, "metadata-refresh", cfg.MetadataRefresh, "Kubernetes metadata informer resync interval")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// -h/-help 요청은 flag 패키지가 usage를 출력한 뒤 ErrHelp를 반환한다.
 		// 사용자 의도된 정상 경로이므로 exit 0으로 종료한다.
@@ -62,6 +78,10 @@ func Parse() (Config, error) {
 
 	if cfg.GPUPollInterval <= 0 {
 		return Config{}, fmt.Errorf("invalid -poll-interval: must be > 0")
+	}
+
+	if cfg.MetadataRefresh <= 0 {
+		return Config{}, fmt.Errorf("invalid -metadata-refresh: must be > 0")
 	}
 
 	if strings.TrimSpace(cfg.NodeName) == "" {

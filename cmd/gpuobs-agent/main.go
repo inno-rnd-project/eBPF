@@ -16,6 +16,7 @@ import (
 	"netobs/internal/gpuobs/config"
 	"netobs/internal/gpuobs/metrics"
 	"netobs/internal/gpuobs/nvml"
+	"netobs/internal/kube"
 	"netobs/internal/server"
 )
 
@@ -30,9 +31,18 @@ func main() {
 
 	reg := prometheus.NewRegistry()
 	metrics.Register(reg)
+	metrics.SetPodMetricsEnabled(cfg.PodMetricsEnabled)
+
+	// kube.Resolver는 Pod/Service/Node informer를 띄우고 IP/UID 인덱스를 유지한다.
+	// gpuobs는 ResolvePID 경로만 사용하지만, kube 패키지가 informer 일체를 함께 띄우므로
+	// pods/services/nodes 모두에 대해 RBAC가 필요하다 (deploy/gpuobs/base/clusterrole.yaml 참조).
+	kr := kube.NewResolver(cfg.NodeName, cfg.MetadataRefresh)
 
 	var collectorReady atomic.Bool
 	ready := func() (bool, string) {
+		if !kr.HasSynced() {
+			return false, "kube resolver informer not synced"
+		}
 		if !collectorReady.Load() {
 			return false, "collector not ready"
 		}
@@ -54,6 +64,9 @@ func main() {
 		}
 	}()
 
+	// Kubernetes metadata informer.
+	go kr.Start(ctx)
+
 	// NVML 초기화는 수집이 활성화된 경우에만 시도한다. GPU_METRICS_ENABLED=false 환경에서는
 	// libnvidia-ml.so.1 로드 자체를 건너뛰어 불필요한 초기화 비용과 실패 로그를 제거한다.
 	// 활성화된 상태에서 non-GPU 노드나 driver 미설치로 Init이 실패하면 warn 로그만 남기고
@@ -67,7 +80,7 @@ func main() {
 		}
 	}
 
-	col := collector.New(nv, cfg)
+	col := collector.New(nv, cfg, kr)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- col.Run(ctx, func() {
