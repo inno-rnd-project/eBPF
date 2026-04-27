@@ -19,27 +19,28 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"netobs/internal/kube"
 	"netobs/internal/netobs/drop"
 	"netobs/internal/netobs/types"
 )
 
 type podCacheEntry struct {
 	key string
-	id  types.PodIdentity
+	id  kube.PodIdentity
 }
 
 type serviceCacheEntry struct {
 	key string
-	id  types.PodIdentity
+	id  kube.PodIdentity
 }
 
 type flowCacheEntry struct {
-	Src types.PodIdentity
-	Dst types.PodIdentity
+	Src kube.PodIdentity
+	Dst kube.PodIdentity
 }
 
 type runtimeCacheEntry struct {
-	ID       types.PodIdentity
+	ID       kube.PodIdentity
 	LastSeen time.Time
 }
 
@@ -529,11 +530,11 @@ func nodeIPs(n corev1.Node) []string {
 	return out
 }
 
-func podIdentity(p corev1.Pod) types.PodIdentity {
+func podIdentity(p corev1.Pod) kube.PodIdentity {
 	kind, workload := ownerInfo(p)
 
-	return types.PodIdentity{
-		IdentityClass: types.IdentityClassPod,
+	return kube.PodIdentity{
+		IdentityClass: kube.IdentityClassPod,
 		Namespace:     p.Namespace,
 		PodUID:        string(p.UID),
 		PodName:       p.Name,
@@ -544,9 +545,9 @@ func podIdentity(p corev1.Pod) types.PodIdentity {
 	}
 }
 
-func serviceIdentity(s corev1.Service) types.PodIdentity {
-	return types.PodIdentity{
-		IdentityClass: types.IdentityClassService,
+func serviceIdentity(s corev1.Service) kube.PodIdentity {
+	return kube.PodIdentity{
+		IdentityClass: kube.IdentityClassService,
 		Namespace:     s.Namespace,
 		WorkloadKind:  "Service",
 		Workload:      s.Name,
@@ -554,9 +555,9 @@ func serviceIdentity(s corev1.Service) types.PodIdentity {
 	}
 }
 
-func nodeIdentity(nodeName, ip string) types.PodIdentity {
-	return types.PodIdentity{
-		IdentityClass: types.IdentityClassNode,
+func nodeIdentity(nodeName, ip string) kube.PodIdentity {
+	return kube.PodIdentity{
+		IdentityClass: kube.IdentityClassNode,
 		NodeName:      nodeName,
 		WorkloadKind:  "Node",
 		Workload:      nodeName,
@@ -564,18 +565,18 @@ func nodeIdentity(nodeName, ip string) types.PodIdentity {
 	}
 }
 
-func externalIdentity(ip string) types.PodIdentity {
-	return types.PodIdentity{
-		IdentityClass: types.IdentityClassExternal,
+func externalIdentity(ip string) kube.PodIdentity {
+	return kube.PodIdentity{
+		IdentityClass: kube.IdentityClassExternal,
 		WorkloadKind:  "External",
 		Workload:      "external",
 		PodIP:         ip,
 	}
 }
 
-func unresolvedIdentity(ip string) types.PodIdentity {
-	return types.PodIdentity{
-		IdentityClass: types.IdentityClassUnresolved,
+func unresolvedIdentity(ip string) kube.PodIdentity {
+	return kube.PodIdentity{
+		IdentityClass: kube.IdentityClassUnresolved,
 		WorkloadKind:  "Unresolved",
 		Workload:      "unresolved",
 		PodIP:         ip,
@@ -592,7 +593,7 @@ func ownerInfo(p corev1.Pod) (string, string) {
 	name := owner.Name
 
 	if kind == "ReplicaSet" {
-		if dep := types.TrimGeneratedSuffix(name); dep != "" {
+		if dep := kube.TrimGeneratedSuffix(name); dep != "" {
 			return "Deployment", dep
 		}
 	}
@@ -602,7 +603,7 @@ func ownerInfo(p corev1.Pod) (string, string) {
 
 // identityCompleteness는 식별 필드가 얼마나 채워졌는지 점수화한다.
 // 같은 IdentityClass 내에서 tiebreak 용도로만 쓰인다.
-func identityCompleteness(p types.PodIdentity) int {
+func identityCompleteness(p kube.PodIdentity) int {
 	score := 0
 	if p.Namespace != "" {
 		score++
@@ -628,7 +629,7 @@ func identityCompleteness(p types.PodIdentity) int {
 	return score
 }
 
-func strongerIdentity(current, candidate types.PodIdentity) types.PodIdentity {
+func strongerIdentity(current, candidate kube.PodIdentity) kube.PodIdentity {
 	if candidate.Rank() > current.Rank() {
 		return candidate
 	}
@@ -642,7 +643,7 @@ func strongerIdentity(current, candidate types.PodIdentity) types.PodIdentity {
 	return current
 }
 
-func withObservedIP(id types.PodIdentity, ip string) types.PodIdentity {
+func withObservedIP(id kube.PodIdentity, ip string) kube.PodIdentity {
 	if ip != "" {
 		id.PodIP = ip
 	}
@@ -702,7 +703,7 @@ func (r *Resolver) maybeRotateFlowsLocked(now time.Time) {
 	r.lastFlowRotate = now
 }
 
-func (r *Resolver) rememberFlow(cookie uint64, src, dst types.PodIdentity, now time.Time) {
+func (r *Resolver) rememberFlow(cookie uint64, src, dst kube.PodIdentity, now time.Time) {
 	if cookie == 0 {
 		return
 	}
@@ -720,7 +721,7 @@ func (r *Resolver) rememberFlow(cookie uint64, src, dst types.PodIdentity, now t
 	}
 }
 
-func (r *Resolver) resolveIP(ip string) types.PodIdentity {
+func (r *Resolver) resolveIP(ip string) kube.PodIdentity {
 	if ip == "" {
 		return unresolvedIdentity(ip)
 	}
@@ -761,9 +762,9 @@ func (r *Resolver) maybeSweepRuntimeLocked(now time.Time) {
 	r.lastRuntimeSweep = now
 }
 
-func (r *Resolver) lookupCgroupHint(cgroupID uint64, now time.Time) (types.PodIdentity, bool) {
+func (r *Resolver) lookupCgroupHint(cgroupID uint64, now time.Time) (kube.PodIdentity, bool) {
 	if cgroupID == 0 {
-		return types.PodIdentity{}, false
+		return kube.PodIdentity{}, false
 	}
 
 	r.mu.RLock()
@@ -771,14 +772,14 @@ func (r *Resolver) lookupCgroupHint(cgroupID uint64, now time.Time) (types.PodId
 	r.mu.RUnlock()
 
 	if !ok || now.Sub(entry.LastSeen) > r.runtimeTTL {
-		return types.PodIdentity{}, false
+		return kube.PodIdentity{}, false
 	}
 	return entry.ID, true
 }
 
-func (r *Resolver) lookupIfindexHint(ifindex uint32, now time.Time) (types.PodIdentity, bool) {
+func (r *Resolver) lookupIfindexHint(ifindex uint32, now time.Time) (kube.PodIdentity, bool) {
 	if ifindex == 0 {
-		return types.PodIdentity{}, false
+		return kube.PodIdentity{}, false
 	}
 
 	r.mu.RLock()
@@ -786,12 +787,12 @@ func (r *Resolver) lookupIfindexHint(ifindex uint32, now time.Time) (types.PodId
 	r.mu.RUnlock()
 
 	if !ok || now.Sub(entry.LastSeen) > r.runtimeTTL {
-		return types.PodIdentity{}, false
+		return kube.PodIdentity{}, false
 	}
 	return entry.ID, true
 }
 
-func (r *Resolver) rememberCgroupHint(cgroupID uint64, id types.PodIdentity, now time.Time) {
+func (r *Resolver) rememberCgroupHint(cgroupID uint64, id kube.PodIdentity, now time.Time) {
 	if cgroupID == 0 || !id.IsPod() {
 		return
 	}
@@ -806,7 +807,7 @@ func (r *Resolver) rememberCgroupHint(cgroupID uint64, id types.PodIdentity, now
 	}
 }
 
-func (r *Resolver) rememberIfindexHint(ifindex uint32, id types.PodIdentity, now time.Time) {
+func (r *Resolver) rememberIfindexHint(ifindex uint32, id kube.PodIdentity, now time.Time) {
 	if ifindex == 0 || !id.IsPod() {
 		return
 	}
@@ -821,7 +822,7 @@ func (r *Resolver) rememberIfindexHint(ifindex uint32, id types.PodIdentity, now
 	}
 }
 
-func (r *Resolver) applyRuntimeHints(ev types.Event, srcIP, dstIP string, src, dst types.PodIdentity, now time.Time) (types.PodIdentity, types.PodIdentity) {
+func (r *Resolver) applyRuntimeHints(ev types.Event, srcIP, dstIP string, src, dst kube.PodIdentity, now time.Time) (kube.PodIdentity, kube.PodIdentity) {
 	if !src.IsPod() {
 		if id, ok := r.lookupCgroupHint(ev.CgroupID, now); ok {
 			src = strongerIdentity(src, withObservedIP(id, srcIP))
@@ -840,7 +841,7 @@ func (r *Resolver) applyRuntimeHints(ev types.Event, srcIP, dstIP string, src, d
 	return src, dst
 }
 
-func (r *Resolver) rememberRuntimeHints(ev types.Event, src, dst types.PodIdentity, now time.Time) {
+func (r *Resolver) rememberRuntimeHints(ev types.Event, src, dst kube.PodIdentity, now time.Time) {
 	switch ev.Stage {
 	case types.StageSendmsgRet:
 		if src.IsPod() {
@@ -864,7 +865,7 @@ func (r *Resolver) rememberRuntimeHints(ev types.Event, src, dst types.PodIdenti
 	}
 }
 
-func classifyFallbackIP(ip string) types.PodIdentity {
+func classifyFallbackIP(ip string) kube.PodIdentity {
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
 		return unresolvedIdentity(ip)
@@ -884,7 +885,7 @@ func classifyFallbackIP(ip string) types.PodIdentity {
 	return externalIdentity(ip)
 }
 
-func deriveTrafficScope(src, dst types.PodIdentity) string {
+func deriveTrafficScope(src, dst kube.PodIdentity) string {
 	switch {
 	case src.IsPod() && dst.IsPod():
 		if src.NodeName != "" && dst.NodeName != "" {
