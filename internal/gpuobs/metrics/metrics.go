@@ -8,6 +8,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"netobs/internal/gpuobs/types"
+	"netobs/internal/kube"
 )
 
 // AgentVersion은 에이전트의 버전 문자열이며, Phase 4 릴리스에서 ldflags로 치환된다.
@@ -25,6 +26,22 @@ var agentInfo = prometheus.NewGauge(
 // deviceLabels는 device 단위 gauge의 공통 라벨 세트다. UUID는 안정적 식별자,
 // index는 slot, model은 그래프 범주화, node는 클러스터 내 귀속에 쓴다.
 var deviceLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model"}
+
+// podLabels는 per-pod gauge의 공통 라벨 세트다. 앞 4개(node/src_namespace/src_pod/src_pod_uid)는
+// netobs `netobs_pod_stage_events_labeled_total`과 정확히 일치해 PromQL 조인 키로 쓰일 수 있다.
+// gpu_uuid/gpu_index는 GPU 차원을 추가해 한 Pod이 복수 GPU를 사용하는 경우 분리 측정한다.
+var podLabels = []string{"node", "src_namespace", "src_pod", "src_pod_uid", "gpu_uuid", "gpu_index"}
+
+// podMetricsEnabled는 per-pod gauge(`gpuobs_pod_*`) 기록 여부를 결정한다.
+// 클러스터 규모가 클 때 src_pod / src_pod_uid 라벨로 인한 Prometheus 카디널리티 폭증을
+// 막기 위한 escape hatch로, 기본값은 true(기록)다. SetPodMetricsEnabled로 startup 시점에만
+// 갱신되고 그 이후에는 읽기 전용으로 쓴다.
+var podMetricsEnabled = true
+
+// SetPodMetricsEnabled는 per-pod 지표 기록 여부를 전환하며 반드시 RecordPod 호출 전(main startup)에만 호출되어야 한다.
+func SetPodMetricsEnabled(v bool) {
+	podMetricsEnabled = v
+}
 
 var (
 	deviceUtilization = prometheus.NewGaugeVec(
@@ -66,6 +83,14 @@ var (
 		},
 		deviceLabels,
 	)
+
+	podMemoryUsed = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_pod_memory_used_bytes",
+			Help: "GPU memory used in bytes attributed to a single Pod via NVML running-process and cgroup-based PID resolution",
+		},
+		podLabels,
+	)
 )
 
 // Register는 gpuobs 지표를 주어진 Prometheus Registerer에 등록한다.
@@ -78,6 +103,7 @@ func Register(reg prometheus.Registerer) {
 		deviceMemoryTotal,
 		deviceTemperature,
 		devicePower,
+		podMemoryUsed,
 	)
 }
 
@@ -95,4 +121,39 @@ func Record(node string, snap types.GPUSnapshot) {
 	deviceMemoryTotal.WithLabelValues(node, uuid, idx, model).Set(float64(snap.MemoryTotalBytes))
 	deviceTemperature.WithLabelValues(node, uuid, idx, model).Set(float64(snap.TemperatureC))
 	devicePower.WithLabelValues(node, uuid, idx, model).Set(snap.PowerUsageWatts)
+}
+
+// RecordPod는 한 (Pod, GPU device) 조합의 GPU 메모리 사용량을 per-pod gauge에 기록한다.
+// podMetricsEnabled가 false이거나 식별이 Pod이 아닌 경우(미해결/host 프로세스 등) no-op으로 처리한다.
+// 본 검증을 호출자에서 중복하지 않게 metrics 측에서 일괄 처리해 collector 코드를 단순화한다.
+func RecordPod(node string, dev types.GPUDevice, id kube.PodIdentity, memUsedBytes uint64) {
+	if !podMetricsEnabled || !id.IsPod() {
+		return
+	}
+
+	idx := strconv.FormatUint(uint64(dev.Index), 10)
+	podMemoryUsed.WithLabelValues(
+		node,
+		id.NamespaceLabel(),
+		podName(id),
+		podUID(id),
+		dev.UUID,
+		idx,
+	).Set(float64(memUsedBytes))
+}
+
+// podName과 podUID는 빈 필드일 때 "unknown"으로 폴백해 라벨 카디널리티가 빈 문자열로 늘어나는 것을 막는다.
+// netobs metrics와 동일한 폴백 정책을 사용한다.
+func podName(id kube.PodIdentity) string {
+	if id.PodName != "" {
+		return id.PodName
+	}
+	return "unknown"
+}
+
+func podUID(id kube.PodIdentity) string {
+	if id.PodUID != "" {
+		return id.PodUID
+	}
+	return "unknown"
 }
