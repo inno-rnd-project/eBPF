@@ -67,7 +67,9 @@ func main() {
 		}
 	}
 
-	col := collector.New(nv, cfg)
+	// Phase 3 Pod 귀속 와이어링은 다음 커밋에서 추가된다. 현 커밋에서는 collector 시그니처만 확장하고
+	// resolver는 nil로 두어 device-level 폴링만 동작시킨다.
+	col := collector.New(nv, cfg, nil)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- col.Run(ctx, func() {
