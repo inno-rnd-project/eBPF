@@ -5,6 +5,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"netobs/internal/kube"
 	"netobs/internal/netobs/types"
 )
 
@@ -118,14 +119,14 @@ func label(v string) string {
 	return v
 }
 
-func podNameLabel(p types.PodIdentity) string {
+func podNameLabel(p kube.PodIdentity) string {
 	if p.PodName != "" {
 		return p.PodName
 	}
 	return "unknown"
 }
 
-func podUIDLabel(p types.PodIdentity) string {
+func podUIDLabel(p kube.PodIdentity) string {
 	if p.PodUID != "" {
 		return p.PodUID
 	}
