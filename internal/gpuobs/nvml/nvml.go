@@ -21,10 +21,13 @@ type NVML interface {
 }
 
 // Device는 개별 GPU device에 대한 읽기 전용 접근을 제공한다.
+// Close는 device 수명 동안 알록된 자원(GPM sample 버퍼 등)을 해제한다.
+// collector.Run이 NVML.Shutdown 직전에 모든 device에 대해 호출한다.
 type Device interface {
 	Info() (types.GPUDevice, error)
 	Snapshot() (types.GPUSnapshot, error)
 	RunningProcesses() ([]types.GPUProcess, error)
+	Close() error
 }
 
 // Init은 NVML 라이브러리(libnvidia-ml.so.1)를 런타임에 dlopen하고 초기화한다.
@@ -62,7 +65,7 @@ func (n *nvmlImpl) Device(index uint) (Device, error) {
 		return nil, err
 	}
 
-	d := &deviceImpl{handle: handle, index: index, unsupported: make(map[string]struct{})}
+	d := &deviceImpl{handle: handle, index: index, unsupported: make(map[string]struct{}), gpmPreviousIdx: -1}
 
 	// UUID와 모델명은 device 수명 동안 불변이므로 최초 1회 조회해 `info`에 캐싱한다.
 	// 이후 Snapshot은 NVML 재조회 없이 캐시된 값을 그대로 재사용한다.
@@ -75,6 +78,10 @@ func (n *nvmlImpl) Device(index uint) (Device, error) {
 		return nil, err
 	}
 	d.info = types.GPUDevice{Index: index, UUID: uuid, Model: name}
+
+	// GPM 지원 여부는 device 수명 동안 불변이므로 1회 조회해 캐싱한다.
+	// 미지원이면 fillGpm은 매 poll에서 즉시 early return하고, sample 버퍼 할당도 건너뛴다.
+	d.initGpm()
 
 	return d, nil
 }
@@ -95,6 +102,44 @@ type deviceImpl struct {
 	// public이라 향후 동시 호출 가능성을 차단하기 위해 mu로 보호한다 (read 우세 → RWMutex).
 	mu          sync.RWMutex
 	unsupported map[string]struct{}
+
+	// GPM은 두 sample(현재/직전) 사이의 평균 사용률을 산출한다. sample 버퍼는 initGpm에서 1회 alloc하고
+	// 이후 GpmSampleGet으로 재사용(write back)한다. gpmPreviousIdx는 직전 sample을 담은 슬롯 인덱스(0/1)로,
+	// -1은 "아직 sample을 받은 적 없음"을 뜻한다.
+	// gpmDeviceSupport=false면 fillGpm은 매 poll에서 즉시 return하며 sample 버퍼는 할당되지 않는다.
+	// 본 필드들은 Snapshot 단일 goroutine 계약 아래서만 변경되며, Close는 collector ctx 종료 후 호출되어
+	// Snapshot과 동시 실행되지 않는다. 따라서 별도 mutex는 두지 않는다.
+	gpmDeviceSupport bool
+	gpmAllocated     bool
+	gpmSamples       [2]gonvml.GpmSample
+	gpmPreviousIdx   int
+}
+
+// violationReasons는 GetViolationStatus를 호출할 PerfPolicyType 8종이다. 각 reason은 NVML이
+// 별도 호출로 노출하므로 device당 매 poll에서 최대 8회 NVML 호출이 추가된다(첫 NOT_SUPPORTED 응답 이후
+// 해당 reason은 markUnsupported로 캐시되어 다음 poll부터 호출 건너뜀).
+// reason 라벨은 metrics 계층의 deviceViolationLabels와 1:1 대응되며, 새 reason을 추가하려면 양쪽을 함께 수정한다.
+var violationReasons = []struct {
+	name   string
+	policy gonvml.PerfPolicyType
+}{
+	{"power", gonvml.PERF_POLICY_POWER},
+	{"thermal", gonvml.PERF_POLICY_THERMAL},
+	{"sync_boost", gonvml.PERF_POLICY_SYNC_BOOST},
+	{"board_limit", gonvml.PERF_POLICY_BOARD_LIMIT},
+	{"low_utilization", gonvml.PERF_POLICY_LOW_UTILIZATION},
+	{"reliability", gonvml.PERF_POLICY_RELIABILITY},
+	{"total_app_clocks", gonvml.PERF_POLICY_TOTAL_APP_CLOCKS},
+	{"total_base_clocks", gonvml.PERF_POLICY_TOTAL_BASE_CLOCKS},
+}
+
+// gpmMetricIDs는 본 PR이 수집하는 GPM metric ID 4종이다. snap 필드와 1:1로 대응시키는 순서를 유지한다.
+// 추가 GPM ID를 받으려면 본 슬라이스와 fillGpm 내 매핑, types.GPUSnapshot 필드를 함께 수정한다.
+var gpmMetricIDs = [4]gonvml.GpmMetricId{
+	gonvml.GPM_METRIC_GRAPHICS_UTIL,
+	gonvml.GPM_METRIC_SM_OCCUPANCY,
+	gonvml.GPM_METRIC_ANY_TENSOR_UTIL,
+	gonvml.GPM_METRIC_DRAM_BW_UTIL,
 }
 
 // wrapErr는 device 호출 에러에 device index 컨텍스트를 덧붙여 래핑한다.
@@ -173,6 +218,11 @@ func (d *deviceImpl) Snapshot() (types.GPUSnapshot, error) {
 	d.fillEccErrors(&snap)
 	d.fillEncoderDecoder(&snap)
 	d.fillPerformanceState(&snap)
+	d.fillFanSpeed(&snap)
+	d.fillBAR1Memory(&snap)
+	d.fillPowerLimit(&snap)
+	d.fillViolationStatus(&snap)
+	d.fillGpm(&snap)
 
 	return snap, nil
 }
@@ -327,6 +377,210 @@ func (d *deviceImpl) fillPerformanceState(snap *types.GPUSnapshot) {
 	}
 	snap.PerformanceState = uint8(pstate)
 	snap.PerformanceStateSupported = true
+}
+
+func (d *deviceImpl) fillFanSpeed(snap *types.GPUSnapshot) {
+	if d.isUnsupported("fan") {
+		return
+	}
+	speed, ret := d.handle.GetFanSpeed()
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		d.markUnsupported("fan")
+		return
+	}
+	if ret != gonvml.SUCCESS {
+		log.Printf("gpuobs: fan speed idx=%d: %s", d.index, gonvml.ErrorString(ret))
+		return
+	}
+	snap.FanSpeedPct = uint(speed)
+	snap.FanSpeedSupported = true
+}
+
+func (d *deviceImpl) fillBAR1Memory(snap *types.GPUSnapshot) {
+	if d.isUnsupported("bar1") {
+		return
+	}
+	bar1, ret := d.handle.GetBAR1MemoryInfo()
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		d.markUnsupported("bar1")
+		return
+	}
+	if ret != gonvml.SUCCESS {
+		log.Printf("gpuobs: bar1 memory idx=%d: %s", d.index, gonvml.ErrorString(ret))
+		return
+	}
+	snap.BAR1MemoryUsedBytes = bar1.Bar1Used
+	snap.BAR1MemoryTotalBytes = bar1.Bar1Total
+	snap.BAR1Supported = true
+}
+
+// fillPowerLimit은 현재 적용된 power management limit (Watts)을 채운다. NVML은 milliwatts로 반환하므로 1000으로 나눈다.
+// EnforcedPowerLimit 대신 PowerManagementLimit을 사용해 "운영자가 nvidia-smi -pl로 설정한 값"을 그대로 노출한다.
+func (d *deviceImpl) fillPowerLimit(snap *types.GPUSnapshot) {
+	if d.isUnsupported("power_limit") {
+		return
+	}
+	limitMilliWatts, ret := d.handle.GetPowerManagementLimit()
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		d.markUnsupported("power_limit")
+		return
+	}
+	if ret != gonvml.SUCCESS {
+		log.Printf("gpuobs: power limit idx=%d: %s", d.index, gonvml.ErrorString(ret))
+		return
+	}
+	snap.PowerLimitWatts = float64(limitMilliWatts) / 1000.0
+	snap.PowerLimitSupported = true
+}
+
+// fillViolationStatus는 reason별 누적 throttle 시간을 모두 조회해 map에 채운다.
+// reason 한 종이 NOT_SUPPORTED여도 다른 reason은 유지될 수 있어 markUnsupported는 reason별 키로 분리한다.
+// 적어도 하나라도 성공하면 ViolationSupported=true로 설정해 metrics 계층이 발행 모드로 진입하게 한다.
+func (d *deviceImpl) fillViolationStatus(snap *types.GPUSnapshot) {
+	times := make(map[string]uint64, len(violationReasons))
+	for _, r := range violationReasons {
+		key := "violation." + r.name
+		if d.isUnsupported(key) {
+			continue
+		}
+		v, ret := d.handle.GetViolationStatus(r.policy)
+		if ret == gonvml.ERROR_NOT_SUPPORTED {
+			d.markUnsupported(key)
+			continue
+		}
+		if ret != gonvml.SUCCESS {
+			log.Printf("gpuobs: violation %s idx=%d: %s", r.name, d.index, gonvml.ErrorString(ret))
+			continue
+		}
+		times[r.name] = v.ViolationTime
+	}
+	if len(times) > 0 {
+		snap.ViolationTimesNs = times
+		snap.ViolationSupported = true
+	}
+}
+
+// initGpm은 device 생성 시 1회 호출되어 GPM 지원 여부를 캐싱하고 sample 버퍼 두 개를 미리 alloc한다.
+// 미지원이면 alloc을 건너뛰어 RTX 3090 같은 컨슈머 카드에서 매 poll alloc/free 비용을 제거한다.
+// 본 함수는 Device가 collector에 노출되기 전에 호출되므로 Snapshot과 동시 실행되지 않는다.
+func (d *deviceImpl) initGpm() {
+	support, ret := d.handle.GpmQueryDeviceSupport()
+	if ret != gonvml.SUCCESS {
+		// 다음 에러 코드들은 모두 "이 GPU/드라이버에서 GPM이 동작하지 않음"으로 동치 처리한다:
+		//   - ERROR_NOT_SUPPORTED: GPU 자체가 GPM 미지원 (대부분의 컨슈머 카드)
+		//   - ERROR_FUNCTION_NOT_FOUND: 구버전 드라이버에 GPM API 없음
+		//   - ERROR_ARGUMENT_VERSION_MISMATCH: 드라이버가 본 go-nvml의 struct 버전을 인식하지 못함 (RTX 3090 + 드라이버 560 등)
+		switch ret {
+		case gonvml.ERROR_NOT_SUPPORTED, gonvml.ERROR_FUNCTION_NOT_FOUND, gonvml.ERROR_ARGUMENT_VERSION_MISMATCH:
+			// graceful skip — markUnsupported가 1회 warn 로그 남김.
+		default:
+			log.Printf("gpuobs: gpm support query idx=%d: %s", d.index, gonvml.ErrorString(ret))
+		}
+		d.markUnsupported("gpm")
+		return
+	}
+	if support.IsSupportedDevice == 0 {
+		d.markUnsupported("gpm")
+		return
+	}
+
+	// 두 sample 버퍼를 미리 alloc해 매 poll 호출 시 GpmSampleGet이 재사용하도록 한다.
+	for i := 0; i < 2; i++ {
+		s, ret := gonvml.GpmSampleAlloc()
+		if ret != gonvml.SUCCESS {
+			log.Printf("gpuobs: gpm sample alloc idx=%d slot=%d: %s", d.index, i, gonvml.ErrorString(ret))
+			// 일부 alloc 성공 후 실패한 경우 부분 free.
+			for j := 0; j < i; j++ {
+				_ = d.gpmSamples[j].Free()
+			}
+			d.markUnsupported("gpm")
+			return
+		}
+		d.gpmSamples[i] = s
+	}
+	d.gpmAllocated = true
+	d.gpmDeviceSupport = true
+}
+
+// fillGpm은 ping-pong 슬롯에 sample을 받고 두 sample이 모이면 GpmMetricsGet으로 평균 사용률을 산출한다.
+// 첫 호출에서는 GpmFirstSampleReady=false로 채워 metrics 계층이 발행을 건너뛴다.
+func (d *deviceImpl) fillGpm(snap *types.GPUSnapshot) {
+	if !d.gpmDeviceSupport || !d.gpmAllocated {
+		return
+	}
+
+	// 다음 sample이 들어갈 슬롯. 첫 호출(previousIdx=-1)이면 0번 슬롯 사용.
+	nextIdx := 0
+	if d.gpmPreviousIdx == 0 {
+		nextIdx = 1
+	}
+	curr := d.gpmSamples[nextIdx]
+	if ret := curr.Get(d.handle); ret != gonvml.SUCCESS {
+		log.Printf("gpuobs: gpm sample get idx=%d: %s", d.index, gonvml.ErrorString(ret))
+		return
+	}
+
+	// 첫 sample은 baseline일 뿐 metric 계산은 건너뛴다.
+	if d.gpmPreviousIdx < 0 {
+		d.gpmPreviousIdx = nextIdx
+		snap.GpmSupported = true
+		// GpmFirstSampleReady=false 그대로 두면 metrics 계층이 발행을 건너뛴다.
+		return
+	}
+
+	prev := d.gpmSamples[d.gpmPreviousIdx]
+	get := &gonvml.GpmMetricsGetType{
+		NumMetrics: uint32(len(gpmMetricIDs)),
+		Sample1:    prev,
+		Sample2:    curr,
+	}
+	for i, id := range gpmMetricIDs {
+		get.Metrics[i].MetricId = uint32(id)
+	}
+	if ret := gonvml.GpmMetricsGet(get); ret != gonvml.SUCCESS {
+		log.Printf("gpuobs: gpm metrics get idx=%d: %s", d.index, gonvml.ErrorString(ret))
+		// metrics 호출 자체가 실패해도 다음 poll에서 재시도. previousIdx는 새 sample을 가리키도록 갱신한다.
+		d.gpmPreviousIdx = nextIdx
+		return
+	}
+
+	// gpmMetricIDs와 1:1 대응 순서로 snapshot에 채운다. NvmlReturn이 SUCCESS인 metric만 신뢰한다.
+	for i, m := range get.Metrics[:len(gpmMetricIDs)] {
+		if gonvml.Return(m.NvmlReturn) != gonvml.SUCCESS {
+			continue
+		}
+		switch gpmMetricIDs[i] {
+		case gonvml.GPM_METRIC_GRAPHICS_UTIL:
+			snap.GpmGraphicsUtilPct = m.Value
+		case gonvml.GPM_METRIC_SM_OCCUPANCY:
+			snap.GpmSMOccupancyPct = m.Value
+		case gonvml.GPM_METRIC_ANY_TENSOR_UTIL:
+			snap.GpmTensorActivePct = m.Value
+		case gonvml.GPM_METRIC_DRAM_BW_UTIL:
+			snap.GpmDramBandwidthPct = m.Value
+		}
+	}
+	snap.GpmSupported = true
+	snap.GpmFirstSampleReady = true
+	d.gpmPreviousIdx = nextIdx
+}
+
+// Close는 device가 alloc한 GPM sample 버퍼를 해제한다. collector.Run이 ctx 취소 후 NVML.Shutdown 직전에 호출한다.
+// 본 함수가 호출되는 시점에는 Snapshot이 더 이상 호출되지 않음을 collector가 보장한다.
+// 호출이 두 번 들어오더라도 두 번째는 gpmAllocated=false 가드로 nop.
+func (d *deviceImpl) Close() error {
+	if !d.gpmAllocated {
+		return nil
+	}
+	for i := range d.gpmSamples {
+		if ret := d.gpmSamples[i].Free(); ret != gonvml.SUCCESS {
+			log.Printf("gpuobs: gpm sample free idx=%d slot=%d: %s", d.index, i, gonvml.ErrorString(ret))
+		}
+	}
+	// stale handle 재사용을 차단하기 위해 슬롯을 비운다 (use-after-free 방어).
+	d.gpmSamples = [2]gonvml.GpmSample{}
+	d.gpmAllocated = false
+	return nil
 }
 
 func (d *deviceImpl) RunningProcesses() ([]types.GPUProcess, error) {

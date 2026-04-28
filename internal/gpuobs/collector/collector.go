@@ -65,7 +65,13 @@ func (c *Collector) Run(ctx context.Context, onReady func()) error {
 
 	// non-nil NVML 핸들을 받은 이상 lifecycle은 collector가 소유한다.
 	// flag 기반 disable 경로에서도 defer가 먼저 등록되어 Shutdown이 보장된다.
+	// device별 Close는 NVML.Shutdown 직전에 일괄 수행해 GPM sample 등 device-scope 자원이 먼저 해제되도록 한다.
 	defer func() {
+		for _, dev := range c.devices {
+			if err := dev.Close(); err != nil {
+				log.Printf("nvml device close: %v", err)
+			}
+		}
 		if err := c.nvml.Shutdown(); err != nil {
 			log.Printf("nvml shutdown: %v", err)
 		}
