@@ -177,8 +177,10 @@ func (d *deviceImpl) Snapshot() (types.GPUSnapshot, error) {
 	return snap, nil
 }
 
-// fillPcieThroughput은 RX/TX 두 카운터를 한 번에 채운다. 둘 중 하나가 NOT_SUPPORTED면 양쪽 모두 비활성으로 간주한다.
-// NVML이 KB/s 단위 sample을 반환하므로 1024 곱해 bytes/sec로 정규화한다.
+// fillPcieThroughput은 RX/TX 두 카운터를 한 번에 채운다. NVML 자체는 두 호출을 분리해 노출하지만
+// PCIe 인터페이스의 양방향이라 한쪽만 지원되는 GPU는 사실상 존재하지 않는다. 한 쪽이 NOT_SUPPORTED면
+// "PCIe 자체 미지원"으로 간주해 양쪽 모두 비활성 표시하며, 그 결과 markUnsupported("pcie") 1회 호출로
+// 다음 poll부터 두 호출 모두 건너뛴다. NVML이 KB/s 단위 sample을 반환하므로 1024 곱해 bytes/sec로 정규화한다.
 func (d *deviceImpl) fillPcieThroughput(snap *types.GPUSnapshot) {
 	if d.isUnsupported("pcie") {
 		return

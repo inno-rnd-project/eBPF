@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	gonvml "github.com/NVIDIA/go-nvml/pkg/nvml"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"netobs/internal/gpuobs/types"
@@ -41,19 +42,20 @@ var deviceEccLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model", "er
 // throttleReasonBits는 NVML이 보고하는 known throttle 사유 9종이다. 매 poll마다 9개를 모두
 // 0/1로 발행해 "직전엔 있었는데 이번엔 사라진" 라벨이 stale로 남는 일을 회피한다.
 // 동일 비트값을 갖는 alias(ApplicationsClocksSetting/UserDefinedClocks=2)는 한 번만 노출한다.
+// 비트값을 raw 정수가 아닌 go-nvml 명명 상수로 두어 NVML 헤더 변경 시 컴파일 단계에서 잡히도록 한다.
 var throttleReasonBits = []struct {
 	name string
 	bit  uint64
 }{
-	{"gpu_idle", 1},
-	{"applications_clocks_setting", 2},
-	{"sw_power_cap", 4},
-	{"hw_slowdown", 8},
-	{"sync_boost", 16},
-	{"sw_thermal_slowdown", 32},
-	{"hw_thermal_slowdown", 64},
-	{"hw_power_brake_slowdown", 128},
-	{"display_clock_setting", 256},
+	{"gpu_idle", uint64(gonvml.ClocksThrottleReasonGpuIdle)},
+	{"applications_clocks_setting", uint64(gonvml.ClocksThrottleReasonApplicationsClocksSetting)},
+	{"sw_power_cap", uint64(gonvml.ClocksThrottleReasonSwPowerCap)},
+	{"hw_slowdown", uint64(gonvml.ClocksThrottleReasonHwSlowdown)},
+	{"sync_boost", uint64(gonvml.ClocksThrottleReasonSyncBoost)},
+	{"sw_thermal_slowdown", uint64(gonvml.ClocksThrottleReasonSwThermalSlowdown)},
+	{"hw_thermal_slowdown", uint64(gonvml.ClocksThrottleReasonHwThermalSlowdown)},
+	{"hw_power_brake_slowdown", uint64(gonvml.ClocksThrottleReasonHwPowerBrakeSlowdown)},
+	{"display_clock_setting", uint64(gonvml.ClocksThrottleReasonDisplayClockSetting)},
 }
 
 // lastEccAbsolute는 device(UUID)별 error_type별 직전 poll의 NVML 절대값을 보관한다.
@@ -266,6 +268,9 @@ func Record(node string, snap types.GPUSnapshot) {
 	deviceMemoryTotal.WithLabelValues(node, uuid, idx, model).Set(float64(snap.MemoryTotalBytes))
 	deviceTemperature.WithLabelValues(node, uuid, idx, model).Set(float64(snap.TemperatureC))
 	devicePower.WithLabelValues(node, uuid, idx, model).Set(snap.PowerUsageWatts)
+	// MemoryCopyUtilPct는 GetUtilizationRates 단일 호출에서 UtilizationPct(.Gpu)와 함께 반환되는 값(.Memory)이라
+	// 별도 *Supported 게이트 없이 base 메트릭과 같은 NVML SUCCESS gate 아래 발행한다. 호출 자체가 실패하면
+	// Snapshot이 상위에서 에러로 빠져나가므로 여기까지 도달했다는 것은 두 값 모두 유효하다는 뜻이다.
 	deviceMemoryCopyUtilization.WithLabelValues(node, uuid, idx, model).Set(float64(snap.MemoryCopyUtilPct))
 
 	if snap.PcieSupported {
