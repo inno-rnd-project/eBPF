@@ -6,6 +6,7 @@ package nvml
 import (
 	"fmt"
 	"log"
+	"sync"
 
 	gonvml "github.com/NVIDIA/go-nvml/pkg/nvml"
 
@@ -89,7 +90,10 @@ type deviceImpl struct {
 
 	// unsupported는 NOT_SUPPORTED를 한 번이라도 반환한 metric의 키 셋이다.
 	// 다음 Snapshot부터 해당 metric은 NVML 호출을 건너뛰어 컨슈머 GPU 등에서 매 poll마다 발생하던
-	// NOT_SUPPORTED 로그/호출 비용을 제거한다. 키는 metric 식별 문자열(예: "pcie", "ecc.corrected").
+	// NOT_SUPPORTED 로그/호출 비용을 제거한다. 키는 metric 식별 문자열(예: "pcie", "ecc").
+	// Snapshot은 단일 goroutine(collector pollOnce)에서만 호출되지만 Device 인터페이스가
+	// public이라 향후 동시 호출 가능성을 차단하기 위해 mu로 보호한다 (read 우세 → RWMutex).
+	mu          sync.RWMutex
 	unsupported map[string]struct{}
 }
 
@@ -103,7 +107,10 @@ func (d *deviceImpl) wrapErr(op string, ret gonvml.Return) error {
 
 // markUnsupported는 metric 키를 unsupported 셋에 추가하고 1회 warn 로그를 남긴다.
 // 같은 키가 반복되면 한 번만 로그 처리해 출력 스팸을 회피한다.
+// 쓰기 작업이라 mu.Lock으로 보호한다.
 func (d *deviceImpl) markUnsupported(metric string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if _, seen := d.unsupported[metric]; seen {
 		return
 	}
@@ -113,7 +120,10 @@ func (d *deviceImpl) markUnsupported(metric string) {
 }
 
 // isUnsupported는 해당 metric이 이전에 NOT_SUPPORTED로 표시되었는지 검사한다.
+// 매 poll마다 모든 metric 진입에서 호출되어 호출 빈도가 높아 RLock으로 read 동시성을 허용한다.
 func (d *deviceImpl) isUnsupported(metric string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	_, ok := d.unsupported[metric]
 	return ok
 }

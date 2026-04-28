@@ -320,49 +320,69 @@ func TestRecord_PerDomainSupportedFlagSkipsMetric(t *testing.T) {
 	}
 }
 
+func TestRecord_EccFirstPollIsBaselineOnly(t *testing.T) {
+	// 첫 poll에 들어온 NVML VOLATILE 절대값(에이전트 기동 이전부터 노드 부팅 후 누적된 값)은
+	// counter에 더해지지 않고 baseline으로만 저장된다. 이로써 _total counter가
+	// "에이전트 기동 이후 신규 ECC 에러"의 정확한 의미를 가진다 (README 명시 의도와 일치).
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnap()
+	snap.EccCorrectedTotal = 1234
+	snap.EccUncorrectedTotal = 567
+	Record("n", snap)
+
+	if got := testutil.CollectAndCount(deviceEccErrors); got != 0 {
+		t.Errorf("first poll must not create any series; got %d", got)
+	}
+}
+
 func TestRecord_EccDeltaTracking(t *testing.T) {
-	// 첫 poll: prev 없음 → current 그대로 delta로 적용. 두 번째 poll: 증가분만 적용.
+	// 첫 poll: baseline만 저장(counter 0). 두 번째 poll: 증가분만 적용.
 	resetDeviceMetricsState(t)
 
 	snap := fullySupportedSnap()
 	snap.EccCorrectedTotal = 10
 	snap.EccUncorrectedTotal = 2
 	Record("n", snap)
-	if got := testutil.ToFloat64(deviceEccErrors.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "corrected")); got != 10 {
-		t.Errorf("first poll corrected=%v want 10", got)
+	if got := testutil.CollectAndCount(deviceEccErrors); got != 0 {
+		t.Errorf("first poll baseline-only; series=%d want 0", got)
 	}
 
-	snap.EccCorrectedTotal = 17  // +7
-	snap.EccUncorrectedTotal = 2 // unchanged
+	snap.EccCorrectedTotal = 17  // +7 vs baseline 10
+	snap.EccUncorrectedTotal = 2 // unchanged → delta 0, no Add
 	Record("n", snap)
-	if got := testutil.ToFloat64(deviceEccErrors.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "corrected")); got != 17 {
-		t.Errorf("second poll corrected counter=%v want 17 (10 + 7 delta)", got)
+	if got := testutil.ToFloat64(deviceEccErrors.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "corrected")); got != 7 {
+		t.Errorf("second poll corrected counter=%v want 7 (delta from baseline 10)", got)
 	}
-	if got := testutil.ToFloat64(deviceEccErrors.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "uncorrected")); got != 2 {
-		t.Errorf("uncorrected unchanged=%v want 2", got)
+	// uncorrected는 delta 0이라 series 자체가 만들어지지 않아야 한다.
+	if got := testutil.CollectAndCount(deviceEccErrors); got != 1 {
+		t.Errorf("only corrected should have a series; got %d", got)
 	}
 }
 
 func TestRecord_EccCounterResetTreatedAsCurrentValue(t *testing.T) {
-	// 직전값 100 → 현재값 5 (드라이버 리셋 등) 인 경우 negative delta를 막고 current 자체를 적용한다.
+	// 첫 poll baseline=100, 두 번째 poll current=5 (드라이버 리셋 등)인 경우
+	// negative delta를 막고 current 자체를 fresh delta로 적용한다.
 	resetDeviceMetricsState(t)
 
 	snap := fullySupportedSnap()
 	snap.EccCorrectedTotal = 100
 	Record("n", snap)
-	if got := testutil.ToFloat64(deviceEccErrors.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "corrected")); got != 100 {
-		t.Errorf("setup=%v want 100", got)
+	if got := testutil.CollectAndCount(deviceEccErrors); got != 0 {
+		t.Errorf("first poll baseline-only; series=%d want 0", got)
 	}
+
 	snap.EccCorrectedTotal = 5
 	Record("n", snap)
-	if got := testutil.ToFloat64(deviceEccErrors.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "corrected")); got != 105 {
-		t.Errorf("post-reset=%v want 105 (100 + 5 fresh delta)", got)
+	if got := testutil.ToFloat64(deviceEccErrors.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "corrected")); got != 5 {
+		t.Errorf("post-reset counter=%v want 5 (current applied as fresh delta)", got)
 	}
 }
 
 func TestRecord_UnsupportedFlagsSkipMetricEmission(t *testing.T) {
-	// 모든 *Supported 플래그가 false면 base 5종(util / memory / temperature / power / mem-copy)만 발행되고
-	// 신규 Phase 4 메트릭들은 series가 만들어지지 않아야 한다.
+	// 모든 *Supported 플래그가 false여도 항상 발행되는 base 6 metric
+	// (util / memory used / memory total / temperature / power / mem-copy) 은 그대로 유지되고,
+	// *Supported 게이트에 묶인 신규 Phase 4 메트릭들은 series가 만들어지지 않아야 한다.
 	resetDeviceMetricsState(t)
 
 	snap := fullySupportedSnap()

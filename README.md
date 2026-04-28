@@ -181,7 +181,7 @@ Device-level gauges are sampled from NVML every `GPU_POLL_INTERVAL` (default 5s)
 | `gpuobs_device_power_usage_watts` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | GPU power draw (watts) |
 | `gpuobs_device_memory_copy_utilization_percent` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | Memory copy engine utilization (0-100) |
 | `gpuobs_device_pcie_rx_bytes_per_second` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | PCIe receive rate sampled by NVML (20ms window, normalized to bytes/sec) |
-| `gpuobs_device_pcie_tx_bytes_per_second` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | PCIe transmit rate sampled by NVML |
+| `gpuobs_device_pcie_tx_bytes_per_second` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | PCIe transmit rate sampled by NVML (20ms window, normalized to bytes/sec) |
 | `gpuobs_device_throttle_active` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model`, `reason` | 1 if NVML reports the named throttle reason is currently active; reasons include `gpu_idle`, `sw_power_cap`, `hw_slowdown`, `sw_thermal_slowdown`, `hw_thermal_slowdown`, `hw_power_brake_slowdown`, `applications_clocks_setting`, `sync_boost`, `display_clock_setting` |
 | `gpuobs_device_clock_mhz` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model`, `clock` | Current GPU clock frequency in MHz per domain (`clock`=`sm`/`memory`/`graphics`) |
 | `gpuobs_device_ecc_errors_total` | Counter | `node`, `gpu_uuid`, `gpu_index`, `gpu_model`, `error_type` | Cumulative ECC error count since the agent started, sourced from NVML VOLATILE counters with delta tracking (`error_type`=`corrected`/`uncorrected`) |

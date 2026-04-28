@@ -5,6 +5,7 @@ package metrics
 import (
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -58,8 +59,12 @@ var throttleReasonBits = []struct {
 // lastEccAbsolute는 device(UUID)별 error_type별 직전 poll의 NVML 절대값을 보관한다.
 // VOLATILE_ECC가 노드 부팅 이후 누적값을 반환하므로 delta = current - prev 로 Counter.Add에 쓴다.
 // current < prev 인 경우(드라이버 리셋 등)는 reset으로 간주하고 current 자체를 delta로 더한다.
-// 본 변수는 단일 호출자(collector pollOnce) 계약 아래 별도 mutex 없이 운영된다.
-var lastEccAbsolute = make(map[string]uint64)
+// 호출자는 단일 goroutine(collector pollOnce)이지만 본 변수가 패키지 전역이고 Record가
+// public 함수라 향후 호출 패턴 변경에 대비해 lastEccAbsoluteMu로 보호한다.
+var (
+	lastEccAbsolute   = make(map[string]uint64)
+	lastEccAbsoluteMu sync.Mutex
+)
 
 // podLabels는 per-pod gauge의 공통 라벨 세트다. 앞 4개(node/src_namespace/src_pod/src_pod_uid)는
 // netobs `netobs_pod_stage_events_labeled_total`과 정확히 일치해 PromQL 조인 키로 쓰일 수 있다.
@@ -87,8 +92,12 @@ type PodGPUSample struct {
 
 // lastPodSampleKeys는 직전 RecordPodSnapshot 호출에서 기록된 라벨 키 셋이다.
 // diff-based cleanup에 쓰여, 이번 호출에 등장하지 않은 키는 DeleteLabelValues로 series에서 제거된다.
-// 이 변수는 단일 호출자(collector pollOnce)만 접근한다는 startup-only 계약 아래 별도 mutex 없이 운영된다.
-var lastPodSampleKeys = make(map[string]struct{})
+// 호출자는 단일 goroutine(collector pollOnce)이지만, 본 변수가 패키지 전역이고 RecordPodSnapshot이
+// public 함수라 향후 호출 패턴 변경에 대비해 lastPodSampleKeysMu로 보호한다.
+var (
+	lastPodSampleKeys   = make(map[string]struct{})
+	lastPodSampleKeysMu sync.Mutex
+)
 
 // podLabelSeparator는 라벨 키 직렬화용 구분자다. K8s 식별자(namespace/pod/uid 등)와 GPU UUID 어디에도
 // 등장할 수 없는 NUL 바이트를 사용해 join/split 충돌을 회피한다.
@@ -303,13 +312,24 @@ func Record(node string, snap types.GPUSnapshot) {
 }
 
 // recordEccDelta는 NVML이 보고한 누적 절대값에서 직전 poll의 값을 빼 양수 delta만 Counter에 더한다.
-// current < prev 인 경우(드라이버 리셋 / GPU 리셋 등)는 reset으로 간주해 current 자체를 delta로 적용한다.
-// 본 함수는 lastEccAbsolute에 (uuid + error_type) 키로 직전값을 보관한다.
+// 첫 호출(prev 미존재)은 baseline만 저장하고 Add를 건너뛴다 — 에이전트 기동 이전에 이미 누적되어
+// 있던 NVML VOLATILE 값이 한 번에 counter로 반영되지 않게 해, "에이전트 기동 이후 신규 ECC"라는
+// counter 의미(README 명시)를 정확히 보존한다.
+// current < prev (드라이버 리셋 / GPU 리셋 등)인 경우 reset으로 간주해 current 자체를 delta로 적용한다.
+// lastEccAbsoluteMu가 패키지 전역 map 접근을 보호한다.
 func recordEccDelta(node, uuid, idx, model, errorType string, current uint64) {
 	key := uuid + "/" + errorType
+
+	lastEccAbsoluteMu.Lock()
+	defer lastEccAbsoluteMu.Unlock()
+
 	prev, ok := lastEccAbsolute[key]
+	if !ok {
+		lastEccAbsolute[key] = current
+		return
+	}
 	delta := current
-	if ok && current >= prev {
+	if current >= prev {
 		delta = current - prev
 	}
 	if delta > 0 {
@@ -329,7 +349,8 @@ func recordEccDelta(node, uuid, idx, model, errorType string, current uint64) {
 // podMetricsEnabled가 false이면 신규 기록은 건너뛰지만 직전 라벨 cleanup은 그대로 수행해
 // 토글 off 직후 잔존 series가 즉시 정리되도록 한다.
 //
-// startup-only 계약: 호출자는 단일 goroutine(pollOnce)에서만 본 함수를 부른다고 가정하며 별도 lock을 잡지 않는다.
+// 호출자는 단일 goroutine(pollOnce)을 가정하지만 본 함수가 public이고 lastPodSampleKeys가 패키지
+// 전역이라 향후 호출 패턴 변경에 대비해 lastPodSampleKeysMu로 보호한다.
 func RecordPodSnapshot(node string, samples []PodGPUSample) {
 	currentKeys := make(map[string]struct{}, len(samples))
 
@@ -353,6 +374,8 @@ func RecordPodSnapshot(node string, samples []PodGPUSample) {
 	}
 
 	// 직전 poll에는 있었지만 이번에는 없는 라벨 series 제거 (Pod 종료 / 프로세스 종료 / toggle off 모두 흡수).
+	lastPodSampleKeysMu.Lock()
+	defer lastPodSampleKeysMu.Unlock()
 	for key := range lastPodSampleKeys {
 		if _, ok := currentKeys[key]; !ok {
 			podMemoryUsed.DeleteLabelValues(strings.Split(key, podLabelSeparator)...)
