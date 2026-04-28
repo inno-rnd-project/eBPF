@@ -179,11 +179,22 @@ Device-level gauges are sampled from NVML every `GPU_POLL_INTERVAL` (default 5s)
 | `gpuobs_device_memory_total_bytes` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | GPU memory total capacity (bytes) |
 | `gpuobs_device_temperature_celsius` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | GPU temperature (°C) |
 | `gpuobs_device_power_usage_watts` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | GPU power draw (watts) |
+| `gpuobs_device_memory_copy_utilization_percent` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | Memory copy engine utilization (0-100) |
+| `gpuobs_device_pcie_rx_bytes_per_second` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | PCIe receive rate sampled by NVML (20ms window, normalized to bytes/sec) |
+| `gpuobs_device_pcie_tx_bytes_per_second` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | PCIe transmit rate sampled by NVML |
+| `gpuobs_device_throttle_active` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model`, `reason` | 1 if NVML reports the named throttle reason is currently active; reasons include `gpu_idle`, `sw_power_cap`, `hw_slowdown`, `sw_thermal_slowdown`, `hw_thermal_slowdown`, `hw_power_brake_slowdown`, `applications_clocks_setting`, `sync_boost`, `display_clock_setting` |
+| `gpuobs_device_clock_mhz` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model`, `clock` | Current GPU clock frequency in MHz per domain (`clock`=`sm`/`memory`/`graphics`) |
+| `gpuobs_device_ecc_errors_total` | Counter | `node`, `gpu_uuid`, `gpu_index`, `gpu_model`, `error_type` | Cumulative ECC error count since the agent started, sourced from NVML VOLATILE counters with delta tracking (`error_type`=`corrected`/`uncorrected`) |
+| `gpuobs_device_encoder_utilization_percent` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | NVENC encoder utilization (0-100) |
+| `gpuobs_device_decoder_utilization_percent` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | NVDEC decoder utilization (0-100) |
+| `gpuobs_device_performance_state` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | NVML performance state (0=highest, 15=idle, 32=unknown) |
 | `gpuobs_pod_memory_used_bytes` | Gauge | `node`, `src_namespace`, `src_pod`, `src_pod_uid`, `gpu_uuid`, `gpu_index` | GPU memory used (bytes) attributed to a single Pod |
 
 > **Cardinality note**: `gpuobs_pod_memory_used_bytes` carries `src_pod` and `src_pod_uid` labels, mirroring `netobs_pod_stage_*` so the four shared keys (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) join cleanly in PromQL. On large clusters or with frequent pod churn this can inflate Prometheus memory. Set `GPUOBS_POD_METRICS_ENABLED=false` (or `-pod-metrics=false`) to opt out.
 
 On NVML initialization failure (non-GPU node, driver missing) or when `GPU_METRICS_ENABLED=false`, the collector logs a warning and skips device polling; `gpuobs_device_*` series are not emitted, and `/healthz`·`/readyz` continue to return 200. When the kube informer cache has not synced, `/readyz` reports `kube resolver informer not synced` until the initial sync completes.
+
+> **Per-metric NVML support detection**: NVML returns `NVML_ERROR_NOT_SUPPORTED` for metrics that the GPU model does not expose (e.g., ECC counters on consumer cards, encoder util on some SKUs). gpuobs detects this on the first call per metric per device, logs a single warning, then silently skips that metric in subsequent polls — only the supported metric series are emitted, keeping Prometheus cardinality minimal.
 
 > **Why no `gpuobs_pod_sm_utilization_percent`**: NVML's `nvmlDeviceGetProcessUtilization` exposes a 6-second sliding window sampler, which is too coarse for short-lived training steps and can miss bursts entirely. Per-pod compute utilization is deferred until a more precise data source is available; only memory attribution is published in Phase 3.
 
