@@ -57,6 +57,8 @@ sudo ./bin/netobs-agent -listen :9810 -print-events=true
 | `NODE_NAME` | `-node-name` | *(hostname)* | Observed Kubernetes node name |
 | `GPU_POLL_INTERVAL` | `-poll-interval` | `5s` | NVML device polling interval; must be > 0 |
 | `GPU_METRICS_ENABLED` | `-gpu-metrics` | `true` | Emit `gpuobs_device_*` metrics; set false to skip device polling entirely |
+| `GPUOBS_POD_METRICS_ENABLED` | `-pod-metrics` | `true` | Emit `gpuobs_pod_*` metrics via PID → Pod resolution; disable on large clusters to cap Prometheus cardinality |
+| `KUBE_METADATA_REFRESH` | `-metadata-refresh` | `30s` | Kubernetes informer resync interval; must be > 0 |
 
 ## Versioning
 
@@ -167,7 +169,7 @@ Both agents expose the same endpoints (netobs: `:9810`, gpuobs: `:9820`).
 
 ### gpuobs
 
-Device-level gauges are sampled from NVML every `GPU_POLL_INTERVAL` (default 5s). Per-pod attribution arrives in Phase 3.
+Device-level gauges are sampled from NVML every `GPU_POLL_INTERVAL` (default 5s). Per-pod gauges resolve each running PID via `/proc/<pid>/cgroup` to a Pod UID and join with the Kubernetes informer cache.
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
@@ -177,8 +179,15 @@ Device-level gauges are sampled from NVML every `GPU_POLL_INTERVAL` (default 5s)
 | `gpuobs_device_memory_total_bytes` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | GPU memory total capacity (bytes) |
 | `gpuobs_device_temperature_celsius` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | GPU temperature (°C) |
 | `gpuobs_device_power_usage_watts` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | GPU power draw (watts) |
+| `gpuobs_pod_memory_used_bytes` | Gauge | `node`, `src_namespace`, `src_pod`, `src_pod_uid`, `gpu_uuid`, `gpu_index` | GPU memory used (bytes) attributed to a single Pod |
 
-On NVML initialization failure (non-GPU node, driver missing) or when `GPU_METRICS_ENABLED=false`, the collector logs a warning and skips device polling; `gpuobs_device_*` series are not emitted, and `/healthz`·`/readyz` continue to return 200.
+> **Cardinality note**: `gpuobs_pod_memory_used_bytes` carries `src_pod` and `src_pod_uid` labels, mirroring `netobs_pod_stage_*` so the four shared keys (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) join cleanly in PromQL. On large clusters or with frequent pod churn this can inflate Prometheus memory. Set `GPUOBS_POD_METRICS_ENABLED=false` (or `-pod-metrics=false`) to opt out.
+
+On NVML initialization failure (non-GPU node, driver missing) or when `GPU_METRICS_ENABLED=false`, the collector logs a warning and skips device polling; `gpuobs_device_*` series are not emitted, and `/healthz`·`/readyz` continue to return 200. When the kube informer cache has not synced, `/readyz` reports `kube resolver informer not synced` until the initial sync completes.
+
+> **Why no `gpuobs_pod_sm_utilization_percent`**: NVML's `nvmlDeviceGetProcessUtilization` exposes a 6-second sliding window sampler, which is too coarse for short-lived training steps and can miss bursts entirely. Per-pod compute utilization is deferred until a more precise data source is available; only memory attribution is published in Phase 3.
+
+> **hostPID requirement**: NVML returns host-namespace PIDs, so the gpuobs DaemonSet sets `hostPID: true` to read `/proc/<pid>/cgroup` for Pod UID extraction. The container remains non-privileged with `capabilities.drop: ALL`; only read access to procfs is gained.
 
 ## Notes
 

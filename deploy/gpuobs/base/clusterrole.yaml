@@ -6,6 +6,16 @@ metadata:
     app.kubernetes.io/name: gpuobs-agent
     app.kubernetes.io/part-of: ebpf-project
     app.kubernetes.io/component: gpu-observer
-# Phase 1은 placeholder collector로 Kubernetes API를 호출하지 않으므로 rules를 비워둔다.
-# Phase 3에서 Pod 귀속(ResolvePID) 도입 시 pods/nodes에 대한 get/list/watch 권한이 추가된다.
-rules: []
+# kube.Resolver(internal/kube)는 Pod/Service/Node informer 세 가지를 동시에 띄워 IP/UID 인덱스를 유지한다.
+# gpuobs는 ResolvePID 경로(Pod 인덱스)만 직접 활용하지만, 동일 Resolver를 netobs와 공유하기 위해
+# Service/Node informer도 함께 기동되므로 RBAC도 그에 맞춰 셋 모두 list/watch 권한을 부여한다.
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - services
+      - nodes
+    verbs:
+      - get
+      - list
+      - watch

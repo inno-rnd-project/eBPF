@@ -19,6 +19,10 @@ spec:
         app.kubernetes.io/component: gpu-observer
     spec:
       serviceAccountName: gpuobs-agent
+      # NVML이 호스트 PID 네임스페이스 기준 PID를 반환하므로, /proc/<pid>/cgroup 파싱으로
+      # PID → Pod UID 귀속을 수행하려면 컨테이너가 호스트 PID 네임스페이스를 공유해야 한다.
+      # privileged는 여전히 false로 두며, hostPID만 노출해 cgroup 정보 read-only 접근만 허용한다.
+      hostPID: true
       containers:
         - name: gpuobs-agent
           image: gpuobs-agent
@@ -42,8 +46,9 @@ spec:
             - name: metrics
               containerPort: 9820
               protocol: TCP
-          # netobs와 달리 gpuobs는 eBPF 로딩이 필요 없어 privileged·hostPID·추가 capability 모두 불필요.
-          # 런타임 체크리스트(#7)에서 nvidia-container-runtime 주입만으로 NVML 접근이 가능함을 확인했다.
+          # gpuobs는 eBPF 로딩이 필요 없어 privileged와 추가 capability 모두 불필요하다.
+          # Phase 3부터 PID → Pod 귀속을 위해 hostPID가 추가되지만, 컨테이너 권한은 read-only(/proc 조회) 수준에 머무른다.
+          # nvidia-container-runtime 주입으로 NVML 접근이 가능함은 런타임 체크리스트(#7)에서 확인되었다.
           securityContext:
             privileged: false
             allowPrivilegeEscalation: false

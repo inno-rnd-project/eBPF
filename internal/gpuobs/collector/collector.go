@@ -11,19 +11,40 @@ import (
 	"netobs/internal/gpuobs/config"
 	"netobs/internal/gpuobs/metrics"
 	"netobs/internal/gpuobs/nvml"
+	"netobs/internal/kube"
 )
+
+// PodResolver는 collector가 PID → PodIdentity 해석을 위해 의존하는 최소 인터페이스다.
+// 운영에서는 *kube.Resolver가 자연스럽게 만족하며, 단위 테스트에서는 fake로 주입한다.
+type PodResolver interface {
+	ResolvePID(pid uint32) kube.PodIdentity
+}
 
 // Collector는 NVML 폴링 루프를 소유한다.
 type Collector struct {
-	nvml    nvml.NVML
-	cfg     config.Config
-	devices []nvml.Device
+	nvml     nvml.NVML
+	cfg      config.Config
+	resolver PodResolver
+	devices  []nvml.Device
+
+	// recordSnapshot은 metrics.RecordPodSnapshot을 위한 test seam이다.
+	// 운영 코드는 New에서 metrics.RecordPodSnapshot을 기본값으로 받고, 단위 테스트에서는
+	// spy 함수로 교체해 호출 인자(snapshot)를 검증한다.
+	recordSnapshot func(node string, samples []metrics.PodGPUSample)
 }
 
-// New는 NVML 핸들과 Config를 받아 Collector를 구성한다.
-// nvml이 nil이어도 생성은 성공하며, Run 시점에 graceful disable 경로로 분기된다.
-func New(nv nvml.NVML, cfg config.Config) *Collector {
-	return &Collector{nvml: nv, cfg: cfg}
+// New는 NVML 핸들과 Config, 그리고 선택적 PodResolver를 받아 Collector를 구성한다.
+// nvml이 nil이거나 resolver가 nil이어도 생성은 성공한다. nvml nil은 device 폴링 자체를 비활성화하고,
+// resolver nil은 device 폴링은 유지하되 per-pod 귀속 단계만 건너뛴다.
+// resolver가 주입되더라도 cfg.PodMetricsEnabled가 false이면 RunningProcesses 호출 자체를 건너뛰어
+// /proc/<pid>/cgroup 읽기 비용을 발생시키지 않는다.
+func New(nv nvml.NVML, cfg config.Config, resolver PodResolver) *Collector {
+	return &Collector{
+		nvml:           nv,
+		cfg:            cfg,
+		resolver:       resolver,
+		recordSnapshot: metrics.RecordPodSnapshot,
+	}
 }
 
 // Run은 수집 루프를 실행한다.
@@ -97,9 +118,29 @@ func (c *Collector) discover() []nvml.Device {
 	return devices
 }
 
-// pollOnce는 캐시된 device 핸들마다 Snapshot을 읽어 metrics로 전달한다.
-// 한 device에서 실패해도 나머지 device 폴링은 계속한다.
+// podGPUKey는 (Pod, GPU device) 단위 합산용 키다. Pod UID는 클러스터 내 유일하고 GPU UUID/Index는
+// 노드 안에서 device를 구분하므로 본 키 조합은 single-node agent 한 폴 사이클 내에서 일의적이다.
+type podGPUKey struct {
+	podUID   string
+	gpuUUID  string
+	gpuIndex uint
+}
+
+// pollOnce는 캐시된 device 핸들마다 Snapshot과 RunningProcesses를 읽고, per-pod 분량은
+// (podUID, gpu) 키로 합산한 뒤 한 번에 metrics.RecordPodSnapshot으로 전달한다.
+// 합산 단계가 있어 동일 Pod의 다중 GPU 프로세스가 라벨 충돌로 덮어써지는 문제가 사라지고,
+// metrics 측의 diff cleanup이 종료된 Pod의 stale 시리즈를 자동 제거한다.
+//
+// 한 device에서 Snapshot/RunningProcesses 실패는 다른 device 폴링을 막지 않는다.
+// per-pod 귀속은 resolver 주입 + cfg 토글이 모두 활성일 때만 시도되며, 그 외에는 device-level만 수행한다.
 func (c *Collector) pollOnce() {
+	perPodEnabled := c.resolver != nil && c.cfg.PodMetricsEnabled
+
+	var aggregated map[podGPUKey]*metrics.PodGPUSample
+	if perPodEnabled {
+		aggregated = make(map[podGPUKey]*metrics.PodGPUSample)
+	}
+
 	for _, dev := range c.devices {
 		snap, err := dev.Snapshot()
 		if err != nil {
@@ -108,6 +149,47 @@ func (c *Collector) pollOnce() {
 			continue
 		}
 		metrics.Record(c.cfg.NodeName, snap)
+
+		if !perPodEnabled {
+			continue
+		}
+
+		procs, err := dev.RunningProcesses()
+		if err != nil {
+			log.Printf("gpuobs: running processes: %v", err)
+			continue
+		}
+		for _, p := range procs {
+			id := c.resolver.ResolvePID(p.PID)
+			if !id.IsPod() {
+				// unresolved / host process / 미동기화 Pod 등은 합산 키 생성도 건너뛴다.
+				continue
+			}
+			key := podGPUKey{
+				podUID:   id.PodUID,
+				gpuUUID:  snap.Device.UUID,
+				gpuIndex: snap.Device.Index,
+			}
+			if v, ok := aggregated[key]; ok {
+				v.MemUsedBytes += p.MemoryUsedBytes
+				continue
+			}
+			aggregated[key] = &metrics.PodGPUSample{
+				ID:           id,
+				Device:       snap.Device,
+				MemUsedBytes: p.MemoryUsedBytes,
+			}
+		}
+	}
+
+	// per-pod 토글이 켜진 경로에서만 RecordPodSnapshot을 호출한다.
+	// 빈 aggregated여도 호출해야 직전 poll에 있던 라벨이 metrics 측 diff cleanup으로 삭제된다.
+	if perPodEnabled {
+		samples := make([]metrics.PodGPUSample, 0, len(aggregated))
+		for _, v := range aggregated {
+			samples = append(samples, *v)
+		}
+		c.recordSnapshot(c.cfg.NodeName, samples)
 	}
 }
 

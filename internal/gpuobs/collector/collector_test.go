@@ -8,9 +8,71 @@ import (
 	"time"
 
 	"netobs/internal/gpuobs/config"
+	"netobs/internal/gpuobs/metrics"
 	"netobs/internal/gpuobs/nvml"
 	"netobs/internal/gpuobs/types"
+	"netobs/internal/kube"
 )
+
+// snapshotSpy는 collector.recordSnapshot test seam에 주입되어 호출 인자를 수집한다.
+// 호출 시점/인자 검증을 통해 합산·diff cleanup 동작을 단위 테스트로 고정한다.
+type snapshotSpy struct {
+	mu    sync.Mutex
+	calls []snapshotCall
+}
+
+type snapshotCall struct {
+	node    string
+	samples []metrics.PodGPUSample
+}
+
+func (s *snapshotSpy) record(node string, samples []metrics.PodGPUSample) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// samples slice ownership을 caller가 재사용할 가능성에 대비해 깊은 복사를 보관한다.
+	cp := make([]metrics.PodGPUSample, len(samples))
+	copy(cp, samples)
+	s.calls = append(s.calls, snapshotCall{node: node, samples: cp})
+}
+
+func (s *snapshotSpy) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.calls)
+}
+
+func (s *snapshotSpy) lastSamples() []metrics.PodGPUSample {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.calls) == 0 {
+		return nil
+	}
+	return s.calls[len(s.calls)-1].samples
+}
+
+// fakeResolver는 PID → PodIdentity 매핑을 테스트에서 직접 시드하는 PodResolver 구현이다.
+// 등록되지 않은 PID는 unresolved를 반환해 collector pollOnce의 IsPod 가드에서 자연스럽게 걸러진다.
+type fakeResolver struct {
+	byPID map[uint32]kube.PodIdentity
+	calls int
+	mu    sync.Mutex
+}
+
+func (f *fakeResolver) ResolvePID(pid uint32) kube.PodIdentity {
+	f.mu.Lock()
+	f.calls++
+	defer f.mu.Unlock()
+	if id, ok := f.byPID[pid]; ok {
+		return id
+	}
+	return kube.PodIdentity{IdentityClass: kube.IdentityClassUnresolved}
+}
+
+func (f *fakeResolver) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
 
 // fakeNVML은 nvml.NVML의 테스트용 구현이며, 호출 횟수와 사전에 지정된 디바이스 맵을 통해
 // collector 동작을 검증 가능한 상태로 관찰한다.
@@ -52,11 +114,14 @@ func (f *fakeNVML) shutdownCallCount() int {
 }
 
 type fakeDevice struct {
-	mu          sync.Mutex
-	info        types.GPUDevice
-	snapshot    types.GPUSnapshot
-	snapshotErr error
-	snapCalls   int
+	mu           sync.Mutex
+	info         types.GPUDevice
+	snapshot     types.GPUSnapshot
+	snapshotErr  error
+	snapCalls    int
+	processes    []types.GPUProcess
+	processesErr error
+	procCalls    int
 }
 
 func (d *fakeDevice) Info() (types.GPUDevice, error) { return d.info, nil }
@@ -68,7 +133,18 @@ func (d *fakeDevice) Snapshot() (types.GPUSnapshot, error) {
 	return d.snapshot, d.snapshotErr
 }
 
-func (d *fakeDevice) RunningProcesses() ([]types.GPUProcess, error) { return nil, nil }
+func (d *fakeDevice) RunningProcesses() ([]types.GPUProcess, error) {
+	d.mu.Lock()
+	d.procCalls++
+	d.mu.Unlock()
+	return d.processes, d.processesErr
+}
+
+func (d *fakeDevice) procCallCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.procCalls
+}
 
 func (d *fakeDevice) snapCallCount() int {
 	d.mu.Lock()
@@ -118,7 +194,7 @@ func waitUntil(t *testing.T, timeout time.Duration, check func() bool, msg strin
 
 func TestRun_NilNVMLGracefullyDisables(t *testing.T) {
 	cfg := config.Config{GPUMetricsEnabled: true, GPUPollInterval: 10 * time.Millisecond, NodeName: "n"}
-	c := New(nil, cfg)
+	c := New(nil, cfg, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	readyCh := make(chan struct{}, 1)
@@ -136,7 +212,7 @@ func TestRun_FlagDisabledSkipsPolling(t *testing.T) {
 	dev := &fakeDevice{info: types.GPUDevice{Index: 0, UUID: "u0"}}
 	fake := &fakeNVML{count: 1, devices: map[uint]*fakeDevice{0: dev}}
 	cfg := config.Config{GPUMetricsEnabled: false, GPUPollInterval: 10 * time.Millisecond, NodeName: "n"}
-	c := New(fake, cfg)
+	c := New(fake, cfg, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	readyCh := make(chan struct{}, 1)
@@ -166,7 +242,7 @@ func TestRun_HappyPathPollsAndShutsDown(t *testing.T) {
 	dev1 := &fakeDevice{info: types.GPUDevice{Index: 1, UUID: "u1"}, snapshot: types.GPUSnapshot{UtilizationPct: 77}}
 	fake := &fakeNVML{count: 2, devices: map[uint]*fakeDevice{0: dev0, 1: dev1}}
 	cfg := config.Config{GPUMetricsEnabled: true, GPUPollInterval: 10 * time.Millisecond, NodeName: "n"}
-	c := New(fake, cfg)
+	c := New(fake, cfg, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	readyCh := make(chan struct{}, 1)
@@ -201,7 +277,7 @@ func TestPollOnce_PerDeviceErrorContinues(t *testing.T) {
 	dev2 := &fakeDevice{info: types.GPUDevice{Index: 2, UUID: "u2"}}
 	fake := &fakeNVML{count: 3, devices: map[uint]*fakeDevice{0: dev0, 1: dev1, 2: dev2}}
 	cfg := config.Config{GPUMetricsEnabled: true, NodeName: "n"}
-	c := New(fake, cfg)
+	c := New(fake, cfg, nil)
 	// Run을 거치지 않고 pollOnce만 단독 검증하므로 discover가 채워야 할 devices를 직접 주입한다.
 	c.devices = []nvml.Device{dev0, dev1, dev2}
 
@@ -212,5 +288,258 @@ func TestPollOnce_PerDeviceErrorContinues(t *testing.T) {
 	}
 	if got := dev2.snapCallCount(); got != 1 {
 		t.Errorf("dev2 should be polled after dev1 error; got %d", got)
+	}
+}
+
+func TestPollOnce_PerPodInvokesResolver(t *testing.T) {
+	// resolver와 PodMetricsEnabled가 모두 활성일 때 device당 RunningProcesses 결과가 ResolvePID로 전달되어야 한다.
+	dev := &fakeDevice{
+		info: types.GPUDevice{Index: 0, UUID: "u0"},
+		processes: []types.GPUProcess{
+			{DeviceIndex: 0, PID: 100, MemoryUsedBytes: 1024},
+			{DeviceIndex: 0, PID: 200, MemoryUsedBytes: 2048},
+		},
+	}
+	resolver := &fakeResolver{byPID: map[uint32]kube.PodIdentity{
+		100: {IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "p1", PodUID: "u1"},
+	}}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
+	c := New(nil, cfg, resolver)
+	c.devices = []nvml.Device{dev}
+
+	c.pollOnce()
+
+	// 두 PID 모두 ResolvePID로 전달되어야 한다. (한 PID는 unresolved지만 호출 자체는 발생)
+	if got := resolver.callCount(); got != 2 {
+		t.Fatalf("expected 2 ResolvePID calls; got %d", got)
+	}
+}
+
+func TestPollOnce_PerPodSkippedWhenResolverNil(t *testing.T) {
+	// resolver가 nil이면 RunningProcesses 호출 자체가 일어나지 않아야 한다.
+	// 호출 카운터로 명시적으로 검증한다 (error 전파 부재만으로는 미호출을 증명할 수 없다).
+	dev := &fakeDevice{
+		info:      types.GPUDevice{Index: 0, UUID: "u0"},
+		processes: []types.GPUProcess{{DeviceIndex: 0, PID: 100, MemoryUsedBytes: 1}},
+	}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
+	c := New(nil, cfg, nil)
+	c.devices = []nvml.Device{dev}
+
+	c.pollOnce()
+
+	if got := dev.procCallCount(); got != 0 {
+		t.Fatalf("nil resolver must short-circuit RunningProcesses; got %d calls", got)
+	}
+}
+
+func TestPollOnce_PerPodSkippedWhenToggleDisabled(t *testing.T) {
+	// resolver는 주입되었지만 PodMetricsEnabled가 false면 RunningProcesses와 ResolvePID 모두 호출되지 않아야 한다.
+	dev := &fakeDevice{
+		info:      types.GPUDevice{Index: 0, UUID: "u0"},
+		processes: []types.GPUProcess{{DeviceIndex: 0, PID: 100, MemoryUsedBytes: 1}},
+	}
+	resolver := &fakeResolver{byPID: map[uint32]kube.PodIdentity{}}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: false, NodeName: "n"}
+	c := New(nil, cfg, resolver)
+	c.devices = []nvml.Device{dev}
+
+	c.pollOnce()
+
+	if got := dev.procCallCount(); got != 0 {
+		t.Errorf("disabled toggle must short-circuit RunningProcesses; got %d calls", got)
+	}
+	if got := resolver.callCount(); got != 0 {
+		t.Errorf("disabled toggle must short-circuit ResolvePID; got %d calls", got)
+	}
+}
+
+func TestPollOnce_AggregatesMultiProcessIntoSinglePodSample(t *testing.T) {
+	// 동일 Pod이 같은 GPU에서 두 프로세스를 띄우면 합산 후 단일 sample만 RecordPodSnapshot에 전달되어야 한다.
+	// 라벨 셋에 pid가 없어 직접 호출하면 덮어써지던 문제를 collector 합산 단계가 막는다.
+	devInfo := types.GPUDevice{Index: 0, UUID: "GPU-A"}
+	dev := &fakeDevice{
+		info:     devInfo,
+		snapshot: types.GPUSnapshot{Device: devInfo},
+		processes: []types.GPUProcess{
+			{DeviceIndex: 0, PID: 100, MemoryUsedBytes: 1024},
+			{DeviceIndex: 0, PID: 101, MemoryUsedBytes: 2048},
+		},
+	}
+	pod := kube.PodIdentity{
+		IdentityClass: kube.IdentityClassPod,
+		Namespace:     "ml",
+		PodName:       "trainer-0",
+		PodUID:        "uid-A",
+	}
+	resolver := &fakeResolver{byPID: map[uint32]kube.PodIdentity{
+		100: pod,
+		101: pod,
+	}}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
+	c := New(nil, cfg, resolver)
+	c.devices = []nvml.Device{dev}
+	spy := &snapshotSpy{}
+	c.recordSnapshot = spy.record
+
+	c.pollOnce()
+
+	if got := spy.callCount(); got != 1 {
+		t.Fatalf("RecordPodSnapshot should be called once per poll; got %d", got)
+	}
+	samples := spy.lastSamples()
+	if len(samples) != 1 {
+		t.Fatalf("expected 1 aggregated sample for one (Pod, GPU); got %d", len(samples))
+	}
+	if samples[0].MemUsedBytes != 1024+2048 {
+		t.Errorf("aggregated mem=%d want %d", samples[0].MemUsedBytes, 1024+2048)
+	}
+	if samples[0].ID.PodUID != "uid-A" {
+		t.Errorf("sample ID.PodUID=%q want uid-A", samples[0].ID.PodUID)
+	}
+}
+
+func TestPollOnce_AggregatesAcrossDevicesSeparately(t *testing.T) {
+	// 같은 Pod이 두 GPU에 걸쳐 워크로드를 띄운 경우 (gpu_uuid, gpu_index)가 다르면 별도 sample로 분리되어야 한다.
+	dev0Info := types.GPUDevice{Index: 0, UUID: "GPU-A"}
+	dev1Info := types.GPUDevice{Index: 1, UUID: "GPU-B"}
+	dev0 := &fakeDevice{
+		info:      dev0Info,
+		snapshot:  types.GPUSnapshot{Device: dev0Info},
+		processes: []types.GPUProcess{{DeviceIndex: 0, PID: 100, MemoryUsedBytes: 1024}},
+	}
+	dev1 := &fakeDevice{
+		info:      dev1Info,
+		snapshot:  types.GPUSnapshot{Device: dev1Info},
+		processes: []types.GPUProcess{{DeviceIndex: 1, PID: 200, MemoryUsedBytes: 2048}},
+	}
+	pod := kube.PodIdentity{
+		IdentityClass: kube.IdentityClassPod,
+		Namespace:     "ml",
+		PodName:       "trainer-0",
+		PodUID:        "uid-A",
+	}
+	resolver := &fakeResolver{byPID: map[uint32]kube.PodIdentity{100: pod, 200: pod}}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
+	c := New(nil, cfg, resolver)
+	c.devices = []nvml.Device{dev0, dev1}
+	spy := &snapshotSpy{}
+	c.recordSnapshot = spy.record
+
+	c.pollOnce()
+
+	samples := spy.lastSamples()
+	if len(samples) != 2 {
+		t.Fatalf("expected 2 samples (one per GPU); got %d", len(samples))
+	}
+	uuids := map[string]uint64{}
+	for _, s := range samples {
+		uuids[s.Device.UUID] = s.MemUsedBytes
+	}
+	if uuids["GPU-A"] != 1024 || uuids["GPU-B"] != 2048 {
+		t.Errorf("per-GPU aggregation mismatch: %+v", uuids)
+	}
+}
+
+func TestPollOnce_NonPodIdentitiesExcludedFromSamples(t *testing.T) {
+	// host process / unresolved 등 IsPod가 false인 PID는 합산 키 생성도 안 되어 sample에 포함되지 않아야 한다.
+	devInfo := types.GPUDevice{Index: 0, UUID: "GPU-A"}
+	dev := &fakeDevice{
+		info:     devInfo,
+		snapshot: types.GPUSnapshot{Device: devInfo},
+		processes: []types.GPUProcess{
+			{DeviceIndex: 0, PID: 100, MemoryUsedBytes: 1024}, // pod
+			{DeviceIndex: 0, PID: 999, MemoryUsedBytes: 4096}, // host (no entry → unresolved)
+		},
+	}
+	resolver := &fakeResolver{byPID: map[uint32]kube.PodIdentity{
+		100: {IdentityClass: kube.IdentityClassPod, PodUID: "uid-A", PodName: "p", Namespace: "ml"},
+	}}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
+	c := New(nil, cfg, resolver)
+	c.devices = []nvml.Device{dev}
+	spy := &snapshotSpy{}
+	c.recordSnapshot = spy.record
+
+	c.pollOnce()
+
+	samples := spy.lastSamples()
+	if len(samples) != 1 {
+		t.Fatalf("expected 1 sample (host PID excluded); got %d", len(samples))
+	}
+	if samples[0].MemUsedBytes != 1024 {
+		t.Errorf("pod-only mem=%d want 1024 (host PID memory must not be included)", samples[0].MemUsedBytes)
+	}
+}
+
+func TestPollOnce_StaleCleanupCallsSnapshotEvenWhenEmpty(t *testing.T) {
+	// 첫 poll은 podA, 두 번째 poll에는 워크로드가 사라진 경우 두 번째 호출에서도 RecordPodSnapshot이
+	// 호출되어 metrics 측 diff cleanup이 직전 라벨을 정리할 수 있어야 한다.
+	pod := kube.PodIdentity{
+		IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "a", PodUID: "uid-a",
+	}
+	devInfo := types.GPUDevice{Index: 0, UUID: "GPU-A"}
+	dev := &fakeDevice{
+		info:     devInfo,
+		snapshot: types.GPUSnapshot{Device: devInfo},
+	}
+	dev.processes = []types.GPUProcess{{DeviceIndex: 0, PID: 100, MemoryUsedBytes: 100}}
+	resolver := &fakeResolver{byPID: map[uint32]kube.PodIdentity{100: pod}}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
+	c := New(nil, cfg, resolver)
+	c.devices = []nvml.Device{dev}
+	spy := &snapshotSpy{}
+	c.recordSnapshot = spy.record
+
+	c.pollOnce()
+	// 워크로드가 사라진 상태로 다시 폴링
+	dev.mu.Lock()
+	dev.processes = nil
+	dev.mu.Unlock()
+	c.pollOnce()
+
+	if got := spy.callCount(); got != 2 {
+		t.Fatalf("expected 2 RecordPodSnapshot calls (one per poll); got %d", got)
+	}
+	if last := spy.lastSamples(); len(last) != 0 {
+		t.Errorf("second poll snapshot must be empty; got %d samples", len(last))
+	}
+}
+
+func TestPollOnce_NoSnapshotCallWhenResolverNil(t *testing.T) {
+	// resolver가 nil이면 RecordPodSnapshot 호출 자체가 없어야 한다.
+	// 이 경로에서는 metrics 패키지 lastPodSampleKeys도 건드리지 않는다.
+	dev := &fakeDevice{
+		info:      types.GPUDevice{Index: 0, UUID: "u0"},
+		processes: []types.GPUProcess{{DeviceIndex: 0, PID: 100, MemoryUsedBytes: 1}},
+	}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
+	c := New(nil, cfg, nil)
+	c.devices = []nvml.Device{dev}
+	spy := &snapshotSpy{}
+	c.recordSnapshot = spy.record
+
+	c.pollOnce()
+
+	if got := spy.callCount(); got != 0 {
+		t.Fatalf("nil resolver must not invoke RecordPodSnapshot; got %d calls", got)
+	}
+}
+
+func TestPollOnce_NoSnapshotCallWhenToggleDisabled(t *testing.T) {
+	// PodMetricsEnabled=false면 RecordPodSnapshot 호출 없음. metrics 패키지의 lastPodSampleKeys는
+	// startup 시점에 빈 상태이므로 호출 누락이 stale을 유발하지 않는다(toggle이 startup-only 계약).
+	dev := &fakeDevice{info: types.GPUDevice{Index: 0, UUID: "u0"}}
+	resolver := &fakeResolver{}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: false, NodeName: "n"}
+	c := New(nil, cfg, resolver)
+	c.devices = []nvml.Device{dev}
+	spy := &snapshotSpy{}
+	c.recordSnapshot = spy.record
+
+	c.pollOnce()
+
+	if got := spy.callCount(); got != 0 {
+		t.Fatalf("disabled toggle must not invoke RecordPodSnapshot; got %d calls", got)
 	}
 }
