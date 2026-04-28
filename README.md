@@ -188,6 +188,12 @@ Device-level gauges are sampled from NVML every `GPU_POLL_INTERVAL` (default 5s)
 | `gpuobs_device_encoder_utilization_percent` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | NVENC encoder utilization (0-100) |
 | `gpuobs_device_decoder_utilization_percent` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | NVDEC decoder utilization (0-100) |
 | `gpuobs_device_performance_state` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | NVML performance state (0=highest, 15=idle, 32=unknown) |
+| `gpuobs_device_fan_speed_percent` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | GPU fan duty cycle (0-100); absent on passively-cooled cards |
+| `gpuobs_device_bar1_memory_used_bytes` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | PCIe BAR1 memory area used (bytes); host-mapped GPU memory |
+| `gpuobs_device_bar1_memory_total_bytes` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | PCIe BAR1 memory area capacity (bytes) |
+| `gpuobs_device_power_limit_watts` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | Currently configured power management limit (watts) — compare against `gpuobs_device_power_usage_watts` for headroom |
+| `gpuobs_device_throttle_violation_seconds_total` | Counter | `node`, `gpu_uuid`, `gpu_index`, `gpu_model`, `reason` | Cumulative throttle violation time (seconds) since the agent started, sourced from NVML `GetViolationStatus` per `PerfPolicyType` with delta tracking and nanosecond-to-second conversion. `reason` ∈ {`power`, `thermal`, `sync_boost`, `board_limit`, `low_utilization`, `reliability`, `total_app_clocks`, `total_base_clocks`}. Complements `gpuobs_device_throttle_active` (instantaneous) with cumulative duration |
+| `gpuobs_device_gpm_utilization_percent` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model`, `gpm_metric` | Datacenter-GPU GPM (GPU Performance Monitoring) sampler output (0-100). `gpm_metric` ∈ {`graphics_util`, `sm_occupancy`, `tensor_active`, `dram_bandwidth`}. **Datacenter GPU only** (H100/A100 등); consumer cards (RTX 3090/4090 등) report unsupported and emit no series |
 | `gpuobs_pod_memory_used_bytes` | Gauge | `node`, `src_namespace`, `src_pod`, `src_pod_uid`, `gpu_uuid`, `gpu_index` | GPU memory used (bytes) attributed to a single Pod |
 
 > **Cardinality note**: `gpuobs_pod_memory_used_bytes` carries `src_pod` and `src_pod_uid` labels, mirroring `netobs_pod_stage_*` so the four shared keys (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) join cleanly in PromQL. On large clusters or with frequent pod churn this can inflate Prometheus memory. Set `GPUOBS_POD_METRICS_ENABLED=false` (or `-pod-metrics=false`) to opt out.
@@ -195,6 +201,8 @@ Device-level gauges are sampled from NVML every `GPU_POLL_INTERVAL` (default 5s)
 On NVML initialization failure (non-GPU node, driver missing) or when `GPU_METRICS_ENABLED=false`, the collector logs a warning and skips device polling; `gpuobs_device_*` series are not emitted, and `/healthz`·`/readyz` continue to return 200. When the kube informer cache has not synced, `/readyz` reports `kube resolver informer not synced` until the initial sync completes.
 
 > **Per-metric NVML support detection**: NVML returns `NVML_ERROR_NOT_SUPPORTED` for metrics that the GPU model does not expose (e.g., ECC counters on consumer cards, encoder util on some SKUs). gpuobs detects this on the first call per metric per device, logs a single warning, then silently skips that metric in subsequent polls — only the supported metric series are emitted, keeping Prometheus cardinality minimal.
+
+> **GPM hardware requirement**: `gpuobs_device_gpm_utilization_percent` requires a GPM-capable GPU (H100/H200, A100/A30 등 데이터센터 카드). On consumer cards the `nvmlGpmQueryDeviceSupport` call returns unsupported and the agent skips GPM sampling entirely — no series are created. GPM also needs two consecutive samples to compute the first metric, so the very first poll after agent start emits no GPM series even on supported hardware.
 
 > **Why no `gpuobs_pod_sm_utilization_percent`**: NVML's `nvmlDeviceGetProcessUtilization` exposes a 6-second sliding window sampler, which is too coarse for short-lived training steps and can miss bursts entirely. Per-pod compute utilization is deferred until a more precise data source is available; only memory attribution is published in Phase 3.
 
