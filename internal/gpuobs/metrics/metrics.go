@@ -4,6 +4,7 @@ package metrics
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -38,10 +39,27 @@ var podLabels = []string{"node", "src_namespace", "src_pod", "src_pod_uid", "gpu
 // 갱신되고 그 이후에는 읽기 전용으로 쓴다.
 var podMetricsEnabled = true
 
-// SetPodMetricsEnabled는 per-pod 지표 기록 여부를 전환하며 반드시 RecordPod 호출 전(main startup)에만 호출되어야 한다.
+// SetPodMetricsEnabled는 per-pod 지표 기록 여부를 전환하며 반드시 RecordPodSnapshot 호출 전(main startup)에만 호출되어야 한다.
 func SetPodMetricsEnabled(v bool) {
 	podMetricsEnabled = v
 }
+
+// PodGPUSample은 한 (Pod, GPU device) 조합의 메모리 관측치다.
+// collector가 NVML RunningProcesses 결과를 (podUID, gpu) 키로 합산한 뒤 한 번에 RecordPodSnapshot으로 전달한다.
+type PodGPUSample struct {
+	ID           kube.PodIdentity
+	Device       types.GPUDevice
+	MemUsedBytes uint64
+}
+
+// lastPodSampleKeys는 직전 RecordPodSnapshot 호출에서 기록된 라벨 키 셋이다.
+// diff-based cleanup에 쓰여, 이번 호출에 등장하지 않은 키는 DeleteLabelValues로 series에서 제거된다.
+// 이 변수는 단일 호출자(collector pollOnce)만 접근한다는 startup-only 계약 아래 별도 mutex 없이 운영된다.
+var lastPodSampleKeys = make(map[string]struct{})
+
+// podLabelSeparator는 라벨 키 직렬화용 구분자다. K8s 식별자(namespace/pod/uid 등)와 GPU UUID 어디에도
+// 등장할 수 없는 NUL 바이트를 사용해 join/split 충돌을 회피한다.
+const podLabelSeparator = "\x00"
 
 var (
 	deviceUtilization = prometheus.NewGaugeVec(
@@ -123,23 +141,47 @@ func Record(node string, snap types.GPUSnapshot) {
 	devicePower.WithLabelValues(node, uuid, idx, model).Set(snap.PowerUsageWatts)
 }
 
-// RecordPod는 한 (Pod, GPU device) 조합의 GPU 메모리 사용량을 per-pod gauge에 기록한다.
-// podMetricsEnabled가 false이거나 식별이 Pod이 아닌 경우(미해결/host 프로세스 등) no-op으로 처리한다.
-// 본 검증을 호출자에서 중복하지 않게 metrics 측에서 일괄 처리해 collector 코드를 단순화한다.
-func RecordPod(node string, dev types.GPUDevice, id kube.PodIdentity, memUsedBytes uint64) {
-	if !podMetricsEnabled || !id.IsPod() {
-		return
+// RecordPodSnapshot은 이번 poll에 관측된 (Pod, GPU) 메모리 사용량 스냅샷을 일괄 기록한다.
+// 호출자(collector)는 NVML RunningProcesses 결과를 (podUID, gpu) 단위로 합산한 뒤 본 함수 한 번만 호출한다.
+// 이로써 동일 Pod의 다중 GPU 프로세스가 라벨 충돌로 덮어써지는 문제를 막는다.
+//
+// 직전 호출에서는 있었지만 이번에는 없는 라벨 시리즈는 DeleteLabelValues로 surgical하게 제거되어
+// 종료된 Pod의 stale gauge가 영구히 남는 것도 방지한다. Reset()을 쓰지 않아 scrape 중간에 빈 시리즈가
+// 보이는 race window를 회피한다.
+//
+// podMetricsEnabled가 false이면 신규 기록은 건너뛰지만 직전 라벨 cleanup은 그대로 수행해
+// 토글 off 직후 잔존 series가 즉시 정리되도록 한다.
+//
+// startup-only 계약: 호출자는 단일 goroutine(pollOnce)에서만 본 함수를 부른다고 가정하며 별도 lock을 잡지 않는다.
+func RecordPodSnapshot(node string, samples []PodGPUSample) {
+	currentKeys := make(map[string]struct{}, len(samples))
+
+	if podMetricsEnabled {
+		for _, s := range samples {
+			if !s.ID.IsPod() {
+				continue
+			}
+			idx := strconv.FormatUint(uint64(s.Device.Index), 10)
+			labels := []string{
+				node,
+				s.ID.NamespaceLabel(),
+				podName(s.ID),
+				podUID(s.ID),
+				s.Device.UUID,
+				idx,
+			}
+			podMemoryUsed.WithLabelValues(labels...).Set(float64(s.MemUsedBytes))
+			currentKeys[strings.Join(labels, podLabelSeparator)] = struct{}{}
+		}
 	}
 
-	idx := strconv.FormatUint(uint64(dev.Index), 10)
-	podMemoryUsed.WithLabelValues(
-		node,
-		id.NamespaceLabel(),
-		podName(id),
-		podUID(id),
-		dev.UUID,
-		idx,
-	).Set(float64(memUsedBytes))
+	// 직전 poll에는 있었지만 이번에는 없는 라벨 series 제거 (Pod 종료 / 프로세스 종료 / toggle off 모두 흡수).
+	for key := range lastPodSampleKeys {
+		if _, ok := currentKeys[key]; !ok {
+			podMemoryUsed.DeleteLabelValues(strings.Split(key, podLabelSeparator)...)
+		}
+	}
+	lastPodSampleKeys = currentKeys
 }
 
 // podName과 podUID는 빈 필드일 때 "unknown"으로 폴백해 라벨 카디널리티가 빈 문자열로 늘어나는 것을 막는다.

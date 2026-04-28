@@ -34,13 +34,19 @@ func main() {
 	metrics.SetPodMetricsEnabled(cfg.PodMetricsEnabled)
 
 	// kube.Resolver는 Pod/Service/Node informer를 띄우고 IP/UID 인덱스를 유지한다.
-	// gpuobs는 ResolvePID 경로만 사용하지만, kube 패키지가 informer 일체를 함께 띄우므로
-	// pods/services/nodes 모두에 대해 RBAC가 필요하다 (deploy/gpuobs/base/clusterrole.yaml 참조).
-	kr := kube.NewResolver(cfg.NodeName, cfg.MetadataRefresh)
+	// gpuobs는 ResolvePID 경로만 사용하므로, PodMetricsEnabled가 false인 경우에는
+	// informer 자체를 기동하지 않아 RBAC/메모리 비용을 발생시키지 않고 /readyz도 kube sync에 묶이지 않는다.
+	// 토글 on 시에는 pods/services/nodes 모두에 대해 RBAC가 필요하다 (deploy/gpuobs/base/clusterrole.yaml 참조).
+	var kr *kube.Resolver
+	if cfg.PodMetricsEnabled {
+		kr = kube.NewResolver(cfg.NodeName, cfg.MetadataRefresh)
+	}
 
 	var collectorReady atomic.Bool
 	ready := func() (bool, string) {
-		if !kr.HasSynced() {
+		// kr이 nil이면 본 에이전트는 device-only 모드라 kube sync 의존이 없다.
+		// kr이 주입된 경우에만 informer 동기화 완료를 readiness 조건으로 추가한다.
+		if kr != nil && !kr.HasSynced() {
 			return false, "kube resolver informer not synced"
 		}
 		if !collectorReady.Load() {
@@ -64,8 +70,10 @@ func main() {
 		}
 	}()
 
-	// Kubernetes metadata informer.
-	go kr.Start(ctx)
+	// Kubernetes metadata informer (PodMetricsEnabled일 때만 기동).
+	if kr != nil {
+		go kr.Start(ctx)
+	}
 
 	// NVML 초기화는 수집이 활성화된 경우에만 시도한다. GPU_METRICS_ENABLED=false 환경에서는
 	// libnvidia-ml.so.1 로드 자체를 건너뛰어 불필요한 초기화 비용과 실패 로그를 제거한다.
@@ -80,7 +88,14 @@ func main() {
 		}
 	}
 
-	col := collector.New(nv, cfg, kr)
+	// kr이 nil 포인터일 때 그대로 PodResolver 인자로 넘기면 typed-nil interface가 되어
+	// collector.pollOnce의 `c.resolver != nil` 검사가 true로 평가되며 잠재 nil deref가 발생한다.
+	// 명시적으로 nil interface로 변환해 collector가 의도한 disable 분기로 떨어지게 한다.
+	var resolver collector.PodResolver
+	if kr != nil {
+		resolver = kr
+	}
+	col := collector.New(nv, cfg, resolver)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- col.Run(ctx, func() {
