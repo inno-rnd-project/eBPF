@@ -76,6 +76,7 @@ spec:
 
         # node:gpu_temperature_headroom_celsius
         # threshold별 thermal 헤드룸. 양수면 안전 마진, 0 이하면 throttle/shutdown 임박.
-        # left side(threshold gauge) 의 threshold 라벨을 group_left로 보존하고 right side(현재 온도) 와 (node, gpu_uuid, gpu_index) 키로 매칭.
+        # 두 메트릭의 라벨 차이는 LHS의 threshold 라벨 하나뿐이므로 ignoring(threshold)로 매칭한다.
+        # device당 LHS는 N 시리즈(threshold별), RHS는 1 시리즈라 many-to-one이고, 이를 명시하기 위해 group_left()를 함께 둔다.
         - record: node:gpu_temperature_headroom_celsius
-          expr: gpuobs_device_temperature_threshold_celsius - on(node, gpu_uuid, gpu_index) group_left(threshold) gpuobs_device_temperature_celsius
+          expr: gpuobs_device_temperature_threshold_celsius - ignoring(threshold) group_left() gpuobs_device_temperature_celsius

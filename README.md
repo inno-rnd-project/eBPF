@@ -247,7 +247,7 @@ PrometheusRule CR `netobs-gpuobs-correlation` 에 group `netobs-gpuobs.recording
 | `node:gpu_ecc_errors:rate5m` | errors/sec | `sum by(node, error_type) (rate(gpuobs_device_ecc_errors_total[5m]))` |
 | `node:gpu_energy_watts_avg:5m` | watts | `sum by(node) (rate(gpuobs_device_energy_consumption_joules_total[5m]))` — J/sec = W 단위로 5분 평균 전력 |
 | `node:gpu_pcie_replay:rate5m` | errors/sec | `sum by(node) (rate(gpuobs_device_pcie_replay_errors_total[5m]))` — PCIe 헬스 |
-| `node:gpu_temperature_headroom_celsius` | celsius | `gpuobs_device_temperature_threshold_celsius - on(node, gpu_uuid, gpu_index) group_left(threshold) gpuobs_device_temperature_celsius` — threshold별 thermal 안전 마진 |
+| `node:gpu_temperature_headroom_celsius` | celsius | `gpuobs_device_temperature_threshold_celsius - ignoring(threshold) group_left() gpuobs_device_temperature_celsius` — threshold별 thermal 안전 마진. 두 메트릭의 라벨 차이가 `threshold` 하나뿐이라 `ignoring(threshold) group_left()` many-to-one 매칭으로 안전하게 산출 |
 
 > **빈 시리즈 정상 케이스**: `pod:gpu_memory_used_avg:5m` / `pod:gpu_memory_utilization_ratio:5m` 는 GPU를 사용하는 Pod이 없으면 base 시리즈가 부재해 빈 결과를 산출한다. `node:gpu_ecc_errors:rate5m` 은 컨슈머 GPU(RTX 3090 등) 에서 ECC 미지원으로 base 시리즈 자체가 발행되지 않아 빈 결과가 정상 동작이다.
 
