@@ -194,7 +194,17 @@ Device-level gauges are sampled from NVML every `GPU_POLL_INTERVAL` (default 5s)
 | `gpuobs_device_power_limit_watts` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | Currently configured power management limit (watts) — compare against `gpuobs_device_power_usage_watts` for headroom |
 | `gpuobs_device_throttle_violation_seconds_total` | Counter | `node`, `gpu_uuid`, `gpu_index`, `gpu_model`, `reason` | Cumulative throttle violation time (seconds) since the agent started, sourced from NVML `GetViolationStatus` per `PerfPolicyType` with delta tracking and nanosecond-to-second conversion. `reason` ∈ {`power`, `thermal`, `sync_boost`, `board_limit`, `low_utilization`, `reliability`, `total_app_clocks`, `total_base_clocks`}. Complements `gpuobs_device_throttle_active` (instantaneous) with cumulative duration |
 | `gpuobs_device_gpm_utilization_percent` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model`, `gpm_metric` | Datacenter-GPU GPM (GPU Performance Monitoring) sampler output (0-100). `gpm_metric` ∈ {`graphics_util`, `sm_occupancy`, `tensor_active`, `dram_bandwidth`}. **Datacenter GPU only** (H100/A100 등); consumer cards (RTX 3090/4090 등) report unsupported and emit no series |
-| `gpuobs_pod_memory_used_bytes` | Gauge | `node`, `src_namespace`, `src_pod`, `src_pod_uid`, `gpu_uuid`, `gpu_index` | GPU memory used (bytes) attributed to a single Pod |
+| `gpuobs_device_energy_consumption_joules_total` | Counter | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | Cumulative GPU energy consumption (joules) since the agent started, sourced from NVML `GetTotalEnergyConsumption` with baseline-then-delta tracking and millijoule-to-joule conversion. `rate(...)` 가 곧 J/sec = Watts 평균 |
+| `gpuobs_device_pcie_link_generation_current` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | Current PCIe link generation negotiated by the GPU (1-5); idle GPUs may downgrade and recover under load |
+| `gpuobs_device_pcie_link_width_current` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | Current PCIe link width negotiated by the GPU (lanes 1-16) |
+| `gpuobs_device_pcie_replay_errors_total` | Counter | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | Cumulative PCIe link replay errors with baseline-then-delta tracking. Sustained increase signals riser/cable/slot issues |
+| `gpuobs_device_temperature_threshold_celsius` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model`, `threshold` | Static GPU temperature thresholds in Celsius. `threshold` ∈ {`slowdown`, `shutdown`, `mem_max`, `gpu_max`}. Pair with `gpuobs_device_temperature_celsius` for thermal headroom |
+| `gpuobs_device_power_limit_enforced_watts` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | Currently enforced GPU power limit (NVML `GetEnforcedPowerLimit`); usually equals `power_limit_watts` but diverges under driver-level capping |
+| `gpuobs_device_persistence_mode` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | NVML driver persistence mode (1=enabled, 0=disabled). Disabled mode incurs cold-start cost on first CUDA context creation |
+| `gpuobs_device_compute_mode` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model` | NVML compute mode enum (0=Default, 1=ExclusiveThread, 2=Prohibited, 3=ExclusiveProcess) |
+| `gpuobs_device_info` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model`, `compute_capability`, `architecture`, `max_pcie_generation`, `max_pcie_width`, `num_cores`, `memory_bus_width_bits` | Static GPU characteristics (value always 1). Use as join target for fleet-wide grouping (e.g., `* on(...) group_left(architecture) gpuobs_device_info`) |
+| `gpuobs_device_firmware_info` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model`, `vbios_version`, `gsp_firmware_version` | GPU firmware versions (value always 1) for regression debugging |
+| `gpuobs_pod_memory_used_bytes` | Gauge | `node`, `src_namespace`, `src_pod`, `src_pod_uid`, `gpu_uuid`, `gpu_index` | GPU memory used (bytes) attributed to a single Pod. Aggregates compute + graphics mode processes, max-by-PID deduplication |
 
 > **Cardinality note**: `gpuobs_pod_memory_used_bytes` carries `src_pod` and `src_pod_uid` labels, mirroring `netobs_pod_stage_*` so the four shared keys (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) join cleanly in PromQL. On large clusters or with frequent pod churn this can inflate Prometheus memory. Set `GPUOBS_POD_METRICS_ENABLED=false` (or `-pod-metrics=false`) to opt out.
 
@@ -235,6 +245,9 @@ PrometheusRule CR `netobs-gpuobs-correlation` 에 group `netobs-gpuobs.recording
 | `node:gpu_power_headroom_watts` | watts | `gpuobs_device_power_limit_watts - gpuobs_device_power_usage_watts` |
 | `pod:gpu_memory_utilization_ratio:5m` | 0-1 | `avg_over_time(gpuobs_pod_memory_used_bytes[5m]) / on(node, gpu_uuid, gpu_index) group_left() gpuobs_device_memory_total_bytes` |
 | `node:gpu_ecc_errors:rate5m` | errors/sec | `sum by(node, error_type) (rate(gpuobs_device_ecc_errors_total[5m]))` |
+| `node:gpu_energy_watts_avg:5m` | watts | `sum by(node) (rate(gpuobs_device_energy_consumption_joules_total[5m]))` — J/sec = W 단위로 5분 평균 전력 |
+| `node:gpu_pcie_replay:rate5m` | errors/sec | `sum by(node) (rate(gpuobs_device_pcie_replay_errors_total[5m]))` — PCIe 헬스 |
+| `node:gpu_temperature_headroom_celsius` | celsius | `gpuobs_device_temperature_threshold_celsius - on(node, gpu_uuid, gpu_index) group_left(threshold) gpuobs_device_temperature_celsius` — threshold별 thermal 안전 마진 |
 
 > **빈 시리즈 정상 케이스**: `pod:gpu_memory_used_avg:5m` / `pod:gpu_memory_utilization_ratio:5m` 는 GPU를 사용하는 Pod이 없으면 base 시리즈가 부재해 빈 결과를 산출한다. `node:gpu_ecc_errors:rate5m` 은 컨슈머 GPU(RTX 3090 등) 에서 ECC 미지원으로 base 시리즈 자체가 발행되지 않아 빈 결과가 정상 동작이다.
 
@@ -283,6 +296,29 @@ histogram_quantile(0.95,
 ```promql
 # 데이터센터 GPU 노드에서만 시리즈 산출. RTX 3090 등 컨슈머 카드는 빈 결과.
 gpuobs_device_gpm_utilization_percent{gpm_metric="sm_occupancy"}
+```
+
+#### 7. Architecture별 평균 전력 (info gauge join)
+```promql
+# device_info 의 architecture 라벨을 group_left로 끌어와 GPU 세대별 전력 추세 비교.
+sum by(architecture) (
+  rate(gpuobs_device_energy_consumption_joules_total[5m])
+  * on(node, gpu_uuid, gpu_index) group_left(architecture)
+    gpuobs_device_info
+)
+```
+
+#### 8. PCIe 링크 다운그레이드 감지
+```promql
+# 현재 gen이 max gen보다 낮으면 다운그레이드 상태. info gauge 의 max_pcie_generation 을 라벨에서 직접 비교할 수는 없어
+# 운영자가 dashboard에서 단순 gauge 시각화 후 max_pcie_generation 라벨을 별도 패널로 함께 표기하는 방식이 자연스럽다.
+gpuobs_device_pcie_link_generation_current
+```
+
+#### 9. Thermal headroom 알림 후보 쿼리
+```promql
+# 어떤 GPU가 slowdown threshold까지 5도 이내인지 즉시 식별.
+node:gpu_temperature_headroom_celsius{threshold="slowdown"} < 5
 ```
 
 ### 검증 방법
