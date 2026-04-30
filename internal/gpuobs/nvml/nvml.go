@@ -79,6 +79,13 @@ func (n *nvmlImpl) Device(index uint) (Device, error) {
 	}
 	d.info = types.GPUDevice{Index: index, UUID: uuid, Model: name}
 
+	// 정적 device 특성(compute capability / architecture / 최대 PCIe 스펙 등) 을 1회 fetch해 d.info에 캐싱한다.
+	// 개별 NVML 호출이 미지원이면 해당 필드만 zero value로 남고 나머지는 정상 채워진다.
+	d.populateStaticInfo()
+
+	// 온도 threshold 값(slowdown/shutdown 등) 도 device 수명 동안 불변이므로 1회 fetch + 캐싱한다.
+	d.initTemperatureThresholds()
+
 	// GPM 지원 여부는 device 수명 동안 불변이므로 1회 조회해 캐싱한다.
 	// 미지원이면 fillGpm은 매 poll에서 즉시 early return하고, sample 버퍼 할당도 건너뛴다.
 	d.initGpm()
@@ -116,6 +123,11 @@ type deviceImpl struct {
 	gpmAllocated     bool
 	gpmSamples       [2]gonvml.GpmSample
 	gpmPreviousIdx   int
+
+	// temperatureThresholds는 device 수명 동안 불변인 threshold 값(slowdown/shutdown/mem_max/gpu_max)을 캐싱한다.
+	// initTemperatureThresholds가 1회 fetch 후 보관하고 fillTemperatureThresholds는 매 poll 캐시를 그대로 snapshot에 복사한다.
+	// 키는 reason 라벨 문자열이며 값은 Celsius. 미지원 threshold는 키 자체가 부재한다.
+	temperatureThresholds map[string]uint32
 }
 
 // violationReasons는 GetViolationStatus를 호출할 PerfPolicyType 8종이다. 각 reason은 NVML이
@@ -143,6 +155,45 @@ var gpmMetricIDs = [4]gonvml.GpmMetricId{
 	gonvml.GPM_METRIC_SM_OCCUPANCY,
 	gonvml.GPM_METRIC_ANY_TENSOR_UTIL,
 	gonvml.GPM_METRIC_DRAM_BW_UTIL,
+}
+
+// temperatureThresholds는 GetTemperatureThreshold가 노출하는 4종 thresholds를 reason 라벨 문자열에 매핑한다.
+// ACOUSTIC / GPS 계열은 콘텐슈머·데이터센터 모두 거의 미지원이라 본 셋에서 제외한다.
+var temperatureThresholds = []struct {
+	name      string
+	threshold gonvml.TemperatureThresholds
+}{
+	{"slowdown", gonvml.TEMPERATURE_THRESHOLD_SLOWDOWN},
+	{"shutdown", gonvml.TEMPERATURE_THRESHOLD_SHUTDOWN},
+	{"mem_max", gonvml.TEMPERATURE_THRESHOLD_MEM_MAX},
+	{"gpu_max", gonvml.TEMPERATURE_THRESHOLD_GPU_MAX},
+}
+
+// architectureName은 GetArchitecture가 반환한 enum을 사람이 읽을 수 있는 이름으로 매핑한다.
+// 매핑 미정의 enum은 "unknown"으로 채워 라벨 카디널리티 폭증을 막는다.
+func architectureName(a gonvml.DeviceArchitecture) string {
+	switch a {
+	case gonvml.DEVICE_ARCH_KEPLER:
+		return "kepler"
+	case gonvml.DEVICE_ARCH_MAXWELL:
+		return "maxwell"
+	case gonvml.DEVICE_ARCH_PASCAL:
+		return "pascal"
+	case gonvml.DEVICE_ARCH_VOLTA:
+		return "volta"
+	case gonvml.DEVICE_ARCH_TURING:
+		return "turing"
+	case gonvml.DEVICE_ARCH_AMPERE:
+		return "ampere"
+	case gonvml.DEVICE_ARCH_ADA:
+		return "ada"
+	case gonvml.DEVICE_ARCH_HOPPER:
+		return "hopper"
+	case gonvml.DEVICE_ARCH_BLACKWELL:
+		return "blackwell"
+	default:
+		return "unknown"
+	}
 }
 
 // wrapErr는 device 호출 에러에 device index 컨텍스트를 덧붙여 래핑한다.
@@ -225,6 +276,13 @@ func (d *deviceImpl) Snapshot() (types.GPUSnapshot, error) {
 	d.fillBAR1Memory(&snap)
 	d.fillPowerLimit(&snap)
 	d.fillViolationStatus(&snap)
+	d.fillEnergy(&snap)
+	d.fillPcieLink(&snap)
+	d.fillPcieReplay(&snap)
+	d.fillTemperatureThresholds(&snap)
+	d.fillEnforcedPowerLimit(&snap)
+	d.fillPersistenceMode(&snap)
+	d.fillComputeMode(&snap)
 	d.fillGpm(&snap)
 
 	return snap, nil
@@ -600,17 +658,217 @@ func (d *deviceImpl) Close() error {
 	return nil
 }
 
+// populateStaticInfo는 Device 생성 시 1회 호출되어 정적 특성을 d.info에 채운다.
+// 개별 NVML 호출이 실패해도 다른 필드 수집을 막지 않으며, 미지원이면 해당 필드는 zero value 그대로 둔다.
+// 본 함수는 caller에 Device 핸들을 반환하기 전 동기 실행되므로 동시성 보호 불필요.
+func (d *deviceImpl) populateStaticInfo() {
+	if major, minor, ret := d.handle.GetCudaComputeCapability(); ret == gonvml.SUCCESS {
+		d.info.CudaComputeMajor = major
+		d.info.CudaComputeMinor = minor
+	}
+	if arch, ret := d.handle.GetArchitecture(); ret == gonvml.SUCCESS {
+		d.info.Architecture = architectureName(arch)
+	}
+	if gen, ret := d.handle.GetMaxPcieLinkGeneration(); ret == gonvml.SUCCESS {
+		d.info.MaxPcieLinkGeneration = gen
+	}
+	if width, ret := d.handle.GetMaxPcieLinkWidth(); ret == gonvml.SUCCESS {
+		d.info.MaxPcieLinkWidth = width
+	}
+	if cores, ret := d.handle.GetNumGpuCores(); ret == gonvml.SUCCESS {
+		d.info.NumGpuCores = cores
+	}
+	if bus, ret := d.handle.GetMemoryBusWidth(); ret == gonvml.SUCCESS {
+		d.info.MemoryBusWidthBits = bus
+	}
+	if vbios, ret := d.handle.GetVbiosVersion(); ret == gonvml.SUCCESS {
+		d.info.VbiosVersion = vbios
+	}
+	if gsp, ret := d.handle.GetGspFirmwareVersion(); ret == gonvml.SUCCESS {
+		d.info.GspFirmwareVersion = gsp
+	}
+}
+
+// initTemperatureThresholds는 Device 생성 시 1회 호출되어 4종 threshold 값을 캐싱한다.
+// 미지원 threshold는 키 자체를 추가하지 않아 fillTemperatureThresholds가 그대로 snapshot에 누락 시킬 수 있게 한다.
+func (d *deviceImpl) initTemperatureThresholds() {
+	cache := make(map[string]uint32, len(temperatureThresholds))
+	for _, t := range temperatureThresholds {
+		v, ret := d.handle.GetTemperatureThreshold(t.threshold)
+		if ret != gonvml.SUCCESS {
+			// NOT_SUPPORTED는 흔한 케이스라 조용히 skip. 다른 에러도 init 시점이라 1회 로그는 아끼고 누락만 시킨다.
+			continue
+		}
+		cache[t.name] = v
+	}
+	if len(cache) > 0 {
+		d.temperatureThresholds = cache
+	}
+}
+
+func (d *deviceImpl) fillEnergy(snap *types.GPUSnapshot) {
+	if d.isUnsupported("energy") {
+		return
+	}
+	mJ, ret := d.handle.GetTotalEnergyConsumption()
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		d.markUnsupported("energy")
+		return
+	}
+	if ret != gonvml.SUCCESS {
+		log.Printf("gpuobs: energy idx=%d: %s", d.index, gonvml.ErrorString(ret))
+		return
+	}
+	snap.EnergyConsumptionMilliJoules = mJ
+	snap.EnergySupported = true
+}
+
+// fillPcieLink은 현재 PCIe 링크의 동적 상태(gen / width)를 채운다.
+// gen/width 한 쪽만 미지원되는 카드는 사실상 없어 한 쪽이 NOT_SUPPORTED면 양쪽 모두 비활성 표시한다.
+func (d *deviceImpl) fillPcieLink(snap *types.GPUSnapshot) {
+	if d.isUnsupported("pcie_link") {
+		return
+	}
+	gen, ret := d.handle.GetCurrPcieLinkGeneration()
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		d.markUnsupported("pcie_link")
+		return
+	}
+	if ret != gonvml.SUCCESS {
+		log.Printf("gpuobs: pcie link gen idx=%d: %s", d.index, gonvml.ErrorString(ret))
+		return
+	}
+	width, ret := d.handle.GetCurrPcieLinkWidth()
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		d.markUnsupported("pcie_link")
+		return
+	}
+	if ret != gonvml.SUCCESS {
+		log.Printf("gpuobs: pcie link width idx=%d: %s", d.index, gonvml.ErrorString(ret))
+		return
+	}
+	snap.PcieLinkGenerationCurrent = uint32(gen)
+	snap.PcieLinkWidthCurrent = uint32(width)
+	snap.PcieLinkSupported = true
+}
+
+func (d *deviceImpl) fillPcieReplay(snap *types.GPUSnapshot) {
+	if d.isUnsupported("pcie_replay") {
+		return
+	}
+	count, ret := d.handle.GetPcieReplayCounter()
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		d.markUnsupported("pcie_replay")
+		return
+	}
+	if ret != gonvml.SUCCESS {
+		log.Printf("gpuobs: pcie replay idx=%d: %s", d.index, gonvml.ErrorString(ret))
+		return
+	}
+	snap.PcieReplayErrors = uint32(count)
+	snap.PcieReplaySupported = true
+}
+
+// fillTemperatureThresholds는 init에서 캐싱한 threshold 값을 매 poll snapshot에 복사만 한다(NVML 호출 0회).
+// 캐시가 비어 있으면 (모든 threshold가 init에서 미지원이었음) snapshot의 *Supported=false로 둔다.
+func (d *deviceImpl) fillTemperatureThresholds(snap *types.GPUSnapshot) {
+	if len(d.temperatureThresholds) == 0 {
+		return
+	}
+	// snapshot은 매 poll 새로 만들어지므로 같은 map을 공유해도 안전하다 (caller 측 mutation 없음).
+	snap.TemperatureThresholdsCelsius = d.temperatureThresholds
+	snap.TemperatureThresholdSupported = true
+}
+
+func (d *deviceImpl) fillEnforcedPowerLimit(snap *types.GPUSnapshot) {
+	if d.isUnsupported("enforced_power_limit") {
+		return
+	}
+	mW, ret := d.handle.GetEnforcedPowerLimit()
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		d.markUnsupported("enforced_power_limit")
+		return
+	}
+	if ret != gonvml.SUCCESS {
+		log.Printf("gpuobs: enforced power limit idx=%d: %s", d.index, gonvml.ErrorString(ret))
+		return
+	}
+	snap.PowerLimitEnforcedWatts = float64(mW) / 1000.0
+	snap.PowerLimitEnforcedSupported = true
+}
+
+func (d *deviceImpl) fillPersistenceMode(snap *types.GPUSnapshot) {
+	if d.isUnsupported("persistence_mode") {
+		return
+	}
+	state, ret := d.handle.GetPersistenceMode()
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		d.markUnsupported("persistence_mode")
+		return
+	}
+	if ret != gonvml.SUCCESS {
+		log.Printf("gpuobs: persistence mode idx=%d: %s", d.index, gonvml.ErrorString(ret))
+		return
+	}
+	if state == gonvml.FEATURE_ENABLED {
+		snap.PersistenceModeEnabled = 1
+	}
+	snap.PersistenceModeSupported = true
+}
+
+func (d *deviceImpl) fillComputeMode(snap *types.GPUSnapshot) {
+	if d.isUnsupported("compute_mode") {
+		return
+	}
+	mode, ret := d.handle.GetComputeMode()
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		d.markUnsupported("compute_mode")
+		return
+	}
+	if ret != gonvml.SUCCESS {
+		log.Printf("gpuobs: compute mode idx=%d: %s", d.index, gonvml.ErrorString(ret))
+		return
+	}
+	snap.ComputeMode = uint8(mode)
+	snap.ComputeModeSupported = true
+}
+
+// RunningProcesses는 compute(CUDA) + graphics(OpenGL/Vulkan) 모드 프로세스를 모두 합쳐 반환한다.
+// 같은 PID이 두 모드에 등장하는 경우 NVML이 보고하는 사용 메모리는 같은 GPU 할당을 두 view에서 본 값이라
+// 단순 합산은 double-count가 되므로 max를 채택한다.
+// compute 호출이 실패하면 그것을 결정적 에러로 간주해 즉시 반환하고, graphics 호출은 NOT_SUPPORTED 등을 흡수한다 — 즉 graphics 부재는 skip한다.
 func (d *deviceImpl) RunningProcesses() ([]types.GPUProcess, error) {
-	procs, ret := d.handle.GetComputeRunningProcesses()
-	if err := d.wrapErr("running processes", ret); err != nil {
+	compute, ret := d.handle.GetComputeRunningProcesses()
+	if err := d.wrapErr("running processes (compute)", ret); err != nil {
 		return nil, err
 	}
-	result := make([]types.GPUProcess, 0, len(procs))
-	for _, p := range procs {
+
+	// graphics 호출은 일부 GPU에서 NOT_SUPPORTED를 돌려줄 수 있으므로 실패도 nil 반환으로 흡수한다.
+	graphics, ret := d.handle.GetGraphicsRunningProcesses()
+	if ret != gonvml.SUCCESS && ret != gonvml.ERROR_NOT_SUPPORTED {
+		log.Printf("gpuobs: running processes (graphics) idx=%d: %s", d.index, gonvml.ErrorString(ret))
+		graphics = nil
+	}
+
+	// PID 단위로 dedupe + max memory 채택 — compute / graphics가 같은 GPU 할당을 두 view로 본다.
+	merged := make(map[uint32]uint64, len(compute)+len(graphics))
+	for _, p := range compute {
+		if p.UsedGpuMemory > merged[p.Pid] {
+			merged[p.Pid] = p.UsedGpuMemory
+		}
+	}
+	for _, p := range graphics {
+		if p.UsedGpuMemory > merged[p.Pid] {
+			merged[p.Pid] = p.UsedGpuMemory
+		}
+	}
+
+	result := make([]types.GPUProcess, 0, len(merged))
+	for pid, mem := range merged {
 		result = append(result, types.GPUProcess{
 			DeviceIndex:     d.index,
-			PID:             p.Pid,
-			MemoryUsedBytes: p.UsedGpuMemory,
+			PID:             pid,
+			MemoryUsedBytes: mem,
 		})
 	}
 	return result, nil
