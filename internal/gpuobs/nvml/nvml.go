@@ -6,6 +6,7 @@ package nvml
 import (
 	"fmt"
 	"log"
+	"sort"
 	"sync"
 
 	gonvml "github.com/NVIDIA/go-nvml/pkg/nvml"
@@ -871,5 +872,7 @@ func (d *deviceImpl) RunningProcesses() ([]types.GPUProcess, error) {
 			MemoryUsedBytes: mem,
 		})
 	}
+	// PID 오름차순 정렬로 결정성 확보 — collector 합산 결과는 순서 무관이지만 로그/디버깅/테스트 일관성을 위해.
+	sort.Slice(result, func(i, j int) bool { return result[i].PID < result[j].PID })
 	return result, nil
 }
