@@ -436,8 +436,9 @@ func (d *deviceImpl) fillPowerLimit(snap *types.GPUSnapshot) {
 // fillViolationStatus는 reason별 누적 throttle 시간을 모두 조회해 map에 채운다.
 // reason 한 종이 NOT_SUPPORTED여도 다른 reason은 유지될 수 있어 markUnsupported는 reason별 키로 분리한다.
 // 적어도 하나라도 성공하면 ViolationSupported=true로 설정해 metrics 계층이 발행 모드로 진입하게 한다.
+// 모든 reason이 미지원이거나 호출 실패만 있는 경우 map 자체를 alloc하지 않아 graceful skip 카드의 alloc 비용을 제거한다.
 func (d *deviceImpl) fillViolationStatus(snap *types.GPUSnapshot) {
-	times := make(map[string]uint64, len(violationReasons))
+	var times map[string]uint64
 	for _, r := range violationReasons {
 		key := "violation." + r.name
 		if d.isUnsupported(key) {
@@ -451,6 +452,9 @@ func (d *deviceImpl) fillViolationStatus(snap *types.GPUSnapshot) {
 		if ret != gonvml.SUCCESS {
 			log.Printf("gpuobs: violation %s idx=%d: %s", r.name, d.index, gonvml.ErrorString(ret))
 			continue
+		}
+		if times == nil {
+			times = make(map[string]uint64, len(violationReasons))
 		}
 		times[r.name] = v.ViolationTime
 	}
@@ -466,17 +470,15 @@ func (d *deviceImpl) fillViolationStatus(snap *types.GPUSnapshot) {
 func (d *deviceImpl) initGpm() {
 	support, ret := d.handle.GpmQueryDeviceSupport()
 	if ret != gonvml.SUCCESS {
-		// 다음 에러 코드들은 모두 "이 GPU/드라이버에서 GPM이 동작하지 않음"으로 동치 처리한다:
-		//   - ERROR_NOT_SUPPORTED: GPU 자체가 GPM 미지원 (대부분의 컨슈머 카드)
-		//   - ERROR_FUNCTION_NOT_FOUND: 구버전 드라이버에 GPM API 없음
-		//   - ERROR_ARGUMENT_VERSION_MISMATCH: 드라이버가 본 go-nvml의 struct 버전을 인식하지 못함 (RTX 3090 + 드라이버 560 등)
-		switch ret {
-		case gonvml.ERROR_NOT_SUPPORTED, gonvml.ERROR_FUNCTION_NOT_FOUND, gonvml.ERROR_ARGUMENT_VERSION_MISMATCH:
-			// graceful skip — markUnsupported가 1회 warn 로그 남김.
-		default:
-			log.Printf("gpuobs: gpm support query idx=%d: %s", d.index, gonvml.ErrorString(ret))
+		// 원인을 분리한다:
+		//   - ERROR_NOT_SUPPORTED: GPU 자체가 GPM 미지원 (대부분의 컨슈머 카드). markUnsupported가 1회 warn 로그를 남겨 운영자가 즉시 인지하게 한다.
+		//   - 그 외 (ERROR_FUNCTION_NOT_FOUND, ERROR_ARGUMENT_VERSION_MISMATCH 등): 드라이버 / API 버전 불일치 등으로 GPM "지원 여부 자체를 단정할 수 없는" 상태이므로
+		//     "not supported" warn 로그로 운영자를 오도하지 않고 ret 코드를 그대로 남긴다. 어떤 경로든 gpmDeviceSupport=false가 유지되어 fillGpm은 매 poll silent skip한다.
+		if ret == gonvml.ERROR_NOT_SUPPORTED {
+			d.markUnsupported("gpm")
+		} else {
+			log.Printf("gpuobs: gpm support query idx=%d failed: ret=%d (%s); GPM remains uninitialized", d.index, ret, gonvml.ErrorString(ret))
 		}
-		d.markUnsupported("gpm")
 		return
 	}
 	if support.IsSupportedDevice == 0 {
@@ -488,12 +490,16 @@ func (d *deviceImpl) initGpm() {
 	for i := 0; i < 2; i++ {
 		s, ret := gonvml.GpmSampleAlloc()
 		if ret != gonvml.SUCCESS {
-			log.Printf("gpuobs: gpm sample alloc idx=%d slot=%d: %s", d.index, i, gonvml.ErrorString(ret))
-			// 일부 alloc 성공 후 실패한 경우 부분 free.
+			// alloc 실패는 호스트 메모리 부족 등 일시적 자원 문제일 수 있어 "미지원"으로 영구 캐시하지 않는다.
+			// 영구 unsupported 캐시 대신 ret 코드를 보존해 운영자가 원인을 추적할 수 있게 한다.
+			// 결과적으로 gpmAllocated=false / gpmDeviceSupport=false 상태가 유지되어 fillGpm/Close 모두 nop이며,
+			// agent 재기동 시 다시 init을 시도할 수 있다.
+			log.Printf("gpuobs: gpm sample alloc failed idx=%d slot=%d ret=%d (%s); GPM remains uninitialized", d.index, i, ret, gonvml.ErrorString(ret))
+			// 일부 alloc 성공 후 실패한 경우 부분 free + 슬롯 nil 클리어 (use-after-free 방어).
 			for j := 0; j < i; j++ {
 				_ = d.gpmSamples[j].Free()
+				d.gpmSamples[j] = nil
 			}
-			d.markUnsupported("gpm")
 			return
 		}
 		d.gpmSamples[i] = s
