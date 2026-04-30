@@ -107,8 +107,11 @@ type deviceImpl struct {
 	// 이후 GpmSampleGet으로 재사용(write back)한다. gpmPreviousIdx는 직전 sample을 담은 슬롯 인덱스(0/1)로,
 	// -1은 "아직 sample을 받은 적 없음"을 뜻한다.
 	// gpmDeviceSupport=false면 fillGpm은 매 poll에서 즉시 return하며 sample 버퍼는 할당되지 않는다.
-	// 본 필드들은 Snapshot 단일 goroutine 계약 아래서만 변경되며, Close는 collector ctx 종료 후 호출되어
-	// Snapshot과 동시 실행되지 않는다. 따라서 별도 mutex는 두지 않는다.
+	// 본 필드들은 unsupported map과 동일한 mu(RWMutex)로 보호한다 — 현재 collector usage는
+	// Snapshot/Close가 select-case로 직렬화되지만 Device 인터페이스가 public이라 향후 동시 호출
+	// 가능성을 차단해 두고, fillGpm과 Close 사이의 sample 버퍼 race(예: Close의 nil 클리어 도중
+	// fillGpm이 인덱싱하면서 발생하는 nil interface deref)를 원천적으로 막는다.
+	// 단, initGpm은 Device가 caller에 반환되기 전 생성자 단계에서만 실행되므로 Lock 불필요.
 	gpmDeviceSupport bool
 	gpmAllocated     bool
 	gpmSamples       [2]gonvml.GpmSample
@@ -510,7 +513,13 @@ func (d *deviceImpl) initGpm() {
 
 // fillGpm은 ping-pong 슬롯에 sample을 받고 두 sample이 모이면 GpmMetricsGet으로 평균 사용률을 산출한다.
 // 첫 호출에서는 GpmFirstSampleReady=false로 채워 metrics 계층이 발행을 건너뛴다.
+// GPM 상태(gpmDeviceSupport / gpmAllocated / gpmSamples / gpmPreviousIdx)는 deviceImpl.mu로 보호되며,
+// 본 함수는 NVML I/O(GpmSampleGet, GpmMetricsGet) 호출 동안에도 Lock을 유지해
+// Close가 sample 버퍼를 free·nil 클리어하는 시점과 정확히 직렬화된다.
+// 본 함수는 unsupported map을 직접 읽거나 markUnsupported를 호출하지 않으므로 mu 재진입 위험 없음.
 func (d *deviceImpl) fillGpm(snap *types.GPUSnapshot) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if !d.gpmDeviceSupport || !d.gpmAllocated {
 		return
 	}
@@ -572,9 +581,11 @@ func (d *deviceImpl) fillGpm(snap *types.GPUSnapshot) {
 }
 
 // Close는 device가 alloc한 GPM sample 버퍼를 해제한다. collector.Run이 ctx 취소 후 NVML.Shutdown 직전에 호출한다.
-// 본 함수가 호출되는 시점에는 Snapshot이 더 이상 호출되지 않음을 collector가 보장한다.
-// 호출이 두 번 들어오더라도 두 번째는 gpmAllocated=false 가드로 nop.
+// collector usage에서는 Snapshot과 동시 실행되지 않지만, Device 인터페이스가 public이라 mu로 fillGpm과
+// 직렬화한다. 호출이 두 번 들어오더라도 두 번째는 gpmAllocated=false 가드로 nop.
 func (d *deviceImpl) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if !d.gpmAllocated {
 		return nil
 	}
