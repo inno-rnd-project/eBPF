@@ -78,7 +78,7 @@ var throttleReasonBits = []struct {
 
 // lastEccAbsolute는 device(UUID)별 error_type별 직전 poll의 NVML 절대값을 보관한다.
 // VOLATILE_ECC가 노드 부팅 이후 누적값을 반환하므로 delta = current - prev 로 Counter.Add에 쓴다.
-// current < prev 인 경우(드라이버 리셋 등)는 reset으로 간주하고 current 자체를 delta로 더한다.
+// current < prev (드라이버 리셋 등) 시에는 데이터 연속성 단절로 간주해 가산을 건너뛰고 새 baseline으로만 갱신한다 — 거짓 spike 회피.
 // 호출자는 단일 goroutine(collector pollOnce)이지만 본 변수가 패키지 전역이고 Record가
 // public 함수라 향후 호출 패턴 변경에 대비해 lastEccAbsoluteMu로 보호한다.
 var (
@@ -89,6 +89,7 @@ var (
 // lastViolationAbsolute는 device(UUID)별 reason별 직전 poll의 NVML 누적 ns 값을 보관한다.
 // ECC와 동일한 baseline-then-delta 패턴이지만 단위는 nanoseconds이고, Counter.Add 시 1e9로 나눠 seconds로 환산한다.
 // 첫 poll은 baseline만 저장(Add 건너뜀)해 "에이전트 기동 이후 신규 throttle 시간"이라는 counter 의미를 보존한다.
+// current < prev (드라이버 리셋 등) 시에는 가산을 건너뛰고 새 baseline으로만 갱신해 dashboard 거짓 spike를 회피한다.
 var (
 	lastViolationAbsolute   = make(map[string]uint64)
 	lastViolationAbsoluteMu sync.Mutex
@@ -96,6 +97,7 @@ var (
 
 // lastEnergyAbsolute는 device(UUID)별 NVML 누적 에너지 (mJ since driver load) 직전 poll 값을 보관한다.
 // ECC/Violation과 동일한 baseline-then-delta 패턴이며 발행 시점에 mJ → J 환산한다.
+// driver reload 등으로 current < prev 일 때는 가산을 건너뛰고 새 baseline 으로만 갱신한다.
 var (
 	lastEnergyAbsolute   = make(map[string]uint64)
 	lastEnergyAbsoluteMu sync.Mutex
@@ -103,6 +105,7 @@ var (
 
 // lastPcieReplayAbsolute는 device(UUID)별 PCIe replay counter 직전 poll 값을 보관한다.
 // NVML이 uint32로 반환하는 누적값이며 baseline-then-delta로 처리한다.
+// uint32 wrap-around 또는 driver reload 시 current < prev 가 발생할 수 있으며 이 경우 가산을 건너뛰고 새 baseline 만 갱신한다.
 var (
 	lastPcieReplayAbsolute   = make(map[string]uint32)
 	lastPcieReplayAbsoluteMu sync.Mutex
@@ -558,7 +561,7 @@ func Record(node string, snap types.GPUSnapshot) {
 
 	// 정적 device 특성과 펌웨어 정보는 매 poll 같은 라벨 값으로 idempotent Set한다.
 	// 라벨 값이 device 수명 동안 불변이므로 동일 시리즈가 유지되고, 일부 NVML 호출이 init에서 실패해 zero value로 남은 필드는
-	// "0" / 빈 문자열로 라벨에 들어가도 카디널리티 폭증 없이 device당 1 시리즈만 노출된다.
+	// 정수 필드는 "0", 문자열 필드는 fallbackString으로 "unknown" 으로 치환되어 카디널리티 폭증 없이 device당 1 시리즈만 노출된다.
 	deviceInfo.WithLabelValues(
 		node, uuid, idx, model,
 		formatComputeCapability(snap.Device.CudaComputeMajor, snap.Device.CudaComputeMinor),
@@ -595,7 +598,7 @@ func fallbackString(s, fallback string) string {
 // 첫 호출(prev 미존재)은 baseline만 저장하고 Add를 건너뛴다 — 에이전트 기동 이전에 이미 누적되어
 // 있던 NVML VOLATILE 값이 한 번에 counter로 반영되지 않게 해, "에이전트 기동 이후 신규 ECC"라는
 // counter 의미(README 명시)를 정확히 보존한다.
-// current < prev (드라이버 리셋 / GPU 리셋 등)인 경우 reset으로 간주해 current 자체를 delta로 적용한다.
+// current < prev (드라이버 리셋 / GPU 리셋 등) 시에는 데이터 연속성 단절로 간주해 가산을 건너뛰고 새 baseline 으로만 갱신한다 — 거짓 spike 회피.
 // lastEccAbsoluteMu가 패키지 전역 map 접근을 보호한다.
 func recordEccDelta(node, uuid, idx, model, errorType string, current uint64) {
 	key := uuid + "/" + errorType

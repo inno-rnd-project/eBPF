@@ -9,12 +9,12 @@ type GPUDevice struct {
 	UUID  string
 	Model string
 
-	// CudaCompute*는 GetCudaComputeCapability 결과(major.minor). 빈 값이면 NVML 호출 실패로 미수집된 상태.
+	// CudaCompute*는 GetCudaComputeCapability 결과(major.minor). 0/0이면 NVML 호출 실패로 미수집된 상태.
 	CudaComputeMajor int
 	CudaComputeMinor int
 
-	// Architecture는 GetArchitecture를 사람이 읽을 수 있는 이름("Ampere"/"Ada"/"Hopper"/"Blackwell" 등)으로 매핑한 값이다.
-	// 매핑 불가능한 enum이면 "unknown"으로 채운다.
+	// Architecture는 GetArchitecture 결과를 사람이 읽을 수 있는 소문자 이름("ampere"/"ada"/"hopper"/"blackwell" 등) 으로 매핑한 값이다.
+	// 매핑 불가능한 enum이면 "unknown"으로 채운다. 라벨 값으로 그대로 노출되므로 케이스 일관성을 유지한다.
 	Architecture string
 
 	// MaxPcieLink* 는 GetMaxPcieLinkGeneration / GetMaxPcieLinkWidth 결과. 0이면 미수집.

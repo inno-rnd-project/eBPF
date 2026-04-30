@@ -220,7 +220,7 @@ On NVML initialization failure (non-GPU node, driver missing) or when `GPU_METRI
 
 ## Observability — netobs/gpuobs Correlation
 
-netobs와 gpuobs는 동일한 4개 라벨 키 (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) 를 노출해 PromQL `* on(node, src_namespace, src_pod, src_pod_uid) group_left(...)` 패턴으로 join 가능하다. 이 절은 양쪽 메트릭 라벨 일치성 표, recording rule 카탈로그, dashboard 작성 시 즉시 활용 가능한 PromQL 예제 6종을 정의한다.
+netobs와 gpuobs는 동일한 4개 라벨 키 (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) 를 노출해 PromQL `* on(node, src_namespace, src_pod, src_pod_uid) group_left(...)` 패턴으로 join 가능하다. 이 절은 양쪽 메트릭 라벨 일치성 표, recording rule 카탈로그, dashboard 작성 시 즉시 활용 가능한 PromQL 예제 9종을 정의한다.
 
 ### Pod-level 라벨 일치성 (4-key join)
 
@@ -242,12 +242,12 @@ PrometheusRule CR `netobs-gpuobs-correlation` 에 group `netobs-gpuobs.recording
 | `pod:gpu_memory_used_avg:5m` | bytes | `avg_over_time(gpuobs_pod_memory_used_bytes[5m])` |
 | `pod:network_egress_rate:5m` | events/sec | `sum by(node, src_namespace, src_pod, src_pod_uid) (rate(netobs_pod_stage_events_labeled_total{direction="egress"}[5m]))` |
 | `node:gpu_throttle_seconds:rate5m` | seconds/sec | `sum by(node, reason) (rate(gpuobs_device_throttle_violation_seconds_total[5m]))` |
-| `node:gpu_power_headroom_watts` | watts | `gpuobs_device_power_limit_watts - gpuobs_device_power_usage_watts` |
+| `node:gpu_power_headroom_watts` | watts | `min by(node) (gpuobs_device_power_limit_watts - gpuobs_device_power_usage_watts)` — 노드 내 가장 위험한 GPU 기준 |
 | `pod:gpu_memory_utilization_ratio:5m` | 0-1 | `avg_over_time(gpuobs_pod_memory_used_bytes[5m]) / on(node, gpu_uuid, gpu_index) group_left() gpuobs_device_memory_total_bytes` |
 | `node:gpu_ecc_errors:rate5m` | errors/sec | `sum by(node, error_type) (rate(gpuobs_device_ecc_errors_total[5m]))` |
 | `node:gpu_energy_watts_avg:5m` | watts | `sum by(node) (rate(gpuobs_device_energy_consumption_joules_total[5m]))` — J/sec = W 단위로 5분 평균 전력 |
 | `node:gpu_pcie_replay:rate5m` | errors/sec | `sum by(node) (rate(gpuobs_device_pcie_replay_errors_total[5m]))` — PCIe 헬스 |
-| `node:gpu_temperature_headroom_celsius` | celsius | `gpuobs_device_temperature_threshold_celsius - ignoring(threshold) group_left() gpuobs_device_temperature_celsius` — threshold별 thermal 안전 마진. 두 메트릭의 라벨 차이가 `threshold` 하나뿐이라 `ignoring(threshold) group_left()` many-to-one 매칭으로 안전하게 산출 |
+| `node:gpu_temperature_headroom_celsius` | celsius | `min by(node, threshold) (gpuobs_device_temperature_threshold_celsius - ignoring(threshold) group_left() gpuobs_device_temperature_celsius)` — threshold별 thermal 안전 마진. 노드 내 가장 위험한 GPU 기준으로 (node, threshold) 당 1 시리즈 |
 
 > **빈 시리즈 정상 케이스**: `pod:gpu_memory_used_avg:5m` / `pod:gpu_memory_utilization_ratio:5m` 는 GPU를 사용하는 Pod이 없으면 base 시리즈가 부재해 빈 결과를 산출한다. `node:gpu_ecc_errors:rate5m` 은 컨슈머 GPU(RTX 3090 등) 에서 ECC 미지원으로 base 시리즈 자체가 발행되지 않아 빈 결과가 정상 동작이다.
 
@@ -334,10 +334,12 @@ PROM_POD=$(kubectl -n monitoring get pod -l app.kubernetes.io/name=prometheus -o
 kubectl -n monitoring exec $PROM_POD -c prometheus -- \
   ls /etc/prometheus/rules/prometheus-kube-prometheus-stack-prometheus-rulefiles-0/ | grep correlation
 
-# 3) 각 record가 산출하는 시리즈 수 확인
+# 3) 각 record가 산출하는 시리즈 수 확인 (rule 10종 전체)
 for q in 'node:gpu_util_p95:5m' 'pod:gpu_memory_used_avg:5m' 'pod:network_egress_rate:5m' \
          'node:gpu_throttle_seconds:rate5m' 'node:gpu_power_headroom_watts' \
-         'pod:gpu_memory_utilization_ratio:5m' 'node:gpu_ecc_errors:rate5m'; do
+         'pod:gpu_memory_utilization_ratio:5m' 'node:gpu_ecc_errors:rate5m' \
+         'node:gpu_energy_watts_avg:5m' 'node:gpu_pcie_replay:rate5m' \
+         'node:gpu_temperature_headroom_celsius'; do
   kubectl -n monitoring exec $PROM_POD -c prometheus -- \
     wget -qO- "http://localhost:9090/api/v1/query?query=${q}"
 done

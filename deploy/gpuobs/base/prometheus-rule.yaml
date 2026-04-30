@@ -45,10 +45,11 @@ spec:
           expr: sum by(node, reason) (rate(gpuobs_device_throttle_violation_seconds_total[5m]))
 
         # node:gpu_power_headroom_watts
-        # 현재 power_limit과 power_usage의 차. 음수면 limit 근접/초과 상태. 두 메트릭이 동일 라벨 셋(node, gpu_uuid, gpu_index, gpu_model)을
-        # 가져 추가 join 키 없이 1:1 매칭된다.
+        # 노드 단위 GPU power headroom — limit과 사용량의 차를 GPU별로 산출한 뒤 노드 내 최솟값(min)을 채택해
+        # "노드의 가장 위험한 GPU" 기준으로 노드당 1 시리즈로 요약한다. 음수면 limit 근접/초과 상태.
+        # node: 접두사 규약에 맞춰 노드 차원으로 rollup하며, GPU별 상세는 raw 메트릭(gpuobs_device_power_*)에서 확인한다.
         - record: node:gpu_power_headroom_watts
-          expr: gpuobs_device_power_limit_watts - gpuobs_device_power_usage_watts
+          expr: min by(node) (gpuobs_device_power_limit_watts - gpuobs_device_power_usage_watts)
 
         # pod:gpu_memory_utilization_ratio:5m
         # pod의 5분 평균 메모리 사용량을 device 총 메모리로 나눈 비율(0-1). group_left로 device 라벨은 취하지 않고
@@ -75,8 +76,8 @@ spec:
           expr: sum by(node) (rate(gpuobs_device_pcie_replay_errors_total[5m]))
 
         # node:gpu_temperature_headroom_celsius
-        # threshold별 thermal 헤드룸. 양수면 안전 마진, 0 이하면 throttle/shutdown 임박.
-        # 두 메트릭의 라벨 차이는 LHS의 threshold 라벨 하나뿐이므로 ignoring(threshold)로 매칭한다.
-        # device당 LHS는 N 시리즈(threshold별), RHS는 1 시리즈라 many-to-one이고, 이를 명시하기 위해 group_left()를 함께 둔다.
+        # 노드 x threshold 단위 thermal headroom — GPU별 (threshold − 현재 온도) 를 산출한 뒤 노드 내 최솟값(min)을 채택해
+        # "노드의 가장 위험한 GPU" 기준으로 (node, threshold) 당 1 시리즈로 요약한다. 양수면 안전 마진, 0 이하면 throttle/shutdown 임박.
+        # 두 원본 메트릭의 라벨 차이는 LHS의 threshold 라벨 하나뿐이라 ignoring(threshold) group_left() 로 many-to-one 매칭한 뒤 노드로 rollup한다.
         - record: node:gpu_temperature_headroom_celsius
-          expr: gpuobs_device_temperature_threshold_celsius - ignoring(threshold) group_left() gpuobs_device_temperature_celsius
+          expr: min by(node, threshold) (gpuobs_device_temperature_threshold_celsius - ignoring(threshold) group_left() gpuobs_device_temperature_celsius)
