@@ -208,6 +208,107 @@ On NVML initialization failure (non-GPU node, driver missing) or when `GPU_METRI
 
 > **hostPID requirement**: NVML returns host-namespace PIDs, so the gpuobs DaemonSet sets `hostPID: true` to read `/proc/<pid>/cgroup` for Pod UID extraction. The container remains non-privileged with `capabilities.drop: ALL`; only read access to procfs is gained.
 
+## Observability — netobs/gpuobs Correlation
+
+netobs와 gpuobs는 동일한 4개 라벨 키 (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) 를 노출해 PromQL `* on(node, src_namespace, src_pod, src_pod_uid) group_left(...)` 패턴으로 join 가능하다. 이 절은 양쪽 메트릭 라벨 일치성 표, recording rule 카탈로그, dashboard 작성 시 즉시 활용 가능한 PromQL 예제 6종을 정의한다.
+
+### Pod-level 라벨 일치성 (4-key join)
+
+| Metric | 공통 join 키 | 추가 라벨 |
+|---|---|---|
+| `netobs_pod_stage_events_labeled_total` | `node`, `src_namespace`, `src_pod`, `src_pod_uid` | `stage`, `traffic_scope`, `direction` |
+| `netobs_pod_stage_latency_labeled_seconds` | `node`, `src_namespace`, `src_pod`, `src_pod_uid` | `stage`, `traffic_scope`, `direction` |
+| `gpuobs_pod_memory_used_bytes` | `node`, `src_namespace`, `src_pod`, `src_pod_uid` | `gpu_uuid`, `gpu_index` |
+
+`netobs_pod_stage_events_total` / `netobs_pod_stage_latency_seconds` 등 workload-level (`src_workload`) 메트릭은 pod-instance 키 셋이 다르므로 본 join 대상이 아니다. gpuobs `_device_*` 메트릭(`gpu_uuid` / `gpu_index` 만 가짐) 은 노드 / GPU 단위 분석용으로 별도 group 처리한다.
+
+### Recording rules (`deploy/gpuobs/base/prometheus-rule.yaml`)
+
+PrometheusRule CR `netobs-gpuobs-correlation` 에 group `netobs-gpuobs.recording` (interval 30s) 으로 배포한다. agent base kustomization에 포함되어 `make deploy-gpuobs-{dev,prod}` 시 함께 배포된다.
+
+| Record | 단위 | 표현식 골자 |
+|---|---|---|
+| `node:gpu_util_p95:5m` | 0-100 | `max by(node) (quantile_over_time(0.95, gpuobs_device_utilization_percent[5m]))` |
+| `pod:gpu_memory_used_avg:5m` | bytes | `avg_over_time(gpuobs_pod_memory_used_bytes[5m])` |
+| `pod:network_egress_rate:5m` | events/sec | `sum by(node, src_namespace, src_pod, src_pod_uid) (rate(netobs_pod_stage_events_labeled_total{direction="egress"}[5m]))` |
+| `node:gpu_throttle_seconds:rate5m` | seconds/sec | `sum by(node, reason) (rate(gpuobs_device_throttle_violation_seconds_total[5m]))` |
+| `node:gpu_power_headroom_watts` | watts | `gpuobs_device_power_limit_watts - gpuobs_device_power_usage_watts` |
+| `pod:gpu_memory_utilization_ratio:5m` | 0-1 | `avg_over_time(gpuobs_pod_memory_used_bytes[5m]) / on(node, gpu_uuid, gpu_index) group_left() gpuobs_device_memory_total_bytes` |
+| `node:gpu_ecc_errors:rate5m` | errors/sec | `sum by(node, error_type) (rate(gpuobs_device_ecc_errors_total[5m]))` |
+
+> **빈 시리즈 정상 케이스**: `pod:gpu_memory_used_avg:5m` / `pod:gpu_memory_utilization_ratio:5m` 는 GPU를 사용하는 Pod이 없으면 base 시리즈가 부재해 빈 결과를 산출한다. `node:gpu_ecc_errors:rate5m` 은 컨슈머 GPU(RTX 3090 등) 에서 ECC 미지원으로 base 시리즈 자체가 발행되지 않아 빈 결과가 정상 동작이다.
+
+> **rule 명명 규칙 — `pod:network_egress_rate:5m` 단위**: netobs는 byte 카운터를 노출하지 않으므로 본 record 의 단위는 events/sec(이벤트 빈도) 이며 byte rate가 아님. dashboard에서 "egress 트래픽 강도" 추세 지표로 활용한다.
+
+### PromQL 예제
+
+#### 1. 노드별 GPU 평균 사용률
+```promql
+avg by(node) (gpuobs_device_utilization_percent)
+```
+
+#### 2. throttle reason 분해 (현재 활성 reason 표시)
+```promql
+sum by(reason) (gpuobs_device_throttle_active)
+```
+
+#### 3. clock 도메인별 평균 frequency
+```promql
+avg by(clock) (gpuobs_device_clock_mhz)
+```
+
+#### 4. Pod별 GPU 메모리 + 네트워크 활동 join (4-key)
+```promql
+gpuobs_pod_memory_used_bytes
+  * on(node, src_namespace, src_pod, src_pod_uid) group_left()
+  sum by(node, src_namespace, src_pod, src_pod_uid) (
+    rate(netobs_pod_stage_events_labeled_total[5m])
+  )
+```
+
+#### 5. Pod 네트워크 latency p95와 GPU 메모리 동시 표기
+```promql
+# 1) latency p95
+histogram_quantile(0.95,
+  sum by(le, node, src_namespace, src_pod, src_pod_uid) (
+    rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])
+  )
+)
+# 2) 같은 키로 GPU 메모리 join — group_left로 pod 라벨 보존
+* on(node, src_namespace, src_pod, src_pod_uid) group_left()
+  gpuobs_pod_memory_used_bytes
+```
+
+#### 6. GPM 라벨 분해 (데이터센터 GPU 한정)
+```promql
+# 데이터센터 GPU 노드에서만 시리즈 산출. RTX 3090 등 컨슈머 카드는 빈 결과.
+gpuobs_device_gpm_utilization_percent{gpm_metric="sm_occupancy"}
+```
+
+### 검증 방법
+
+dev 배포 후 PrometheusRule 등록 + 시리즈 산출을 다음 절차로 확인한다.
+
+```bash
+# 1) PrometheusRule CR 등록 확인
+kubectl -n ebpf-project get prometheusrules
+
+# 2) Prometheus operator pickup 확인 (rule 파일이 mount되었는지)
+PROM_POD=$(kubectl -n monitoring get pod -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
+kubectl -n monitoring exec $PROM_POD -c prometheus -- \
+  ls /etc/prometheus/rules/prometheus-kube-prometheus-stack-prometheus-rulefiles-0/ | grep correlation
+
+# 3) 각 record가 산출하는 시리즈 수 확인
+for q in 'node:gpu_util_p95:5m' 'pod:gpu_memory_used_avg:5m' 'pod:network_egress_rate:5m' \
+         'node:gpu_throttle_seconds:rate5m' 'node:gpu_power_headroom_watts' \
+         'pod:gpu_memory_utilization_ratio:5m' 'node:gpu_ecc_errors:rate5m'; do
+  kubectl -n monitoring exec $PROM_POD -c prometheus -- \
+    wget -qO- "http://localhost:9090/api/v1/query?query=${q}"
+done
+```
+
+5분 윈도우 record는 평가 시작 5분 후부터 의미 있는 결과를 내므로 검증은 충분한 대기 후 수행한다.
+
 ## Notes
 
 - If `bpf/netlat.bpf.c` changes, regenerate the embedded BPF artifacts first:
