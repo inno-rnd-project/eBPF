@@ -61,6 +61,43 @@ type GPUSnapshot struct {
 	// uint8 범위로 충분 (NVML enum 값이 32 이하).
 	PerformanceState          uint8
 	PerformanceStateSupported bool
+
+	// FanSpeedPct는 GetFanSpeed가 반환하는 fan duty cycle (0-100) 이다.
+	// passive cooling 카드(데이터센터 GPU 다수)는 NOT_SUPPORTED를 돌려주므로 *Supported 게이트가 필요하다.
+	FanSpeedPct       uint
+	FanSpeedSupported bool
+
+	// BAR1MemoryUsed/Total는 GetBAR1MemoryInfo가 보고하는 PCIe BAR1 메모리(호스트가 직접 매핑하는 영역)의
+	// 사용량 / 총량 (bytes). MIG/vGPU 환경에서 NOT_SUPPORTED 가능성이 있어 BAR1Supported로 게이트한다.
+	BAR1MemoryUsedBytes  uint64
+	BAR1MemoryTotalBytes uint64
+	BAR1Supported        bool
+
+	// PowerLimitWatts는 GetPowerManagementLimit가 보고하는 현재 적용된 power limit (Watts).
+	// NVML이 milliwatts로 반환하므로 nvml 계층에서 1000으로 나눠 채운다.
+	// 미지원 GPU에서는 PowerLimitSupported=false.
+	PowerLimitWatts     float64
+	PowerLimitSupported bool
+
+	// ViolationTimesNs는 GetViolationStatus가 PerfPolicyType별로 반환한 누적 throttle 시간 (nanoseconds, since boot).
+	// 키는 reason 라벨 문자열("power", "thermal", ...)이고 값은 NVML 절대 누적값이다.
+	// metrics 계층은 ECC와 동일하게 직전 poll 값을 빼 양수 delta만 Counter.Add에 사용한다.
+	// 일부 reason만 지원되는 카드도 있어 fill 단계에서 reason별 NOT_SUPPORTED를 흡수하고,
+	// 적어도 하나라도 성공하면 ViolationSupported=true로 설정한다.
+	ViolationTimesNs   map[string]uint64
+	ViolationSupported bool
+
+	// GPM* 시리즈는 NVML GPM (GPU Performance Monitoring) API가 두 sample 사이의 평균 사용률을 % 단위로 반환한 값이다.
+	// 데이터센터 GPU(H100/A100 등) 전용 기능이라 컨슈머 카드(RTX 3090 등)에서는 GpmQueryDeviceSupport가
+	// IsSupportedDevice=0을 반환한다. 그 경우 GpmSupported=false로 채워 metrics 계층에서 발행을 건너뛴다.
+	// 또한 GPM은 두 sample이 모여야 첫 metric 산출이 가능하므로 첫 poll에서는 GpmFirstSampleReady=false 상태로
+	// 값 발행을 건너뛴다.
+	GpmGraphicsUtilPct  float64
+	GpmSMOccupancyPct   float64
+	GpmTensorActivePct  float64
+	GpmDramBandwidthPct float64
+	GpmSupported        bool
+	GpmFirstSampleReady bool
 }
 
 // GPUProcess는 특정 GPU에서 실행 중인 프로세스 단위 기록이다.

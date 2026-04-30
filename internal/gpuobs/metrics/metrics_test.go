@@ -19,7 +19,7 @@ func resetPodMetricsState(t *testing.T) {
 	lastPodSampleKeys = make(map[string]struct{})
 }
 
-// resetDeviceMetricsState는 패키지 레벨 device gauge/counter와 ECC delta 추적기를 초기화한다.
+// resetDeviceMetricsState는 패키지 레벨 device gauge/counter와 ECC/Violation delta 추적기를 초기화한다.
 // counter는 Reset() 후 새 series를 만들 때부터 0에서 시작해 Add(delta)가 올바르게 누적된다.
 func resetDeviceMetricsState(t *testing.T) {
 	t.Helper()
@@ -37,7 +37,14 @@ func resetDeviceMetricsState(t *testing.T) {
 	deviceEncoderUtilization.Reset()
 	deviceDecoderUtilization.Reset()
 	devicePerformanceState.Reset()
+	deviceFanSpeed.Reset()
+	deviceBAR1MemoryUsed.Reset()
+	deviceBAR1MemoryTotal.Reset()
+	devicePowerLimit.Reset()
+	deviceThrottleViolationSeconds.Reset()
+	deviceGpmUtilization.Reset()
 	lastEccAbsolute = make(map[string]uint64)
+	lastViolationAbsolute = make(map[string]uint64)
 }
 
 func samplePod(ns, name, uid string) kube.PodIdentity {
@@ -220,6 +227,24 @@ func fullySupportedSnap() types.GPUSnapshot {
 		DecoderSupported:          true,
 		PerformanceState:          0,
 		PerformanceStateSupported: true,
+		FanSpeedPct:               55,
+		FanSpeedSupported:         true,
+		BAR1MemoryUsedBytes:       64 * 1024 * 1024,
+		BAR1MemoryTotalBytes:      256 * 1024 * 1024,
+		BAR1Supported:             true,
+		PowerLimitWatts:           350.0,
+		PowerLimitSupported:       true,
+		ViolationTimesNs: map[string]uint64{
+			"power":   1_000_000_000, // 1s
+			"thermal": 500_000_000,   // 0.5s
+		},
+		ViolationSupported:  true,
+		GpmGraphicsUtilPct:  42.5,
+		GpmSMOccupancyPct:   31.0,
+		GpmTensorActivePct:  10.0,
+		GpmDramBandwidthPct: 22.0,
+		GpmSupported:        true,
+		GpmFirstSampleReady: true,
 	}
 }
 
@@ -395,6 +420,11 @@ func TestRecord_UnsupportedFlagsSkipMetricEmission(t *testing.T) {
 	snap.EncoderSupported = false
 	snap.DecoderSupported = false
 	snap.PerformanceStateSupported = false
+	snap.FanSpeedSupported = false
+	snap.BAR1Supported = false
+	snap.PowerLimitSupported = false
+	snap.ViolationSupported = false
+	snap.GpmSupported = false
 	Record("n", snap)
 
 	mustZeroGauges := []*prometheus.GaugeVec{
@@ -402,6 +432,8 @@ func TestRecord_UnsupportedFlagsSkipMetricEmission(t *testing.T) {
 		deviceThrottleActive, deviceClockMhz,
 		deviceEncoderUtilization, deviceDecoderUtilization,
 		devicePerformanceState,
+		deviceFanSpeed, deviceBAR1MemoryUsed, deviceBAR1MemoryTotal,
+		devicePowerLimit, deviceGpmUtilization,
 	}
 	for _, g := range mustZeroGauges {
 		if got := testutil.CollectAndCount(g); got != 0 {
@@ -410,5 +442,110 @@ func TestRecord_UnsupportedFlagsSkipMetricEmission(t *testing.T) {
 	}
 	if got := testutil.CollectAndCount(deviceEccErrors); got != 0 {
 		t.Errorf("ECC counter must remain empty when unsupported; got %d series", got)
+	}
+	if got := testutil.CollectAndCount(deviceThrottleViolationSeconds); got != 0 {
+		t.Errorf("Violation counter must remain empty when unsupported; got %d series", got)
+	}
+}
+
+func TestRecord_FanSpeedAndBAR1AndPowerLimit(t *testing.T) {
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnap()
+	Record("n", snap)
+
+	if got := testutil.ToFloat64(deviceFanSpeed.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != 55 {
+		t.Errorf("fan speed=%v want 55", got)
+	}
+	if got := testutil.ToFloat64(deviceBAR1MemoryUsed.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != float64(64*1024*1024) {
+		t.Errorf("bar1 used=%v", got)
+	}
+	if got := testutil.ToFloat64(deviceBAR1MemoryTotal.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != float64(256*1024*1024) {
+		t.Errorf("bar1 total=%v", got)
+	}
+	if got := testutil.ToFloat64(devicePowerLimit.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != 350.0 {
+		t.Errorf("power limit=%v want 350", got)
+	}
+}
+
+func TestRecord_GpmFirstSampleSkipped(t *testing.T) {
+	// 첫 sample만 받은 직후 (FirstSampleReady=false) GPM 4종 series가 만들어지지 않아야 한다.
+	// nvml 계층의 GPM ping-pong 패턴이 metrics 발행 단계와 정확히 맞물려야 함을 고정한다.
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnap()
+	snap.GpmFirstSampleReady = false
+	Record("n", snap)
+
+	if got := testutil.CollectAndCount(deviceGpmUtilization); got != 0 {
+		t.Errorf("first GPM sample must not emit metrics; series=%d", got)
+	}
+}
+
+func TestRecord_GpmAllFourMetricsLabeled(t *testing.T) {
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnap()
+	Record("n", snap)
+
+	if got := testutil.ToFloat64(deviceGpmUtilization.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "graphics_util")); got != 42.5 {
+		t.Errorf("gpm graphics_util=%v want 42.5", got)
+	}
+	if got := testutil.ToFloat64(deviceGpmUtilization.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "sm_occupancy")); got != 31.0 {
+		t.Errorf("gpm sm_occupancy=%v want 31", got)
+	}
+	if got := testutil.ToFloat64(deviceGpmUtilization.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "tensor_active")); got != 10.0 {
+		t.Errorf("gpm tensor_active=%v want 10", got)
+	}
+	if got := testutil.ToFloat64(deviceGpmUtilization.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "dram_bandwidth")); got != 22.0 {
+		t.Errorf("gpm dram_bandwidth=%v want 22", got)
+	}
+	if got := testutil.CollectAndCount(deviceGpmUtilization); got != 4 {
+		t.Errorf("expected 4 GPM series (one per metric label); got %d", got)
+	}
+}
+
+func TestRecord_ViolationFirstPollIsBaselineOnly(t *testing.T) {
+	// ECC와 동일하게 첫 poll의 NVML 누적값(부팅 후 누적)은 counter에 더해지지 않고 baseline으로만 저장된다.
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnap()
+	snap.ViolationTimesNs = map[string]uint64{"power": 5_000_000_000}
+	Record("n", snap)
+
+	if got := testutil.CollectAndCount(deviceThrottleViolationSeconds); got != 0 {
+		t.Errorf("first poll must not create any violation series; got %d", got)
+	}
+}
+
+func TestRecord_ViolationDeltaConvertedToSeconds(t *testing.T) {
+	// nanoseconds 단위 NVML 누적값에서 직전 poll 값을 빼 양수 delta만 seconds로 환산해 Counter.Add 한다.
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnap()
+	snap.ViolationTimesNs = map[string]uint64{"power": 2_000_000_000} // 2s baseline
+	Record("n", snap)
+
+	snap.ViolationTimesNs = map[string]uint64{"power": 5_000_000_000} // +3s
+	Record("n", snap)
+
+	if got := testutil.ToFloat64(deviceThrottleViolationSeconds.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "power")); got != 3 {
+		t.Errorf("violation power counter=%v want 3 seconds (delta 3e9 ns)", got)
+	}
+}
+
+func TestRecord_ViolationCounterResetTreatedAsCurrentValue(t *testing.T) {
+	// baseline 100ms, 두 번째 poll 50ms 인 경우 negative delta 대신 current(50ms = 0.05s)를 fresh delta로 적용한다.
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnap()
+	snap.ViolationTimesNs = map[string]uint64{"thermal": 100_000_000} // 100ms baseline
+	Record("n", snap)
+
+	snap.ViolationTimesNs = map[string]uint64{"thermal": 50_000_000} // 50ms (reset)
+	Record("n", snap)
+
+	if got := testutil.ToFloat64(deviceThrottleViolationSeconds.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "thermal")); got != 0.05 {
+		t.Errorf("post-reset violation counter=%v want 0.05 (current 50ms applied as fresh)", got)
 	}
 }

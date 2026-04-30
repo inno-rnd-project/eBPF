@@ -122,6 +122,7 @@ type fakeDevice struct {
 	processes    []types.GPUProcess
 	processesErr error
 	procCalls    int
+	closeCalls   int
 }
 
 func (d *fakeDevice) Info() (types.GPUDevice, error) { return d.info, nil }
@@ -138,6 +139,19 @@ func (d *fakeDevice) RunningProcesses() ([]types.GPUProcess, error) {
 	d.procCalls++
 	d.mu.Unlock()
 	return d.processes, d.processesErr
+}
+
+func (d *fakeDevice) Close() error {
+	d.mu.Lock()
+	d.closeCalls++
+	d.mu.Unlock()
+	return nil
+}
+
+func (d *fakeDevice) closeCallCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.closeCalls
 }
 
 func (d *fakeDevice) procCallCount() int {
@@ -268,6 +282,13 @@ func TestRun_HappyPathPollsAndShutsDown(t *testing.T) {
 
 	if got := fake.shutdownCallCount(); got != 1 {
 		t.Fatalf("expected Shutdown called exactly once on ctx cancel; got %d", got)
+	}
+	// device별 Close가 ctx 취소 시 정확히 한 번씩 호출되어 GPM sample 등 device-scope 자원이 해제되어야 한다.
+	if got := dev0.closeCallCount(); got != 1 {
+		t.Errorf("expected dev0 Close called once on ctx cancel; got %d", got)
+	}
+	if got := dev1.closeCallCount(); got != 1 {
+		t.Errorf("expected dev1 Close called once on ctx cancel; got %d", got)
 	}
 }
 

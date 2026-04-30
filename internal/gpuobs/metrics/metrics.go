@@ -39,6 +39,14 @@ var deviceThrottleLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model"
 // deviceEccLabels는 corrected/uncorrected를 `error_type` 라벨로 분해한 counter용 라벨 세트다.
 var deviceEccLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model", "error_type"}
 
+// deviceViolationLabels는 PerfPolicyType별 누적 throttle 시간을 `reason` 라벨로 분해한 counter용 라벨 세트다.
+// reason 값은 nvml 계층 violationReasons 슬라이스와 정확히 일치한다.
+var deviceViolationLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model", "reason"}
+
+// deviceGpmLabels는 GPM 메트릭 4종을 `gpm_metric` 라벨로 분해한 gauge용 라벨 세트다.
+// 4종을 별도 시리즈로 분리하면 운영자가 PromQL `sum by(gpm_metric)`으로 grouping할 수 있다.
+var deviceGpmLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model", "gpm_metric"}
+
 // throttleReasonBits는 NVML이 보고하는 known throttle 사유 9종이다. 매 poll마다 9개를 모두
 // 0/1로 발행해 "직전엔 있었는데 이번엔 사라진" 라벨이 stale로 남는 일을 회피한다.
 // 동일 비트값을 갖는 alias(ApplicationsClocksSetting/UserDefinedClocks=2)는 한 번만 노출한다.
@@ -66,6 +74,14 @@ var throttleReasonBits = []struct {
 var (
 	lastEccAbsolute   = make(map[string]uint64)
 	lastEccAbsoluteMu sync.Mutex
+)
+
+// lastViolationAbsolute는 device(UUID)별 reason별 직전 poll의 NVML 누적 ns 값을 보관한다.
+// ECC와 동일한 baseline-then-delta 패턴이지만 단위는 nanoseconds이고, Counter.Add 시 1e9로 나눠 seconds로 환산한다.
+// 첫 poll은 baseline만 저장(Add 건너뜀)해 "에이전트 기동 이후 신규 throttle 시간"이라는 counter 의미를 보존한다.
+var (
+	lastViolationAbsolute   = make(map[string]uint64)
+	lastViolationAbsoluteMu sync.Mutex
 )
 
 // podLabels는 per-pod gauge의 공통 라벨 세트다. 앞 4개(node/src_namespace/src_pod/src_pod_uid)는
@@ -218,6 +234,54 @@ var (
 		deviceLabels,
 	)
 
+	deviceFanSpeed = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_device_fan_speed_percent",
+			Help: "GPU fan speed duty cycle (0-100) sampled from NVML; absent on passively-cooled cards",
+		},
+		deviceLabels,
+	)
+
+	deviceBAR1MemoryUsed = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_device_bar1_memory_used_bytes",
+			Help: "PCIe BAR1 memory area used in bytes sampled from NVML (host-mapped GPU memory)",
+		},
+		deviceLabels,
+	)
+
+	deviceBAR1MemoryTotal = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_device_bar1_memory_total_bytes",
+			Help: "PCIe BAR1 memory area capacity in bytes sampled from NVML",
+		},
+		deviceLabels,
+	)
+
+	devicePowerLimit = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_device_power_limit_watts",
+			Help: "Currently configured GPU power management limit in watts (NVML GetPowerManagementLimit)",
+		},
+		deviceLabels,
+	)
+
+	deviceThrottleViolationSeconds = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gpuobs_device_throttle_violation_seconds_total",
+			Help: "Cumulative throttle violation time per reason since gpuobs started, sourced from NVML GetViolationStatus; deltas applied between polls and converted from nanoseconds to seconds",
+		},
+		deviceViolationLabels,
+	)
+
+	deviceGpmUtilization = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_device_gpm_utilization_percent",
+			Help: "GPU performance monitoring (GPM) utilization (0-100) per metric: graphics_util / sm_occupancy / tensor_active / dram_bandwidth. Datacenter GPU only; absent on consumer cards",
+		},
+		deviceGpmLabels,
+	)
+
 	podMemoryUsed = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "gpuobs_pod_memory_used_bytes",
@@ -246,6 +310,12 @@ func Register(reg prometheus.Registerer) {
 		deviceEncoderUtilization,
 		deviceDecoderUtilization,
 		devicePerformanceState,
+		deviceFanSpeed,
+		deviceBAR1MemoryUsed,
+		deviceBAR1MemoryTotal,
+		devicePowerLimit,
+		deviceThrottleViolationSeconds,
+		deviceGpmUtilization,
 		podMemoryUsed,
 	)
 }
@@ -314,6 +384,34 @@ func Record(node string, snap types.GPUSnapshot) {
 	if snap.PerformanceStateSupported {
 		devicePerformanceState.WithLabelValues(node, uuid, idx, model).Set(float64(snap.PerformanceState))
 	}
+
+	if snap.FanSpeedSupported {
+		deviceFanSpeed.WithLabelValues(node, uuid, idx, model).Set(float64(snap.FanSpeedPct))
+	}
+
+	if snap.BAR1Supported {
+		deviceBAR1MemoryUsed.WithLabelValues(node, uuid, idx, model).Set(float64(snap.BAR1MemoryUsedBytes))
+		deviceBAR1MemoryTotal.WithLabelValues(node, uuid, idx, model).Set(float64(snap.BAR1MemoryTotalBytes))
+	}
+
+	if snap.PowerLimitSupported {
+		devicePowerLimit.WithLabelValues(node, uuid, idx, model).Set(snap.PowerLimitWatts)
+	}
+
+	if snap.ViolationSupported {
+		for reason, ns := range snap.ViolationTimesNs {
+			recordViolationDelta(node, uuid, idx, model, reason, ns)
+		}
+	}
+
+	// GPM은 두 sample이 모인 두 번째 poll부터 metric 산출이 가능하다. GpmFirstSampleReady=false인
+	// 첫 poll은 발행을 건너뛰고 baseline sample만 nvml 계층이 보관한다.
+	if snap.GpmSupported && snap.GpmFirstSampleReady {
+		deviceGpmUtilization.WithLabelValues(node, uuid, idx, model, "graphics_util").Set(snap.GpmGraphicsUtilPct)
+		deviceGpmUtilization.WithLabelValues(node, uuid, idx, model, "sm_occupancy").Set(snap.GpmSMOccupancyPct)
+		deviceGpmUtilization.WithLabelValues(node, uuid, idx, model, "tensor_active").Set(snap.GpmTensorActivePct)
+		deviceGpmUtilization.WithLabelValues(node, uuid, idx, model, "dram_bandwidth").Set(snap.GpmDramBandwidthPct)
+	}
 }
 
 // recordEccDelta는 NVML이 보고한 누적 절대값에서 직전 poll의 값을 빼 양수 delta만 Counter에 더한다.
@@ -341,6 +439,32 @@ func recordEccDelta(node, uuid, idx, model, errorType string, current uint64) {
 		deviceEccErrors.WithLabelValues(node, uuid, idx, model, errorType).Add(float64(delta))
 	}
 	lastEccAbsolute[key] = current
+}
+
+// recordViolationDelta는 NVML이 보고한 누적 ns 절대값에서 직전 poll 값을 빼 양수 delta만 seconds로 환산해 Counter에 더한다.
+// recordEccDelta와 동일한 baseline-then-delta 패턴이며, "에이전트 기동 이후 신규 throttle 시간"이라는
+// counter 의미를 보존한다. current < prev (드라이버 리셋 / GPU 리셋 등)는 reset으로 간주해 current 자체를 fresh delta로 적용한다.
+// lastViolationAbsoluteMu가 패키지 전역 map 접근을 보호한다.
+func recordViolationDelta(node, uuid, idx, model, reason string, currentNs uint64) {
+	key := uuid + "/" + reason
+
+	lastViolationAbsoluteMu.Lock()
+	defer lastViolationAbsoluteMu.Unlock()
+
+	prev, ok := lastViolationAbsolute[key]
+	if !ok {
+		lastViolationAbsolute[key] = currentNs
+		return
+	}
+	deltaNs := currentNs
+	if currentNs >= prev {
+		deltaNs = currentNs - prev
+	}
+	if deltaNs > 0 {
+		// nanoseconds → seconds 환산. Counter 이름이 `_seconds_total`이므로 단위 일관성을 보장한다.
+		deviceThrottleViolationSeconds.WithLabelValues(node, uuid, idx, model, reason).Add(float64(deltaNs) / 1e9)
+	}
+	lastViolationAbsolute[key] = currentNs
 }
 
 // RecordPodSnapshot은 이번 poll에 관측된 (Pod, GPU) 메모리 사용량 스냅샷을 일괄 기록한다.
