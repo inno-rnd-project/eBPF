@@ -432,9 +432,9 @@ func TestRecord_EccDeltaTracking(t *testing.T) {
 	}
 }
 
-func TestRecord_EccCounterResetTreatedAsCurrentValue(t *testing.T) {
-	// 첫 poll baseline=100, 두 번째 poll current=5 (드라이버 리셋 등)인 경우
-	// negative delta를 막고 current 자체를 fresh delta로 적용한다.
+func TestRecord_EccCounterResetSkipsAndRebaselines(t *testing.T) {
+	// 첫 poll baseline=100, 두 번째 poll current=5 (드라이버 리셋 등) 인 경우 데이터 연속성 단절로 간주해
+	// 해당 poll의 가산은 건너뛰고 5를 새 baseline 으로 둔다. 이후 정상 delta poll(8) 부터 가산이 재개된다.
 	resetDeviceMetricsState(t)
 
 	snap := fullySupportedSnap()
@@ -444,10 +444,16 @@ func TestRecord_EccCounterResetTreatedAsCurrentValue(t *testing.T) {
 		t.Errorf("first poll baseline-only; series=%d want 0", got)
 	}
 
-	snap.EccCorrectedTotal = 5
+	snap.EccCorrectedTotal = 5 // reset (current < prev)
 	Record("n", snap)
-	if got := testutil.ToFloat64(deviceEccErrors.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "corrected")); got != 5 {
-		t.Errorf("post-reset counter=%v want 5 (current applied as fresh delta)", got)
+	if got := testutil.CollectAndCount(deviceEccErrors); got != 0 {
+		t.Errorf("post-reset poll must skip Add and rebaseline; series=%d want 0", got)
+	}
+
+	snap.EccCorrectedTotal = 8 // +3 from new baseline 5
+	Record("n", snap)
+	if got := testutil.ToFloat64(deviceEccErrors.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "corrected")); got != 3 {
+		t.Errorf("post-rebaseline counter=%v want 3 (delta from new baseline 5)", got)
 	}
 }
 
@@ -597,8 +603,9 @@ func TestRecord_ViolationDeltaConvertedToSeconds(t *testing.T) {
 	}
 }
 
-func TestRecord_ViolationCounterResetTreatedAsCurrentValue(t *testing.T) {
-	// baseline 100ms, 두 번째 poll 50ms 인 경우 negative delta 대신 current(50ms = 0.05s)를 fresh delta로 적용한다.
+func TestRecord_ViolationCounterResetSkipsAndRebaselines(t *testing.T) {
+	// baseline 100ms, 두 번째 poll 50ms 인 경우 reset으로 간주해 가산을 건너뛰고 50ms를 새 baseline 으로 둔다.
+	// 이후 정상 delta poll(70ms) 에서 +20ms = 0.02s 가 가산되어야 한다.
 	resetDeviceMetricsState(t)
 
 	snap := fullySupportedSnap()
@@ -607,9 +614,58 @@ func TestRecord_ViolationCounterResetTreatedAsCurrentValue(t *testing.T) {
 
 	snap.ViolationTimesNs = map[string]uint64{"thermal": 50_000_000} // 50ms (reset)
 	Record("n", snap)
+	if got := testutil.CollectAndCount(deviceThrottleViolationSeconds); got != 0 {
+		t.Errorf("post-reset poll must skip and rebaseline; series=%d want 0", got)
+	}
 
-	if got := testutil.ToFloat64(deviceThrottleViolationSeconds.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "thermal")); got != 0.05 {
-		t.Errorf("post-reset violation counter=%v want 0.05 (current 50ms applied as fresh)", got)
+	snap.ViolationTimesNs = map[string]uint64{"thermal": 70_000_000} // +20ms from new baseline 50ms
+	Record("n", snap)
+	if got := testutil.ToFloat64(deviceThrottleViolationSeconds.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "thermal")); got != 0.02 {
+		t.Errorf("post-rebaseline violation counter=%v want 0.02 (delta 20ms from new baseline)", got)
+	}
+}
+
+func TestRecord_EnergyCounterResetSkipsAndRebaselines(t *testing.T) {
+	// baseline 1_000_000_000 mJ, 두 번째 poll 500 mJ (driver reload) — 가산 skip + rebaseline.
+	// 이후 1_500 mJ poll에서 +1000 mJ = 1 J 가 가산되어야 한다.
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnap()
+	snap.EnergyConsumptionMilliJoules = 1_000_000_000
+	Record("n", snap)
+
+	snap.EnergyConsumptionMilliJoules = 500 // reset
+	Record("n", snap)
+	if got := testutil.CollectAndCount(deviceEnergyConsumption); got != 0 {
+		t.Errorf("post-reset poll must skip and rebaseline; series=%d want 0", got)
+	}
+
+	snap.EnergyConsumptionMilliJoules = 1_500 // +1000 mJ from new baseline 500
+	Record("n", snap)
+	if got := testutil.ToFloat64(deviceEnergyConsumption.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != 1 {
+		t.Errorf("post-rebaseline energy counter=%v want 1 J", got)
+	}
+}
+
+func TestRecord_PcieReplayCounterResetSkipsAndRebaselines(t *testing.T) {
+	// baseline 100, 두 번째 poll 5 (wrap 또는 reset) — 가산 skip + rebaseline.
+	// 이후 8 poll에서 +3 가 가산되어야 한다.
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnap()
+	snap.PcieReplayErrors = 100
+	Record("n", snap)
+
+	snap.PcieReplayErrors = 5 // reset
+	Record("n", snap)
+	if got := testutil.CollectAndCount(devicePcieReplayErrors); got != 0 {
+		t.Errorf("post-reset poll must skip and rebaseline; series=%d want 0", got)
+	}
+
+	snap.PcieReplayErrors = 8 // +3 from new baseline 5
+	Record("n", snap)
+	if got := testutil.ToFloat64(devicePcieReplayErrors.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != 3 {
+		t.Errorf("post-rebaseline pcie replay counter=%v want 3", got)
 	}
 }
 

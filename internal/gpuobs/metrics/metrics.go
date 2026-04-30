@@ -608,19 +608,23 @@ func recordEccDelta(node, uuid, idx, model, errorType string, current uint64) {
 		lastEccAbsolute[key] = current
 		return
 	}
-	delta := current
-	if current >= prev {
-		delta = current - prev
+	if current < prev {
+		// 드라이버 리셋 등으로 NVML 누적값이 감소한 경우 데이터 연속성이 끊긴 것으로 간주한다.
+		// 해당 poll의 값을 fresh delta로 더하면 reset 직전까지의 누적분과 reset 직후 부분 누적이 합쳐져 dashboard에
+		// 거짓 spike를 만들 수 있으므로, 이번 poll의 가산은 건너뛰고 새 baseline으로만 둔 뒤 다음 poll부터 정상 delta를 적용한다.
+		lastEccAbsolute[key] = current
+		return
 	}
-	if delta > 0 {
+	if delta := current - prev; delta > 0 {
 		deviceEccErrors.WithLabelValues(node, uuid, idx, model, errorType).Add(float64(delta))
 	}
 	lastEccAbsolute[key] = current
 }
 
 // recordViolationDelta는 NVML이 보고한 누적 ns 절대값에서 직전 poll 값을 빼 양수 delta만 seconds로 환산해 Counter에 더한다.
-// recordEccDelta와 동일한 baseline-then-delta 패턴이며, "에이전트 기동 이후 신규 throttle 시간"이라는
-// counter 의미를 보존한다. current < prev (드라이버 리셋 / GPU 리셋 등)는 reset으로 간주해 current 자체를 fresh delta로 적용한다.
+// recordEccDelta와 동일한 baseline-then-delta 패턴이며, "에이전트 기동 이후 신규 throttle 시간"이라는 counter 의미를 보존한다.
+// current < prev (드라이버 리셋 / GPU 리셋 등) 시에는 데이터 연속성이 끊긴 것으로 간주하고 가산을 건너뛴 뒤
+// 새 baseline 으로만 갱신해 dashboard 거짓 spike를 회피한다 (다음 poll 부터 정상 delta 가산).
 // lastViolationAbsoluteMu가 패키지 전역 map 접근을 보호한다.
 func recordViolationDelta(node, uuid, idx, model, reason string, currentNs uint64) {
 	key := uuid + "/" + reason
@@ -633,11 +637,11 @@ func recordViolationDelta(node, uuid, idx, model, reason string, currentNs uint6
 		lastViolationAbsolute[key] = currentNs
 		return
 	}
-	deltaNs := currentNs
-	if currentNs >= prev {
-		deltaNs = currentNs - prev
+	if currentNs < prev {
+		lastViolationAbsolute[key] = currentNs
+		return
 	}
-	if deltaNs > 0 {
+	if deltaNs := currentNs - prev; deltaNs > 0 {
 		// nanoseconds → seconds 환산. Counter 이름이 `_seconds_total`이므로 단위 일관성을 보장한다.
 		deviceThrottleViolationSeconds.WithLabelValues(node, uuid, idx, model, reason).Add(float64(deltaNs) / 1e9)
 	}
@@ -645,8 +649,8 @@ func recordViolationDelta(node, uuid, idx, model, reason string, currentNs uint6
 }
 
 // recordEnergyDelta는 NVML이 보고한 누적 mJ 절대값에서 직전 poll 값을 빼 양수 delta만 J로 환산해 Counter에 더한다.
-// recordEccDelta / recordViolationDelta와 동일한 baseline-then-delta 패턴이며, 단위 환산만 mJ → J(÷1000) 로 다르다.
-// current < prev (드라이버 리셋 / GPU 리셋 등)인 경우 reset으로 간주해 current 자체를 fresh delta로 적용한다.
+// recordEccDelta / recordViolationDelta 와 동일한 baseline-then-delta 패턴 + reset skip 정책 적용.
+// 단위 환산만 mJ → J(÷1000) 로 다르며, current < prev (드라이버 reload 등) 시에는 가산을 건너뛰고 새 baseline 만 갱신한다.
 // lastEnergyAbsoluteMu가 패키지 전역 map 접근을 보호한다.
 func recordEnergyDelta(node, uuid, idx, model string, currentMilliJoules uint64) {
 	key := uuid
@@ -659,11 +663,11 @@ func recordEnergyDelta(node, uuid, idx, model string, currentMilliJoules uint64)
 		lastEnergyAbsolute[key] = currentMilliJoules
 		return
 	}
-	deltaMilliJoules := currentMilliJoules
-	if currentMilliJoules >= prev {
-		deltaMilliJoules = currentMilliJoules - prev
+	if currentMilliJoules < prev {
+		lastEnergyAbsolute[key] = currentMilliJoules
+		return
 	}
-	if deltaMilliJoules > 0 {
+	if deltaMilliJoules := currentMilliJoules - prev; deltaMilliJoules > 0 {
 		// millijoules → joules 환산. Counter 이름이 `_joules_total` 이므로 단위 일관성을 보장한다.
 		deviceEnergyConsumption.WithLabelValues(node, uuid, idx, model).Add(float64(deltaMilliJoules) / 1000.0)
 	}
@@ -671,7 +675,7 @@ func recordEnergyDelta(node, uuid, idx, model string, currentMilliJoules uint64)
 }
 
 // recordPcieReplayDelta는 NVML 누적 PCIe replay 카운터에서 직전 poll 값을 빼 양수 delta만 Counter에 더한다.
-// uint32 카운터지만 베이스라인부터 wrap-around가 일어나기 전까지는 monotonic 가정. wrap 발생 시 reset으로 간주.
+// uint32 wrap-around 또는 driver reload 로 인한 reset 시에는 가산을 건너뛰고 새 baseline 만 갱신한다 (다른 counter 와 동일 정책).
 func recordPcieReplayDelta(node, uuid, idx, model string, current uint32) {
 	key := uuid
 
@@ -683,11 +687,11 @@ func recordPcieReplayDelta(node, uuid, idx, model string, current uint32) {
 		lastPcieReplayAbsolute[key] = current
 		return
 	}
-	delta := current
-	if current >= prev {
-		delta = current - prev
+	if current < prev {
+		lastPcieReplayAbsolute[key] = current
+		return
 	}
-	if delta > 0 {
+	if delta := current - prev; delta > 0 {
 		devicePcieReplayErrors.WithLabelValues(node, uuid, idx, model).Add(float64(delta))
 	}
 	lastPcieReplayAbsolute[key] = current
