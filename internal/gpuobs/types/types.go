@@ -1,10 +1,35 @@
 package types
 
 // GPUDevice는 관측 대상 GPU 한 개의 정적 식별 정보를 담는다.
+// 모든 필드는 device 수명 동안 불변이며 nvml 계층의 Device 생성자에서 1회 채운 뒤 캐싱한다.
+// 정적 특성(Compute capability / Architecture / 최대 PCIe 스펙 / CUDA core 수 / 메모리 버스 폭 /
+// VBIOS·GSP firmware 버전) 은 metrics 계층에서 info gauge 라벨로 노출되어 fleet-wide grouping에 사용된다.
 type GPUDevice struct {
 	Index uint
 	UUID  string
 	Model string
+
+	// CudaCompute*는 GetCudaComputeCapability 결과(major.minor). 0/0이면 NVML 호출 실패로 미수집된 상태.
+	CudaComputeMajor int
+	CudaComputeMinor int
+
+	// Architecture는 GetArchitecture 결과를 사람이 읽을 수 있는 소문자 이름("ampere"/"ada"/"hopper"/"blackwell" 등) 으로 매핑한 값이다.
+	// 매핑 불가능한 enum이면 "unknown"으로 채운다. 라벨 값으로 그대로 노출되므로 케이스 일관성을 유지한다.
+	Architecture string
+
+	// MaxPcieLink* 는 GetMaxPcieLinkGeneration / GetMaxPcieLinkWidth 결과. 0이면 미수집.
+	MaxPcieLinkGeneration int
+	MaxPcieLinkWidth      int
+
+	// NumGpuCores는 GetNumGpuCores 결과 (CUDA core 수). 0이면 미수집.
+	NumGpuCores int
+
+	// MemoryBusWidthBits는 GetMemoryBusWidth 결과 (bits). 0이면 미수집.
+	MemoryBusWidthBits uint32
+
+	// VbiosVersion / GspFirmwareVersion은 펌웨어 회귀 디버깅용 버전 문자열. 빈 문자열이면 미수집.
+	VbiosVersion       string
+	GspFirmwareVersion string
 }
 
 // GPUSnapshot은 특정 시점에 측정된 GPU 상태를 담는다.
@@ -98,6 +123,43 @@ type GPUSnapshot struct {
 	GpmDramBandwidthPct float64
 	GpmSupported        bool
 	GpmFirstSampleReady bool
+
+	// EnergyConsumptionMilliJoules는 GetTotalEnergyConsumption이 반환한 누적 에너지 (mJ, since driver load).
+	// metrics 계층은 ECC와 동일한 baseline-then-delta 패턴으로 처리하되 발행 시점에 mJ → J 환산해 Counter.Add에 사용한다.
+	EnergyConsumptionMilliJoules uint64
+	EnergySupported              bool
+
+	// PcieLink* Current는 현재 PCIe 링크의 동적 상태로, idle 시 다운(예: gen4 x16 → gen1 x4) 되었다가 활성 시 복귀한다.
+	// PCIe rx/tx bps 메트릭의 해석 컨텍스트로 함께 본다. gen / width 한 쪽만 미지원되는 카드는 사실상 없어 단일 *Supported로 게이트.
+	PcieLinkGenerationCurrent uint32
+	PcieLinkWidthCurrent      uint32
+	PcieLinkSupported         bool
+
+	// PcieReplayErrors는 GetPcieReplayCounter가 반환한 누적 PCIe 링크 재전송 횟수.
+	// 값이 빠르게 증가하면 라이저 / 케이블 / 슬롯 문제 시그널이라 baseline-then-delta로 Counter 발행한다.
+	PcieReplayErrors    uint32
+	PcieReplaySupported bool
+
+	// TemperatureThresholdsCelsius는 GetTemperatureThreshold(slowdown/shutdown/mem_max/gpu_max) 결과를 reason 키로 보관한다.
+	// 값은 device 수명 동안 불변이라 nvml 계층에서 1회 fetch + 캐싱하고 매 poll에서 동일 map을 그대로 채운다.
+	// 일부 threshold만 지원되는 GPU도 있어 키 단위 graceful skip 한다 — 적어도 하나라도 성공하면 *Supported=true.
+	TemperatureThresholdsCelsius map[string]uint32
+	TemperatureThresholdSupported bool
+
+	// PowerLimitEnforcedWatts는 GetEnforcedPowerLimit 결과 (Watts). 정상 환경에서는 PowerLimitWatts와 동일하지만
+	// driver-level capping(예: thermal/load 기반 자동 하향) 시 차이가 발생해 진단 단서가 된다.
+	PowerLimitEnforcedWatts     float64
+	PowerLimitEnforcedSupported bool
+
+	// PersistenceModeEnabled는 nvidia-persistenced 활성 여부 (1=enabled, 0=disabled).
+	// disabled 환경은 첫 CUDA context 생성 시 driver init 비용이 커 cold-start가 느려진다.
+	PersistenceModeEnabled   uint8
+	PersistenceModeSupported bool
+
+	// ComputeMode는 NVML compute mode (0=Default, 1=ExclusiveThread, 2=Prohibited, 3=ExclusiveProcess).
+	// 멀티 워크로드 환경에서 의도치 않게 ExclusiveProcess로 설정된 카드를 진단하기 위한 지표.
+	ComputeMode          uint8
+	ComputeModeSupported bool
 }
 
 // GPUProcess는 특정 GPU에서 실행 중인 프로세스 단위 기록이다.

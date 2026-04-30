@@ -1,0 +1,83 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: netobs-gpuobs-correlation
+  namespace: ebpf-project
+  labels:
+    # release 라벨은 servicemonitor.yaml과 동일하게 kube-prometheus-stack Prometheus 인스턴스의
+    # ruleSelector에 매치되도록 둔다. 운영 클러스터의 helm release 이름과 일치시켜야 픽업된다.
+    release: kube-prometheus-stack
+    app.kubernetes.io/name: gpuobs-agent
+    app.kubernetes.io/component: prometheus-rules
+    app.kubernetes.io/part-of: ebpf-project
+spec:
+  groups:
+    # netobs-gpuobs.recording 그룹은 두 agent의 메트릭을 한 단위로 산출하는 recording rule을 모은다.
+    # interval 30s는 kube-prometheus-stack 기본값과 동일해 평가 cadence를 일관되게 유지한다.
+    # netobs를 참조하는 rule(pod:network_egress_rate:5m)도 본 그룹에 함께 둔다 — 단독 운영이 아니라
+    # gpuobs와의 상관 분석 산출물이며 cross-cutting rule들의 위치를 단일화하기 위해서다.
+    - name: netobs-gpuobs.recording
+      interval: 30s
+      rules:
+        # node:gpu_util_p95:5m
+        # 노드별 GPU 사용률 5분 윈도우 95-percentile. 멀티 GPU 노드는 GPU 단위 p95를 먼저 산출한 뒤
+        # node 차원에서 max로 롤업해 "노드의 가장 바쁜 GPU" 부하를 단일 시리즈로 노출한다.
+        # 이슈 원안 pod:gpu_util_p95:5m는 NVML이 pod-level GPU compute util을 노출하지 않아 정의 불가하므로
+        # device-level로 대체했다 (README의 Per-metric NVML support detection 노트 참고).
+        - record: node:gpu_util_p95:5m
+          expr: max by(node) (quantile_over_time(0.95, gpuobs_device_utilization_percent[5m]))
+
+        # pod:gpu_memory_used_avg:5m
+        # pod x GPU 단위 5분 평균 메모리 사용량. 라벨은 (node, src_namespace, src_pod, src_pod_uid, gpu_uuid, gpu_index) 그대로 보존.
+        - record: pod:gpu_memory_used_avg:5m
+          expr: avg_over_time(gpuobs_pod_memory_used_bytes[5m])
+
+        # pod:network_egress_rate:5m
+        # netobs는 byte 카운터를 노출하지 않아 단위는 events/sec(이벤트 빈도)다. dashboard에서 "egress 트래픽 강도"
+        # 추세 지표로 사용한다. stage / traffic_scope 차원은 본 record에서 합산해 pod 단위 단일 시리즈로 만든다.
+        - record: pod:network_egress_rate:5m
+          expr: sum by(node, src_namespace, src_pod, src_pod_uid) (rate(netobs_pod_stage_events_labeled_total{direction="egress"}[5m]))
+
+        # node:gpu_throttle_seconds:rate5m
+        # reason별 누적 throttle 시간(seconds counter)의 5분 rate. 단위는 seconds/sec — 1.0이면 해당 reason이
+        # 윈도우 내내 활성이었음을 뜻한다. node x reason 차원으로 합산해 멀티 GPU 노드도 단일 추세로 본다.
+        - record: node:gpu_throttle_seconds:rate5m
+          expr: sum by(node, reason) (rate(gpuobs_device_throttle_violation_seconds_total[5m]))
+
+        # node:gpu_power_headroom_watts
+        # 노드 단위 GPU power headroom — limit과 사용량의 차를 GPU별로 산출한 뒤 노드 내 최솟값(min)을 채택해
+        # "노드의 가장 위험한 GPU" 기준으로 노드당 1 시리즈로 요약한다. 음수면 limit 근접/초과 상태.
+        # node: 접두사 규약에 맞춰 노드 차원으로 rollup하며, GPU별 상세는 raw 메트릭(gpuobs_device_power_*)에서 확인한다.
+        - record: node:gpu_power_headroom_watts
+          expr: min by(node) (gpuobs_device_power_limit_watts - gpuobs_device_power_usage_watts)
+
+        # pod:gpu_memory_utilization_ratio:5m
+        # pod의 5분 평균 메모리 사용량을 device 총 메모리로 나눈 비율(0-1). group_left로 device 라벨은 취하지 않고
+        # pod 라벨을 보존한다. 한 pod이 device 메모리를 어느 정도 점유하는지 확인하는 직접적인 추세 지표.
+        - record: pod:gpu_memory_utilization_ratio:5m
+          expr: avg_over_time(gpuobs_pod_memory_used_bytes[5m]) / on(node, gpu_uuid, gpu_index) group_left() gpuobs_device_memory_total_bytes
+
+        # node:gpu_ecc_errors:rate5m
+        # error_type별 ECC 에러 발생률(errors/sec). RTX 3090 같은 컨슈머 GPU는 ECC 미지원이라 base 시리즈가 없어
+        # 본 record도 빈 결과를 산출하는 것이 정상 동작이다. 데이터센터 GPU 합류 시 비로소 의미 있는 시리즈가 생긴다.
+        - record: node:gpu_ecc_errors:rate5m
+          expr: sum by(node, error_type) (rate(gpuobs_device_ecc_errors_total[5m]))
+
+        # node:gpu_energy_watts_avg:5m
+        # 누적 에너지 카운터의 5분 rate는 곧 J/sec = Watts 이므로 "5분 평균 전력" 시계열을 산출한다.
+        # instantaneous gpuobs_device_power_usage_watts와 별개로 spike 평균낸 추세를 dashboard에 노출한다. 노드 차원 합산.
+        - record: node:gpu_energy_watts_avg:5m
+          expr: sum by(node) (rate(gpuobs_device_energy_consumption_joules_total[5m]))
+
+        # node:gpu_pcie_replay:rate5m
+        # PCIe 링크 재전송 발생률(errors/sec). 정상 환경에서는 0에 가깝고, 지속적 증가는 라이저/케이블/슬롯 문제 시그널이다.
+        # alert rule을 직접 두지 않더라도 dashboard의 health 패널 시각화에 적합.
+        - record: node:gpu_pcie_replay:rate5m
+          expr: sum by(node) (rate(gpuobs_device_pcie_replay_errors_total[5m]))
+
+        # node:gpu_temperature_headroom_celsius
+        # 노드 x threshold 단위 thermal headroom — GPU별 (threshold − 현재 온도) 를 산출한 뒤 노드 내 최솟값(min)을 채택해
+        # "노드의 가장 위험한 GPU" 기준으로 (node, threshold) 당 1 시리즈로 요약한다. 양수면 안전 마진, 0 이하면 throttle/shutdown 임박.
+        # 두 원본 메트릭의 라벨 차이는 LHS의 threshold 라벨 하나뿐이라 ignoring(threshold) group_left() 로 many-to-one 매칭한 뒤 노드로 rollup한다.
+        - record: node:gpu_temperature_headroom_celsius
+          expr: min by(node, threshold) (gpuobs_device_temperature_threshold_celsius - ignoring(threshold) group_left() gpuobs_device_temperature_celsius)
