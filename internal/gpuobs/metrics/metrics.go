@@ -47,6 +47,16 @@ var deviceViolationLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model
 // 4종을 별도 시리즈로 분리하면 운영자가 PromQL `sum by(gpm_metric)`으로 grouping할 수 있다.
 var deviceGpmLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model", "gpm_metric"}
 
+// deviceTemperatureThresholdLabels는 4종 threshold(slowdown/shutdown/mem_max/gpu_max) 를 `threshold` 라벨로 분해한 gauge용 라벨 세트다.
+var deviceTemperatureThresholdLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model", "threshold"}
+
+// deviceInfoLabels는 정적 device 특성(compute capability / architecture / 최대 PCIe 스펙 / CUDA core 수 / 메모리 버스 폭) 을
+// 라벨로 노출하는 info gauge용 라벨 세트다. value는 항상 1이며 라벨 값으로 fleet-wide grouping에 사용된다.
+var deviceInfoLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model", "compute_capability", "architecture", "max_pcie_generation", "max_pcie_width", "num_cores", "memory_bus_width_bits"}
+
+// deviceFirmwareInfoLabels는 펌웨어 회귀 디버깅용 라벨 세트다. value는 항상 1.
+var deviceFirmwareInfoLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model", "vbios_version", "gsp_firmware_version"}
+
 // throttleReasonBits는 NVML이 보고하는 known throttle 사유 9종이다. 매 poll마다 9개를 모두
 // 0/1로 발행해 "직전엔 있었는데 이번엔 사라진" 라벨이 stale로 남는 일을 회피한다.
 // 동일 비트값을 갖는 alias(ApplicationsClocksSetting/UserDefinedClocks=2)는 한 번만 노출한다.
@@ -82,6 +92,20 @@ var (
 var (
 	lastViolationAbsolute   = make(map[string]uint64)
 	lastViolationAbsoluteMu sync.Mutex
+)
+
+// lastEnergyAbsolute는 device(UUID)별 NVML 누적 에너지 (mJ since driver load) 직전 poll 값을 보관한다.
+// ECC/Violation과 동일한 baseline-then-delta 패턴이며 발행 시점에 mJ → J 환산한다.
+var (
+	lastEnergyAbsolute   = make(map[string]uint64)
+	lastEnergyAbsoluteMu sync.Mutex
+)
+
+// lastPcieReplayAbsolute는 device(UUID)별 PCIe replay counter 직전 poll 값을 보관한다.
+// NVML이 uint32로 반환하는 누적값이며 baseline-then-delta로 처리한다.
+var (
+	lastPcieReplayAbsolute   = make(map[string]uint32)
+	lastPcieReplayAbsoluteMu sync.Mutex
 )
 
 // podLabels는 per-pod gauge의 공통 라벨 세트다. 앞 4개(node/src_namespace/src_pod/src_pod_uid)는
@@ -282,6 +306,86 @@ var (
 		deviceGpmLabels,
 	)
 
+	deviceEnergyConsumption = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gpuobs_device_energy_consumption_joules_total",
+			Help: "Cumulative GPU energy consumption (joules) since the agent started, sourced from NVML GetTotalEnergyConsumption with baseline-then-delta tracking and millijoule-to-joule conversion",
+		},
+		deviceLabels,
+	)
+
+	devicePcieLinkGenerationCurrent = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_device_pcie_link_generation_current",
+			Help: "Current PCIe link generation negotiated by the GPU (1-5); idle GPUs may downgrade and recover under load",
+		},
+		deviceLabels,
+	)
+
+	devicePcieLinkWidthCurrent = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_device_pcie_link_width_current",
+			Help: "Current PCIe link width negotiated by the GPU (lanes 1-16); pairs with link_generation_current as runtime state",
+		},
+		deviceLabels,
+	)
+
+	devicePcieReplayErrors = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gpuobs_device_pcie_replay_errors_total",
+			Help: "Cumulative PCIe link replay errors since the agent started, sourced from NVML GetPcieReplayCounter with baseline-then-delta tracking; sustained increase signals riser/cable/slot issues",
+		},
+		deviceLabels,
+	)
+
+	deviceTemperatureThreshold = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_device_temperature_threshold_celsius",
+			Help: "GPU temperature threshold (celsius) per kind: slowdown / shutdown / mem_max / gpu_max. Static per device; pair with gpuobs_device_temperature_celsius for thermal headroom",
+		},
+		deviceTemperatureThresholdLabels,
+	)
+
+	devicePowerLimitEnforced = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_device_power_limit_enforced_watts",
+			Help: "Currently enforced GPU power limit in watts (NVML GetEnforcedPowerLimit); usually equals power_limit_watts but may diverge under driver-level capping",
+		},
+		deviceLabels,
+	)
+
+	devicePersistenceMode = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_device_persistence_mode",
+			Help: "NVML driver persistence mode (1=enabled, 0=disabled). Disabled mode incurs cold-start cost on first CUDA context creation",
+		},
+		deviceLabels,
+	)
+
+	deviceComputeMode = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_device_compute_mode",
+			Help: "NVML compute mode enum (0=Default, 1=ExclusiveThread, 2=Prohibited, 3=ExclusiveProcess); diagnoses unintended exclusivity in multi-tenant environments",
+		},
+		deviceLabels,
+	)
+
+	deviceInfo = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_device_info",
+			Help: "Static GPU characteristics (compute capability / architecture / max PCIe spec / CUDA cores / memory bus width). Value is always 1; fleet-wide grouping is performed via labels",
+		},
+		deviceInfoLabels,
+	)
+
+	deviceFirmwareInfo = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_device_firmware_info",
+			Help: "GPU firmware versions (VBIOS / GSP firmware) for regression debugging. Value is always 1",
+		},
+		deviceFirmwareInfoLabels,
+	)
+
 	podMemoryUsed = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "gpuobs_pod_memory_used_bytes",
@@ -316,6 +420,16 @@ func Register(reg prometheus.Registerer) {
 		devicePowerLimit,
 		deviceThrottleViolationSeconds,
 		deviceGpmUtilization,
+		deviceEnergyConsumption,
+		devicePcieLinkGenerationCurrent,
+		devicePcieLinkWidthCurrent,
+		devicePcieReplayErrors,
+		deviceTemperatureThreshold,
+		devicePowerLimitEnforced,
+		devicePersistenceMode,
+		deviceComputeMode,
+		deviceInfo,
+		deviceFirmwareInfo,
 		podMemoryUsed,
 	)
 }
@@ -412,6 +526,69 @@ func Record(node string, snap types.GPUSnapshot) {
 		deviceGpmUtilization.WithLabelValues(node, uuid, idx, model, "tensor_active").Set(snap.GpmTensorActivePct)
 		deviceGpmUtilization.WithLabelValues(node, uuid, idx, model, "dram_bandwidth").Set(snap.GpmDramBandwidthPct)
 	}
+
+	if snap.EnergySupported {
+		recordEnergyDelta(node, uuid, idx, model, snap.EnergyConsumptionMilliJoules)
+	}
+
+	if snap.PcieLinkSupported {
+		devicePcieLinkGenerationCurrent.WithLabelValues(node, uuid, idx, model).Set(float64(snap.PcieLinkGenerationCurrent))
+		devicePcieLinkWidthCurrent.WithLabelValues(node, uuid, idx, model).Set(float64(snap.PcieLinkWidthCurrent))
+	}
+
+	if snap.PcieReplaySupported {
+		recordPcieReplayDelta(node, uuid, idx, model, snap.PcieReplayErrors)
+	}
+
+	if snap.TemperatureThresholdSupported {
+		for thresholdName, celsius := range snap.TemperatureThresholdsCelsius {
+			deviceTemperatureThreshold.WithLabelValues(node, uuid, idx, model, thresholdName).Set(float64(celsius))
+		}
+	}
+
+	if snap.PowerLimitEnforcedSupported {
+		devicePowerLimitEnforced.WithLabelValues(node, uuid, idx, model).Set(snap.PowerLimitEnforcedWatts)
+	}
+	if snap.PersistenceModeSupported {
+		devicePersistenceMode.WithLabelValues(node, uuid, idx, model).Set(float64(snap.PersistenceModeEnabled))
+	}
+	if snap.ComputeModeSupported {
+		deviceComputeMode.WithLabelValues(node, uuid, idx, model).Set(float64(snap.ComputeMode))
+	}
+
+	// 정적 device 특성과 펌웨어 정보는 매 poll 같은 라벨 값으로 idempotent Set한다.
+	// 라벨 값이 device 수명 동안 불변이므로 동일 시리즈가 유지되고, 일부 NVML 호출이 init에서 실패해 zero value로 남은 필드는
+	// "0" / 빈 문자열로 라벨에 들어가도 카디널리티 폭증 없이 device당 1 시리즈만 노출된다.
+	deviceInfo.WithLabelValues(
+		node, uuid, idx, model,
+		formatComputeCapability(snap.Device.CudaComputeMajor, snap.Device.CudaComputeMinor),
+		fallbackString(snap.Device.Architecture, "unknown"),
+		strconv.Itoa(snap.Device.MaxPcieLinkGeneration),
+		strconv.Itoa(snap.Device.MaxPcieLinkWidth),
+		strconv.Itoa(snap.Device.NumGpuCores),
+		strconv.FormatUint(uint64(snap.Device.MemoryBusWidthBits), 10),
+	).Set(1)
+	deviceFirmwareInfo.WithLabelValues(
+		node, uuid, idx, model,
+		fallbackString(snap.Device.VbiosVersion, "unknown"),
+		fallbackString(snap.Device.GspFirmwareVersion, "unknown"),
+	).Set(1)
+}
+
+// formatComputeCapability는 (major, minor) 를 "8.6" 형식으로 합친다. 두 값 모두 0이면 "unknown" 으로 둔다.
+func formatComputeCapability(major, minor int) string {
+	if major == 0 && minor == 0 {
+		return "unknown"
+	}
+	return strconv.Itoa(major) + "." + strconv.Itoa(minor)
+}
+
+// fallbackString은 빈 문자열을 fallback 으로 치환한다. NVML 호출 실패로 미수집된 정적 필드가 라벨에 빈 값으로 들어가는 것을 방지한다.
+func fallbackString(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
 }
 
 // recordEccDelta는 NVML이 보고한 누적 절대값에서 직전 poll의 값을 빼 양수 delta만 Counter에 더한다.
@@ -465,6 +642,55 @@ func recordViolationDelta(node, uuid, idx, model, reason string, currentNs uint6
 		deviceThrottleViolationSeconds.WithLabelValues(node, uuid, idx, model, reason).Add(float64(deltaNs) / 1e9)
 	}
 	lastViolationAbsolute[key] = currentNs
+}
+
+// recordEnergyDelta는 NVML이 보고한 누적 mJ 절대값에서 직전 poll 값을 빼 양수 delta만 J로 환산해 Counter에 더한다.
+// recordEccDelta / recordViolationDelta와 동일한 baseline-then-delta 패턴이며, 단위 환산만 mJ → J(÷1000) 로 다르다.
+// current < prev (드라이버 리셋 / GPU 리셋 등)인 경우 reset으로 간주해 current 자체를 fresh delta로 적용한다.
+// lastEnergyAbsoluteMu가 패키지 전역 map 접근을 보호한다.
+func recordEnergyDelta(node, uuid, idx, model string, currentMilliJoules uint64) {
+	key := uuid
+
+	lastEnergyAbsoluteMu.Lock()
+	defer lastEnergyAbsoluteMu.Unlock()
+
+	prev, ok := lastEnergyAbsolute[key]
+	if !ok {
+		lastEnergyAbsolute[key] = currentMilliJoules
+		return
+	}
+	deltaMilliJoules := currentMilliJoules
+	if currentMilliJoules >= prev {
+		deltaMilliJoules = currentMilliJoules - prev
+	}
+	if deltaMilliJoules > 0 {
+		// millijoules → joules 환산. Counter 이름이 `_joules_total` 이므로 단위 일관성을 보장한다.
+		deviceEnergyConsumption.WithLabelValues(node, uuid, idx, model).Add(float64(deltaMilliJoules) / 1000.0)
+	}
+	lastEnergyAbsolute[key] = currentMilliJoules
+}
+
+// recordPcieReplayDelta는 NVML 누적 PCIe replay 카운터에서 직전 poll 값을 빼 양수 delta만 Counter에 더한다.
+// uint32 카운터지만 베이스라인부터 wrap-around가 일어나기 전까지는 monotonic 가정. wrap 발생 시 reset으로 간주.
+func recordPcieReplayDelta(node, uuid, idx, model string, current uint32) {
+	key := uuid
+
+	lastPcieReplayAbsoluteMu.Lock()
+	defer lastPcieReplayAbsoluteMu.Unlock()
+
+	prev, ok := lastPcieReplayAbsolute[key]
+	if !ok {
+		lastPcieReplayAbsolute[key] = current
+		return
+	}
+	delta := current
+	if current >= prev {
+		delta = current - prev
+	}
+	if delta > 0 {
+		devicePcieReplayErrors.WithLabelValues(node, uuid, idx, model).Add(float64(delta))
+	}
+	lastPcieReplayAbsolute[key] = current
 }
 
 // RecordPodSnapshot은 이번 poll에 관측된 (Pod, GPU) 메모리 사용량 스냅샷을 일괄 기록한다.

@@ -19,7 +19,7 @@ func resetPodMetricsState(t *testing.T) {
 	lastPodSampleKeys = make(map[string]struct{})
 }
 
-// resetDeviceMetricsState는 패키지 레벨 device gauge/counter와 ECC/Violation delta 추적기를 초기화한다.
+// resetDeviceMetricsState는 패키지 레벨 device gauge/counter와 모든 delta 추적기를 초기화한다.
 // counter는 Reset() 후 새 series를 만들 때부터 0에서 시작해 Add(delta)가 올바르게 누적된다.
 func resetDeviceMetricsState(t *testing.T) {
 	t.Helper()
@@ -43,8 +43,20 @@ func resetDeviceMetricsState(t *testing.T) {
 	devicePowerLimit.Reset()
 	deviceThrottleViolationSeconds.Reset()
 	deviceGpmUtilization.Reset()
+	deviceEnergyConsumption.Reset()
+	devicePcieLinkGenerationCurrent.Reset()
+	devicePcieLinkWidthCurrent.Reset()
+	devicePcieReplayErrors.Reset()
+	deviceTemperatureThreshold.Reset()
+	devicePowerLimitEnforced.Reset()
+	devicePersistenceMode.Reset()
+	deviceComputeMode.Reset()
+	deviceInfo.Reset()
+	deviceFirmwareInfo.Reset()
 	lastEccAbsolute = make(map[string]uint64)
 	lastViolationAbsolute = make(map[string]uint64)
+	lastEnergyAbsolute = make(map[string]uint64)
+	lastPcieReplayAbsolute = make(map[string]uint32)
 }
 
 func samplePod(ns, name, uid string) kube.PodIdentity {
@@ -245,7 +257,42 @@ func fullySupportedSnap() types.GPUSnapshot {
 		GpmDramBandwidthPct: 22.0,
 		GpmSupported:        true,
 		GpmFirstSampleReady: true,
+		EnergyConsumptionMilliJoules: 0,
+		EnergySupported:              true,
+		PcieLinkGenerationCurrent: 4,
+		PcieLinkWidthCurrent:      16,
+		PcieLinkSupported:         true,
+		PcieReplayErrors:    0,
+		PcieReplaySupported: true,
+		TemperatureThresholdsCelsius: map[string]uint32{
+			"slowdown": 90,
+			"shutdown": 100,
+			"mem_max":  95,
+			"gpu_max":  93,
+		},
+		TemperatureThresholdSupported: true,
+		PowerLimitEnforcedWatts:     350.0,
+		PowerLimitEnforcedSupported: true,
+		PersistenceModeEnabled:   1,
+		PersistenceModeSupported: true,
+		ComputeMode:          0,
+		ComputeModeSupported: true,
 	}
+}
+
+// fullySupportedSnapWithStaticInfo는 정적 정보까지 채워 deviceInfo / deviceFirmwareInfo 발행을 검증할 때 사용한다.
+func fullySupportedSnapWithStaticInfo() types.GPUSnapshot {
+	snap := fullySupportedSnap()
+	snap.Device.CudaComputeMajor = 8
+	snap.Device.CudaComputeMinor = 6
+	snap.Device.Architecture = "ampere"
+	snap.Device.MaxPcieLinkGeneration = 4
+	snap.Device.MaxPcieLinkWidth = 16
+	snap.Device.NumGpuCores = 10496
+	snap.Device.MemoryBusWidthBits = 384
+	snap.Device.VbiosVersion = "94.02.71.40.6e"
+	snap.Device.GspFirmwareVersion = "550.54.15"
+	return snap
 }
 
 func TestRecord_BaseDeviceMetrics(t *testing.T) {
@@ -425,6 +472,13 @@ func TestRecord_UnsupportedFlagsSkipMetricEmission(t *testing.T) {
 	snap.PowerLimitSupported = false
 	snap.ViolationSupported = false
 	snap.GpmSupported = false
+	snap.EnergySupported = false
+	snap.PcieLinkSupported = false
+	snap.PcieReplaySupported = false
+	snap.TemperatureThresholdSupported = false
+	snap.PowerLimitEnforcedSupported = false
+	snap.PersistenceModeSupported = false
+	snap.ComputeModeSupported = false
 	Record("n", snap)
 
 	mustZeroGauges := []*prometheus.GaugeVec{
@@ -434,6 +488,9 @@ func TestRecord_UnsupportedFlagsSkipMetricEmission(t *testing.T) {
 		devicePerformanceState,
 		deviceFanSpeed, deviceBAR1MemoryUsed, deviceBAR1MemoryTotal,
 		devicePowerLimit, deviceGpmUtilization,
+		devicePcieLinkGenerationCurrent, devicePcieLinkWidthCurrent,
+		deviceTemperatureThreshold, devicePowerLimitEnforced,
+		devicePersistenceMode, deviceComputeMode,
 	}
 	for _, g := range mustZeroGauges {
 		if got := testutil.CollectAndCount(g); got != 0 {
@@ -445,6 +502,12 @@ func TestRecord_UnsupportedFlagsSkipMetricEmission(t *testing.T) {
 	}
 	if got := testutil.CollectAndCount(deviceThrottleViolationSeconds); got != 0 {
 		t.Errorf("Violation counter must remain empty when unsupported; got %d series", got)
+	}
+	if got := testutil.CollectAndCount(deviceEnergyConsumption); got != 0 {
+		t.Errorf("Energy counter must remain empty when unsupported; got %d series", got)
+	}
+	if got := testutil.CollectAndCount(devicePcieReplayErrors); got != 0 {
+		t.Errorf("PCIe replay counter must remain empty when unsupported; got %d series", got)
 	}
 }
 
@@ -547,5 +610,118 @@ func TestRecord_ViolationCounterResetTreatedAsCurrentValue(t *testing.T) {
 
 	if got := testutil.ToFloat64(deviceThrottleViolationSeconds.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "thermal")); got != 0.05 {
 		t.Errorf("post-reset violation counter=%v want 0.05 (current 50ms applied as fresh)", got)
+	}
+}
+
+func TestRecord_EnergyDeltaConvertedToJoules(t *testing.T) {
+	// NVML 누적 mJ 절대값에서 직전 poll 값을 빼 양수 delta만 J로 환산해 Counter.Add 한다.
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnap()
+	snap.EnergyConsumptionMilliJoules = 1_000_000 // 1000J baseline (1 megajoule worth of mJ)
+	Record("n", snap)
+	if got := testutil.CollectAndCount(deviceEnergyConsumption); got != 0 {
+		t.Errorf("first poll baseline-only; series=%d want 0", got)
+	}
+
+	snap.EnergyConsumptionMilliJoules = 1_500_000 // +500_000 mJ = +500 J
+	Record("n", snap)
+	if got := testutil.ToFloat64(deviceEnergyConsumption.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != 500 {
+		t.Errorf("energy counter=%v want 500 J (delta 500000mJ)", got)
+	}
+}
+
+func TestRecord_PcieReplayDelta(t *testing.T) {
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnap()
+	snap.PcieReplayErrors = 100 // baseline
+	Record("n", snap)
+	if got := testutil.CollectAndCount(devicePcieReplayErrors); got != 0 {
+		t.Errorf("first poll baseline-only; series=%d want 0", got)
+	}
+
+	snap.PcieReplayErrors = 105 // +5
+	Record("n", snap)
+	if got := testutil.ToFloat64(devicePcieReplayErrors.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != 5 {
+		t.Errorf("pcie replay counter=%v want 5", got)
+	}
+}
+
+func TestRecord_PcieLinkAndPowerLimitEnforcedAndModes(t *testing.T) {
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnap()
+	Record("n", snap)
+
+	if got := testutil.ToFloat64(devicePcieLinkGenerationCurrent.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != 4 {
+		t.Errorf("pcie link gen=%v want 4", got)
+	}
+	if got := testutil.ToFloat64(devicePcieLinkWidthCurrent.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != 16 {
+		t.Errorf("pcie link width=%v want 16", got)
+	}
+	if got := testutil.ToFloat64(devicePowerLimitEnforced.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != 350 {
+		t.Errorf("enforced power limit=%v want 350", got)
+	}
+	if got := testutil.ToFloat64(devicePersistenceMode.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != 1 {
+		t.Errorf("persistence mode=%v want 1", got)
+	}
+	if got := testutil.ToFloat64(deviceComputeMode.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != 0 {
+		t.Errorf("compute mode=%v want 0 (Default)", got)
+	}
+}
+
+func TestRecord_TemperatureThresholdsLabeled(t *testing.T) {
+	// 4종 threshold 모두 별도 시리즈로 발행되어야 한다.
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnap()
+	Record("n", snap)
+
+	if got := testutil.CollectAndCount(deviceTemperatureThreshold); got != 4 {
+		t.Errorf("expected 4 threshold series; got %d", got)
+	}
+	if got := testutil.ToFloat64(deviceTemperatureThreshold.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "slowdown")); got != 90 {
+		t.Errorf("slowdown threshold=%v want 90", got)
+	}
+	if got := testutil.ToFloat64(deviceTemperatureThreshold.WithLabelValues("n", "GPU-A", "0", "RTX-3090", "shutdown")); got != 100 {
+		t.Errorf("shutdown threshold=%v want 100", got)
+	}
+}
+
+func TestRecord_DeviceInfoAndFirmwareInfo(t *testing.T) {
+	// 정적 라벨이 채워진 snapshot에서 deviceInfo / deviceFirmwareInfo 가 정확한 라벨 값으로 1을 발행한다.
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnapWithStaticInfo()
+	Record("n", snap)
+
+	if got := testutil.ToFloat64(deviceInfo.WithLabelValues(
+		"n", "GPU-A", "0", "RTX-3090",
+		"8.6", "ampere", "4", "16", "10496", "384",
+	)); got != 1 {
+		t.Errorf("device_info=%v want 1 with full static labels", got)
+	}
+	if got := testutil.ToFloat64(deviceFirmwareInfo.WithLabelValues(
+		"n", "GPU-A", "0", "RTX-3090",
+		"94.02.71.40.6e", "550.54.15",
+	)); got != 1 {
+		t.Errorf("device_firmware_info=%v want 1 with vbios/gsp", got)
+	}
+}
+
+func TestRecord_DeviceInfoFallbackForMissingFields(t *testing.T) {
+	// 정적 정보 수집이 실패해 zero value인 필드들은 "unknown"/0으로 라벨에 들어가야 한다.
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnap() // static fields 모두 zero value
+	Record("n", snap)
+
+	// compute_capability="unknown", architecture="unknown", 정수 필드들은 "0".
+	if got := testutil.ToFloat64(deviceInfo.WithLabelValues(
+		"n", "GPU-A", "0", "RTX-3090",
+		"unknown", "unknown", "0", "0", "0", "0",
+	)); got != 1 {
+		t.Errorf("device_info fallback labels=%v want 1", got)
 	}
 }
