@@ -61,3 +61,21 @@ spec:
         # 본 record도 빈 결과를 산출하는 것이 정상 동작이다. 데이터센터 GPU 합류 시 비로소 의미 있는 시리즈가 생긴다.
         - record: node:gpu_ecc_errors:rate5m
           expr: sum by(node, error_type) (rate(gpuobs_device_ecc_errors_total[5m]))
+
+        # node:gpu_energy_watts_avg:5m
+        # 누적 에너지 카운터의 5분 rate는 곧 J/sec = Watts 이므로 "5분 평균 전력" 시계열을 산출한다.
+        # instantaneous gpuobs_device_power_usage_watts와 별개로 spike 평균낸 추세를 dashboard에 노출한다. 노드 차원 합산.
+        - record: node:gpu_energy_watts_avg:5m
+          expr: sum by(node) (rate(gpuobs_device_energy_consumption_joules_total[5m]))
+
+        # node:gpu_pcie_replay:rate5m
+        # PCIe 링크 재전송 발생률(errors/sec). 정상 환경에서는 0에 가깝고, 지속적 증가는 라이저/케이블/슬롯 문제 시그널이다.
+        # alert rule을 직접 두지 않더라도 dashboard의 health 패널 시각화에 적합.
+        - record: node:gpu_pcie_replay:rate5m
+          expr: sum by(node) (rate(gpuobs_device_pcie_replay_errors_total[5m]))
+
+        # node:gpu_temperature_headroom_celsius
+        # threshold별 thermal 헤드룸. 양수면 안전 마진, 0 이하면 throttle/shutdown 임박.
+        # left side(threshold gauge) 의 threshold 라벨을 group_left로 보존하고 right side(현재 온도) 와 (node, gpu_uuid, gpu_index) 키로 매칭.
+        - record: node:gpu_temperature_headroom_celsius
+          expr: gpuobs_device_temperature_threshold_celsius - on(node, gpu_uuid, gpu_index) group_left(threshold) gpuobs_device_temperature_celsius
