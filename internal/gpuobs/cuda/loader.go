@@ -318,11 +318,11 @@ func readDroppedTotal(droppedMap *cebpf.Map) uint64 {
 //
 // PodName/PodUID 폴백은 metrics.PodNameOrUnknown / PodUIDOrUnknown 을 그대로 사용해
 // RecordCudaEvent 가 만드는 라벨 키와 정확히 동일한 형식이 보장된다 (cleanup 매칭 정합성).
-func (r *Reader) buildActiveCudaKeys(pidToUUID map[uint32]string) map[string]struct{} {
+func (r *Reader) buildActiveCudaKeys(pidToUUID map[uint32]string) map[metrics.CudaLabelKey]struct{} {
 	if r.resolver == nil {
-		return map[string]struct{}{}
+		return map[metrics.CudaLabelKey]struct{}{}
 	}
-	active := make(map[string]struct{}, len(pidToUUID))
+	active := make(map[metrics.CudaLabelKey]struct{}, len(pidToUUID))
 	for pid, uuid := range pidToUUID {
 		id := r.resolver.ResolvePID(pid)
 		if !id.IsPod() {

@@ -154,17 +154,25 @@ var (
 	lastPodSampleKeysMu sync.Mutex
 )
 
-// seenCudaKeys 는 RecordCudaEvent 가 한 번이라도 기록한 (node, ns, pod, uid, gpu_uuid) 라벨
-// 키 셋이다. cuda 카운터는 streaming event 기반이라 RecordPodSnapshot 류의 "이번 poll snapshot"
+// seenCudaKeys 는 RecordCudaEvent 가 한 번이라도 기록한 (node, ns, pod, uid, gpu_uuid) 5-tuple
+// 라벨 키 셋이다. cuda 카운터는 streaming event 기반이라 RecordPodSnapshot 류의 "이번 poll snapshot"
 // 패턴이 적용되지 않는다. 그래서 RetainCudaSeries 호출 시점에 collector 가 NVML 풀링으로
 // 산출한 active key 셋과 비교해, 더 이상 살아있지 않은 Pod 의 시리즈만 surgical Delete 한다.
+//
+// 키 타입은 고정 길이 [5]string 배열이라 strings.Join (RecordCudaEvent) / strings.Split (RetainCudaSeries)
+// 류의 hot-path 힙 할당이 0 이고, 배열 자체가 hashable 이라 map 키로 직접 쓸 수 있다.
 //
 // hot path 인 RecordCudaEvent 는 동일 키가 반복 등장하므로 RWMutex 의 RLock fast path 로
 // 매 이벤트의 write lock 비용을 회피한다. 새 키 등장 시에만 Lock 으로 승격한다.
 var (
-	seenCudaKeys   = make(map[string]struct{})
+	seenCudaKeys   = make(map[CudaLabelKey]struct{})
 	seenCudaKeysMu sync.RWMutex
 )
+
+// CudaLabelKey 는 cuda 카운터의 5 라벨 (node, src_namespace, src_pod, src_pod_uid, gpu_uuid) 고정
+// 길이 배열이다. 배열 슬롯 순서는 RecordCudaEvent / CudaActiveKey / RetainCudaSeries 가 모두
+// 공유하며, prometheus *Vec 의 WithLabelValues 호출 인자 순서와 정확히 일치해야 한다.
+type CudaLabelKey [5]string
 
 // podLabelSeparator는 라벨 키 직렬화용 구분자다. K8s 식별자(namespace/pod/uid 등)와 GPU UUID 어디에도
 // 등장할 수 없는 NUL 바이트를 사용해 join/split 충돌을 회피한다.
@@ -858,7 +866,9 @@ func RecordCudaEvent(node string, s CudaEventSample) {
 	if !s.ID.IsPod() {
 		return
 	}
-	labels := []string{
+	// stack-allocated 5-tuple. WithLabelValues 에 labels[:] 로 넘겨도 backing array 가 stack 에
+	// 머물러 strings.Join 류의 힙 할당을 발생시키지 않는다.
+	labels := CudaLabelKey{
 		node,
 		s.ID.NamespaceLabel(),
 		podName(s.ID),
@@ -868,26 +878,25 @@ func RecordCudaEvent(node string, s CudaEventSample) {
 
 	switch s.Kind {
 	case types.CudaEventKernelLaunch:
-		cudaKernelLaunchesTotal.WithLabelValues(labels...).Inc()
+		cudaKernelLaunchesTotal.WithLabelValues(labels[:]...).Inc()
 	case types.CudaEventH2D:
-		cudaH2DBytesTotal.WithLabelValues(labels...).Add(float64(s.Bytes))
+		cudaH2DBytesTotal.WithLabelValues(labels[:]...).Add(float64(s.Bytes))
 	case types.CudaEventD2H:
-		cudaD2HBytesTotal.WithLabelValues(labels...).Add(float64(s.Bytes))
+		cudaD2HBytesTotal.WithLabelValues(labels[:]...).Add(float64(s.Bytes))
 	default:
 		// 정의되지 않은 kind 는 BPF / userspace enum 이 어긋난 신호라 발행을 건너뛴다.
 		return
 	}
 
 	// hot path: 이미 본 키면 RLock 만으로 끝나고, 신규 키일 때만 write lock 으로 승격한다.
-	key := strings.Join(labels, podLabelSeparator)
 	seenCudaKeysMu.RLock()
-	_, seen := seenCudaKeys[key]
+	_, seen := seenCudaKeys[labels]
 	seenCudaKeysMu.RUnlock()
 	if seen {
 		return
 	}
 	seenCudaKeysMu.Lock()
-	seenCudaKeys[key] = struct{}{}
+	seenCudaKeys[labels] = struct{}{}
 	seenCudaKeysMu.Unlock()
 }
 
@@ -897,16 +906,16 @@ func AddCudaEventsLost(node string, lost uint64) {
 	cudaEventsLostTotal.WithLabelValues(node).Add(float64(lost))
 }
 
-// CudaActiveKey 는 RetainCudaSeries 호출자가 살아있다고 보고하는 라벨 셋의 직렬 형식을 만든다.
-// RecordCudaEvent 가 사용하는 키 형식과 정확히 동일해야 cleanup 비교가 일관된다.
-func CudaActiveKey(node, namespace, podName, podUID, gpuUUID string) string {
-	return strings.Join([]string{
+// CudaActiveKey 는 RetainCudaSeries 호출자가 살아있다고 보고하는 라벨 셋의 5-tuple 키를 만든다.
+// RecordCudaEvent 가 사용하는 키 슬롯 순서와 정확히 동일해야 cleanup 비교가 일관된다.
+func CudaActiveKey(node, namespace, podName, podUID, gpuUUID string) CudaLabelKey {
+	return CudaLabelKey{
 		node,
 		namespace,
 		podName,
 		podUID,
 		fallbackString(gpuUUID, "unknown"),
-	}, podLabelSeparator)
+	}
 }
 
 // RetainCudaSeries 는 collector 가 이번 NVML 풀링에서 활성으로 식별한 (Pod, GPU) 라벨 키 셋
@@ -917,14 +926,14 @@ func CudaActiveKey(node, namespace, podName, podUID, gpuUUID string) string {
 // 단점: NVML 풀링 주기보다 짧은 수명의 GPU 프로세스는 한 번도 activeKeys 에 들어가지 못해 시리즈가
 // 기록 직후 다음 cleanup 에서 제거될 수 있다. 컨슈머 카드 vectorAdd 류 단발 워크로드에 한해 발생하며,
 // 이 한계는 README 에 명시한다.
-func RetainCudaSeries(activeKeys map[string]struct{}) {
+func RetainCudaSeries(activeKeys map[CudaLabelKey]struct{}) {
 	seenCudaKeysMu.Lock()
 	defer seenCudaKeysMu.Unlock()
 	for key := range seenCudaKeys {
 		if _, ok := activeKeys[key]; ok {
 			continue
 		}
-		labels := strings.Split(key, podLabelSeparator)
+		labels := key[:]
 		cudaKernelLaunchesTotal.DeleteLabelValues(labels...)
 		cudaH2DBytesTotal.DeleteLabelValues(labels...)
 		cudaD2HBytesTotal.DeleteLabelValues(labels...)

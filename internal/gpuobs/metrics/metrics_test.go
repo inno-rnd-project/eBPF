@@ -792,7 +792,7 @@ func resetCudaMetricsState(t *testing.T) {
 	cudaD2HBytesTotal.Reset()
 	cudaSymbolAvailable.Reset()
 	cudaEventsLostTotal.Reset()
-	seenCudaKeys = make(map[string]struct{})
+	seenCudaKeys = make(map[CudaLabelKey]struct{})
 }
 
 func TestRecordCudaEvent_KernelLaunchIncrementsCounter(t *testing.T) {
@@ -911,7 +911,7 @@ func TestRetainCudaSeries_RemovesStaleAndKeepsActive(t *testing.T) {
 		t.Fatalf("setup: kernel series=%d want 2 (podA+podB)", got)
 	}
 
-	active := map[string]struct{}{
+	active := map[CudaLabelKey]struct{}{
 		CudaActiveKey("n", "ml", "a", "uid-a", "G"): {},
 	}
 	RetainCudaSeries(active)
@@ -939,7 +939,7 @@ func TestRetainCudaSeries_EmptyActiveCleansAll(t *testing.T) {
 	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventKernelLaunch})
 	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventH2D, Bytes: 10})
 
-	RetainCudaSeries(map[string]struct{}{})
+	RetainCudaSeries(map[CudaLabelKey]struct{}{})
 
 	if got := testutil.CollectAndCount(cudaKernelLaunchesTotal); got != 0 {
 		t.Errorf("kernel series=%d want 0", got)
@@ -956,7 +956,7 @@ func TestRetainCudaSeries_RebuildsAfterCleanup(t *testing.T) {
 
 	id := samplePod("ml", "p", "u")
 	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventKernelLaunch})
-	RetainCudaSeries(map[string]struct{}{})
+	RetainCudaSeries(map[CudaLabelKey]struct{}{})
 	if got := testutil.CollectAndCount(cudaKernelLaunchesTotal); got != 0 {
 		t.Fatalf("setup: cleanup expected; series=%d", got)
 	}
