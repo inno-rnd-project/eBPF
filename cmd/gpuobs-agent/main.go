@@ -14,6 +14,7 @@ import (
 
 	"netobs/internal/gpuobs/collector"
 	"netobs/internal/gpuobs/config"
+	"netobs/internal/gpuobs/cuda"
 	"netobs/internal/gpuobs/metrics"
 	"netobs/internal/gpuobs/nvml"
 	"netobs/internal/kube"
@@ -43,6 +44,7 @@ func main() {
 	}
 
 	var collectorReady atomic.Bool
+	var cudaReady atomic.Bool
 	ready := func() (bool, string) {
 		// kr이 nil이면 본 에이전트는 device-only 모드라 kube sync 의존이 없다.
 		// kr이 주입된 경우에만 informer 동기화 완료를 readiness 조건으로 추가한다.
@@ -51,6 +53,11 @@ func main() {
 		}
 		if !collectorReady.Load() {
 			return false, "collector not ready"
+		}
+		// cuda uprobe 가 활성일 때만 readiness 조건에 포함한다. 비활성 환경에서는 cuda goroutine 자체가
+		// 기동되지 않으므로 조건에 끼우면 영원히 not-ready 상태가 된다.
+		if cfg.CudaUprobeEnabled && !cudaReady.Load() {
+			return false, "cuda uprobe reader not ready"
 		}
 		return true, ""
 	}
@@ -96,25 +103,60 @@ func main() {
 		resolver = kr
 	}
 	col := collector.New(nv, cfg, resolver)
-	errCh := make(chan error, 1)
+	collectorErrCh := make(chan error, 1)
 	go func() {
-		errCh <- col.Run(ctx, func() {
+		collectorErrCh <- col.Run(ctx, func() {
 			collectorReady.Store(true)
 		})
-		close(errCh)
+		close(collectorErrCh)
 	}()
+
+	// cuda uprobe 모듈은 별도 goroutine 으로 운영한다. CudaUprobeEnabled=false 환경에서는 BPF 객체 로드 /
+	// libcuda hostPath 의존성 / CAP_BPF 등의 capability 요구를 피하기 위해 인스턴스화 자체를 건너뛴다.
+	//
+	// nv==nil + cuda enabled 시: cuda 패키지의 deviceMap refresher 가 즉시 종료해 RetainCudaSeries 가 영원히
+	// 호출되지 않는다. 그러면 종료된 Pod 의 cuda counter 시리즈와 seenCudaKeys 가 무제한 누적되어 카디널리티
+	// 폭증 / 메모리 누수를 유발한다. 이를 막기 위해 cuda reader 자체를 시작하지 않고 warn 로깅 + ready 처리만 한다.
+	var cudaErrCh chan error
+	if cfg.CudaUprobeEnabled {
+		if nv == nil {
+			log.Printf("warn: cuda uprobe enabled but NVML is unavailable; cuda reader skipped to avoid stale-series accumulation")
+			// 기능이 켜져 있어도 NVML 의존성이 없으면 cuda goroutine 을 띄우지 않는다.
+			// readyz 가 cuda 조건에서 영원히 막히지 않도록 ready 상태로 전환한다.
+			cudaReady.Store(true)
+		} else {
+			cudaReader := cuda.New(cfg.CudaUprobeLibcudaPath, cfg.NodeName, nv, resolver, cfg.CudaUprobeDeviceMapRefresh)
+			cudaErrCh = make(chan error, 1)
+			go func() {
+				err := cudaReader.Run(ctx, func() {
+					cudaReady.Store(true)
+				})
+				// cuda 가 onReady 를 호출하기 전에 에러로 빠진 경우(libcuda 미존재 / 모든 심볼 attach 실패 등)
+				// readyz 가 영원히 not-ready 로 묶이는 것을 막기 위해, goroutine 종료 시점에 cudaReady 를 강제 set 한다.
+				// 진단 정보는 errCh 로깅 + gpuobs_cuda_symbol_available 메트릭으로 운영자가 확인한다.
+				cudaReady.Store(true)
+				cudaErrCh <- err
+				close(cudaErrCh)
+			}()
+		}
+	}
 
 	// 이벤트 루프.
 	// ctx가 취소되면 doneSignal을 nil로 돌려 해당 case를 비활성화한다.
-	// 이후 errCh가 자연스럽게 close되면 루프가 종료되므로 busy loop 없이 drain된다.
+	// 각 errCh 가 close되면 채널 변수를 nil 로 만들어 select 에서 영원히 블록 → 자연스럽게 drain 된다.
 	doneSignal := ctx.Done()
-	for errCh != nil {
+	for collectorErrCh != nil || cudaErrCh != nil {
 		select {
-		case err, ok := <-errCh:
+		case err, ok := <-collectorErrCh:
 			if ok && err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("collector error: %v", err)
 			}
-			errCh = nil
+			collectorErrCh = nil
+		case err, ok := <-cudaErrCh:
+			if ok && err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("cuda reader error: %v", err)
+			}
+			cudaErrCh = nil
 		case <-doneSignal:
 			log.Printf("shutdown signal received")
 			doneSignal = nil

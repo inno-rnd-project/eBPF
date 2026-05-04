@@ -143,7 +143,7 @@ type GPUSnapshot struct {
 	// TemperatureThresholdsCelsius는 GetTemperatureThreshold(slowdown/shutdown/mem_max/gpu_max) 결과를 reason 키로 보관한다.
 	// 값은 device 수명 동안 불변이라 nvml 계층에서 1회 fetch + 캐싱하고 매 poll에서 동일 map을 그대로 채운다.
 	// 일부 threshold만 지원되는 GPU도 있어 키 단위 graceful skip 한다 — 적어도 하나라도 성공하면 *Supported=true.
-	TemperatureThresholdsCelsius map[string]uint32
+	TemperatureThresholdsCelsius  map[string]uint32
 	TemperatureThresholdSupported bool
 
 	// PowerLimitEnforcedWatts는 GetEnforcedPowerLimit 결과 (Watts). 정상 환경에서는 PowerLimitWatts와 동일하지만
@@ -169,3 +169,14 @@ type GPUProcess struct {
 	PID             uint32
 	MemoryUsedBytes uint64
 }
+
+// CudaEventKind 는 CUDA uprobe 가 캡처한 이벤트의 종류를 표현한다.
+// BPF 측 enum cuda_event_kind 와 정확히 1:1 매핑되며, 값이 BPF 산출물과 동일해야
+// userspace 의 binary.Read 가 일관되게 해석된다.
+type CudaEventKind uint8
+
+const (
+	CudaEventKernelLaunch CudaEventKind = 1
+	CudaEventH2D          CudaEventKind = 2
+	CudaEventD2H          CudaEventKind = 3
+)

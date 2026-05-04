@@ -250,20 +250,20 @@ func fullySupportedSnap() types.GPUSnapshot {
 			"power":   1_000_000_000, // 1s
 			"thermal": 500_000_000,   // 0.5s
 		},
-		ViolationSupported:  true,
-		GpmGraphicsUtilPct:  42.5,
-		GpmSMOccupancyPct:   31.0,
-		GpmTensorActivePct:  10.0,
-		GpmDramBandwidthPct: 22.0,
-		GpmSupported:        true,
-		GpmFirstSampleReady: true,
+		ViolationSupported:           true,
+		GpmGraphicsUtilPct:           42.5,
+		GpmSMOccupancyPct:            31.0,
+		GpmTensorActivePct:           10.0,
+		GpmDramBandwidthPct:          22.0,
+		GpmSupported:                 true,
+		GpmFirstSampleReady:          true,
 		EnergyConsumptionMilliJoules: 0,
 		EnergySupported:              true,
-		PcieLinkGenerationCurrent: 4,
-		PcieLinkWidthCurrent:      16,
-		PcieLinkSupported:         true,
-		PcieReplayErrors:    0,
-		PcieReplaySupported: true,
+		PcieLinkGenerationCurrent:    4,
+		PcieLinkWidthCurrent:         16,
+		PcieLinkSupported:            true,
+		PcieReplayErrors:             0,
+		PcieReplaySupported:          true,
 		TemperatureThresholdsCelsius: map[string]uint32{
 			"slowdown": 90,
 			"shutdown": 100,
@@ -271,12 +271,12 @@ func fullySupportedSnap() types.GPUSnapshot {
 			"gpu_max":  93,
 		},
 		TemperatureThresholdSupported: true,
-		PowerLimitEnforcedWatts:     350.0,
-		PowerLimitEnforcedSupported: true,
-		PersistenceModeEnabled:   1,
-		PersistenceModeSupported: true,
-		ComputeMode:          0,
-		ComputeModeSupported: true,
+		PowerLimitEnforcedWatts:       350.0,
+		PowerLimitEnforcedSupported:   true,
+		PersistenceModeEnabled:        1,
+		PersistenceModeSupported:      true,
+		ComputeMode:                   0,
+		ComputeModeSupported:          true,
 	}
 }
 
@@ -779,5 +779,245 @@ func TestRecord_DeviceInfoFallbackForMissingFields(t *testing.T) {
 		"unknown", "unknown", "0", "0", "0", "0",
 	)); got != 1 {
 		t.Errorf("device_info fallback labels=%v want 1", got)
+	}
+}
+
+// --------------------- cuda uprobe 메트릭 ---------------------
+
+// resetCudaMetricsState 는 cuda 카운터 / 심볼 가용성 gauge / lost counter / seenCudaKeys 추적기를 초기화한다.
+func resetCudaMetricsState(t *testing.T) {
+	t.Helper()
+	cudaKernelLaunchesTotal.Reset()
+	cudaH2DBytesTotal.Reset()
+	cudaD2HBytesTotal.Reset()
+	cudaSymbolAvailable.Reset()
+	cudaEventsLostTotal.Reset()
+	seenCudaKeys = make(map[CudaLabelKey]struct{})
+}
+
+func TestRecordCudaEvent_KernelLaunchIncrementsCounter(t *testing.T) {
+	resetCudaMetricsState(t)
+
+	id := samplePod("ml", "trainer-0", "uid-xyz")
+	RecordCudaEvent("n", CudaEventSample{
+		ID:      id,
+		GPUUUID: "GPU-1",
+		Kind:    types.CudaEventKernelLaunch,
+	})
+	RecordCudaEvent("n", CudaEventSample{
+		ID:      id,
+		GPUUUID: "GPU-1",
+		Kind:    types.CudaEventKernelLaunch,
+	})
+
+	if got := testutil.ToFloat64(cudaKernelLaunchesTotal.WithLabelValues("n", "ml", "trainer-0", "uid-xyz", "GPU-1")); got != 2 {
+		t.Fatalf("kernel launches=%v want 2", got)
+	}
+}
+
+func TestRecordCudaEvent_H2DAndD2HAccumulateBytes(t *testing.T) {
+	resetCudaMetricsState(t)
+
+	id := samplePod("ml", "p", "u")
+	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventH2D, Bytes: 1024})
+	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventH2D, Bytes: 2048})
+	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventD2H, Bytes: 512})
+
+	if got := testutil.ToFloat64(cudaH2DBytesTotal.WithLabelValues("n", "ml", "p", "u", "G")); got != 3072 {
+		t.Errorf("h2d bytes=%v want 3072", got)
+	}
+	if got := testutil.ToFloat64(cudaD2HBytesTotal.WithLabelValues("n", "ml", "p", "u", "G")); got != 512 {
+		t.Errorf("d2h bytes=%v want 512", got)
+	}
+}
+
+func TestRecordCudaEvent_NonPodIdentitySkipped(t *testing.T) {
+	// Pod 으로 분류되지 않은 식별자(호스트 프로세스 / 미해상도 등) 는 발행을 건너뛰어야 한다.
+	// RecordPodSnapshot 의 IsPod 게이트와 동일 정책.
+	resetCudaMetricsState(t)
+
+	cases := []kube.PodIdentity{
+		{IdentityClass: kube.IdentityClassUnresolved},
+		{IdentityClass: kube.IdentityClassNode, NodeName: "n1"},
+		{IdentityClass: kube.IdentityClassExternal},
+		{IdentityClass: kube.IdentityClassService},
+		{},
+	}
+	for _, id := range cases {
+		RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventKernelLaunch})
+	}
+	if got := testutil.CollectAndCount(cudaKernelLaunchesTotal); got != 0 {
+		t.Fatalf("non-pod identities must not be recorded; series=%d", got)
+	}
+}
+
+func TestRecordCudaEvent_MissingGPUUUIDFallsBackToUnknown(t *testing.T) {
+	// PID→GPU 매핑 실패 시 GPUUUID 가 빈 문자열로 들어올 수 있고, 그대로 라벨로 노출되면
+	// 카디널리티가 빈 값으로 늘어난다. "unknown" fallback 으로 격리한다.
+	resetCudaMetricsState(t)
+
+	id := samplePod("ml", "p", "u")
+	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "", Kind: types.CudaEventKernelLaunch})
+
+	if got := testutil.ToFloat64(cudaKernelLaunchesTotal.WithLabelValues("n", "ml", "p", "u", "unknown")); got != 1 {
+		t.Errorf("missing gpu_uuid must fallback to 'unknown'; got %v want 1", got)
+	}
+}
+
+func TestRecordCudaEvent_MissingPodNameAndUIDFallback(t *testing.T) {
+	// Pod 이지만 PodName/PodUID 가 비어 있는 비정상 입력에서도 빈 라벨로 기록되지 않아야 한다.
+	resetCudaMetricsState(t)
+
+	id := kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml"}
+	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventKernelLaunch})
+
+	if got := testutil.ToFloat64(cudaKernelLaunchesTotal.WithLabelValues("n", "ml", "unknown", "unknown", "G")); got != 1 {
+		t.Errorf("fallback labels expected; got %v want 1", got)
+	}
+}
+
+func TestRecordCudaEvent_UnknownKindSkipped(t *testing.T) {
+	// BPF / userspace enum 이 어긋나 정의되지 않은 kind 가 들어오면 발행을 건너뛴다.
+	resetCudaMetricsState(t)
+
+	id := samplePod("ml", "p", "u")
+	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventKind(99)})
+
+	if got := testutil.CollectAndCount(cudaKernelLaunchesTotal); got != 0 {
+		t.Errorf("unknown kind must not create any series; got %d", got)
+	}
+	if got := testutil.CollectAndCount(cudaH2DBytesTotal); got != 0 {
+		t.Errorf("unknown kind must not create any series; got %d", got)
+	}
+	if got := testutil.CollectAndCount(cudaD2HBytesTotal); got != 0 {
+		t.Errorf("unknown kind must not create any series; got %d", got)
+	}
+}
+
+func TestRetainCudaSeries_RemovesStaleAndKeepsActive(t *testing.T) {
+	// podA, podB 둘 다 이벤트가 들어온 뒤, 다음 cleanup 에서 podA 만 active 로 보고되면
+	// podB 의 3 family 시리즈가 모두 제거되고 podA 시리즈는 유지되어야 한다.
+	resetCudaMetricsState(t)
+
+	podA := samplePod("ml", "a", "uid-a")
+	podB := samplePod("ml", "b", "uid-b")
+	RecordCudaEvent("n", CudaEventSample{ID: podA, GPUUUID: "G", Kind: types.CudaEventKernelLaunch})
+	RecordCudaEvent("n", CudaEventSample{ID: podA, GPUUUID: "G", Kind: types.CudaEventH2D, Bytes: 100})
+	RecordCudaEvent("n", CudaEventSample{ID: podA, GPUUUID: "G", Kind: types.CudaEventD2H, Bytes: 50})
+	RecordCudaEvent("n", CudaEventSample{ID: podB, GPUUUID: "G", Kind: types.CudaEventKernelLaunch})
+	RecordCudaEvent("n", CudaEventSample{ID: podB, GPUUUID: "G", Kind: types.CudaEventH2D, Bytes: 200})
+
+	if got := testutil.CollectAndCount(cudaKernelLaunchesTotal); got != 2 {
+		t.Fatalf("setup: kernel series=%d want 2 (podA+podB)", got)
+	}
+
+	active := map[CudaLabelKey]struct{}{
+		CudaActiveKey("n", "ml", "a", "uid-a", "G"): {},
+	}
+	RetainCudaSeries(active)
+
+	if got := testutil.CollectAndCount(cudaKernelLaunchesTotal); got != 1 {
+		t.Errorf("kernel series after cleanup=%d want 1 (podA only)", got)
+	}
+	if got := testutil.CollectAndCount(cudaH2DBytesTotal); got != 1 {
+		t.Errorf("h2d series after cleanup=%d want 1 (podA only)", got)
+	}
+	if got := testutil.CollectAndCount(cudaD2HBytesTotal); got != 1 {
+		t.Errorf("d2h series after cleanup=%d want 1 (podA only, podB never had d2h)", got)
+	}
+	// podA 카운터 값은 유지되어야 한다 (Reset 이 아닌 surgical Delete).
+	if got := testutil.ToFloat64(cudaKernelLaunchesTotal.WithLabelValues("n", "ml", "a", "uid-a", "G")); got != 1 {
+		t.Errorf("podA kernel counter value=%v want 1 (preserved)", got)
+	}
+}
+
+func TestRetainCudaSeries_EmptyActiveCleansAll(t *testing.T) {
+	// 모든 GPU 워크로드가 종료되어 빈 active 가 들어오면 직전까지 기록된 모든 cuda 시리즈가 제거되어야 한다.
+	resetCudaMetricsState(t)
+
+	id := samplePod("ml", "p", "u")
+	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventKernelLaunch})
+	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventH2D, Bytes: 10})
+
+	RetainCudaSeries(map[CudaLabelKey]struct{}{})
+
+	if got := testutil.CollectAndCount(cudaKernelLaunchesTotal); got != 0 {
+		t.Errorf("kernel series=%d want 0", got)
+	}
+	if got := testutil.CollectAndCount(cudaH2DBytesTotal); got != 0 {
+		t.Errorf("h2d series=%d want 0", got)
+	}
+}
+
+func TestRetainCudaSeries_RebuildsAfterCleanup(t *testing.T) {
+	// cleanup 으로 시리즈 / seenCudaKeys 가 비워진 후 다시 같은 라벨로 이벤트가 들어오면
+	// 정상적으로 신규 시리즈가 만들어져야 한다 (seenCudaKeys 가 영구히 stale 키를 남기지 않음).
+	resetCudaMetricsState(t)
+
+	id := samplePod("ml", "p", "u")
+	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventKernelLaunch})
+	RetainCudaSeries(map[CudaLabelKey]struct{}{})
+	if got := testutil.CollectAndCount(cudaKernelLaunchesTotal); got != 0 {
+		t.Fatalf("setup: cleanup expected; series=%d", got)
+	}
+
+	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventKernelLaunch})
+	if got := testutil.ToFloat64(cudaKernelLaunchesTotal.WithLabelValues("n", "ml", "p", "u", "G")); got != 1 {
+		t.Errorf("re-record after cleanup counter=%v want 1 (counter restarts at 0 then +1)", got)
+	}
+}
+
+func TestRecordCudaEvent_FastPathSkipsWriteLockOnRepeatedKey(t *testing.T) {
+	// 같은 (Pod, GPU) 라벨 키로 두 번째 이후 호출은 fast path (RLock-only) 를 타야 한다.
+	// 기능 정합성 측면에서: 두 번째 호출 후에도 seenCudaKeys 에 키가 정확히 1개 남고 카운터는 누적되어야 한다.
+	resetCudaMetricsState(t)
+
+	id := samplePod("ml", "p", "u")
+	for i := 0; i < 5; i++ {
+		RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventKernelLaunch})
+	}
+
+	if got := testutil.ToFloat64(cudaKernelLaunchesTotal.WithLabelValues("n", "ml", "p", "u", "G")); got != 5 {
+		t.Errorf("counter=%v want 5 (5 events on the same key)", got)
+	}
+	if got := len(seenCudaKeys); got != 1 {
+		t.Errorf("seenCudaKeys size=%d want 1 (fast path must not duplicate)", got)
+	}
+}
+
+func TestAddCudaEventsLost_AccumulatesByNode(t *testing.T) {
+	resetCudaMetricsState(t)
+
+	AddCudaEventsLost("n1", 3)
+	AddCudaEventsLost("n1", 7)
+	AddCudaEventsLost("n2", 2)
+
+	if got := testutil.ToFloat64(cudaEventsLostTotal.WithLabelValues("n1")); got != 10 {
+		t.Errorf("n1 lost=%v want 10", got)
+	}
+	if got := testutil.ToFloat64(cudaEventsLostTotal.WithLabelValues("n2")); got != 2 {
+		t.Errorf("n2 lost=%v want 2", got)
+	}
+}
+
+func TestSetCudaSymbolAvailability_BothStates(t *testing.T) {
+	resetCudaMetricsState(t)
+
+	SetCudaSymbolAvailability("n", "cuLaunchKernel", true)
+	SetCudaSymbolAvailability("n", "cuMemcpyHtoD_v2", false)
+
+	if got := testutil.ToFloat64(cudaSymbolAvailable.WithLabelValues("n", "cuLaunchKernel")); got != 1 {
+		t.Errorf("cuLaunchKernel=%v want 1", got)
+	}
+	if got := testutil.ToFloat64(cudaSymbolAvailable.WithLabelValues("n", "cuMemcpyHtoD_v2")); got != 0 {
+		t.Errorf("cuMemcpyHtoD_v2=%v want 0", got)
+	}
+	// 같은 (node, symbol) 로 다시 호출하면 idempotent Set 으로 시리즈가 늘어나지 않아야 한다.
+	SetCudaSymbolAvailability("n", "cuLaunchKernel", false)
+	if got := testutil.ToFloat64(cudaSymbolAvailable.WithLabelValues("n", "cuLaunchKernel")); got != 0 {
+		t.Errorf("cuLaunchKernel after re-set=%v want 0", got)
+	}
+	if got := testutil.CollectAndCount(cudaSymbolAvailable); got != 2 {
+		t.Errorf("series count=%d want 2", got)
 	}
 }

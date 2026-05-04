@@ -116,6 +116,16 @@ var (
 // gpu_uuid/gpu_index는 GPU 차원을 추가해 한 Pod이 복수 GPU를 사용하는 경우 분리 측정한다.
 var podLabels = []string{"node", "src_namespace", "src_pod", "src_pod_uid", "gpu_uuid", "gpu_index"}
 
+// cudaPodLabels 는 cuda uprobe 카운터가 공유하는 Pod 차원 라벨 세트다.
+// 앞 4개는 netobs/podLabels 와 동일한 4-key 조인 표준이고, 마지막 gpu_uuid 는 NVML
+// GetComputeRunningProcesses 캐시로 PID 를 GPU 에 매핑한 결과다. gpu_index 는 cuda
+// 메트릭에 포함하지 않아 라벨 카디널리티를 1축 줄이며 PromQL 조인 시 gpu_index 가
+// 필요하면 podMemoryUsed 시리즈와 결합해 보강할 수 있다.
+var cudaPodLabels = []string{"node", "src_namespace", "src_pod", "src_pod_uid", "gpu_uuid"}
+
+// cudaSymbolLabels 는 libcuda 심볼 상태 gauge 의 라벨 세트다. 노드 × 추적 심볼 7종 = 노드당 7 시리즈.
+var cudaSymbolLabels = []string{"node", "symbol"}
+
 // podMetricsEnabled는 per-pod gauge(`gpuobs_pod_*`) 기록 여부를 결정한다.
 // 클러스터 규모가 클 때 src_pod / src_pod_uid 라벨로 인한 Prometheus 카디널리티 폭증을
 // 막기 위한 escape hatch로, 기본값은 true(기록)다. SetPodMetricsEnabled로 startup 시점에만
@@ -143,6 +153,26 @@ var (
 	lastPodSampleKeys   = make(map[string]struct{})
 	lastPodSampleKeysMu sync.Mutex
 )
+
+// seenCudaKeys 는 RecordCudaEvent 가 한 번이라도 기록한 (node, ns, pod, uid, gpu_uuid) 5-tuple
+// 라벨 키 셋이다. cuda 카운터는 streaming event 기반이라 RecordPodSnapshot 류의 "이번 poll snapshot"
+// 패턴이 적용되지 않는다. 그래서 RetainCudaSeries 호출 시점에 collector 가 NVML 풀링으로
+// 산출한 active key 셋과 비교해, 더 이상 살아있지 않은 Pod 의 시리즈만 surgical Delete 한다.
+//
+// 키 타입은 고정 길이 [5]string 배열이라 strings.Join (RecordCudaEvent) / strings.Split (RetainCudaSeries)
+// 류의 hot-path 힙 할당이 0 이고, 배열 자체가 hashable 이라 map 키로 직접 쓸 수 있다.
+//
+// hot path 인 RecordCudaEvent 는 동일 키가 반복 등장하므로 RWMutex 의 RLock fast path 로
+// 매 이벤트의 write lock 비용을 회피한다. 새 키 등장 시에만 Lock 으로 승격한다.
+var (
+	seenCudaKeys   = make(map[CudaLabelKey]struct{})
+	seenCudaKeysMu sync.RWMutex
+)
+
+// CudaLabelKey 는 cuda 카운터의 5 라벨 (node, src_namespace, src_pod, src_pod_uid, gpu_uuid) 고정
+// 길이 배열이다. 배열 슬롯 순서는 RecordCudaEvent / CudaActiveKey / RetainCudaSeries 가 모두
+// 공유하며, prometheus *Vec 의 WithLabelValues 호출 인자 순서와 정확히 일치해야 한다.
+type CudaLabelKey [5]string
 
 // podLabelSeparator는 라벨 키 직렬화용 구분자다. K8s 식별자(namespace/pod/uid 등)와 GPU UUID 어디에도
 // 등장할 수 없는 NUL 바이트를 사용해 join/split 충돌을 회피한다.
@@ -396,6 +426,46 @@ var (
 		},
 		podLabels,
 	)
+
+	cudaKernelLaunchesTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gpuobs_cuda_kernel_launches_total",
+			Help: "Cumulative count of CUDA kernel launches captured by uprobes on libcuda.so cuLaunchKernel/cuLaunchKernelEx/cuLaunchCooperativeKernel; attributed per Pod via cgroup-based PID resolution and per GPU via NVML running-process mapping",
+		},
+		cudaPodLabels,
+	)
+
+	cudaH2DBytesTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gpuobs_cuda_h2d_bytes_total",
+			Help: "Cumulative bytes copied host→device via cuMemcpyHtoD_v2/cuMemcpyHtoDAsync_v2, captured by uprobes on libcuda.so",
+		},
+		cudaPodLabels,
+	)
+
+	cudaD2HBytesTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gpuobs_cuda_d2h_bytes_total",
+			Help: "Cumulative bytes copied device→host via cuMemcpyDtoH_v2/cuMemcpyDtoHAsync_v2, captured by uprobes on libcuda.so",
+		},
+		cudaPodLabels,
+	)
+
+	cudaSymbolAvailable = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_cuda_symbol_available",
+			Help: "Whether each tracked libcuda.so symbol was successfully resolved and uprobe-attached at agent startup (1=attached, 0=missing/failed); diagnoses driver/libcuda ABI drift",
+		},
+		cudaSymbolLabels,
+	)
+
+	cudaEventsLostTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gpuobs_cuda_events_lost_total",
+			Help: "Cumulative count of CUDA uprobe ringbuf samples reported as lost by the kernel; sustained increase indicates the ring buffer is undersized for the current event rate",
+		},
+		[]string{"node"},
+	)
 )
 
 // Register는 gpuobs 지표를 주어진 Prometheus Registerer에 등록한다.
@@ -434,6 +504,11 @@ func Register(reg prometheus.Registerer) {
 		deviceInfo,
 		deviceFirmwareInfo,
 		podMemoryUsed,
+		cudaKernelLaunchesTotal,
+		cudaH2DBytesTotal,
+		cudaD2HBytesTotal,
+		cudaSymbolAvailable,
+		cudaEventsLostTotal,
 	)
 }
 
@@ -747,17 +822,132 @@ func RecordPodSnapshot(node string, samples []PodGPUSample) {
 }
 
 // podName과 podUID는 빈 필드일 때 "unknown"으로 폴백해 라벨 카디널리티가 빈 문자열로 늘어나는 것을 막는다.
-// netobs metrics와 동일한 폴백 정책을 사용한다.
-func podName(id kube.PodIdentity) string {
+// netobs metrics와 동일한 폴백 정책을 사용한다. 외부 패키지가 동일 라벨 키를 만들어야 할 때 (예: cuda 패키지의
+// RetainCudaSeries 호출용 active key 생성) 같은 폴백 적용을 보장하기 위해 PodNameOrUnknown / PodUIDOrUnknown
+// 으로도 노출한다 — 두 곳에서 다른 폴백을 쓰면 cleanup 키 매칭이 깨져 stale 시리즈가 영원히 남는다.
+func podName(id kube.PodIdentity) string { return PodNameOrUnknown(id) }
+func podUID(id kube.PodIdentity) string  { return PodUIDOrUnknown(id) }
+
+// PodNameOrUnknown 은 id.PodName 이 비어 있을 때 "unknown" 으로 폴백한다.
+// metrics 측 podName 과 외부 호출자 (cuda 패키지) 의 active key 생성 로직이 동일 폴백을 공유하도록 노출된다.
+func PodNameOrUnknown(id kube.PodIdentity) string {
 	if id.PodName != "" {
 		return id.PodName
 	}
 	return "unknown"
 }
 
-func podUID(id kube.PodIdentity) string {
+// PodUIDOrUnknown 은 id.PodUID 이 비어 있을 때 "unknown" 으로 폴백한다. PodNameOrUnknown 과 같은 이유로 노출된다.
+func PodUIDOrUnknown(id kube.PodIdentity) string {
 	if id.PodUID != "" {
 		return id.PodUID
 	}
 	return "unknown"
+}
+
+// CudaEventSample 은 CUDA uprobe 가 캡처한 이벤트 한 건을 PID→Pod 귀속과 PID→GPU 매핑까지
+// 끝낸 결과물이다. cuda 패키지의 reader 가 BPF 이벤트 → kube.PodIdentity → GPU UUID 해상도를
+// 모두 마친 뒤 본 구조체로 채워 metrics 계층에 넘긴다.
+type CudaEventSample struct {
+	ID      kube.PodIdentity
+	GPUUUID string
+	Kind    types.CudaEventKind
+	Bytes   uint64
+}
+
+// RecordCudaEvent 는 단일 cuda 이벤트를 적절한 카운터에 누적한다.
+//   - kernel launch  → kernel_launches_total +1
+//   - h2d / d2h      → 각 *_bytes_total += event.Bytes
+//
+// IsPod() 가 false 인 식별자는 비-Pod 호스트 프로세스로 간주해 발행을 건너뛴다 (RecordPodSnapshot 과 동일 정책).
+// GPUUUID 가 비어 있으면 "unknown" 으로 폴백해 빈 라벨 카디널리티를 막는다.
+// 사용한 라벨 키는 seenCudaKeys 에 기록되어 추후 RetainCudaSeries 가 stale series 를 제거할 때 참조한다.
+func RecordCudaEvent(node string, s CudaEventSample) {
+	if !s.ID.IsPod() {
+		return
+	}
+	// stack-allocated 5-tuple. WithLabelValues 에 labels[:] 로 넘겨도 backing array 가 stack 에
+	// 머물러 strings.Join 류의 힙 할당을 발생시키지 않는다.
+	labels := CudaLabelKey{
+		node,
+		s.ID.NamespaceLabel(),
+		podName(s.ID),
+		podUID(s.ID),
+		fallbackString(s.GPUUUID, "unknown"),
+	}
+
+	switch s.Kind {
+	case types.CudaEventKernelLaunch:
+		cudaKernelLaunchesTotal.WithLabelValues(labels[:]...).Inc()
+	case types.CudaEventH2D:
+		cudaH2DBytesTotal.WithLabelValues(labels[:]...).Add(float64(s.Bytes))
+	case types.CudaEventD2H:
+		cudaD2HBytesTotal.WithLabelValues(labels[:]...).Add(float64(s.Bytes))
+	default:
+		// 정의되지 않은 kind 는 BPF / userspace enum 이 어긋난 신호라 발행을 건너뛴다.
+		return
+	}
+
+	// hot path: 이미 본 키면 RLock 만으로 끝나고, 신규 키일 때만 write lock 으로 승격한다.
+	seenCudaKeysMu.RLock()
+	_, seen := seenCudaKeys[labels]
+	seenCudaKeysMu.RUnlock()
+	if seen {
+		return
+	}
+	seenCudaKeysMu.Lock()
+	seenCudaKeys[labels] = struct{}{}
+	seenCudaKeysMu.Unlock()
+}
+
+// AddCudaEventsLost 는 cuda 패키지의 ringbuf reader 가 record.LostSamples 로 알려준 누락 이벤트
+// 수를 누적시킨다. 호출 측은 이미 0 가드를 거치므로 본 함수는 양수만 받는다고 가정한다.
+func AddCudaEventsLost(node string, lost uint64) {
+	cudaEventsLostTotal.WithLabelValues(node).Add(float64(lost))
+}
+
+// CudaActiveKey 는 RetainCudaSeries 호출자가 살아있다고 보고하는 라벨 셋의 5-tuple 키를 만든다.
+// RecordCudaEvent 가 사용하는 키 슬롯 순서와 정확히 동일해야 cleanup 비교가 일관된다.
+func CudaActiveKey(node, namespace, podName, podUID, gpuUUID string) CudaLabelKey {
+	return CudaLabelKey{
+		node,
+		namespace,
+		podName,
+		podUID,
+		fallbackString(gpuUUID, "unknown"),
+	}
+}
+
+// RetainCudaSeries 는 collector 가 이번 NVML 풀링에서 활성으로 식별한 (Pod, GPU) 라벨 키 셋
+// (activeKeys) 만 남기고, seenCudaKeys 에는 있지만 activeKeys 에는 없는 시리즈 — 즉 종료된 Pod /
+// 종료된 프로세스 — 의 카운터 3종(kernel/h2d/d2h) 시리즈를 surgical Delete 한다. Reset() 을 쓰지
+// 않아 scrape 도중 빈 시리즈가 잠깐 노출되는 race 를 회피한다.
+//
+// 단점: NVML 풀링 주기보다 짧은 수명의 GPU 프로세스는 한 번도 activeKeys 에 들어가지 못해 시리즈가
+// 기록 직후 다음 cleanup 에서 제거될 수 있다. 컨슈머 카드 vectorAdd 류 단발 워크로드에 한해 발생하며,
+// 이 한계는 README 에 명시한다.
+func RetainCudaSeries(activeKeys map[CudaLabelKey]struct{}) {
+	seenCudaKeysMu.Lock()
+	defer seenCudaKeysMu.Unlock()
+	for key := range seenCudaKeys {
+		if _, ok := activeKeys[key]; ok {
+			continue
+		}
+		labels := key[:]
+		cudaKernelLaunchesTotal.DeleteLabelValues(labels...)
+		cudaH2DBytesTotal.DeleteLabelValues(labels...)
+		cudaD2HBytesTotal.DeleteLabelValues(labels...)
+		delete(seenCudaKeys, key)
+	}
+}
+
+// SetCudaSymbolAvailability 는 libcuda 심볼 한 개의 uprobe attach 결과를 0/1 gauge 로 발행한다.
+// 에이전트 기동 시 uprobe attach 실행 직후 1회 호출되며, 시간이 지나도 변하지 않는 정적 시그널이다.
+// 라벨이 (node, symbol) 두 개 뿐이라 동일 라벨 셋의 idempotent Set 이며 series 가 늘어나지 않는다.
+func SetCudaSymbolAvailability(node, symbol string, available bool) {
+	v := 0.0
+	if available {
+		v = 1.0
+	}
+	cudaSymbolAvailable.WithLabelValues(node, symbol).Set(v)
 }
