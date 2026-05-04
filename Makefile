@@ -19,6 +19,7 @@ PORT_netobs-agent := 9810
 PORT_gpuobs-agent := 9820
 
 PREREQS_netobs-agent := generate
+PREREQS_gpuobs-agent := generate-gpuobs
 
 # go-nvml v0.13.x는 NVML 호출을 CGO `import "C"`로 구현해 CGO 비활성 빌드에서 심볼이
 # 해석되지 않는다. gpuobs-agent만 CGO=1로, netobs-agent는 기존 정적 바이너리 속성을 유지한다.
@@ -40,7 +41,7 @@ OVERLAY_PATH_gpuobs-dev  := deploy/gpuobs/overlays/dev
 OVERLAY_PATH_gpuobs-prod := deploy/gpuobs/overlays/prod
 
 # ============================================================================
-# Architecture detection (netobs BPF 컴파일용)
+# Architecture detection (BPF 컴파일용)
 # ============================================================================
 ifeq ($(ARCH),x86_64)
 TARGET_ARCH := x86
@@ -58,7 +59,7 @@ BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 # .PHONY에 넣지 않는다. GNU make는 .PHONY 타깃에 대해 implicit rule(pattern rule 포함)
 # 탐색을 건너뛰므로 매치가 일어나지 않는다. 해당 타깃들은 동일 이름의 실제 파일이
 # 없어 매 호출마다 recipe가 재실행되므로 phony와 동등 동작이다.
-.PHONY: deps generate clean tree bump \
+.PHONY: deps generate generate-gpuobs clean tree bump \
 	build-all image-build-all image-push-all
 
 # ============================================================================
@@ -75,6 +76,19 @@ generate:
 	-cc clang \
 	-cflags "$(BPF_CFLAGS)" \
 	NetObs ../../../bpf/netlat.bpf.c -- -I../../../bpf
+
+# generate-gpuobs 는 gpuobs CUDA uprobe BPF 산출물을 internal/gpuobs/cuda 패키지로 emit 한다.
+# vmlinux.h 갱신 + bpf2go 호출은 generate 와 동일한 패턴이며, 출력 prefix `CudaUprobe` 는
+# 소문자화되어 cudauprobe_bpfel.{go,o} / cudauprobe_bpfeb.{go,o} 4 파일로 생성된다.
+generate-gpuobs:
+	@if [ -z "$(BPFTOOL)" ]; then echo "bpftool not found"; exit 1; fi
+	@mkdir -p internal/gpuobs/cuda
+	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > ./bpf/vmlinux.h && \
+	cd internal/gpuobs/cuda && GOPACKAGE=cuda go run github.com/cilium/ebpf/cmd/bpf2go@v0.17.1 \
+	-go-package cuda \
+	-cc clang \
+	-cflags "$(BPF_CFLAGS)" \
+	CudaUprobe ../../../bpf/cuda_uprobe.bpf.c -- -I../../../bpf
 
 # ============================================================================
 # Agent build / image pipeline (pattern rule driven)
@@ -144,6 +158,8 @@ clean:
 	rm -f ./bin/*
 	rm -f ./internal/netobs/ebpf/netobs_bpfel.go ./internal/netobs/ebpf/netobs_bpfeb.go
 	rm -f ./internal/netobs/ebpf/netobs_bpfel.o  ./internal/netobs/ebpf/netobs_bpfeb.o
+	rm -f ./internal/gpuobs/cuda/cudauprobe_bpfel.go ./internal/gpuobs/cuda/cudauprobe_bpfeb.go
+	rm -f ./internal/gpuobs/cuda/cudauprobe_bpfel.o  ./internal/gpuobs/cuda/cudauprobe_bpfeb.o
 
 tree:
 	find . -maxdepth 4 -type f | sort
