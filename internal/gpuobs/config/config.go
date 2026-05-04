@@ -26,6 +26,16 @@ type Config struct {
 	// MetadataRefresh는 kube.Resolver의 informer resync 주기다.
 	// 0 이하 값은 의미 없으므로 검증에서 거부된다. netobs와 동일하게 기본값 30s를 쓴다.
 	MetadataRefresh time.Duration
+
+	// CudaUprobeEnabled 는 cuda uprobe 모듈 (libcuda.so 심볼 attach + ringbuf reader) 의 활성 여부다.
+	// 기본값은 true. 운영 환경에서 PodMetricsEnabled=false 로 카디널리티를 막는 경우에는 본 토글도 함께 false 로 두는 것을 권장한다 (README 참고).
+	CudaUprobeEnabled bool
+	// CudaUprobeLibcudaPath 는 host 의 libcuda.so.1 절대경로다.
+	// DaemonSet hostPath 마운트 후 컨테이너에서 보이는 경로 (예: /host/usr/lib/x86_64-linux-gnu/libcuda.so.1).
+	CudaUprobeLibcudaPath string
+	// CudaUprobeDeviceMapRefresh 는 cuda 패키지가 NVML RunningProcesses 로 PID→GPU 매핑을 재구축하는 주기다.
+	// 0 이하 값은 검증에서 거부된다. 매 사이클마다 RetainCudaSeries 도 함께 수행된다.
+	CudaUprobeDeviceMapRefresh time.Duration
 }
 
 // Parse는 env와 CLI flag를 읽어 Config를 구성해 반환한다.
@@ -47,13 +57,21 @@ func Parse() (Config, error) {
 		log.Printf("warn: %v; using default %v", err, metadataRefresh)
 	}
 
+	cudaDeviceMapRefresh, err := getenvDuration("GPUOBS_CUDA_DEVICEMAP_REFRESH", 1*time.Second)
+	if err != nil {
+		log.Printf("warn: %v; using default %v", err, cudaDeviceMapRefresh)
+	}
+
 	cfg := Config{
-		ListenAddr:        getenvDefault("LISTEN_ADDR", ":9820"),
-		NodeName:          getenvDefault("NODE_NAME", ""),
-		GPUPollInterval:   pollInterval,
-		GPUMetricsEnabled: getenvBool("GPU_METRICS_ENABLED", true),
-		PodMetricsEnabled: getenvBool("GPUOBS_POD_METRICS_ENABLED", true),
-		MetadataRefresh:   metadataRefresh,
+		ListenAddr:                 getenvDefault("LISTEN_ADDR", ":9820"),
+		NodeName:                   getenvDefault("NODE_NAME", ""),
+		GPUPollInterval:            pollInterval,
+		GPUMetricsEnabled:          getenvBool("GPU_METRICS_ENABLED", true),
+		PodMetricsEnabled:          getenvBool("GPUOBS_POD_METRICS_ENABLED", true),
+		MetadataRefresh:            metadataRefresh,
+		CudaUprobeEnabled:          getenvBool("GPUOBS_CUDA_UPROBE_ENABLED", true),
+		CudaUprobeLibcudaPath:      getenvDefault("GPUOBS_CUDA_LIBCUDA_PATH", "/host/usr/lib/x86_64-linux-gnu/libcuda.so.1"),
+		CudaUprobeDeviceMapRefresh: cudaDeviceMapRefresh,
 	}
 
 	fs := flag.NewFlagSet("gpuobs-agent", flag.ContinueOnError)
@@ -63,6 +81,9 @@ func Parse() (Config, error) {
 	fs.BoolVar(&cfg.GPUMetricsEnabled, "gpu-metrics", cfg.GPUMetricsEnabled, "emit per-device gpuobs_device_* metrics; disable to suppress device-level collection")
 	fs.BoolVar(&cfg.PodMetricsEnabled, "pod-metrics", cfg.PodMetricsEnabled, "emit per-pod gpuobs_pod_* metrics; disable on large clusters to cap Prometheus cardinality")
 	fs.DurationVar(&cfg.MetadataRefresh, "metadata-refresh", cfg.MetadataRefresh, "Kubernetes metadata informer resync interval")
+	fs.BoolVar(&cfg.CudaUprobeEnabled, "cuda-uprobe", cfg.CudaUprobeEnabled, "enable libcuda.so uprobe module emitting gpuobs_cuda_* counters; requires CAP_BPF/CAP_PERFMON/CAP_SYS_PTRACE and a libcuda hostPath mount")
+	fs.StringVar(&cfg.CudaUprobeLibcudaPath, "cuda-libcuda-path", cfg.CudaUprobeLibcudaPath, "absolute path to host libcuda.so.1 reachable from inside the container")
+	fs.DurationVar(&cfg.CudaUprobeDeviceMapRefresh, "cuda-devicemap-refresh", cfg.CudaUprobeDeviceMapRefresh, "interval between NVML RunningProcesses sweeps that rebuild the PID→GPU map and clean up stale cuda series")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// -h/-help 요청은 flag 패키지가 usage를 출력한 뒤 ErrHelp를 반환한다.
 		// 사용자 의도된 정상 경로이므로 exit 0으로 종료한다.
@@ -82,6 +103,15 @@ func Parse() (Config, error) {
 
 	if cfg.MetadataRefresh <= 0 {
 		return Config{}, fmt.Errorf("invalid -metadata-refresh: must be > 0")
+	}
+
+	if cfg.CudaUprobeEnabled {
+		if strings.TrimSpace(cfg.CudaUprobeLibcudaPath) == "" {
+			return Config{}, fmt.Errorf("invalid -cuda-libcuda-path: must not be empty when cuda uprobe is enabled")
+		}
+		if cfg.CudaUprobeDeviceMapRefresh <= 0 {
+			return Config{}, fmt.Errorf("invalid -cuda-devicemap-refresh: must be > 0")
+		}
 	}
 
 	if strings.TrimSpace(cfg.NodeName) == "" {

@@ -202,8 +202,10 @@ func (r *Reader) dispatch(raw rawEvent, devmap *deviceMap) {
 }
 
 // runDeviceMapRefresher 는 r.refreshEvery 주기로 NVML RunningProcesses 를 모든 device 에서
-// 모은 뒤 deviceMap 을 atomic replace 한다. ctx 종료 시 device handle 을 모두 Close 하고 빠져나간다.
-// nv 가 nil 이면 즉시 종료한다 — 이 경우 deviceMap 은 비어 있어 모든 이벤트가 gpu_uuid="unknown" 으로 발행된다.
+// 모은 뒤 deviceMap 을 atomic replace 하고, 같은 사이클에서 RetainCudaSeries 호출로 종료된
+// (Pod, GPU) 의 metric 시리즈를 surgical Delete 한다. ctx 종료 시 device handle 을 모두 Close 한다.
+// nv 가 nil 이면 즉시 종료한다 — 이 경우 deviceMap 은 비어 있어 모든 이벤트가 gpu_uuid="unknown" 으로 발행되고
+// 시리즈 cleanup 도 일어나지 않는다.
 func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap) {
 	if r.nv == nil {
 		return
@@ -216,8 +218,14 @@ func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap) {
 		}
 	}()
 
+	refresh := func() {
+		fresh := r.collectPidToUUID(devices)
+		devmap.replace(fresh)
+		metrics.RetainCudaSeries(r.buildActiveCudaKeys(fresh))
+	}
+
 	// 첫 풀링을 즉시 1회 수행해 reader 가 첫 이벤트를 받기 전 매핑이 채워지도록 한다.
-	devmap.replace(r.collectPidToUUID(devices))
+	refresh()
 
 	t := time.NewTicker(r.refreshEvery)
 	defer t.Stop()
@@ -226,9 +234,37 @@ func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			devmap.replace(r.collectPidToUUID(devices))
+			refresh()
 		}
 	}
+}
+
+// buildActiveCudaKeys 는 PID→GPU UUID 스냅샷에서 PodResolver 로 Pod 식별까지 끝낸
+// (node, namespace, pod, uid, gpu_uuid) 라벨 키 셋을 만든다. RetainCudaSeries 가 cuda counter
+// 의 stale 시리즈 cleanup 기준으로 사용한다. resolver 가 nil 이거나 어떤 PID 도 Pod 으로
+// 해석되지 않으면 빈 셋을 반환해 모든 시리즈가 제거된다.
+func (r *Reader) buildActiveCudaKeys(pidToUUID map[uint32]string) map[string]struct{} {
+	if r.resolver == nil {
+		return map[string]struct{}{}
+	}
+	active := make(map[string]struct{}, len(pidToUUID))
+	for pid, uuid := range pidToUUID {
+		id := r.resolver.ResolvePID(pid)
+		if !id.IsPod() {
+			continue
+		}
+		active[metrics.CudaActiveKey(r.nodeName, id.NamespaceLabel(), podOrUnknown(id.PodName), podOrUnknown(id.PodUID), uuid)] = struct{}{}
+	}
+	return active
+}
+
+// podOrUnknown 은 metrics 패키지의 podName/podUID fallback 정책과 정확히 일치해야 cleanup 키와
+// RecordCudaEvent 키가 매칭된다. 빈 값은 metrics 측에서 "unknown" 라벨로 기록되므로 동일 폴백을 적용한다.
+func podOrUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
 }
 
 func (r *Reader) discoverDevices() []nvml.Device {
