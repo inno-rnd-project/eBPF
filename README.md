@@ -59,6 +59,9 @@ sudo ./bin/netobs-agent -listen :9810 -print-events=true
 | `GPU_METRICS_ENABLED` | `-gpu-metrics` | `true` | Emit `gpuobs_device_*` metrics; set false to skip device polling entirely |
 | `GPUOBS_POD_METRICS_ENABLED` | `-pod-metrics` | `true` | Emit `gpuobs_pod_*` metrics via PID → Pod resolution; disable on large clusters to cap Prometheus cardinality |
 | `KUBE_METADATA_REFRESH` | `-metadata-refresh` | `30s` | Kubernetes informer resync interval; must be > 0 |
+| `GPUOBS_CUDA_UPROBE_ENABLED` | `-cuda-uprobe` | `true` | Enable libcuda.so uprobe module emitting `gpuobs_cuda_*` counters; requires `CAP_BPF`/`CAP_PERFMON`/`CAP_SYS_PTRACE` and a libcuda hostPath mount. Pair with `GPUOBS_POD_METRICS_ENABLED=false` to fully suppress per-pod cardinality on large clusters |
+| `GPUOBS_CUDA_LIBCUDA_PATH` | `-cuda-libcuda-path` | `/host/usr/lib/x86_64-linux-gnu/libcuda.so.1` | Absolute path to host libcuda.so.1 reachable from inside the container; must match the DaemonSet hostPath mount |
+| `GPUOBS_CUDA_DEVICEMAP_REFRESH` | `-cuda-devicemap-refresh` | `1s` | Interval between NVML `RunningProcesses` sweeps that rebuild the PID→GPU map and clean up stale `gpuobs_cuda_*` series; must be > 0 |
 
 ## Versioning
 
@@ -205,8 +208,12 @@ Device-level gauges are sampled from NVML every `GPU_POLL_INTERVAL` (default 5s)
 | `gpuobs_device_info` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model`, `compute_capability`, `architecture`, `max_pcie_generation`, `max_pcie_width`, `num_cores`, `memory_bus_width_bits` | Static GPU characteristics (value always 1). Use as join target for fleet-wide grouping (e.g., `* on(...) group_left(architecture) gpuobs_device_info`) |
 | `gpuobs_device_firmware_info` | Gauge | `node`, `gpu_uuid`, `gpu_index`, `gpu_model`, `vbios_version`, `gsp_firmware_version` | GPU firmware versions (value always 1) for regression debugging |
 | `gpuobs_pod_memory_used_bytes` | Gauge | `node`, `src_namespace`, `src_pod`, `src_pod_uid`, `gpu_uuid`, `gpu_index` | GPU memory used (bytes) attributed to a single Pod. Aggregates compute + graphics mode processes, max-by-PID deduplication |
+| `gpuobs_cuda_kernel_launches_total` | Counter | `node`, `src_namespace`, `src_pod`, `src_pod_uid`, `gpu_uuid` | Cumulative count of CUDA kernel launches (cuLaunchKernel / cuLaunchKernelEx / cuLaunchCooperativeKernel) captured by libcuda.so uprobes; per-Pod via cgroup PID resolution and per-GPU via NVML `RunningProcesses` mapping |
+| `gpuobs_cuda_h2d_bytes_total` | Counter | `node`, `src_namespace`, `src_pod`, `src_pod_uid`, `gpu_uuid` | Cumulative bytes copied host→device (cuMemcpyHtoD_v2 / cuMemcpyHtoDAsync_v2) captured by libcuda.so uprobes |
+| `gpuobs_cuda_d2h_bytes_total` | Counter | `node`, `src_namespace`, `src_pod`, `src_pod_uid`, `gpu_uuid` | Cumulative bytes copied device→host (cuMemcpyDtoH_v2 / cuMemcpyDtoHAsync_v2) captured by libcuda.so uprobes |
+| `gpuobs_cuda_symbol_available` | Gauge | `node`, `symbol` | 1 if the named libcuda.so symbol was successfully resolved and uprobe-attached at agent startup, 0 otherwise. Diagnoses driver/libcuda ABI drift |
 
-> **Cardinality note**: `gpuobs_pod_memory_used_bytes` carries `src_pod` and `src_pod_uid` labels, mirroring `netobs_pod_stage_*` so the four shared keys (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) join cleanly in PromQL. On large clusters or with frequent pod churn this can inflate Prometheus memory. Set `GPUOBS_POD_METRICS_ENABLED=false` (or `-pod-metrics=false`) to opt out.
+> **Cardinality note**: `gpuobs_pod_memory_used_bytes` and `gpuobs_cuda_*` counters carry `src_pod` and `src_pod_uid` labels, mirroring `netobs_pod_stage_*` so the four shared keys (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) join cleanly in PromQL. On large clusters or with frequent pod churn this can inflate Prometheus memory. Set `GPUOBS_POD_METRICS_ENABLED=false` (or `-pod-metrics=false`) to opt out of `gpuobs_pod_*`, and pair with `GPUOBS_CUDA_UPROBE_ENABLED=false` (or `-cuda-uprobe=false`) to also stop emitting `gpuobs_cuda_*`.
 
 On NVML initialization failure (non-GPU node, driver missing) or when `GPU_METRICS_ENABLED=false`, the collector logs a warning and skips device polling; `gpuobs_device_*` series are not emitted, and `/healthz`·`/readyz` continue to return 200. When the kube informer cache has not synced, `/readyz` reports `kube resolver informer not synced` until the initial sync completes.
 
@@ -216,7 +223,13 @@ On NVML initialization failure (non-GPU node, driver missing) or when `GPU_METRI
 
 > **Why no `gpuobs_pod_sm_utilization_percent`**: NVML's `nvmlDeviceGetProcessUtilization` exposes a 6-second sliding window sampler, which is too coarse for short-lived training steps and can miss bursts entirely. Per-pod compute utilization is deferred until a more precise data source is available; only memory attribution is published in Phase 3.
 
-> **hostPID requirement**: NVML returns host-namespace PIDs, so the gpuobs DaemonSet sets `hostPID: true` to read `/proc/<pid>/cgroup` for Pod UID extraction. The container remains non-privileged with `capabilities.drop: ALL`; only read access to procfs is gained.
+> **hostPID requirement**: NVML returns host-namespace PIDs, so the gpuobs DaemonSet sets `hostPID: true` to read `/proc/<pid>/cgroup` for Pod UID extraction.
+
+> **CUDA uprobe environment requirements**: The `gpuobs_cuda_*` counters are produced by attaching user-space probes to libcuda.so via the kernel `perf_uprobe` PMU. This requires (a) `privileged: true` on the agent container — `CAP_BPF`/`CAP_PERFMON`/`CAP_SYS_PTRACE` alone are blocked by typical `kernel.perf_event_paranoid` settings — and (b) a hostPath mount of the host's libcuda directory (default: `/usr/lib/x86_64-linux-gnu` → `/host/usr/lib/x86_64-linux-gnu`) so that the probe is registered against the same inode that other processes mmap. The `GPUOBS_CUDA_LIBCUDA_PATH` env points at this path inside the container.
+
+> **CUDA uprobe short-lived workload limit**: Because `gpu_uuid` attribution is built from NVML `RunningProcesses` polled every `GPUOBS_CUDA_DEVICEMAP_REFRESH` (default 1s), a CUDA process that lives for less than one polling interval will not appear in any active key set. Its first events land with `gpu_uuid="unknown"` until the next refresh, and if the process exits before that refresh those series are deleted on the very next cleanup cycle. PyTorch/TensorFlow long-running training/inference workloads are unaffected; one-shot CLI binaries (e.g., a single `vectorAdd` invocation) may emit only "unknown"-labeled samples.
+
+> **CUDA uprobe multi-GPU pod**: A Pod that drives more than one GPU on the same node has every PID listed once per GPU it touches in NVML's `RunningProcesses`. The current `pidToUUID` map is single-valued, so the last GPU seen wins — `gpuobs_cuda_*` series for such Pods will appear under one of the GPUs (deterministically per agent restart but not necessarily the GPU that ran a given kernel). Per-GPU split for multi-GPU Pods is a follow-up; NVML does not currently let us recover which GPU a specific kernel launch belonged to from uprobe alone.
 
 ## Observability — netobs/gpuobs Correlation
 
