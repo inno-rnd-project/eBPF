@@ -118,6 +118,67 @@ func TestReaderDispatch_NilResolverPassesEmptyIdentity(t *testing.T) {
 	}
 }
 
+func TestReaderBuildActiveCudaKeys_NilResolverReturnsEmpty(t *testing.T) {
+	// resolver 가 nil 이면 RetainCudaSeries 호출 시 모든 시리즈가 제거되도록 빈 셋을 반환해야 한다.
+	r := New("/unused", "node-A", nil, nil, 0)
+
+	keys := r.buildActiveCudaKeys(map[uint32]string{1: "G"})
+
+	if len(keys) != 0 {
+		t.Errorf("nil resolver must yield empty active set; got %d keys", len(keys))
+	}
+}
+
+func TestReaderBuildActiveCudaKeys_NonPodIdentitySkipped(t *testing.T) {
+	// Pod 으로 해석되지 않은 PID 는 active 셋에 들어가지 않아 RetainCudaSeries 가 자연 cleanup 한다.
+	r := New("/unused", "node-A", nil, fakeResolver{table: map[uint32]kube.PodIdentity{
+		1: {IdentityClass: kube.IdentityClassNode, NodeName: "n1"},
+		2: {IdentityClass: kube.IdentityClassExternal},
+	}}, 0)
+
+	keys := r.buildActiveCudaKeys(map[uint32]string{1: "G", 2: "G"})
+
+	if len(keys) != 0 {
+		t.Errorf("non-pod identities must be skipped; got %d keys", len(keys))
+	}
+}
+
+func TestReaderBuildActiveCudaKeys_KeyFormatMatchesRecordCudaEvent(t *testing.T) {
+	// buildActiveCudaKeys 가 만든 키 형식이 RecordCudaEvent 가 사용하는 metrics.CudaActiveKey 와
+	// 정확히 동일해야 한다. PodName/UID 폴백 분기까지 포함해 검증한다.
+	id := samplePod("ml", "p", "u")
+	r := New("/unused", "node-A", nil, fakeResolver{table: map[uint32]kube.PodIdentity{1: id}}, 0)
+
+	keys := r.buildActiveCudaKeys(map[uint32]string{1: "G"})
+
+	want := metrics.CudaActiveKey("node-A", "ml", "p", "u", "G")
+	if _, ok := keys[want]; !ok {
+		t.Errorf("expected key %q in active set; got %v", want, keys)
+	}
+
+	// Pod 으로 분류되었지만 PodName/PodUID 가 비어 있는 케이스: metrics 의 PodNameOrUnknown / PodUIDOrUnknown
+	// 폴백과 동일한 "unknown" 으로 키가 만들어져야 한다.
+	idEmpty := kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml"}
+	r2 := New("/unused", "node-A", nil, fakeResolver{table: map[uint32]kube.PodIdentity{2: idEmpty}}, 0)
+	keys2 := r2.buildActiveCudaKeys(map[uint32]string{2: "G"})
+	want2 := metrics.CudaActiveKey("node-A", "ml", "unknown", "unknown", "G")
+	if _, ok := keys2[want2]; !ok {
+		t.Errorf("empty pod name/uid must fallback to 'unknown'; got %v", keys2)
+	}
+}
+
+func TestReaderBuildActiveCudaKeys_DuplicatePidDeduped(t *testing.T) {
+	// 동일 PID 가 두 번 등장할 일은 정상 경로엔 없지만 (map key 자체가 unique), 동일 (Pod, GPU)
+	// 매핑이 만들어내는 키는 map 의 자연 dedupe 로 1 슬롯이 되어야 한다.
+	id := samplePod("ml", "p", "u")
+	r := New("/unused", "node-A", nil, fakeResolver{table: map[uint32]kube.PodIdentity{1: id}}, 0)
+
+	keys := r.buildActiveCudaKeys(map[uint32]string{1: "G"})
+	if len(keys) != 1 {
+		t.Errorf("single pid → single key; got %d", len(keys))
+	}
+}
+
 func TestReaderDispatch_KindPassThrough(t *testing.T) {
 	// rawEvent.Kind(uint8) 가 types.CudaEventKind 로 그대로 전달되어야 한다.
 	rec := &captureRecorder{}

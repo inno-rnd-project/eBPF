@@ -249,19 +249,33 @@ func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap, d
 		}
 	}()
 
-	var lastDroppedTotal uint64
+	// dropped counter 는 metrics 측 ECC / Violation / Energy / PcieReplay 와 동일한 baseline-then-delta
+	// 패턴으로 처리한다. 첫 refresh() 시점에 BPF percpu map 이 0 이 아닐 가능성 (cuda reader 가 attach 보다
+	// 먼저 map 을 만들고 다른 프로세스가 그 사이 reserve 실패한 케이스 / agent 재시작 시 map 잔존 등) 이
+	// 있으므로, 첫 호출은 baseline 만 저장하고 delta 가산은 두 번째 호출부터 시작한다.
+	var (
+		lastDroppedTotal uint64
+		droppedBaselined bool
+	)
 	refresh := func() {
 		fresh := r.collectPidToUUID(devices)
 		devmap.replace(fresh)
 		metrics.RetainCudaSeries(r.buildActiveCudaKeys(fresh))
 
 		current := readDroppedTotal(droppedMap)
-		if current > lastDroppedTotal {
+		switch {
+		case !droppedBaselined:
+			// 첫 호출: baseline 만 저장하고 add 건너뜀.
+			lastDroppedTotal = current
+			droppedBaselined = true
+		case current < lastDroppedTotal:
+			// BPF map reset 등 정상적으로는 일어나기 어려운 케이스. 거짓 spike 회피 위해 가산 skip + 새 baseline.
+			lastDroppedTotal = current
+		case current > lastDroppedTotal:
 			metrics.AddCudaEventsLost(r.nodeName, current-lastDroppedTotal)
+			lastDroppedTotal = current
 		}
-		// current < lastDroppedTotal 은 BPF map reset 등 정상적으로는 일어날 수 없는 케이스라
-		// 데이터 연속성 단절로 간주해 가산을 건너뛰고 새 baseline 으로만 갱신한다.
-		lastDroppedTotal = current
+		// current == lastDroppedTotal 인 케이스 (drop 변화 없음) 는 모든 분기를 통과하지 않아 자연 no-op.
 	}
 
 	// 첫 풀링을 즉시 1회 수행해 reader 가 첫 이벤트를 받기 전 매핑이 채워지도록 한다.
@@ -301,6 +315,9 @@ func readDroppedTotal(droppedMap *cebpf.Map) uint64 {
 // (node, namespace, pod, uid, gpu_uuid) 라벨 키 셋을 만든다. RetainCudaSeries 가 cuda counter
 // 의 stale 시리즈 cleanup 기준으로 사용한다. resolver 가 nil 이거나 어떤 PID 도 Pod 으로
 // 해석되지 않으면 빈 셋을 반환해 모든 시리즈가 제거된다.
+//
+// PodName/PodUID 폴백은 metrics.PodNameOrUnknown / PodUIDOrUnknown 을 그대로 사용해
+// RecordCudaEvent 가 만드는 라벨 키와 정확히 동일한 형식이 보장된다 (cleanup 매칭 정합성).
 func (r *Reader) buildActiveCudaKeys(pidToUUID map[uint32]string) map[string]struct{} {
 	if r.resolver == nil {
 		return map[string]struct{}{}
@@ -311,18 +328,9 @@ func (r *Reader) buildActiveCudaKeys(pidToUUID map[uint32]string) map[string]str
 		if !id.IsPod() {
 			continue
 		}
-		active[metrics.CudaActiveKey(r.nodeName, id.NamespaceLabel(), podOrUnknown(id.PodName), podOrUnknown(id.PodUID), uuid)] = struct{}{}
+		active[metrics.CudaActiveKey(r.nodeName, id.NamespaceLabel(), metrics.PodNameOrUnknown(id), metrics.PodUIDOrUnknown(id), uuid)] = struct{}{}
 	}
 	return active
-}
-
-// podOrUnknown 은 metrics 패키지의 podName/podUID fallback 정책과 정확히 일치해야 cleanup 키와
-// RecordCudaEvent 키가 매칭된다. 빈 값은 metrics 측에서 "unknown" 라벨로 기록되므로 동일 폴백을 적용한다.
-func podOrUnknown(s string) string {
-	if s == "" {
-		return "unknown"
-	}
-	return s
 }
 
 func (r *Reader) discoverDevices() []nvml.Device {

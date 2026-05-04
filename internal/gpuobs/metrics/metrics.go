@@ -814,15 +814,23 @@ func RecordPodSnapshot(node string, samples []PodGPUSample) {
 }
 
 // podName과 podUID는 빈 필드일 때 "unknown"으로 폴백해 라벨 카디널리티가 빈 문자열로 늘어나는 것을 막는다.
-// netobs metrics와 동일한 폴백 정책을 사용한다.
-func podName(id kube.PodIdentity) string {
+// netobs metrics와 동일한 폴백 정책을 사용한다. 외부 패키지가 동일 라벨 키를 만들어야 할 때 (예: cuda 패키지의
+// RetainCudaSeries 호출용 active key 생성) 같은 폴백 적용을 보장하기 위해 PodNameOrUnknown / PodUIDOrUnknown
+// 으로도 노출한다 — 두 곳에서 다른 폴백을 쓰면 cleanup 키 매칭이 깨져 stale 시리즈가 영원히 남는다.
+func podName(id kube.PodIdentity) string { return PodNameOrUnknown(id) }
+func podUID(id kube.PodIdentity) string  { return PodUIDOrUnknown(id) }
+
+// PodNameOrUnknown 은 id.PodName 이 비어 있을 때 "unknown" 으로 폴백한다.
+// metrics 측 podName 과 외부 호출자 (cuda 패키지) 의 active key 생성 로직이 동일 폴백을 공유하도록 노출된다.
+func PodNameOrUnknown(id kube.PodIdentity) string {
 	if id.PodName != "" {
 		return id.PodName
 	}
 	return "unknown"
 }
 
-func podUID(id kube.PodIdentity) string {
+// PodUIDOrUnknown 은 id.PodUID 이 비어 있을 때 "unknown" 으로 폴백한다. PodNameOrUnknown 과 같은 이유로 노출된다.
+func PodUIDOrUnknown(id kube.PodIdentity) string {
 	if id.PodUID != "" {
 		return id.PodUID
 	}
