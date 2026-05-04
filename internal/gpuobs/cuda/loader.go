@@ -1,7 +1,6 @@
 package cuda
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -91,11 +90,6 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 	}
 	defer objs.Close()
 
-	ex, err := link.OpenExecutable(r.libcudaPath)
-	if err != nil {
-		return fmt.Errorf("open libcuda %q: %w", r.libcudaPath, err)
-	}
-
 	progBySymbol := map[string]*cebpf.Program{
 		"cuLaunchKernel":            objs.HandleCuLaunchKernel,
 		"cuLaunchKernelEx":          objs.HandleCuLaunchKernelEx,
@@ -104,6 +98,19 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 		"cuMemcpyHtoDAsync_v2":      objs.HandleCuMemcpyHtodAsync,
 		"cuMemcpyDtoH_v2":           objs.HandleCuMemcpyDtoh,
 		"cuMemcpyDtoHAsync_v2":      objs.HandleCuMemcpyDtohAsync,
+	}
+
+	// 진단 시그널 일관성: attach 시도 자체가 일어나기 전에 모든 심볼을 0 으로 선등록해 둔다.
+	// 이렇게 하면 OpenExecutable 실패 / BPF object 로드 실패 / capability 부족 등으로 attach 단계조차
+	// 못 가는 상황도 운영자가 gpuobs_cuda_symbol_available 메트릭만 보고 진단할 수 있다.
+	// 성공한 심볼만 이후 1 로 덮어쓴다.
+	for _, sym := range trackedSymbols {
+		metrics.SetCudaSymbolAvailability(r.nodeName, sym, false)
+	}
+
+	ex, err := link.OpenExecutable(r.libcudaPath)
+	if err != nil {
+		return fmt.Errorf("open libcuda %q: %w", r.libcudaPath, err)
 	}
 
 	var links []link.Link
@@ -115,10 +122,15 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 
 	attached := 0
 	for _, sym := range trackedSymbols {
-		prog := progBySymbol[sym]
+		prog, ok := progBySymbol[sym]
+		if !ok || prog == nil {
+			// trackedSymbols 에는 있는데 BPF 산출물에 매칭 program 이 없는 케이스 (개발자 실수).
+			// 0 은 이미 선등록되어 있으므로 로그만 남기고 계속 진행한다.
+			log.Printf("cuda uprobe attach %s: missing ebpf program mapping", sym)
+			continue
+		}
 		l, err := ex.Uprobe(sym, prog, nil)
 		if err != nil {
-			metrics.SetCudaSymbolAvailability(r.nodeName, sym, false)
 			log.Printf("cuda uprobe attach %s: %v", sym, err)
 			continue
 		}
@@ -151,7 +163,7 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		r.runDeviceMapRefresher(runCtx, devmap)
+		r.runDeviceMapRefresher(runCtx, devmap, objs.CudaDropped)
 	}()
 
 	go func() {
@@ -175,14 +187,30 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 			return err
 		}
 
-		var raw rawEvent
-		if err := binary.Read(bytes.NewReader(record.RawSample), binary.NativeEndian, &raw); err != nil {
-			log.Printf("decode cuda event: %v", err)
+		raw, ok := decodeRawEvent(record.RawSample)
+		if !ok {
+			log.Printf("short cuda event: got %d bytes want %d", len(record.RawSample), rawEventSize)
 			continue
 		}
 
 		r.dispatch(raw, devmap)
 	}
+}
+
+// decodeRawEvent 는 ringbuf wire 바이트를 rawEvent 로 zero-alloc 디코드한다.
+// binary.Read + bytes.NewReader 가 reflection 기반이라 hot path 비용이 무시할 수 없어 직접 인덱싱한다.
+// 길이가 부족하면 ok=false 를 반환해 호출자가 skip 하도록 한다.
+func decodeRawEvent(b []byte) (rawEvent, bool) {
+	if len(b) < rawEventSize {
+		return rawEvent{}, false
+	}
+	return rawEvent{
+		TsNs:  binary.NativeEndian.Uint64(b[0:8]),
+		Bytes: binary.NativeEndian.Uint64(b[8:16]),
+		PID:   binary.NativeEndian.Uint32(b[16:20]),
+		TID:   binary.NativeEndian.Uint32(b[20:24]),
+		Kind:  b[24],
+	}, true
 }
 
 // dispatch 는 한 raw 이벤트를 PID → PodIdentity / PID → GPU UUID 까지 해상도하고,
@@ -203,10 +231,13 @@ func (r *Reader) dispatch(raw rawEvent, devmap *deviceMap) {
 
 // runDeviceMapRefresher 는 r.refreshEvery 주기로 NVML RunningProcesses 를 모든 device 에서
 // 모은 뒤 deviceMap 을 atomic replace 하고, 같은 사이클에서 RetainCudaSeries 호출로 종료된
-// (Pod, GPU) 의 metric 시리즈를 surgical Delete 한다. ctx 종료 시 device handle 을 모두 Close 한다.
-// nv 가 nil 이면 즉시 종료한다 — 이 경우 deviceMap 은 비어 있어 모든 이벤트가 gpu_uuid="unknown" 으로 발행되고
-// 시리즈 cleanup 도 일어나지 않는다.
-func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap) {
+// (Pod, GPU) 의 metric 시리즈를 surgical Delete 한다. 같은 ticker 에서 BPF percpu cuda_dropped
+// 카운터도 read + sum 해 baseline-then-delta 로 gpuobs_cuda_events_lost_total 에 누적시킨다.
+// ctx 종료 시 device handle 을 모두 Close 한다.
+//
+// nv 가 nil 이면 즉시 종료한다 — main 단에서 nv==nil + cuda enabled 시 cuda reader 자체를 시작하지
+// 않도록 가드되어 있어 정상 경로에서는 도달하지 않는 안전망이다.
+func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap, droppedMap *cebpf.Map) {
 	if r.nv == nil {
 		return
 	}
@@ -218,10 +249,19 @@ func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap) {
 		}
 	}()
 
+	var lastDroppedTotal uint64
 	refresh := func() {
 		fresh := r.collectPidToUUID(devices)
 		devmap.replace(fresh)
 		metrics.RetainCudaSeries(r.buildActiveCudaKeys(fresh))
+
+		current := readDroppedTotal(droppedMap)
+		if current > lastDroppedTotal {
+			metrics.AddCudaEventsLost(r.nodeName, current-lastDroppedTotal)
+		}
+		// current < lastDroppedTotal 은 BPF map reset 등 정상적으로는 일어날 수 없는 케이스라
+		// 데이터 연속성 단절로 간주해 가산을 건너뛰고 새 baseline 으로만 갱신한다.
+		lastDroppedTotal = current
 	}
 
 	// 첫 풀링을 즉시 1회 수행해 reader 가 첫 이벤트를 받기 전 매핑이 채워지도록 한다.
@@ -237,6 +277,24 @@ func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap) {
 			refresh()
 		}
 	}
+}
+
+// readDroppedTotal 은 cuda_dropped percpu array (key=0) 슬롯을 모든 CPU 에서 읽어 합산한다.
+// percpu 슬롯이라 각 CPU 가 자기 슬롯만 비-원자 증가시키므로 합산 시점의 값이 한 단계 늦을 수
+// 있지만, baseline-then-delta 패턴이라 다음 폴에서 자연스럽게 흡수된다. lookup 자체가 실패하면
+// 0 을 반환해 delta 가산 없이 무해하게 진행한다.
+func readDroppedTotal(droppedMap *cebpf.Map) uint64 {
+	var perCPU []uint64
+	var key uint32 = 0
+	if err := droppedMap.Lookup(key, &perCPU); err != nil {
+		log.Printf("cuda dropped map lookup: %v", err)
+		return 0
+	}
+	var sum uint64
+	for _, v := range perCPU {
+		sum += v
+	}
+	return sum
 }
 
 // buildActiveCudaKeys 는 PID→GPU UUID 스냅샷에서 PodResolver 로 Pod 식별까지 끝낸

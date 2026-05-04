@@ -158,10 +158,12 @@ var (
 // 키 셋이다. cuda 카운터는 streaming event 기반이라 RecordPodSnapshot 류의 "이번 poll snapshot"
 // 패턴이 적용되지 않는다. 그래서 RetainCudaSeries 호출 시점에 collector 가 NVML 풀링으로
 // 산출한 active key 셋과 비교해, 더 이상 살아있지 않은 Pod 의 시리즈만 surgical Delete 한다.
-// streaming Inc 와 주기적 Retain 이 서로 다른 goroutine 에서 호출될 수 있어 mutex 로 보호한다.
+//
+// hot path 인 RecordCudaEvent 는 동일 키가 반복 등장하므로 RWMutex 의 RLock fast path 로
+// 매 이벤트의 write lock 비용을 회피한다. 새 키 등장 시에만 Lock 으로 승격한다.
 var (
 	seenCudaKeys   = make(map[string]struct{})
-	seenCudaKeysMu sync.Mutex
+	seenCudaKeysMu sync.RWMutex
 )
 
 // podLabelSeparator는 라벨 키 직렬화용 구분자다. K8s 식별자(namespace/pod/uid 등)와 GPU UUID 어디에도
@@ -448,6 +450,14 @@ var (
 		},
 		cudaSymbolLabels,
 	)
+
+	cudaEventsLostTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gpuobs_cuda_events_lost_total",
+			Help: "Cumulative count of CUDA uprobe ringbuf samples reported as lost by the kernel; sustained increase indicates the ring buffer is undersized for the current event rate",
+		},
+		[]string{"node"},
+	)
 )
 
 // Register는 gpuobs 지표를 주어진 Prometheus Registerer에 등록한다.
@@ -490,6 +500,7 @@ func Register(reg prometheus.Registerer) {
 		cudaH2DBytesTotal,
 		cudaD2HBytesTotal,
 		cudaSymbolAvailable,
+		cudaEventsLostTotal,
 	)
 }
 
@@ -859,10 +870,23 @@ func RecordCudaEvent(node string, s CudaEventSample) {
 		return
 	}
 
+	// hot path: 이미 본 키면 RLock 만으로 끝나고, 신규 키일 때만 write lock 으로 승격한다.
 	key := strings.Join(labels, podLabelSeparator)
+	seenCudaKeysMu.RLock()
+	_, seen := seenCudaKeys[key]
+	seenCudaKeysMu.RUnlock()
+	if seen {
+		return
+	}
 	seenCudaKeysMu.Lock()
 	seenCudaKeys[key] = struct{}{}
 	seenCudaKeysMu.Unlock()
+}
+
+// AddCudaEventsLost 는 cuda 패키지의 ringbuf reader 가 record.LostSamples 로 알려준 누락 이벤트
+// 수를 누적시킨다. 호출 측은 이미 0 가드를 거치므로 본 함수는 양수만 받는다고 가정한다.
+func AddCudaEventsLost(node string, lost uint64) {
+	cudaEventsLostTotal.WithLabelValues(node).Add(float64(lost))
 }
 
 // CudaActiveKey 는 RetainCudaSeries 호출자가 살아있다고 보고하는 라벨 셋의 직렬 형식을 만든다.

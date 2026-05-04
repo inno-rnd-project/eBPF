@@ -113,22 +113,32 @@ func main() {
 
 	// cuda uprobe 모듈은 별도 goroutine 으로 운영한다. CudaUprobeEnabled=false 환경에서는 BPF 객체 로드 /
 	// libcuda hostPath 의존성 / CAP_BPF 등의 capability 요구를 피하기 위해 인스턴스화 자체를 건너뛴다.
-	// resolver 가 nil 이거나 nv 가 nil 이면 cuda 패키지가 자체적으로 graceful disable 분기를 따른다.
+	//
+	// nv==nil + cuda enabled 시: cuda 패키지의 deviceMap refresher 가 즉시 종료해 RetainCudaSeries 가 영원히
+	// 호출되지 않는다. 그러면 종료된 Pod 의 cuda counter 시리즈와 seenCudaKeys 가 무제한 누적되어 카디널리티
+	// 폭증 / 메모리 누수를 유발한다. 이를 막기 위해 cuda reader 자체를 시작하지 않고 warn 로깅 + ready 처리만 한다.
 	var cudaErrCh chan error
 	if cfg.CudaUprobeEnabled {
-		cudaReader := cuda.New(cfg.CudaUprobeLibcudaPath, cfg.NodeName, nv, resolver, cfg.CudaUprobeDeviceMapRefresh)
-		cudaErrCh = make(chan error, 1)
-		go func() {
-			err := cudaReader.Run(ctx, func() {
-				cudaReady.Store(true)
-			})
-			// cuda 가 onReady 를 호출하기 전에 에러로 빠진 경우(libcuda 미존재 / 모든 심볼 attach 실패 등)
-			// readyz 가 영원히 not-ready 로 묶이는 것을 막기 위해, goroutine 종료 시점에 cudaReady 를 강제 set 한다.
-			// 진단 정보는 errCh 로깅 + gpuobs_cuda_symbol_available 메트릭으로 운영자가 확인한다.
+		if nv == nil {
+			log.Printf("warn: cuda uprobe enabled but NVML is unavailable; cuda reader skipped to avoid stale-series accumulation")
+			// 기능이 켜져 있어도 NVML 의존성이 없으면 cuda goroutine 을 띄우지 않는다.
+			// readyz 가 cuda 조건에서 영원히 막히지 않도록 ready 상태로 전환한다.
 			cudaReady.Store(true)
-			cudaErrCh <- err
-			close(cudaErrCh)
-		}()
+		} else {
+			cudaReader := cuda.New(cfg.CudaUprobeLibcudaPath, cfg.NodeName, nv, resolver, cfg.CudaUprobeDeviceMapRefresh)
+			cudaErrCh = make(chan error, 1)
+			go func() {
+				err := cudaReader.Run(ctx, func() {
+					cudaReady.Store(true)
+				})
+				// cuda 가 onReady 를 호출하기 전에 에러로 빠진 경우(libcuda 미존재 / 모든 심볼 attach 실패 등)
+				// readyz 가 영원히 not-ready 로 묶이는 것을 막기 위해, goroutine 종료 시점에 cudaReady 를 강제 set 한다.
+				// 진단 정보는 errCh 로깅 + gpuobs_cuda_symbol_available 메트릭으로 운영자가 확인한다.
+				cudaReady.Store(true)
+				cudaErrCh <- err
+				close(cudaErrCh)
+			}()
+		}
 	}
 
 	// 이벤트 루프.

@@ -43,14 +43,38 @@ struct {
     __uint(max_entries, 1 << 22);    /* 4 MiB */
 } cuda_events SEC(".maps");
 
+/* cilium/ebpf 의 ringbuf API 는 perf 와 달리 lost sample 카운터를 노출하지 않으므로,
+ * bpf_ringbuf_reserve 가 NULL 을 돌려준 (즉 ringbuf 가 가득 차서 record 를 못 잡은) 케이스를
+ * BPF 측 percpu 카운터로 직접 누적한다. userspace 가 주기적으로 read + sum 해서
+ * gpuobs_cuda_events_lost_total 카운터에 delta 만 add 한다.
+ *
+ * percpu 로 잡아 producer 측 atomic 비용을 0 으로 둔다 (각 CPU 의 자기 슬롯만 갱신).
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u64);
+} cuda_dropped SEC(".maps");
+
+static __always_inline void inc_dropped(void)
+{
+    __u32 key = 0;
+    __u64 *v = bpf_map_lookup_elem(&cuda_dropped, &key);
+    if (v)
+        (*v)++;        /* percpu 슬롯이라 비-원자 증가로 충분하다 */
+}
+
 static __always_inline void emit_event(__u8 kind, __u64 bytes)
 {
     struct cuda_event *e;
     __u64 pid_tgid;
 
     e = bpf_ringbuf_reserve(&cuda_events, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        inc_dropped();
         return;
+    }
 
     pid_tgid = bpf_get_current_pid_tgid();
     e->ts_ns = bpf_ktime_get_ns();

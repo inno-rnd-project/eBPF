@@ -784,13 +784,14 @@ func TestRecord_DeviceInfoFallbackForMissingFields(t *testing.T) {
 
 // --------------------- cuda uprobe 메트릭 ---------------------
 
-// resetCudaMetricsState 는 cuda 카운터 / 심볼 가용성 gauge / seenCudaKeys 추적기를 초기화한다.
+// resetCudaMetricsState 는 cuda 카운터 / 심볼 가용성 gauge / lost counter / seenCudaKeys 추적기를 초기화한다.
 func resetCudaMetricsState(t *testing.T) {
 	t.Helper()
 	cudaKernelLaunchesTotal.Reset()
 	cudaH2DBytesTotal.Reset()
 	cudaD2HBytesTotal.Reset()
 	cudaSymbolAvailable.Reset()
+	cudaEventsLostTotal.Reset()
 	seenCudaKeys = make(map[string]struct{})
 }
 
@@ -963,6 +964,39 @@ func TestRetainCudaSeries_RebuildsAfterCleanup(t *testing.T) {
 	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventKernelLaunch})
 	if got := testutil.ToFloat64(cudaKernelLaunchesTotal.WithLabelValues("n", "ml", "p", "u", "G")); got != 1 {
 		t.Errorf("re-record after cleanup counter=%v want 1 (counter restarts at 0 then +1)", got)
+	}
+}
+
+func TestRecordCudaEvent_FastPathSkipsWriteLockOnRepeatedKey(t *testing.T) {
+	// 같은 (Pod, GPU) 라벨 키로 두 번째 이후 호출은 fast path (RLock-only) 를 타야 한다.
+	// 기능 정합성 측면에서: 두 번째 호출 후에도 seenCudaKeys 에 키가 정확히 1개 남고 카운터는 누적되어야 한다.
+	resetCudaMetricsState(t)
+
+	id := samplePod("ml", "p", "u")
+	for i := 0; i < 5; i++ {
+		RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventKernelLaunch})
+	}
+
+	if got := testutil.ToFloat64(cudaKernelLaunchesTotal.WithLabelValues("n", "ml", "p", "u", "G")); got != 5 {
+		t.Errorf("counter=%v want 5 (5 events on the same key)", got)
+	}
+	if got := len(seenCudaKeys); got != 1 {
+		t.Errorf("seenCudaKeys size=%d want 1 (fast path must not duplicate)", got)
+	}
+}
+
+func TestAddCudaEventsLost_AccumulatesByNode(t *testing.T) {
+	resetCudaMetricsState(t)
+
+	AddCudaEventsLost("n1", 3)
+	AddCudaEventsLost("n1", 7)
+	AddCudaEventsLost("n2", 2)
+
+	if got := testutil.ToFloat64(cudaEventsLostTotal.WithLabelValues("n1")); got != 10 {
+		t.Errorf("n1 lost=%v want 10", got)
+	}
+	if got := testutil.ToFloat64(cudaEventsLostTotal.WithLabelValues("n2")); got != 2 {
+		t.Errorf("n2 lost=%v want 2", got)
 	}
 }
 

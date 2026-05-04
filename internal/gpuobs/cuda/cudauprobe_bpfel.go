@@ -67,7 +67,8 @@ type CudaUprobeProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type CudaUprobeMapSpecs struct {
-	CudaEvents *ebpf.MapSpec `ebpf:"cuda_events"`
+	CudaDropped *ebpf.MapSpec `ebpf:"cuda_dropped"`
+	CudaEvents  *ebpf.MapSpec `ebpf:"cuda_events"`
 }
 
 // CudaUprobeVariableSpecs contains global variables before they are loaded into the kernel.
@@ -96,11 +97,13 @@ func (o *CudaUprobeObjects) Close() error {
 //
 // It can be passed to LoadCudaUprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type CudaUprobeMaps struct {
-	CudaEvents *ebpf.Map `ebpf:"cuda_events"`
+	CudaDropped *ebpf.Map `ebpf:"cuda_dropped"`
+	CudaEvents  *ebpf.Map `ebpf:"cuda_events"`
 }
 
 func (m *CudaUprobeMaps) Close() error {
 	return _CudaUprobeClose(
+		m.CudaDropped,
 		m.CudaEvents,
 	)
 }
