@@ -234,7 +234,7 @@ On NVML initialization failure (non-GPU node, driver missing) or when `GPU_METRI
 
 > **CUDA uprobe NVML dependency**: When `GPUOBS_CUDA_UPROBE_ENABLED=true` but NVML is unavailable (driver missing, `GPU_METRICS_ENABLED=false`, etc.), the cuda reader is **not** started. NVML is the source of both the PID→GPU map and the periodic `RetainCudaSeries` cleanup signal — without it, terminated-Pod series and the in-process key set would accumulate without bound. Operators see a `cuda uprobe enabled but NVML is unavailable` warn log; `gpuobs_cuda_*` series are not emitted on such nodes.
 
-> **CUDA uprobe device hot-plug**: Device discovery in the cuda reader runs once at startup, mirroring the device-level collector's policy that hot-plug is out of scope. GPUs added or removed at runtime are not reflected until the agent is restarted.
+> **GPU device hot-plug**: Both the device-level collector and the CUDA uprobe reader rebuild their device handle set every NVML poll via `nvml.DeviceSet.Sync`, which keys on GPU UUID rather than NVML index. Newly added GPUs are picked up on the next sync and removed GPUs have their handles closed automatically; index reordering after a hot-remove is absorbed without re-attaching probes for surviving devices. GPU device reset / driver reload that re-introduces the same UUID is out of scope and is tracked separately.
 
 ## Observability — netobs/gpuobs Correlation
 

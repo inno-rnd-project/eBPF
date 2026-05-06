@@ -8,6 +8,7 @@ import (
 	"log"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	gonvml "github.com/NVIDIA/go-nvml/pkg/nvml"
 
@@ -18,6 +19,11 @@ import (
 type NVML interface {
 	DeviceCount() (uint, error)
 	Device(index uint) (Device, error)
+	// DeviceUUID는 index 슬롯의 GPU UUID만 light-weight로 조회한다.
+	// Device(index) 가 GPM init / 정적 info fetch 등을 함께 수행하는 무거운 호출인 데 비해, 본 메서드는
+	// hot-plug 동기화 loop 에서 매 sync 마다 모든 index 의 UUID 를 조회해도 비용이 무시 가능하도록 분리되어 있다.
+	// hot-remove 시 remaining device 들의 index 가 NVML 에 의해 재배치될 수 있어, 안정 식별자는 UUID 다.
+	DeviceUUID(index uint) (string, error)
 	Shutdown() error
 }
 
@@ -67,6 +73,7 @@ func (n *nvmlImpl) Device(index uint) (Device, error) {
 	}
 
 	d := &deviceImpl{handle: handle, index: index, unsupported: make(map[string]struct{}), gpmPreviousIdx: -1}
+	d.currentIdx.Store(uint64(index))
 
 	// UUID와 모델명은 device 수명 동안 불변이므로 최초 1회 조회해 `info`에 캐싱한다.
 	// 이후 Snapshot은 NVML 재조회 없이 캐시된 값을 그대로 재사용한다.
@@ -94,14 +101,36 @@ func (n *nvmlImpl) Device(index uint) (Device, error) {
 	return d, nil
 }
 
+// DeviceUUID 는 GetHandleByIndex + GetUUID 두 개의 가벼운 NVML 호출만으로 UUID 를 반환한다.
+// Device(index) 가 동반하는 GPM init / 정적 info populate / threshold fetch 등을 모두 우회하므로
+// DeviceSet.Sync 가 매 polling 사이클에서 모든 index 의 UUID 를 조회하는 데 사용된다.
+func (n *nvmlImpl) DeviceUUID(index uint) (string, error) {
+	handle, ret := gonvml.DeviceGetHandleByIndex(int(index))
+	if err := nvmlErr(fmt.Sprintf("device handle idx=%d", index), ret); err != nil {
+		return "", err
+	}
+	uuid, ret := handle.GetUUID()
+	if err := nvmlErr(fmt.Sprintf("device uuid idx=%d", index), ret); err != nil {
+		return "", err
+	}
+	return uuid, nil
+}
+
 func (n *nvmlImpl) Shutdown() error {
 	return nvmlErr("nvml shutdown", gonvml.Shutdown())
 }
 
 type deviceImpl struct {
 	handle gonvml.Device
-	index  uint
-	info   types.GPUDevice
+	// index 는 device 생성 시점의 NVML index 다. 로그 메시지 컨텍스트에 그대로 사용되며, hot-plug 로 인해 stale
+	// 가능성이 있어도 진단 용도라 무해하다. 외부에 노출되는 GPUDevice.Index / GPUProcess.DeviceIndex 는
+	// hot-plug 추적을 위해 currentIdx 의 atomic load 결과로 대체된다.
+	index uint
+	// currentIdx 는 DeviceSet.Sync 가 hot-add / hot-remove 후 NVML index 재배치를 발견했을 때 updateIndex 로
+	// 갱신하는 atomic 슬롯이다. Info / Snapshot / RunningProcesses 가 매 호출마다 Load 해 반환 값에 반영하므로
+	// metric 라벨 gpu_index 가 stale 되지 않는다.
+	currentIdx atomic.Uint64
+	info       types.GPUDevice
 
 	// unsupported는 NOT_SUPPORTED를 한 번이라도 반환한 metric의 키 셋이다.
 	// 다음 Snapshot부터 해당 metric은 NVML 호출을 건너뛰어 컨슈머 GPU 등에서 매 poll마다 발생하던
@@ -228,11 +257,21 @@ func (d *deviceImpl) isUnsupported(metric string) bool {
 	return ok
 }
 
-// Info는 Device 생성 시 캐싱된 정적 정보를 그대로 반환한다.
+// Info는 Device 생성 시 캐싱된 정적 정보를 반환하되, Index 만은 currentIdx 의 atomic load 결과로
+// 매 호출마다 갱신해 hot-plug 후 NVML index 재배치를 즉시 반영한다.
 // 현재 구현에서는 에러를 돌려줄 경로가 없지만, 다른 백엔드에서의 재조회 패턴을 허용하기 위해
 // 인터페이스 시그니처는 그대로 유지한다.
 func (d *deviceImpl) Info() (types.GPUDevice, error) {
-	return d.info, nil
+	info := d.info
+	info.Index = uint(d.currentIdx.Load())
+	return info, nil
+}
+
+// updateIndex 는 DeviceSet.Sync 가 hot-plug 후 NVML 이 보고하는 index 변경을 발견했을 때 호출된다.
+// atomic.Store 라 lock 없이 안전하게 갱신되며, 다음 Info / Snapshot / RunningProcesses 호출부터
+// 반환 값에 즉시 반영된다.
+func (d *deviceImpl) updateIndex(newIndex uint) {
+	d.currentIdx.Store(uint64(newIndex))
 }
 
 func (d *deviceImpl) Snapshot() (types.GPUSnapshot, error) {
@@ -266,6 +305,8 @@ func (d *deviceImpl) Snapshot() (types.GPUSnapshot, error) {
 		TemperatureC:      uint(temp),
 		PowerUsageWatts:   float64(powerMilliWatts) / 1000.0,
 	}
+	// hot-plug 추적: NVML index 가 재배치된 경우 currentIdx 가 갱신되어 있으니 라벨 일관성을 위해 반영한다.
+	snap.Device.Index = uint(d.currentIdx.Load())
 
 	d.fillPcieThroughput(&snap)
 	d.fillThrottleReasons(&snap)
@@ -864,10 +905,13 @@ func (d *deviceImpl) RunningProcesses() ([]types.GPUProcess, error) {
 		}
 	}
 
+	// hot-plug 추적: RunningProcesses 의 DeviceIndex 도 currentIdx atomic 으로 매 호출 갱신해
+	// metric 라벨의 gpu_index 가 NVML index 재배치 후에도 일관되게 노출되도록 한다.
+	currentIdx := uint(d.currentIdx.Load())
 	result := make([]types.GPUProcess, 0, len(merged))
 	for pid, mem := range merged {
 		result = append(result, types.GPUProcess{
-			DeviceIndex:     d.index,
+			DeviceIndex:     currentIdx,
 			PID:             pid,
 			MemoryUsedBytes: mem,
 		})

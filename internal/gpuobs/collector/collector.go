@@ -25,7 +25,7 @@ type Collector struct {
 	nvml     nvml.NVML
 	cfg      config.Config
 	resolver PodResolver
-	devices  []nvml.Device
+	devSet   *nvml.DeviceSet
 
 	// recordSnapshot은 metrics.RecordPodSnapshot을 위한 test seam이다.
 	// 운영 코드는 New에서 metrics.RecordPodSnapshot을 기본값으로 받고, 단위 테스트에서는
@@ -50,11 +50,12 @@ func New(nv nvml.NVML, cfg config.Config, resolver PodResolver) *Collector {
 // Run은 수집 루프를 실행한다.
 //
 //   - NVML 불가 또는 메트릭 비활성화 시: warn 로그 후 ctx.Done 까지 대기
-//   - 정상 경로: Run 시작 시 device 핸들을 1회 discover → 초기 pollOnce → readiness 신호 →
-//     cfg.GPUPollInterval 주기로 캐시된 device 슬라이스만 반복 폴링
-//   - ctx 취소 시 NVML Shutdown까지 수행한 뒤 반환
+//   - 정상 경로: nvml.DeviceSet 생성 → 매 cfg.GPUPollInterval 주기로 Sync (hot-add/remove 동적 반영) +
+//     Snapshot 으로 현재 device 슬라이스 폴링
+//   - ctx 취소 시 device handle 모두 Close + NVML Shutdown 까지 수행한 뒤 반환
 //
-// device hot-plug는 Phase 2 비목표이며, discover 이후 추가된 device는 다음 기동까지 인식되지 않는다.
+// device hot-plug 는 nvml.DeviceSet 의 UUID 기반 차분 동기화로 흡수된다 (Phase 5, issue #34).
+// 다만 GPU device 자체의 reset / driver reload 후 동일 UUID 재등장 회복은 별도 이슈로 분리한다.
 func (c *Collector) Run(ctx context.Context, onReady func()) error {
 	if c.nvml == nil {
 		log.Printf("gpuobs collector disabled: NVML unavailable")
@@ -65,12 +66,11 @@ func (c *Collector) Run(ctx context.Context, onReady func()) error {
 
 	// non-nil NVML 핸들을 받은 이상 lifecycle은 collector가 소유한다.
 	// flag 기반 disable 경로에서도 defer가 먼저 등록되어 Shutdown이 보장된다.
-	// device별 Close는 NVML.Shutdown 직전에 일괄 수행해 GPM sample 등 device-scope 자원이 먼저 해제되도록 한다.
+	// DeviceSet.Close 는 NVML.Shutdown 직전에 수행해 GPM sample 등 device-scope 자원이 먼저 해제되도록 한다.
+	c.devSet = nvml.NewDeviceSet(c.nvml)
 	defer func() {
-		for _, dev := range c.devices {
-			if err := dev.Close(); err != nil {
-				log.Printf("nvml device close: %v", err)
-			}
+		if err := c.devSet.Close(); err != nil {
+			log.Printf("nvml device set close: %v", err)
 		}
 		if err := c.nvml.Shutdown(); err != nil {
 			log.Printf("nvml shutdown: %v", err)
@@ -84,10 +84,11 @@ func (c *Collector) Run(ctx context.Context, onReady func()) error {
 		return nil
 	}
 
-	// device 핸들과 정적 속성을 1회 discover해 이후 폴링에서 재조회가 일어나지 않도록 한다.
-	c.devices = c.discover()
-
-	// 초기 1회 폴링으로 기동 직후 /metrics를 채운 뒤 readiness를 올린다.
+	// 첫 sync 로 device 핸들 등록 후 1회 폴링 → readiness. sync 실패는 warn 로그만 남기고 빈 셋으로 진행한다
+	// (이후 ticker 마다 재시도되어 자연 회복).
+	if err := c.devSet.Sync(); err != nil {
+		log.Printf("gpuobs: initial device sync: %v", err)
+	}
 	c.pollOnce()
 	signalReady(onReady)
 
@@ -99,29 +100,12 @@ func (c *Collector) Run(ctx context.Context, onReady func()) error {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
+			if err := c.devSet.Sync(); err != nil {
+				log.Printf("gpuobs: device sync: %v", err)
+			}
 			c.pollOnce()
 		}
 	}
-}
-
-// discover는 Run 진입 시 1회 실행되어 NVML device 개수를 읽고 각 index의 핸들을 얻는다.
-// 개별 device의 핸들 획득이 실패하면 해당 device만 건너뛰고 계속 진행한다.
-func (c *Collector) discover() []nvml.Device {
-	count, err := c.nvml.DeviceCount()
-	if err != nil {
-		log.Printf("gpuobs: device count: %v", err)
-		return nil
-	}
-	devices := make([]nvml.Device, 0, count)
-	for i := uint(0); i < count; i++ {
-		dev, err := c.nvml.Device(i)
-		if err != nil {
-			log.Printf("gpuobs: device idx=%d: %v", i, err)
-			continue
-		}
-		devices = append(devices, dev)
-	}
-	return devices
 }
 
 // podGPUKey는 (Pod, GPU device) 단위 합산용 키다. Pod UID는 클러스터 내 유일하고 GPU UUID/Index는
@@ -132,8 +116,9 @@ type podGPUKey struct {
 	gpuIndex uint
 }
 
-// pollOnce는 캐시된 device 핸들마다 Snapshot과 RunningProcesses를 읽고, per-pod 분량은
-// (podUID, gpu) 키로 합산한 뒤 한 번에 metrics.RecordPodSnapshot으로 전달한다.
+// pollOnce는 DeviceSet.Snapshot 으로 현재 알려진 device 핸들을 받아 각 device 마다 Snapshot 과
+// RunningProcesses 를 읽고, per-pod 분량은 (podUID, gpu) 키로 합산한 뒤 한 번에
+// metrics.RecordPodSnapshot 으로 전달한다.
 // 합산 단계가 있어 동일 Pod의 다중 GPU 프로세스가 라벨 충돌로 덮어써지는 문제가 사라지고,
 // metrics 측의 diff cleanup이 종료된 Pod의 stale 시리즈를 자동 제거한다.
 //
@@ -147,7 +132,7 @@ func (c *Collector) pollOnce() {
 		aggregated = make(map[podGPUKey]*metrics.PodGPUSample)
 	}
 
-	for _, dev := range c.devices {
+	for _, dev := range c.devSet.Snapshot() {
 		snap, err := dev.Snapshot()
 		if err != nil {
 			// wrapErr가 이미 idx 컨텍스트를 포함한다.
