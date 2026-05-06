@@ -100,6 +100,18 @@ func (f *fakeNVML) Device(i uint) (nvml.Device, error) {
 	return d, nil
 }
 
+// DeviceUUID 는 nvml.DeviceSet 이 hot-plug 동기화 루프에서 호출하는 light-weight UUID 조회다.
+// devices map 에 등록된 device 의 info.UUID 를 그대로 돌려준다.
+func (f *fakeNVML) DeviceUUID(i uint) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d, ok := f.devices[i]
+	if !ok {
+		return "", errors.New("unknown device")
+	}
+	return d.info.UUID, nil
+}
+
 func (f *fakeNVML) Shutdown() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -164,6 +176,27 @@ func (d *fakeDevice) snapCallCount() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.snapCalls
+}
+
+// newCollectorWithDevs 는 fakeDevice 슬라이스로 fakeNVML 을 시드하고 Collector + DeviceSet 을 한 번에 구성한다.
+// 기존 테스트가 `c := New(nil, ...) + c.devices = []nvml.Device{...}` 로 단언했던 흐름을, DeviceSet 도입 이후의
+// `New(fake) + devSet.Sync()` 등가 헬퍼로 대체한다. fake 는 caller 에 함께 반환해 호출 횟수 / Shutdown 카운터를
+// 추가 검증할 수 있게 한다.
+func newCollectorWithDevs(t *testing.T, cfg config.Config, resolver PodResolver, devs ...*fakeDevice) (*Collector, *fakeNVML) {
+	t.Helper()
+	fake := &fakeNVML{
+		count:   uint(len(devs)),
+		devices: make(map[uint]*fakeDevice, len(devs)),
+	}
+	for i, d := range devs {
+		fake.devices[uint(i)] = d
+	}
+	c := New(fake, cfg, resolver)
+	c.devSet = nvml.NewDeviceSet(fake)
+	if err := c.devSet.Sync(); err != nil {
+		t.Fatalf("seed devSet sync: %v", err)
+	}
+	return c, fake
 }
 
 // waitReady는 onReady가 신호될 때까지 대기하며 타임아웃 시 테스트를 실패 처리한다.
@@ -296,11 +329,9 @@ func TestPollOnce_PerDeviceErrorContinues(t *testing.T) {
 	dev0 := &fakeDevice{info: types.GPUDevice{Index: 0, UUID: "u0"}}
 	dev1 := &fakeDevice{info: types.GPUDevice{Index: 1, UUID: "u1"}, snapshotErr: errors.New("boom")}
 	dev2 := &fakeDevice{info: types.GPUDevice{Index: 2, UUID: "u2"}}
-	fake := &fakeNVML{count: 3, devices: map[uint]*fakeDevice{0: dev0, 1: dev1, 2: dev2}}
 	cfg := config.Config{GPUMetricsEnabled: true, NodeName: "n"}
-	c := New(fake, cfg, nil)
-	// Run을 거치지 않고 pollOnce만 단독 검증하므로 discover가 채워야 할 devices를 직접 주입한다.
-	c.devices = []nvml.Device{dev0, dev1, dev2}
+	// Run 을 거치지 않고 pollOnce 만 단독 검증하므로 newCollectorWithDevs 가 DeviceSet 시드까지 처리한다.
+	c, _ := newCollectorWithDevs(t, cfg, nil, dev0, dev1, dev2)
 
 	c.pollOnce()
 
@@ -325,8 +356,7 @@ func TestPollOnce_PerPodInvokesResolver(t *testing.T) {
 		100: {IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "p1", PodUID: "u1"},
 	}}
 	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
-	c := New(nil, cfg, resolver)
-	c.devices = []nvml.Device{dev}
+	c, _ := newCollectorWithDevs(t, cfg, resolver, dev)
 
 	c.pollOnce()
 
@@ -344,8 +374,7 @@ func TestPollOnce_PerPodSkippedWhenResolverNil(t *testing.T) {
 		processes: []types.GPUProcess{{DeviceIndex: 0, PID: 100, MemoryUsedBytes: 1}},
 	}
 	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
-	c := New(nil, cfg, nil)
-	c.devices = []nvml.Device{dev}
+	c, _ := newCollectorWithDevs(t, cfg, nil, dev)
 
 	c.pollOnce()
 
@@ -362,8 +391,7 @@ func TestPollOnce_PerPodSkippedWhenToggleDisabled(t *testing.T) {
 	}
 	resolver := &fakeResolver{byPID: map[uint32]kube.PodIdentity{}}
 	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: false, NodeName: "n"}
-	c := New(nil, cfg, resolver)
-	c.devices = []nvml.Device{dev}
+	c, _ := newCollectorWithDevs(t, cfg, resolver, dev)
 
 	c.pollOnce()
 
@@ -398,8 +426,7 @@ func TestPollOnce_AggregatesMultiProcessIntoSinglePodSample(t *testing.T) {
 		101: pod,
 	}}
 	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
-	c := New(nil, cfg, resolver)
-	c.devices = []nvml.Device{dev}
+	c, _ := newCollectorWithDevs(t, cfg, resolver, dev)
 	spy := &snapshotSpy{}
 	c.recordSnapshot = spy.record
 
@@ -442,8 +469,7 @@ func TestPollOnce_AggregatesAcrossDevicesSeparately(t *testing.T) {
 	}
 	resolver := &fakeResolver{byPID: map[uint32]kube.PodIdentity{100: pod, 200: pod}}
 	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
-	c := New(nil, cfg, resolver)
-	c.devices = []nvml.Device{dev0, dev1}
+	c, _ := newCollectorWithDevs(t, cfg, resolver, dev0, dev1)
 	spy := &snapshotSpy{}
 	c.recordSnapshot = spy.record
 
@@ -477,8 +503,7 @@ func TestPollOnce_NonPodIdentitiesExcludedFromSamples(t *testing.T) {
 		100: {IdentityClass: kube.IdentityClassPod, PodUID: "uid-A", PodName: "p", Namespace: "ml"},
 	}}
 	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
-	c := New(nil, cfg, resolver)
-	c.devices = []nvml.Device{dev}
+	c, _ := newCollectorWithDevs(t, cfg, resolver, dev)
 	spy := &snapshotSpy{}
 	c.recordSnapshot = spy.record
 
@@ -507,8 +532,7 @@ func TestPollOnce_StaleCleanupCallsSnapshotEvenWhenEmpty(t *testing.T) {
 	dev.processes = []types.GPUProcess{{DeviceIndex: 0, PID: 100, MemoryUsedBytes: 100}}
 	resolver := &fakeResolver{byPID: map[uint32]kube.PodIdentity{100: pod}}
 	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
-	c := New(nil, cfg, resolver)
-	c.devices = []nvml.Device{dev}
+	c, _ := newCollectorWithDevs(t, cfg, resolver, dev)
 	spy := &snapshotSpy{}
 	c.recordSnapshot = spy.record
 
@@ -535,8 +559,7 @@ func TestPollOnce_NoSnapshotCallWhenResolverNil(t *testing.T) {
 		processes: []types.GPUProcess{{DeviceIndex: 0, PID: 100, MemoryUsedBytes: 1}},
 	}
 	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
-	c := New(nil, cfg, nil)
-	c.devices = []nvml.Device{dev}
+	c, _ := newCollectorWithDevs(t, cfg, nil, dev)
 	spy := &snapshotSpy{}
 	c.recordSnapshot = spy.record
 
@@ -553,8 +576,7 @@ func TestPollOnce_NoSnapshotCallWhenToggleDisabled(t *testing.T) {
 	dev := &fakeDevice{info: types.GPUDevice{Index: 0, UUID: "u0"}}
 	resolver := &fakeResolver{}
 	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: false, NodeName: "n"}
-	c := New(nil, cfg, resolver)
-	c.devices = []nvml.Device{dev}
+	c, _ := newCollectorWithDevs(t, cfg, resolver, dev)
 	spy := &snapshotSpy{}
 	c.recordSnapshot = spy.record
 

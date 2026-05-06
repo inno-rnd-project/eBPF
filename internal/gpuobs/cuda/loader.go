@@ -233,7 +233,9 @@ func (r *Reader) dispatch(raw rawEvent, devmap *deviceMap) {
 // 모은 뒤 deviceMap 을 atomic replace 하고, 같은 사이클에서 RetainCudaSeries 호출로 종료된
 // (Pod, GPU) 의 metric 시리즈를 surgical Delete 한다. 같은 ticker 에서 BPF percpu cuda_dropped
 // 카운터도 read + sum 해 baseline-then-delta 로 gpuobs_cuda_events_lost_total 에 누적시킨다.
-// ctx 종료 시 device handle 을 모두 Close 한다.
+//
+// device 목록은 nvml.DeviceSet 으로 매 사이클마다 Sync 되어 hot-add / hot-remove / index 재배치를
+// 자동 흡수한다 (#34). ctx 종료 시 DeviceSet.Close 가 모든 device handle 을 일괄 해제한다.
 //
 // nv 가 nil 이면 즉시 종료한다 — main 단에서 nv==nil + cuda enabled 시 cuda reader 자체를 시작하지
 // 않도록 가드되어 있어 정상 경로에서는 도달하지 않는 안전망이다.
@@ -242,10 +244,10 @@ func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap, d
 		return
 	}
 
-	devices := r.discoverDevices()
+	devSet := nvml.NewDeviceSet(r.nv)
 	defer func() {
-		for _, dev := range devices {
-			_ = dev.Close()
+		if err := devSet.Close(); err != nil {
+			log.Printf("cuda: device set close: %v", err)
 		}
 	}()
 
@@ -258,7 +260,12 @@ func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap, d
 		droppedBaselined bool
 	)
 	refresh := func() {
-		fresh := r.collectPidToUUID(devices)
+		// 매 cycle 에 device 셋을 동기화해 hot-plug 변화를 흡수한다. Sync 실패는 warn 로그만 남기고
+		// 직전까지의 device 슬라이스를 그대로 사용한다 (다음 cycle 에서 재시도).
+		if err := devSet.Sync(); err != nil {
+			log.Printf("cuda: device sync: %v", err)
+		}
+		fresh := r.collectPidToUUID(devSet.Snapshot())
 		devmap.replace(fresh)
 		metrics.RetainCudaSeries(r.buildActiveCudaKeys(fresh))
 
@@ -331,24 +338,6 @@ func (r *Reader) buildActiveCudaKeys(pidToUUID map[uint32]string) map[metrics.Cu
 		active[metrics.CudaActiveKey(r.nodeName, id.NamespaceLabel(), metrics.PodNameOrUnknown(id), metrics.PodUIDOrUnknown(id), uuid)] = struct{}{}
 	}
 	return active
-}
-
-func (r *Reader) discoverDevices() []nvml.Device {
-	count, err := r.nv.DeviceCount()
-	if err != nil {
-		log.Printf("cuda: device count: %v", err)
-		return nil
-	}
-	devices := make([]nvml.Device, 0, count)
-	for i := uint(0); i < count; i++ {
-		dev, err := r.nv.Device(i)
-		if err != nil {
-			log.Printf("cuda: device idx=%d: %v", i, err)
-			continue
-		}
-		devices = append(devices, dev)
-	}
-	return devices
 }
 
 func (r *Reader) collectPidToUUID(devices []nvml.Device) map[uint32]string {
