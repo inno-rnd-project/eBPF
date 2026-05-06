@@ -1,14 +1,16 @@
 // gpuobs CUDA uprobe BPF 프로그램.
 //
-// libcuda.so.1 의 7개 심볼에 uprobe 를 걸어 (pid, kind, bytes) 이벤트를
-// ringbuf 로 emit 한다. 심볼 선택 근거:
+// libcuda.so.1 의 9개 심볼에 uprobe 를 걸어 (pid, kind, bytes) 이벤트를 ringbuf 로 emit 한다.
+// 심볼 선택 근거:
 //   * cuLaunchKernel / cuLaunchKernelEx / cuLaunchCooperativeKernel
 //     - CUDA Driver API 의 모든 커널 런치 경로. PyTorch / TF 가 둘 다 통과한다.
 //   * cuMemcpyHtoD_v2 / cuMemcpyHtoDAsync_v2 / cuMemcpyDtoH_v2 / cuMemcpyDtoHAsync_v2
 //     - 방향이 명확한 host↔device 메모리 전송 경로. ByteCount(rdx) 를 그대로 발행한다.
+//   * cuMemcpyDtoD_v2 / cuMemcpyDtoDAsync_v2
+//     - 방향이 항상 device→device 인 경로. ByteCount(rdx) 를 그대로 발행한다 (#31 1단계).
 //
-// 방향이 인자에서 결정되는 cuMemcpy / cuMemcpy2D* / cuMemcpy3D* / cuMemcpyDtoD* 류는
-// 본 프로그램에서 다루지 않으며, 후속 이슈에서 분리해 다룬다 (issue 코멘트 참고).
+// 방향이 인자 ptr type 또는 구조체 필드에서 결정되는 cuMemcpy / cuMemcpy2D* / cuMemcpy3D* 와
+// CUDA Runtime API (cudaMemcpy*, cudaLaunchKernel) 는 본 PR 의 후속 commit 들에서 단계적으로 추가된다.
 //
 // userspace 측 PID→GPU 귀속은 NVML GetComputeRunningProcesses 캐시로 수행하므로
 // 본 BPF 프로그램은 GPU 식별자를 모른다. 이벤트는 prog→user 의 thin pipe 역할만 한다.
@@ -25,6 +27,7 @@ enum cuda_event_kind {
     CUDA_EVENT_KERNEL_LAUNCH = 1,
     CUDA_EVENT_H2D           = 2,
     CUDA_EVENT_D2H           = 3,
+    CUDA_EVENT_DTOD          = 4,
 };
 
 // userspace 의 Go 측 구조체와 layout 이 정확히 일치해야 한다 (binary.NativeEndian Read).
@@ -152,5 +155,28 @@ int BPF_UPROBE(handle_cu_memcpy_dtoh_async)
 {
     __u64 bytes = (__u64)PT_REGS_PARM3(ctx);
     emit_event(CUDA_EVENT_D2H, bytes);
+    return 0;
+}
+
+/*
+ * cuMemcpyDtoD_v2(CUdeviceptr dstDevice, CUdeviceptr srcDevice, size_t ByteCount)
+ * cuMemcpyDtoDAsync_v2(..., CUstream hStream)
+ *
+ * 두 심볼 모두 ByteCount 가 3번째 인자 (x86_64 SysV: rdx, PT_REGS_PARM3) 에 위치하며 방향이 항상 dtod 다.
+ * 단일 GPU 안의 device-to-device copy 와 cudaMemcpyDeviceToDevice 의 driver API 백엔드를 모두 커버한다.
+ */
+SEC("uprobe/cuMemcpyDtoD_v2")
+int BPF_UPROBE(handle_cu_memcpy_dtod)
+{
+    __u64 bytes = (__u64)PT_REGS_PARM3(ctx);
+    emit_event(CUDA_EVENT_DTOD, bytes);
+    return 0;
+}
+
+SEC("uprobe/cuMemcpyDtoDAsync_v2")
+int BPF_UPROBE(handle_cu_memcpy_dtod_async)
+{
+    __u64 bytes = (__u64)PT_REGS_PARM3(ctx);
+    emit_event(CUDA_EVENT_DTOD, bytes);
     return 0;
 }

@@ -57,6 +57,8 @@ type CudaUprobeProgramSpecs struct {
 	HandleCuLaunchCooperativeKernel *ebpf.ProgramSpec `ebpf:"handle_cu_launch_cooperative_kernel"`
 	HandleCuLaunchKernel            *ebpf.ProgramSpec `ebpf:"handle_cu_launch_kernel"`
 	HandleCuLaunchKernelEx          *ebpf.ProgramSpec `ebpf:"handle_cu_launch_kernel_ex"`
+	HandleCuMemcpyDtod              *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_dtod"`
+	HandleCuMemcpyDtodAsync         *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_dtod_async"`
 	HandleCuMemcpyDtoh              *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_dtoh"`
 	HandleCuMemcpyDtohAsync         *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_dtoh_async"`
 	HandleCuMemcpyHtod              *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_htod"`
@@ -121,6 +123,8 @@ type CudaUprobePrograms struct {
 	HandleCuLaunchCooperativeKernel *ebpf.Program `ebpf:"handle_cu_launch_cooperative_kernel"`
 	HandleCuLaunchKernel            *ebpf.Program `ebpf:"handle_cu_launch_kernel"`
 	HandleCuLaunchKernelEx          *ebpf.Program `ebpf:"handle_cu_launch_kernel_ex"`
+	HandleCuMemcpyDtod              *ebpf.Program `ebpf:"handle_cu_memcpy_dtod"`
+	HandleCuMemcpyDtodAsync         *ebpf.Program `ebpf:"handle_cu_memcpy_dtod_async"`
 	HandleCuMemcpyDtoh              *ebpf.Program `ebpf:"handle_cu_memcpy_dtoh"`
 	HandleCuMemcpyDtohAsync         *ebpf.Program `ebpf:"handle_cu_memcpy_dtoh_async"`
 	HandleCuMemcpyHtod              *ebpf.Program `ebpf:"handle_cu_memcpy_htod"`
@@ -132,6 +136,8 @@ func (p *CudaUprobePrograms) Close() error {
 		p.HandleCuLaunchCooperativeKernel,
 		p.HandleCuLaunchKernel,
 		p.HandleCuLaunchKernelEx,
+		p.HandleCuMemcpyDtod,
+		p.HandleCuMemcpyDtodAsync,
 		p.HandleCuMemcpyDtoh,
 		p.HandleCuMemcpyDtohAsync,
 		p.HandleCuMemcpyHtod,

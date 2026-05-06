@@ -790,6 +790,7 @@ func resetCudaMetricsState(t *testing.T) {
 	cudaKernelLaunchesTotal.Reset()
 	cudaH2DBytesTotal.Reset()
 	cudaD2HBytesTotal.Reset()
+	cudaDtoDBytesTotal.Reset()
 	cudaSymbolAvailable.Reset()
 	cudaEventsLostTotal.Reset()
 	seenCudaKeys = make(map[CudaLabelKey]struct{})
@@ -828,6 +829,52 @@ func TestRecordCudaEvent_H2DAndD2HAccumulateBytes(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(cudaD2HBytesTotal.WithLabelValues("n", "ml", "p", "u", "G")); got != 512 {
 		t.Errorf("d2h bytes=%v want 512", got)
+	}
+}
+
+func TestRecordCudaEvent_DtoDAccumulatesBytes(t *testing.T) {
+	resetCudaMetricsState(t)
+
+	id := samplePod("ml", "p", "u")
+	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventDtoD, Bytes: 8192})
+	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventDtoD, Bytes: 4096})
+
+	if got := testutil.ToFloat64(cudaDtoDBytesTotal.WithLabelValues("n", "ml", "p", "u", "G")); got != 12288 {
+		t.Errorf("dtod bytes=%v want 12288", got)
+	}
+	// 다른 kind 의 카운터에는 영향이 없어야 한다.
+	if got := testutil.CollectAndCount(cudaH2DBytesTotal); got != 0 {
+		t.Errorf("dtod must not leak into h2d; got %d series", got)
+	}
+	if got := testutil.CollectAndCount(cudaD2HBytesTotal); got != 0 {
+		t.Errorf("dtod must not leak into d2h; got %d series", got)
+	}
+}
+
+func TestRetainCudaSeries_RemovesDtoDStaleSeries(t *testing.T) {
+	// dtod 시리즈도 RetainCudaSeries 에서 cleanup 되어야 한다 — 종료된 (Pod, GPU) 가 active 셋에 없으면
+	// kernel / h2d / d2h 와 동일하게 surgical Delete 된다.
+	resetCudaMetricsState(t)
+
+	podA := samplePod("ml", "a", "uid-a")
+	podB := samplePod("ml", "b", "uid-b")
+	RecordCudaEvent("n", CudaEventSample{ID: podA, GPUUUID: "G", Kind: types.CudaEventDtoD, Bytes: 100})
+	RecordCudaEvent("n", CudaEventSample{ID: podB, GPUUUID: "G", Kind: types.CudaEventDtoD, Bytes: 200})
+
+	if got := testutil.CollectAndCount(cudaDtoDBytesTotal); got != 2 {
+		t.Fatalf("setup: dtod series=%d want 2", got)
+	}
+
+	active := map[CudaLabelKey]struct{}{
+		CudaActiveKey("n", "ml", "a", "uid-a", "G"): {},
+	}
+	RetainCudaSeries(active)
+
+	if got := testutil.CollectAndCount(cudaDtoDBytesTotal); got != 1 {
+		t.Errorf("after cleanup dtod series=%d want 1 (podA only)", got)
+	}
+	if got := testutil.ToFloat64(cudaDtoDBytesTotal.WithLabelValues("n", "ml", "a", "uid-a", "G")); got != 100 {
+		t.Errorf("podA dtod counter=%v want 100 (preserved)", got)
 	}
 }
 

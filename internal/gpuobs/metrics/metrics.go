@@ -451,6 +451,14 @@ var (
 		cudaPodLabels,
 	)
 
+	cudaDtoDBytesTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gpuobs_cuda_dtod_bytes_total",
+			Help: "Cumulative bytes copied device→device via cuMemcpyDtoD_v2/cuMemcpyDtoDAsync_v2, captured by uprobes on libcuda.so",
+		},
+		cudaPodLabels,
+	)
+
 	cudaSymbolAvailable = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "gpuobs_cuda_symbol_available",
@@ -507,6 +515,7 @@ func Register(reg prometheus.Registerer) {
 		cudaKernelLaunchesTotal,
 		cudaH2DBytesTotal,
 		cudaD2HBytesTotal,
+		cudaDtoDBytesTotal,
 		cudaSymbolAvailable,
 		cudaEventsLostTotal,
 	)
@@ -883,6 +892,8 @@ func RecordCudaEvent(node string, s CudaEventSample) {
 		cudaH2DBytesTotal.WithLabelValues(labels[:]...).Add(float64(s.Bytes))
 	case types.CudaEventD2H:
 		cudaD2HBytesTotal.WithLabelValues(labels[:]...).Add(float64(s.Bytes))
+	case types.CudaEventDtoD:
+		cudaDtoDBytesTotal.WithLabelValues(labels[:]...).Add(float64(s.Bytes))
 	default:
 		// 정의되지 않은 kind 는 BPF / userspace enum 이 어긋난 신호라 발행을 건너뛴다.
 		return
@@ -937,6 +948,7 @@ func RetainCudaSeries(activeKeys map[CudaLabelKey]struct{}) {
 		cudaKernelLaunchesTotal.DeleteLabelValues(labels...)
 		cudaH2DBytesTotal.DeleteLabelValues(labels...)
 		cudaD2HBytesTotal.DeleteLabelValues(labels...)
+		cudaDtoDBytesTotal.DeleteLabelValues(labels...)
 		delete(seenCudaKeys, key)
 	}
 }

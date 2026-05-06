@@ -179,4 +179,7 @@ const (
 	CudaEventKernelLaunch CudaEventKind = 1
 	CudaEventH2D          CudaEventKind = 2
 	CudaEventD2H          CudaEventKind = 3
+	// CudaEventDtoD 는 device→device 메모리 전송 이벤트다. cuMemcpyDtoD_v2 / cuMemcpyDtoDAsync_v2
+	// uprobe 가 emit 하며, 인자 ByteCount (PARM3) 가 그대로 metric 의 bytes 누적값으로 들어간다.
+	CudaEventDtoD CudaEventKind = 4
 )
