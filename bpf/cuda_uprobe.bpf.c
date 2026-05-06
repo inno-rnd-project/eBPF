@@ -1,16 +1,19 @@
 // gpuobs CUDA uprobe BPF 프로그램.
 //
-// libcuda.so.1 의 9개 심볼에 uprobe 를 걸어 (pid, kind, bytes) 이벤트를 ringbuf 로 emit 한다.
+// libcuda.so.1 의 13개 심볼에 uprobe 를 걸어 (pid, kind, bytes) 이벤트를 ringbuf 로 emit 한다.
 // 심볼 선택 근거:
 //   * cuLaunchKernel / cuLaunchKernelEx / cuLaunchCooperativeKernel
 //     - CUDA Driver API 의 모든 커널 런치 경로. PyTorch / TF 가 둘 다 통과한다.
 //   * cuMemcpyHtoD_v2 / cuMemcpyHtoDAsync_v2 / cuMemcpyDtoH_v2 / cuMemcpyDtoHAsync_v2
 //     - 방향이 명확한 host↔device 메모리 전송 경로. ByteCount(rdx) 를 그대로 발행한다.
 //   * cuMemcpyDtoD_v2 / cuMemcpyDtoDAsync_v2
-//     - 방향이 항상 device→device 인 경로. ByteCount(rdx) 를 그대로 발행한다 (#31 1단계).
+//     - 방향이 항상 device→device 인 경로. ByteCount(rdx) 를 그대로 발행한다.
+//   * cuMemcpy2D_v2 / cuMemcpy2DAsync_v2 / cuMemcpy3D_v2 / cuMemcpy3DAsync_v2
+//     - 구조체 인자 (CUDA_MEMCPY2D / 3D) 로 방향이 결정되는 경로. bpf_probe_read_user 로
+//       srcMemoryType / dstMemoryType 필드를 읽어 명시 방향 (h2d / d2h / dtod) 만 emit 하고,
+//       UNIFIED / ARRAY / HOST→HOST 등 방향 불명확 케이스는 본 commit 에서 skip 한다.
 //
-// 방향이 인자 ptr type 또는 구조체 필드에서 결정되는 cuMemcpy / cuMemcpy2D* / cuMemcpy3D* 와
-// CUDA Runtime API (cudaMemcpy*, cudaLaunchKernel) 는 본 PR 의 후속 commit 들에서 단계적으로 추가된다.
+// UVA cuMemcpy / CUDA Runtime API (cudaMemcpy*, cudaLaunchKernel) 는 본 PR 의 후속 commit 들에서 추가된다.
 //
 // userspace 측 PID→GPU 귀속은 NVML GetComputeRunningProcesses 캐시로 수행하므로
 // 본 BPF 프로그램은 GPU 식별자를 모른다. 이벤트는 prog→user 의 thin pipe 역할만 한다.
@@ -29,6 +32,27 @@ enum cuda_event_kind {
     CUDA_EVENT_D2H           = 3,
     CUDA_EVENT_DTOD          = 4,
 };
+
+/* CUDA_MEMCPY2D / CUDA_MEMCPY3D 구조체의 byte offset (x86_64 linux ABI).
+ * cuda.h 헤더의 정의를 참조해 패딩 / 정렬을 포함한 절대 위치를 직접 명시한다 — 헤더 변경 시 본 값들도
+ * 함께 갱신해야 한다. CUmemorytype 은 unsigned int (4 bytes), 그 외 필드는 size_t / pointer (8 bytes) 다.
+ */
+#define MEMCPY2D_SRC_MEMTYPE_OFF  16
+#define MEMCPY2D_DST_MEMTYPE_OFF  72
+#define MEMCPY2D_WIDTH_BYTES_OFF  112
+#define MEMCPY2D_HEIGHT_OFF       120
+
+#define MEMCPY3D_SRC_MEMTYPE_OFF  32
+#define MEMCPY3D_DST_MEMTYPE_OFF  120
+#define MEMCPY3D_WIDTH_BYTES_OFF  176
+#define MEMCPY3D_HEIGHT_OFF       184
+#define MEMCPY3D_DEPTH_OFF        192
+
+/* CUmemorytype enum 값. cuda.h 의 CU_MEMORYTYPE_* 와 1:1. */
+#define CU_MEMORYTYPE_HOST    1
+#define CU_MEMORYTYPE_DEVICE  2
+#define CU_MEMORYTYPE_ARRAY   3
+#define CU_MEMORYTYPE_UNIFIED 4
 
 // userspace 의 Go 측 구조체와 layout 이 정확히 일치해야 한다 (binary.NativeEndian Read).
 // 32 bytes 고정 — 8(ts) + 8(bytes) + 4(pid) + 4(tid) + 1(kind) + 7(pad).
@@ -178,5 +202,94 @@ int BPF_UPROBE(handle_cu_memcpy_dtod_async)
 {
     __u64 bytes = (__u64)PT_REGS_PARM3(ctx);
     emit_event(CUDA_EVENT_DTOD, bytes);
+    return 0;
+}
+
+/* dir_from_memtype 는 (src, dst) memtype 쌍을 cuda_event_kind 로 변환한다.
+ * 명시 방향 (h2d / d2h / dtod) 만 0 이외 값을 반환하며, ARRAY / UNIFIED / HOST→HOST 등 본 commit 의
+ * 비목표 케이스는 0 을 돌려준다. 호출자는 0 을 "skip 신호" 로 보고 emit_event 호출 자체를 건너뛴다.
+ * 후속 commit 에서 UNKNOWN_DIR kind 가 도입되면 본 함수의 fallthrough 가 그 값을 반환하도록 갱신된다.
+ */
+static __always_inline __u8 dir_from_memtype(__u32 src, __u32 dst)
+{
+    if (src == CU_MEMORYTYPE_HOST && dst == CU_MEMORYTYPE_DEVICE)
+        return CUDA_EVENT_H2D;
+    if (src == CU_MEMORYTYPE_DEVICE && dst == CU_MEMORYTYPE_HOST)
+        return CUDA_EVENT_D2H;
+    if (src == CU_MEMORYTYPE_DEVICE && dst == CU_MEMORYTYPE_DEVICE)
+        return CUDA_EVENT_DTOD;
+    return 0;
+}
+
+/* emit_memcpy2d / emit_memcpy3d 는 user-space 의 CUDA_MEMCPY2D / 3D 구조체 포인터에서 srcMemoryType /
+ * dstMemoryType / WidthInBytes / Height (3D 는 Depth 까지) 만 bpf_probe_read_user 로 읽어 명시 방향이면
+ * 총 byte 크기와 함께 emit 한다. pCopy 가 NULL 이거나 read 실패 시 0 으로 남아 자연 skip 된다.
+ */
+static __always_inline void emit_memcpy2d(__u64 pCopy)
+{
+    if (!pCopy)
+        return;
+    __u32 src_mt = 0, dst_mt = 0;
+    bpf_probe_read_user(&src_mt, sizeof(src_mt), (const void *)(pCopy + MEMCPY2D_SRC_MEMTYPE_OFF));
+    bpf_probe_read_user(&dst_mt, sizeof(dst_mt), (const void *)(pCopy + MEMCPY2D_DST_MEMTYPE_OFF));
+    __u8 kind = dir_from_memtype(src_mt, dst_mt);
+    if (!kind)
+        return;
+    __u64 width = 0, height = 0;
+    bpf_probe_read_user(&width, sizeof(width), (const void *)(pCopy + MEMCPY2D_WIDTH_BYTES_OFF));
+    bpf_probe_read_user(&height, sizeof(height), (const void *)(pCopy + MEMCPY2D_HEIGHT_OFF));
+    emit_event(kind, width * height);
+}
+
+static __always_inline void emit_memcpy3d(__u64 pCopy)
+{
+    if (!pCopy)
+        return;
+    __u32 src_mt = 0, dst_mt = 0;
+    bpf_probe_read_user(&src_mt, sizeof(src_mt), (const void *)(pCopy + MEMCPY3D_SRC_MEMTYPE_OFF));
+    bpf_probe_read_user(&dst_mt, sizeof(dst_mt), (const void *)(pCopy + MEMCPY3D_DST_MEMTYPE_OFF));
+    __u8 kind = dir_from_memtype(src_mt, dst_mt);
+    if (!kind)
+        return;
+    __u64 width = 0, height = 0, depth = 0;
+    bpf_probe_read_user(&width, sizeof(width), (const void *)(pCopy + MEMCPY3D_WIDTH_BYTES_OFF));
+    bpf_probe_read_user(&height, sizeof(height), (const void *)(pCopy + MEMCPY3D_HEIGHT_OFF));
+    bpf_probe_read_user(&depth, sizeof(depth), (const void *)(pCopy + MEMCPY3D_DEPTH_OFF));
+    emit_event(kind, width * height * depth);
+}
+
+/*
+ * cuMemcpy2D_v2(const CUDA_MEMCPY2D *pCopy)
+ * cuMemcpy2DAsync_v2(const CUDA_MEMCPY2D *pCopy, CUstream hStream)
+ * cuMemcpy3D_v2(const CUDA_MEMCPY3D *pCopy)
+ * cuMemcpy3DAsync_v2(const CUDA_MEMCPY3D *pCopy, CUstream hStream)
+ *
+ * 모두 PARM1 이 구조체 포인터다. async 변형의 stream 인자는 본 모듈에서 사용하지 않아 무시한다.
+ */
+SEC("uprobe/cuMemcpy2D_v2")
+int BPF_UPROBE(handle_cu_memcpy_2d)
+{
+    emit_memcpy2d((__u64)PT_REGS_PARM1(ctx));
+    return 0;
+}
+
+SEC("uprobe/cuMemcpy2DAsync_v2")
+int BPF_UPROBE(handle_cu_memcpy_2d_async)
+{
+    emit_memcpy2d((__u64)PT_REGS_PARM1(ctx));
+    return 0;
+}
+
+SEC("uprobe/cuMemcpy3D_v2")
+int BPF_UPROBE(handle_cu_memcpy_3d)
+{
+    emit_memcpy3d((__u64)PT_REGS_PARM1(ctx));
+    return 0;
+}
+
+SEC("uprobe/cuMemcpy3DAsync_v2")
+int BPF_UPROBE(handle_cu_memcpy_3d_async)
+{
+    emit_memcpy3d((__u64)PT_REGS_PARM1(ctx));
     return 0;
 }
