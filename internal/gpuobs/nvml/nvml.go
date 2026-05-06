@@ -18,6 +18,11 @@ import (
 type NVML interface {
 	DeviceCount() (uint, error)
 	Device(index uint) (Device, error)
+	// DeviceUUID는 index 슬롯의 GPU UUID만 light-weight로 조회한다.
+	// Device(index) 가 GPM init / 정적 info fetch 등을 함께 수행하는 무거운 호출인 데 비해, 본 메서드는
+	// hot-plug 동기화 luupe 에서 매 sync 마다 모든 index 의 UUID 를 조회해도 비용이 무시 가능하도록 분리되어 있다.
+	// hot-remove 시 remaining device 들의 index 가 NVML 에 의해 재배치될 수 있어, 안정 식별자는 UUID 다.
+	DeviceUUID(index uint) (string, error)
 	Shutdown() error
 }
 
@@ -92,6 +97,21 @@ func (n *nvmlImpl) Device(index uint) (Device, error) {
 	d.initGpm()
 
 	return d, nil
+}
+
+// DeviceUUID 는 GetHandleByIndex + GetUUID 두 개의 가벼운 NVML 호출만으로 UUID 를 반환한다.
+// Device(index) 가 동반하는 GPM init / 정적 info populate / threshold fetch 등을 모두 우회하므로
+// DeviceSet.Sync 가 매 polling 사이클에서 모든 index 의 UUID 를 조회하는 데 사용된다.
+func (n *nvmlImpl) DeviceUUID(index uint) (string, error) {
+	handle, ret := gonvml.DeviceGetHandleByIndex(int(index))
+	if err := nvmlErr(fmt.Sprintf("device handle idx=%d", index), ret); err != nil {
+		return "", err
+	}
+	uuid, ret := handle.GetUUID()
+	if err := nvmlErr(fmt.Sprintf("device uuid idx=%d", index), ret); err != nil {
+		return "", err
+	}
+	return uuid, nil
 }
 
 func (n *nvmlImpl) Shutdown() error {
