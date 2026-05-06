@@ -26,7 +26,7 @@ type PodResolver interface {
 	ResolvePID(pid uint32) kube.PodIdentity
 }
 
-// trackedSymbols 는 attach 시도할 libcuda 심볼 13종이다. 슬라이스 순서는 Reader.Run 의
+// trackedSymbols 는 attach 시도할 libcuda 심볼 14종이다. 슬라이스 순서는 Reader.Run 의
 // attach 루프와 metrics 의 symbol_available 라벨에 그대로 노출된다.
 //
 // 추가 심볼은 BPF 측 SEC 정의와 progBySymbol 매핑을 함께 동시에 갱신해야 한다.
@@ -44,6 +44,7 @@ var trackedSymbols = []string{
 	"cuMemcpy2DAsync_v2",
 	"cuMemcpy3D_v2",
 	"cuMemcpy3DAsync_v2",
+	"cuMemcpy",
 }
 
 // Reader 는 cuda uprobe 가 emit 한 ringbuf 이벤트의 소비자다. lifecycle 은 Run 이 소유한다.
@@ -108,6 +109,7 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 		"cuMemcpy2DAsync_v2":        objs.HandleCuMemcpy2dAsync,
 		"cuMemcpy3D_v2":             objs.HandleCuMemcpy3d,
 		"cuMemcpy3DAsync_v2":        objs.HandleCuMemcpy3dAsync,
+		"cuMemcpy":                  objs.HandleCuMemcpy,
 	}
 
 	// 진단 시그널 일관성: attach 시도 자체가 일어나기 전에 모든 심볼을 0 으로 선등록해 둔다.

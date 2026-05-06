@@ -57,6 +57,7 @@ type CudaUprobeProgramSpecs struct {
 	HandleCuLaunchCooperativeKernel *ebpf.ProgramSpec `ebpf:"handle_cu_launch_cooperative_kernel"`
 	HandleCuLaunchKernel            *ebpf.ProgramSpec `ebpf:"handle_cu_launch_kernel"`
 	HandleCuLaunchKernelEx          *ebpf.ProgramSpec `ebpf:"handle_cu_launch_kernel_ex"`
+	HandleCuMemcpy                  *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy"`
 	HandleCuMemcpy2d                *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_2d"`
 	HandleCuMemcpy2dAsync           *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_2d_async"`
 	HandleCuMemcpy3d                *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_3d"`
@@ -127,6 +128,7 @@ type CudaUprobePrograms struct {
 	HandleCuLaunchCooperativeKernel *ebpf.Program `ebpf:"handle_cu_launch_cooperative_kernel"`
 	HandleCuLaunchKernel            *ebpf.Program `ebpf:"handle_cu_launch_kernel"`
 	HandleCuLaunchKernelEx          *ebpf.Program `ebpf:"handle_cu_launch_kernel_ex"`
+	HandleCuMemcpy                  *ebpf.Program `ebpf:"handle_cu_memcpy"`
 	HandleCuMemcpy2d                *ebpf.Program `ebpf:"handle_cu_memcpy_2d"`
 	HandleCuMemcpy2dAsync           *ebpf.Program `ebpf:"handle_cu_memcpy_2d_async"`
 	HandleCuMemcpy3d                *ebpf.Program `ebpf:"handle_cu_memcpy_3d"`
@@ -144,6 +146,7 @@ func (p *CudaUprobePrograms) Close() error {
 		p.HandleCuLaunchCooperativeKernel,
 		p.HandleCuLaunchKernel,
 		p.HandleCuLaunchKernelEx,
+		p.HandleCuMemcpy,
 		p.HandleCuMemcpy2d,
 		p.HandleCuMemcpy2dAsync,
 		p.HandleCuMemcpy3d,

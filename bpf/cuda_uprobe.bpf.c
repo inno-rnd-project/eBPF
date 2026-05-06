@@ -1,6 +1,6 @@
 // gpuobs CUDA uprobe BPF 프로그램.
 //
-// libcuda.so.1 의 13개 심볼에 uprobe 를 걸어 (pid, kind, bytes) 이벤트를 ringbuf 로 emit 한다.
+// libcuda.so.1 의 14개 심볼에 uprobe 를 걸어 (pid, kind, bytes) 이벤트를 ringbuf 로 emit 한다.
 // 심볼 선택 근거:
 //   * cuLaunchKernel / cuLaunchKernelEx / cuLaunchCooperativeKernel
 //     - CUDA Driver API 의 모든 커널 런치 경로. PyTorch / TF 가 둘 다 통과한다.
@@ -10,10 +10,13 @@
 //     - 방향이 항상 device→device 인 경로. ByteCount(rdx) 를 그대로 발행한다.
 //   * cuMemcpy2D_v2 / cuMemcpy2DAsync_v2 / cuMemcpy3D_v2 / cuMemcpy3DAsync_v2
 //     - 구조체 인자 (CUDA_MEMCPY2D / 3D) 로 방향이 결정되는 경로. bpf_probe_read_user 로
-//       srcMemoryType / dstMemoryType 필드를 읽어 명시 방향 (h2d / d2h / dtod) 만 emit 하고,
-//       UNIFIED / ARRAY / HOST→HOST 등 방향 불명확 케이스는 본 commit 에서 skip 한다.
+//       srcMemoryType / dstMemoryType 필드를 읽어 명시 방향 (h2d / d2h / dtod) 으로 분류하고,
+//       UNIFIED / ARRAY / HOST→HOST 등 방향 불명확 케이스는 UNKNOWN_DIR kind 로 emit 한다.
+//   * cuMemcpy
+//     - UVA 경로. dst / src 모두 CUdeviceptr 라 BPF 단에서 host/device 구분 불가하므로 항상
+//       UNKNOWN_DIR 로 emit 한다.
 //
-// UVA cuMemcpy / CUDA Runtime API (cudaMemcpy*, cudaLaunchKernel) 는 본 PR 의 후속 commit 들에서 추가된다.
+// CUDA Runtime API (cudaMemcpy*, cudaLaunchKernel) 는 본 PR 의 후속 commit 에서 추가된다.
 //
 // userspace 측 PID→GPU 귀속은 NVML GetComputeRunningProcesses 캐시로 수행하므로
 // 본 BPF 프로그램은 GPU 식별자를 모른다. 이벤트는 prog→user 의 thin pipe 역할만 한다.
@@ -31,6 +34,9 @@ enum cuda_event_kind {
     CUDA_EVENT_H2D           = 2,
     CUDA_EVENT_D2H           = 3,
     CUDA_EVENT_DTOD          = 4,
+    /* UNKNOWN_DIR 은 BPF 단에서 방향 판정이 불가능한 케이스 — UVA cuMemcpy 와 cuMemcpy2D/3D 의
+     * ARRAY / UNIFIED / HOST→HOST 분기에서 사용된다. */
+    CUDA_EVENT_UNKNOWN_DIR   = 5,
 };
 
 /* CUDA_MEMCPY2D / CUDA_MEMCPY3D 구조체의 byte offset (x86_64 linux ABI).
@@ -206,9 +212,8 @@ int BPF_UPROBE(handle_cu_memcpy_dtod_async)
 }
 
 /* dir_from_memtype 는 (src, dst) memtype 쌍을 cuda_event_kind 로 변환한다.
- * 명시 방향 (h2d / d2h / dtod) 만 0 이외 값을 반환하며, ARRAY / UNIFIED / HOST→HOST 등 본 commit 의
- * 비목표 케이스는 0 을 돌려준다. 호출자는 0 을 "skip 신호" 로 보고 emit_event 호출 자체를 건너뛴다.
- * 후속 commit 에서 UNKNOWN_DIR kind 가 도입되면 본 함수의 fallthrough 가 그 값을 반환하도록 갱신된다.
+ * 명시 방향 (h2d / d2h / dtod) 외의 모든 케이스 (ARRAY / UNIFIED / HOST→HOST 등) 는
+ * UNKNOWN_DIR 을 반환해 metric 측에서 별도 카운터로 누적된다.
  */
 static __always_inline __u8 dir_from_memtype(__u32 src, __u32 dst)
 {
@@ -218,7 +223,7 @@ static __always_inline __u8 dir_from_memtype(__u32 src, __u32 dst)
         return CUDA_EVENT_D2H;
     if (src == CU_MEMORYTYPE_DEVICE && dst == CU_MEMORYTYPE_DEVICE)
         return CUDA_EVENT_DTOD;
-    return 0;
+    return CUDA_EVENT_UNKNOWN_DIR;
 }
 
 /* emit_memcpy2d / emit_memcpy3d 는 user-space 의 CUDA_MEMCPY2D / 3D 구조체 포인터에서 srcMemoryType /
@@ -233,8 +238,6 @@ static __always_inline void emit_memcpy2d(__u64 pCopy)
     bpf_probe_read_user(&src_mt, sizeof(src_mt), (const void *)(pCopy + MEMCPY2D_SRC_MEMTYPE_OFF));
     bpf_probe_read_user(&dst_mt, sizeof(dst_mt), (const void *)(pCopy + MEMCPY2D_DST_MEMTYPE_OFF));
     __u8 kind = dir_from_memtype(src_mt, dst_mt);
-    if (!kind)
-        return;
     __u64 width = 0, height = 0;
     bpf_probe_read_user(&width, sizeof(width), (const void *)(pCopy + MEMCPY2D_WIDTH_BYTES_OFF));
     bpf_probe_read_user(&height, sizeof(height), (const void *)(pCopy + MEMCPY2D_HEIGHT_OFF));
@@ -249,8 +252,6 @@ static __always_inline void emit_memcpy3d(__u64 pCopy)
     bpf_probe_read_user(&src_mt, sizeof(src_mt), (const void *)(pCopy + MEMCPY3D_SRC_MEMTYPE_OFF));
     bpf_probe_read_user(&dst_mt, sizeof(dst_mt), (const void *)(pCopy + MEMCPY3D_DST_MEMTYPE_OFF));
     __u8 kind = dir_from_memtype(src_mt, dst_mt);
-    if (!kind)
-        return;
     __u64 width = 0, height = 0, depth = 0;
     bpf_probe_read_user(&width, sizeof(width), (const void *)(pCopy + MEMCPY3D_WIDTH_BYTES_OFF));
     bpf_probe_read_user(&height, sizeof(height), (const void *)(pCopy + MEMCPY3D_HEIGHT_OFF));
@@ -291,5 +292,21 @@ SEC("uprobe/cuMemcpy3DAsync_v2")
 int BPF_UPROBE(handle_cu_memcpy_3d_async)
 {
     emit_memcpy3d((__u64)PT_REGS_PARM1(ctx));
+    return 0;
+}
+
+/*
+ * cuMemcpy(CUdeviceptr dst, CUdeviceptr src, size_t ByteCount)
+ *
+ * UVA (Unified Virtual Addressing) 환경에서 dst / src 모두 CUdeviceptr 로 표현되어 BPF 단에서는
+ * host / device 구분이 불가능하다. cuPointerGetAttribute(CU_POINTER_ATTRIBUTE_MEMORY_TYPE) 호출이
+ * 필요하지만 BPF 안에서 호출할 수 없으므로 본 심볼의 모든 이벤트는 UNKNOWN_DIR 로 emit 한다.
+ * 운영자는 metric 으로 비중을 보고 추가 분석을 결정한다.
+ */
+SEC("uprobe/cuMemcpy")
+int BPF_UPROBE(handle_cu_memcpy)
+{
+    __u64 bytes = (__u64)PT_REGS_PARM3(ctx);
+    emit_event(CUDA_EVENT_UNKNOWN_DIR, bytes);
     return 0;
 }

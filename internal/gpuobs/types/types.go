@@ -182,4 +182,9 @@ const (
 	// CudaEventDtoD 는 device→device 메모리 전송 이벤트다. cuMemcpyDtoD_v2 / cuMemcpyDtoDAsync_v2
 	// uprobe 가 emit 하며, 인자 ByteCount (PARM3) 가 그대로 metric 의 bytes 누적값으로 들어간다.
 	CudaEventDtoD CudaEventKind = 4
+	// CudaEventUnknownDir 은 BPF 단에서 방향 판정이 불가능한 메모리 전송 이벤트다. UVA cuMemcpy
+	// (양 ptr 이 모두 CUdeviceptr 라 host/device 구분 불가) 와 cuMemcpy2D / 3D 의 ARRAY / UNIFIED /
+	// HOST→HOST 케이스가 본 kind 로 분류된다. 운영자는 metric 으로 이 시리즈의 비중을 보고 추가 분석
+	// (cuPointerGetAttribute 등) 을 결정할 수 있다.
+	CudaEventUnknownDir CudaEventKind = 5
 )

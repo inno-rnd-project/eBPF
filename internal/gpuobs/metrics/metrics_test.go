@@ -791,6 +791,7 @@ func resetCudaMetricsState(t *testing.T) {
 	cudaH2DBytesTotal.Reset()
 	cudaD2HBytesTotal.Reset()
 	cudaDtoDBytesTotal.Reset()
+	cudaUnknownDirBytesTotal.Reset()
 	cudaSymbolAvailable.Reset()
 	cudaEventsLostTotal.Reset()
 	seenCudaKeys = make(map[CudaLabelKey]struct{})
@@ -829,6 +830,37 @@ func TestRecordCudaEvent_H2DAndD2HAccumulateBytes(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(cudaD2HBytesTotal.WithLabelValues("n", "ml", "p", "u", "G")); got != 512 {
 		t.Errorf("d2h bytes=%v want 512", got)
+	}
+}
+
+func TestRecordCudaEvent_UnknownDirAccumulatesBytes(t *testing.T) {
+	// UVA cuMemcpy 와 2D/3D 의 ARRAY / UNIFIED / HOST→HOST 케이스가 합류하는 unknown_dir 카운터 검증.
+	resetCudaMetricsState(t)
+
+	id := samplePod("ml", "p", "u")
+	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventUnknownDir, Bytes: 4096})
+	RecordCudaEvent("n", CudaEventSample{ID: id, GPUUUID: "G", Kind: types.CudaEventUnknownDir, Bytes: 8192})
+
+	if got := testutil.ToFloat64(cudaUnknownDirBytesTotal.WithLabelValues("n", "ml", "p", "u", "G")); got != 12288 {
+		t.Errorf("unknown_dir bytes=%v want 12288", got)
+	}
+	if got := testutil.CollectAndCount(cudaH2DBytesTotal); got != 0 {
+		t.Errorf("unknown_dir must not leak into h2d; got %d series", got)
+	}
+}
+
+func TestRetainCudaSeries_RemovesUnknownDirStaleSeries(t *testing.T) {
+	resetCudaMetricsState(t)
+
+	pod := samplePod("ml", "a", "uid-a")
+	RecordCudaEvent("n", CudaEventSample{ID: pod, GPUUUID: "G", Kind: types.CudaEventUnknownDir, Bytes: 1000})
+	if got := testutil.CollectAndCount(cudaUnknownDirBytesTotal); got != 1 {
+		t.Fatalf("setup: unknown_dir series=%d want 1", got)
+	}
+
+	RetainCudaSeries(map[CudaLabelKey]struct{}{})
+	if got := testutil.CollectAndCount(cudaUnknownDirBytesTotal); got != 0 {
+		t.Errorf("after empty active set unknown_dir series=%d want 0", got)
 	}
 }
 
