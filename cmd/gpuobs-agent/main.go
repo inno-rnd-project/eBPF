@@ -125,7 +125,7 @@ func main() {
 			// readyz 가 cuda 조건에서 영원히 막히지 않도록 ready 상태로 전환한다.
 			cudaReady.Store(true)
 		} else {
-			cudaReader := cuda.New(cfg.CudaUprobeLibcudaPath, cfg.NodeName, nv, resolver, cfg.CudaUprobeDeviceMapRefresh)
+			cudaReader := cuda.New(cfg.CudaUprobeLibcudaPath, cfg.CudaUprobeLibcudartPath, cfg.NodeName, nv, resolver, cfg.CudaUprobeDeviceMapRefresh)
 			cudaErrCh = make(chan error, 1)
 			go func() {
 				err := cudaReader.Run(ctx, func() {

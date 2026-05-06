@@ -1,6 +1,6 @@
 // gpuobs CUDA uprobe BPF 프로그램.
 //
-// libcuda.so.1 의 14개 심볼에 uprobe 를 걸어 (pid, kind, bytes) 이벤트를 ringbuf 로 emit 한다.
+// libcuda.so.1 의 14개 심볼과 libcudart.so 의 3개 심볼에 uprobe 를 걸어 (pid, kind, bytes) 이벤트를 ringbuf 로 emit 한다.
 // 심볼 선택 근거:
 //   * cuLaunchKernel / cuLaunchKernelEx / cuLaunchCooperativeKernel
 //     - CUDA Driver API 의 모든 커널 런치 경로. PyTorch / TF 가 둘 다 통과한다.
@@ -15,8 +15,10 @@
 //   * cuMemcpy
 //     - UVA 경로. dst / src 모두 CUdeviceptr 라 BPF 단에서 host/device 구분 불가하므로 항상
 //       UNKNOWN_DIR 로 emit 한다.
-//
-// CUDA Runtime API (cudaMemcpy*, cudaLaunchKernel) 는 본 PR 의 후속 commit 에서 추가된다.
+//   * cudaLaunchKernel / cudaMemcpy / cudaMemcpyAsync (libcudart.so)
+//     - CUDA Runtime API. cudaMemcpy* 의 PARM4 가 cudaMemcpyKind enum 이라 그것을 그대로 분기에
+//       사용해 h2d / d2h / dtod / unknown_dir 로 분류한다. 운영 환경에 따라 컨테이너가 자체 libcudart
+//       를 번들링하는 경우 host attach 가 fire 되지 않을 수 있으며, 이는 README 한계 note 에 명시한다.
 //
 // userspace 측 PID→GPU 귀속은 NVML GetComputeRunningProcesses 캐시로 수행하므로
 // 본 BPF 프로그램은 GPU 식별자를 모른다. 이벤트는 prog→user 의 thin pipe 역할만 한다.
@@ -308,5 +310,65 @@ int BPF_UPROBE(handle_cu_memcpy)
 {
     __u64 bytes = (__u64)PT_REGS_PARM3(ctx);
     emit_event(CUDA_EVENT_UNKNOWN_DIR, bytes);
+    return 0;
+}
+
+/* CUDA Runtime API (libcudart.so) 의 cudaMemcpyKind enum 값. cuda_runtime_api.h 와 1:1.
+ * cudaMemcpyDefault (=4) 는 UVA 라 driver 가 결정해 BPF 가 모르므로 UNKNOWN_DIR 로 분류한다.
+ */
+#define CUDA_MEMCPY_HOST_TO_HOST     0
+#define CUDA_MEMCPY_HOST_TO_DEVICE   1
+#define CUDA_MEMCPY_DEVICE_TO_HOST   2
+#define CUDA_MEMCPY_DEVICE_TO_DEVICE 3
+#define CUDA_MEMCPY_DEFAULT          4
+
+static __always_inline __u8 cudart_dir_from_kind(__u32 kind)
+{
+    if (kind == CUDA_MEMCPY_HOST_TO_DEVICE)
+        return CUDA_EVENT_H2D;
+    if (kind == CUDA_MEMCPY_DEVICE_TO_HOST)
+        return CUDA_EVENT_D2H;
+    if (kind == CUDA_MEMCPY_DEVICE_TO_DEVICE)
+        return CUDA_EVENT_DTOD;
+    /* HOST_TO_HOST / DEFAULT / 기타 */
+    return CUDA_EVENT_UNKNOWN_DIR;
+}
+
+/*
+ * cudaError_t cudaLaunchKernel(const void *func, dim3 gridDim, dim3 blockDim, void **args,
+ *                              size_t sharedMem, cudaStream_t stream)
+ *
+ * Runtime API 의 커널 런치. driver API 의 cuLaunchKernel 과 동일하게 카운터 이벤트만 emit 한다.
+ */
+SEC("uprobe/cudaLaunchKernel")
+int BPF_UPROBE(handle_cuda_launch_kernel)
+{
+    emit_event(CUDA_EVENT_KERNEL_LAUNCH, 0);
+    return 0;
+}
+
+/*
+ * cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, enum cudaMemcpyKind kind)
+ * cudaError_t cudaMemcpyAsync(void *dst, const void *src, size_t count,
+ *                             enum cudaMemcpyKind kind, cudaStream_t stream)
+ *
+ * 두 심볼 모두 PARM3 = count, PARM4 = cudaMemcpyKind enum (4 bytes signed int 이지만 64-bit 레지스터
+ * 의 하위 32 비트만 의미). cudart_dir_from_kind 가 enum 을 cuda_event_kind 로 변환한다.
+ */
+SEC("uprobe/cudaMemcpy")
+int BPF_UPROBE(handle_cuda_memcpy)
+{
+    __u64 count = (__u64)PT_REGS_PARM3(ctx);
+    __u32 kind = (__u32)PT_REGS_PARM4(ctx);
+    emit_event(cudart_dir_from_kind(kind), count);
+    return 0;
+}
+
+SEC("uprobe/cudaMemcpyAsync")
+int BPF_UPROBE(handle_cuda_memcpy_async)
+{
+    __u64 count = (__u64)PT_REGS_PARM3(ctx);
+    __u32 kind = (__u32)PT_REGS_PARM4(ctx);
+    emit_event(cudart_dir_from_kind(kind), count);
     return 0;
 }

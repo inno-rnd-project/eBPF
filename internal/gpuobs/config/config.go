@@ -36,6 +36,10 @@ type Config struct {
 	// CudaUprobeDeviceMapRefresh 는 cuda 패키지가 NVML RunningProcesses 로 PID→GPU 매핑을 재구축하는 주기다.
 	// 0 이하 값은 검증에서 거부된다. 매 사이클마다 RetainCudaSeries 도 함께 수행된다.
 	CudaUprobeDeviceMapRefresh time.Duration
+	// CudaUprobeLibcudartPath 는 host 의 libcudart.so 절대경로다. 빈 문자열이면 cudart 모듈을 활성화하지 않는다 (default).
+	// libcudart 는 NVIDIA driver 가 아닌 CUDA Toolkit 의 일부라 host 에 설치된 환경에서만 의미가 있고,
+	// 컨테이너가 자체 libcudart 를 번들링하는 환경에서는 host attach 가 fire 되지 않는다 (README 한계 note 참고).
+	CudaUprobeLibcudartPath string
 }
 
 // Parse는 env와 CLI flag를 읽어 Config를 구성해 반환한다.
@@ -71,6 +75,7 @@ func Parse() (Config, error) {
 		MetadataRefresh:            metadataRefresh,
 		CudaUprobeEnabled:          getenvBool("GPUOBS_CUDA_UPROBE_ENABLED", true),
 		CudaUprobeLibcudaPath:      getenvDefault("GPUOBS_CUDA_LIBCUDA_PATH", "/host/usr/lib/x86_64-linux-gnu/libcuda.so.1"),
+		CudaUprobeLibcudartPath:    getenvDefault("GPUOBS_CUDA_LIBCUDART_PATH", ""),
 		CudaUprobeDeviceMapRefresh: cudaDeviceMapRefresh,
 	}
 
@@ -83,6 +88,7 @@ func Parse() (Config, error) {
 	fs.DurationVar(&cfg.MetadataRefresh, "metadata-refresh", cfg.MetadataRefresh, "Kubernetes metadata informer resync interval")
 	fs.BoolVar(&cfg.CudaUprobeEnabled, "cuda-uprobe", cfg.CudaUprobeEnabled, "enable libcuda.so uprobe module emitting gpuobs_cuda_* counters; requires CAP_BPF/CAP_PERFMON/CAP_SYS_PTRACE and a libcuda hostPath mount")
 	fs.StringVar(&cfg.CudaUprobeLibcudaPath, "cuda-libcuda-path", cfg.CudaUprobeLibcudaPath, "absolute path to host libcuda.so.1 reachable from inside the container")
+	fs.StringVar(&cfg.CudaUprobeLibcudartPath, "cuda-libcudart-path", cfg.CudaUprobeLibcudartPath, "absolute path to host libcudart.so reachable from inside the container; empty disables cudart attach")
 	fs.DurationVar(&cfg.CudaUprobeDeviceMapRefresh, "cuda-devicemap-refresh", cfg.CudaUprobeDeviceMapRefresh, "interval between NVML RunningProcesses sweeps that rebuild the PID→GPU map and clean up stale cuda series")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// -h/-help 요청은 flag 패키지가 usage를 출력한 뒤 ErrHelp를 반환한다.

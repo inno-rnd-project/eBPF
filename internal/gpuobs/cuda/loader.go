@@ -26,7 +26,7 @@ type PodResolver interface {
 	ResolvePID(pid uint32) kube.PodIdentity
 }
 
-// trackedSymbols 는 attach 시도할 libcuda 심볼 14종이다. 슬라이스 순서는 Reader.Run 의
+// trackedSymbols 는 libcuda.so 에 attach 시도할 심볼 14종이다. 슬라이스 순서는 Reader.Run 의
 // attach 루프와 metrics 의 symbol_available 라벨에 그대로 노출된다.
 //
 // 추가 심볼은 BPF 측 SEC 정의와 progBySymbol 매핑을 함께 동시에 갱신해야 한다.
@@ -47,13 +47,22 @@ var trackedSymbols = []string{
 	"cuMemcpy",
 }
 
+// cudartTrackedSymbols 는 libcudart.so 에 attach 시도할 CUDA Runtime API 심볼 3종이다.
+// libcuda 와 분리된 OpenExecutable 로 처리되며, libcudartPath 가 빈 값이면 본 attach 자체가 skip 된다.
+var cudartTrackedSymbols = []string{
+	"cudaLaunchKernel",
+	"cudaMemcpy",
+	"cudaMemcpyAsync",
+}
+
 // Reader 는 cuda uprobe 가 emit 한 ringbuf 이벤트의 소비자다. lifecycle 은 Run 이 소유한다.
 type Reader struct {
-	libcudaPath  string
-	nodeName     string
-	nv           nvml.NVML
-	resolver     PodResolver
-	refreshEvery time.Duration
+	libcudaPath   string
+	libcudartPath string
+	nodeName      string
+	nv            nvml.NVML
+	resolver      PodResolver
+	refreshEvery  time.Duration
 
 	// recordEvent 는 metrics.RecordCudaEvent 를 위한 test seam 이다.
 	// 운영 코드는 New 에서 metrics.RecordCudaEvent 를 기본값으로 받고, 단위 테스트에서는
@@ -62,19 +71,21 @@ type Reader struct {
 }
 
 // New 는 Reader 를 생성한다.
-//   - libcudaPath: host 의 libcuda.so.1 절대경로. DaemonSet hostPath 마운트 결과 (예: /host/usr/lib/x86_64-linux-gnu/libcuda.so.1).
-//   - nodeName:    metric 라벨 / log 컨텍스트 용 노드명.
-//   - nv:          NVML 핸들. nil 이면 device map refresher 가 즉시 종료해 모든 이벤트가 gpu_uuid="unknown" 으로 발행된다.
-//   - resolver:    PID→Pod 해상도 제공자. nil 이면 모든 이벤트가 비-Pod 로 분류되어 metrics 측에서 발행 skip 된다.
-//   - refreshEvery: device map refresh 주기. 0 이하 값은 호출자가 사전 검증해야 한다.
-func New(libcudaPath, nodeName string, nv nvml.NVML, resolver PodResolver, refreshEvery time.Duration) *Reader {
+//   - libcudaPath:   host 의 libcuda.so.1 절대경로. DaemonSet hostPath 마운트 결과 (예: /host/usr/lib/x86_64-linux-gnu/libcuda.so.1).
+//   - libcudartPath: host 의 libcudart.so 절대경로. 빈 문자열이면 cudart attach 자체를 skip 한다.
+//   - nodeName:      metric 라벨 / log 컨텍스트 용 노드명.
+//   - nv:            NVML 핸들. nil 이면 device map refresher 가 즉시 종료해 모든 이벤트가 gpu_uuid="unknown" 으로 발행된다.
+//   - resolver:      PID→Pod 해상도 제공자. nil 이면 모든 이벤트가 비-Pod 로 분류되어 metrics 측에서 발행 skip 된다.
+//   - refreshEvery:  device map refresh 주기. 0 이하 값은 호출자가 사전 검증해야 한다.
+func New(libcudaPath, libcudartPath, nodeName string, nv nvml.NVML, resolver PodResolver, refreshEvery time.Duration) *Reader {
 	return &Reader{
-		libcudaPath:  libcudaPath,
-		nodeName:     nodeName,
-		nv:           nv,
-		resolver:     resolver,
-		refreshEvery: refreshEvery,
-		recordEvent:  metrics.RecordCudaEvent,
+		libcudaPath:   libcudaPath,
+		libcudartPath: libcudartPath,
+		nodeName:      nodeName,
+		nv:            nv,
+		resolver:      resolver,
+		refreshEvery:  refreshEvery,
+		recordEvent:   metrics.RecordCudaEvent,
 	}
 }
 
@@ -112,11 +123,22 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 		"cuMemcpy":                  objs.HandleCuMemcpy,
 	}
 
+	// libcudart 의 program 매핑은 libcudart 경로가 비어 있어도 항상 노출되며, 실제 attach 는 libcudartPath
+	// 가 비어있지 않을 때만 수행된다.
+	cudartProgBySymbol := map[string]*cebpf.Program{
+		"cudaLaunchKernel": objs.HandleCudaLaunchKernel,
+		"cudaMemcpy":       objs.HandleCudaMemcpy,
+		"cudaMemcpyAsync":  objs.HandleCudaMemcpyAsync,
+	}
+
 	// 진단 시그널 일관성: attach 시도 자체가 일어나기 전에 모든 심볼을 0 으로 선등록해 둔다.
 	// 이렇게 하면 OpenExecutable 실패 / BPF object 로드 실패 / capability 부족 등으로 attach 단계조차
 	// 못 가는 상황도 운영자가 gpuobs_cuda_symbol_available 메트릭만 보고 진단할 수 있다.
 	// 성공한 심볼만 이후 1 로 덮어쓴다.
 	for _, sym := range trackedSymbols {
+		metrics.SetCudaSymbolAvailability(r.nodeName, sym, false)
+	}
+	for _, sym := range cudartTrackedSymbols {
 		metrics.SetCudaSymbolAvailability(r.nodeName, sym, false)
 	}
 
@@ -153,7 +175,35 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 	if attached == 0 {
 		return fmt.Errorf("no cuda uprobe attached; check libcuda path %q and CAP_BPF/CAP_PERFMON/CAP_SYS_PTRACE", r.libcudaPath)
 	}
-	log.Printf("cuda uprobe attached %d/%d symbols on %s", attached, len(trackedSymbols), r.libcudaPath)
+	log.Printf("cuda uprobe attached %d/%d libcuda symbols on %s", attached, len(trackedSymbols), r.libcudaPath)
+
+	// libcudart 는 NVIDIA driver 가 아닌 CUDA Toolkit 의 일부라 host 에 설치된 환경에서만 의미가 있다.
+	// libcudartPath 가 빈 값이면 cudart attach 자체를 skip 하고 모든 cudart 심볼은 availability=0 으로 둔다.
+	// libcudartPath 가 지정되었더라도 OpenExecutable 실패 (파일 부재 등) 는 fatal 로 다루지 않고 warn 로깅 후 진행한다.
+	if r.libcudartPath != "" {
+		cudartEx, err := link.OpenExecutable(r.libcudartPath)
+		if err != nil {
+			log.Printf("cuda uprobe open libcudart %q: %v (cudart symbols remain unavailable)", r.libcudartPath, err)
+		} else {
+			cudartAttached := 0
+			for _, sym := range cudartTrackedSymbols {
+				prog, ok := cudartProgBySymbol[sym]
+				if !ok || prog == nil {
+					log.Printf("cuda uprobe attach %s: missing ebpf program mapping", sym)
+					continue
+				}
+				l, err := cudartEx.Uprobe(sym, prog, nil)
+				if err != nil {
+					log.Printf("cuda uprobe attach %s: %v", sym, err)
+					continue
+				}
+				links = append(links, l)
+				metrics.SetCudaSymbolAvailability(r.nodeName, sym, true)
+				cudartAttached++
+			}
+			log.Printf("cuda uprobe attached %d/%d libcudart symbols on %s", cudartAttached, len(cudartTrackedSymbols), r.libcudartPath)
+		}
+	}
 
 	rd, err := ringbuf.NewReader(objs.CudaEvents)
 	if err != nil {

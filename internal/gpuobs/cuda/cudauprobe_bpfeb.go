@@ -68,6 +68,9 @@ type CudaUprobeProgramSpecs struct {
 	HandleCuMemcpyDtohAsync         *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_dtoh_async"`
 	HandleCuMemcpyHtod              *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_htod"`
 	HandleCuMemcpyHtodAsync         *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_htod_async"`
+	HandleCudaLaunchKernel          *ebpf.ProgramSpec `ebpf:"handle_cuda_launch_kernel"`
+	HandleCudaMemcpy                *ebpf.ProgramSpec `ebpf:"handle_cuda_memcpy"`
+	HandleCudaMemcpyAsync           *ebpf.ProgramSpec `ebpf:"handle_cuda_memcpy_async"`
 }
 
 // CudaUprobeMapSpecs contains maps before they are loaded into the kernel.
@@ -139,6 +142,9 @@ type CudaUprobePrograms struct {
 	HandleCuMemcpyDtohAsync         *ebpf.Program `ebpf:"handle_cu_memcpy_dtoh_async"`
 	HandleCuMemcpyHtod              *ebpf.Program `ebpf:"handle_cu_memcpy_htod"`
 	HandleCuMemcpyHtodAsync         *ebpf.Program `ebpf:"handle_cu_memcpy_htod_async"`
+	HandleCudaLaunchKernel          *ebpf.Program `ebpf:"handle_cuda_launch_kernel"`
+	HandleCudaMemcpy                *ebpf.Program `ebpf:"handle_cuda_memcpy"`
+	HandleCudaMemcpyAsync           *ebpf.Program `ebpf:"handle_cuda_memcpy_async"`
 }
 
 func (p *CudaUprobePrograms) Close() error {
@@ -157,6 +163,9 @@ func (p *CudaUprobePrograms) Close() error {
 		p.HandleCuMemcpyDtohAsync,
 		p.HandleCuMemcpyHtod,
 		p.HandleCuMemcpyHtodAsync,
+		p.HandleCudaLaunchKernel,
+		p.HandleCudaMemcpy,
+		p.HandleCudaMemcpyAsync,
 	)
 }
 
