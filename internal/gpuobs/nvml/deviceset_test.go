@@ -18,6 +18,7 @@ type fakeDeviceSetNVML struct {
 	indexUUIDs []string
 	openErr    map[string]error
 	uuidErr    map[uint]error
+	countErr   error
 	opens      map[string]int
 	closed     map[string]int
 }
@@ -41,6 +42,9 @@ func (f *fakeDeviceSetNVML) setIndexUUIDs(uuids ...string) {
 func (f *fakeDeviceSetNVML) DeviceCount() (uint, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
 	return uint(len(f.indexUUIDs)), nil
 }
 
@@ -69,7 +73,7 @@ func (f *fakeDeviceSetNVML) Device(index uint) (Device, error) {
 	}
 	f.opens[uuid]++
 	f.mu.Unlock()
-	return &fakeDeviceSetDevice{uuid: uuid, parent: f}, nil
+	return &fakeDeviceSetDevice{uuid: uuid, index: index, parent: f}, nil
 }
 
 func (f *fakeDeviceSetNVML) Shutdown() error { return nil }
@@ -89,13 +93,29 @@ func (f *fakeDeviceSetNVML) closeCount(uuid string) int {
 type fakeDeviceSetDevice struct {
 	uuid   string
 	parent *fakeDeviceSetNVML
+
+	// index 는 운영 deviceImpl 의 currentIdx 와 동등한 hot-plug 추적 슬롯이다. updateIndex 호출 시 갱신되고
+	// Info() 가 매 호출마다 반영해 반환한다. parent.mu 와 별도 lock 없이 parent.mu 를 그대로 빌려 보호한다.
+	index uint
+
+	// infoUUID 는 Info() 가 반환하는 UUID 의 오버라이드다. DeviceUUID(i) 와 Device(i) 사이 race 를 시뮬레이션할 때
+	// (DeviceSet 이 받은 dev.Info().UUID 가 기대 UUID 와 다른 케이스) 호출자가 본 필드를 set 한다. 빈 값이면
+	// d.uuid 가 그대로 반환된다.
+	infoUUID string
 }
 
 func (d *fakeDeviceSetDevice) Info() (types.GPUDevice, error) {
-	return types.GPUDevice{UUID: d.uuid}, nil
+	d.parent.mu.Lock()
+	defer d.parent.mu.Unlock()
+	uuid := d.uuid
+	if d.infoUUID != "" {
+		uuid = d.infoUUID
+	}
+	return types.GPUDevice{Index: d.index, UUID: uuid}, nil
 }
 func (d *fakeDeviceSetDevice) Snapshot() (types.GPUSnapshot, error) {
-	return types.GPUSnapshot{Device: types.GPUDevice{UUID: d.uuid}}, nil
+	info, _ := d.Info()
+	return types.GPUSnapshot{Device: info}, nil
 }
 func (d *fakeDeviceSetDevice) RunningProcesses() ([]types.GPUProcess, error) { return nil, nil }
 func (d *fakeDeviceSetDevice) Close() error {
@@ -103,6 +123,15 @@ func (d *fakeDeviceSetDevice) Close() error {
 	d.parent.closed[d.uuid]++
 	d.parent.mu.Unlock()
 	return nil
+}
+
+// updateIndex 는 운영 deviceImpl 의 동명 메서드와 같은 시그니처를 구현해, DeviceSet.Sync 가 type assertion
+// 으로 호출하는 indexUpdater 인터페이스를 fake 도 만족시키도록 한다. 이로써 reorder 시나리오 단위 테스트가
+// Info().Index 의 hot-plug 추적을 검증할 수 있다.
+func (d *fakeDeviceSetDevice) updateIndex(newIndex uint) {
+	d.parent.mu.Lock()
+	d.index = newIndex
+	d.parent.mu.Unlock()
 }
 
 func snapshotUUIDs(set *DeviceSet) []string {
@@ -283,17 +312,160 @@ func TestDeviceSet_CloseClosesAllAndEmptiesSet(t *testing.T) {
 	}
 }
 
-func TestDeviceSet_CountErrorPropagates(t *testing.T) {
-	nv := &fakeDeviceSetNVML{}
+func TestDeviceSet_EmptySyncDoesNotError(t *testing.T) {
+	// indexUUIDs 가 비어 있으면 DeviceCount 는 0 을 반환하고, 빈 셋의 Sync 도 에러 없이 종료되어야 한다.
+	nv := newFakeDeviceSetNVML()
 	set := NewDeviceSet(nv)
-	// indexUUIDs 비어있고 uuidErr 등도 없음 → DeviceCount 는 0 이라 에러 아님.
-	// count 자체 에러 시뮬: 별도 fake 가 필요. fakeDeviceSetNVML 의 단순 케이스로 충분하지 않으므로
-	// 본 테스트는 정상 경로 (count=0) 가 에러 없이 반환되는지만 확인한다.
+
 	if err := set.Sync(); err != nil {
 		t.Errorf("empty Sync should not error; got %v", err)
 	}
 	if set.Len() != 0 {
 		t.Errorf("Len=%d want 0", set.Len())
+	}
+}
+
+func TestDeviceSet_CountErrorPropagates(t *testing.T) {
+	// DeviceCount 자체가 에러를 반환하면 그 에러가 호출자에게 그대로 전파되고 셋 상태는 변경되지 않아야 한다.
+	nv := newFakeDeviceSetNVML("GPU-A")
+	if err := (NewDeviceSet(nv)).Sync(); err != nil {
+		t.Fatalf("baseline Sync should succeed; got %v", err)
+	}
+
+	// 새 셋을 만들어 countErr 만 시뮬한다 — 기존 byUUID 와 분리해 에러 전파 자체에 집중한다.
+	nv2 := newFakeDeviceSetNVML("GPU-A")
+	nv2.countErr = errors.New("simulated count error")
+	set := NewDeviceSet(nv2)
+
+	err := set.Sync()
+	if err == nil || err.Error() != "simulated count error" {
+		t.Errorf("Sync should propagate DeviceCount error verbatim; got %v", err)
+	}
+	if set.Len() != 0 {
+		t.Errorf("Len=%d want 0 (count error must not register devices)", set.Len())
+	}
+}
+
+func TestDeviceSet_PartialFailureSkipsCleanup(t *testing.T) {
+	// 한 device 의 UUID lookup 이 일시 실패한 cycle 에서는 stale cleanup 자체가 건너뛰어야 한다.
+	// 이로써 정상 device 가 transient error 에 휩쓸려 Close → 다음 cycle 재 Open 으로 churn 하지 않는다.
+	nv := newFakeDeviceSetNVML("GPU-A", "GPU-B")
+	set := NewDeviceSet(nv)
+	if err := set.Sync(); err != nil {
+		t.Fatalf("baseline Sync: %v", err)
+	}
+
+	// 두 번째 sync 에서 idx=0 (GPU-A) 의 UUID lookup 만 일시 실패한다고 시뮬.
+	nv.uuidErr[0] = errors.New("transient")
+	if err := set.Sync(); err != nil {
+		t.Fatalf("partial-failure Sync should not return error; got %v", err)
+	}
+
+	// 정상 동작이라면 GPU-A 가 seen 에서 빠져 stale 정리되었을 것. cleanup skip 으로 Close 호출이 없어야 한다.
+	if got := nv.closeCount("GPU-A"); got != 0 {
+		t.Errorf("transient UUID lookup failure must not Close existing device; closes=%d", got)
+	}
+	if got := snapshotUUIDs(set); !equalStrings(got, []string{"GPU-A", "GPU-B"}) {
+		t.Errorf("set must retain both UUIDs across transient failure; got %v", got)
+	}
+
+	// transient 해제 후 다음 sync 에서 정상 cleanup 이 가능한 상태로 돌아오는지도 확인한다.
+	delete(nv.uuidErr, 0)
+	nv.setIndexUUIDs("GPU-B") // 이제 진짜 GPU-A 가 사라진 상태
+	if err := set.Sync(); err != nil {
+		t.Fatalf("recovery Sync: %v", err)
+	}
+	if got := nv.closeCount("GPU-A"); got != 1 {
+		t.Errorf("after recovery sync, GPU-A should be Closed exactly once; closes=%d", got)
+	}
+}
+
+func TestDeviceSet_UUIDMismatchRaceClosesDevAndSkips(t *testing.T) {
+	// DeviceUUID(i) 와 Device(i) 사이 race 시뮬: NVML 이 idx=0 의 UUID 로 GPU-A 를 보고했지만
+	// Device(i) 가 돌려준 핸들의 Info().UUID 는 GPU-X (race 로 바뀐 상태). DeviceSet 은 dev 를 close 하고 등록을 거부해야 한다.
+	nv := newFakeDeviceSetNVML("GPU-A")
+	// indexUUIDs 는 GPU-A 라고 보고하지만, fakeDevice 의 Info() 가 다른 UUID 를 돌려주도록 후처리.
+	set := NewDeviceSet(nv)
+
+	// 첫 sync 가 device 를 Open 한 직후, race 시뮬을 위해 그 device 의 infoUUID 를 GPU-X 로 바꾼다.
+	// 단, DeviceSet 은 첫 sync 에서 mismatch 를 감지하기 위해 sync 도중에 mismatch 가 발생해야 한다.
+	// 본 fake 는 Open 직후 부터 infoUUID 를 set 해 둘 수 없으므로, 시뮬 우회로: fakeDeviceSetNVML 의 Device 가
+	// 갓 Open 한 dev 에 대해 infoUUID 를 미리 주입할 수 있도록 별도 hook 가 필요하지만, 본 테스트는
+	// 원리적 검증을 위해 별도 fake (fakeRaceNVML) 를 사용한다.
+	nv2 := &fakeRaceNVML{
+		realUUID:  "GPU-A",
+		fakeInfoUUID: "GPU-X",
+		parent:    nv,
+	}
+	set = NewDeviceSet(nv2)
+	if err := set.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	if set.Len() != 0 {
+		t.Errorf("UUID mismatch must reject registration; Len=%d want 0", set.Len())
+	}
+	if nv2.closeCount != 1 {
+		t.Errorf("mismatched dev must be Closed; closeCount=%d want 1", nv2.closeCount)
+	}
+}
+
+// fakeRaceNVML 은 DeviceUUID 가 보고한 UUID 와 Device 가 돌려주는 dev 의 Info().UUID 가 다른 race 상황을
+// 시뮬레이션한다. 단순 fakeDeviceSetNVML 만으로는 Open 시점에 infoUUID 를 주입할 수 있는 hook 이 없어 별도로 둔다.
+type fakeRaceNVML struct {
+	realUUID     string
+	fakeInfoUUID string
+	closeCount   int
+	parent       *fakeDeviceSetNVML
+}
+
+func (f *fakeRaceNVML) DeviceCount() (uint, error)            { return 1, nil }
+func (f *fakeRaceNVML) DeviceUUID(i uint) (string, error)     { return f.realUUID, nil }
+func (f *fakeRaceNVML) Shutdown() error                       { return nil }
+func (f *fakeRaceNVML) Device(i uint) (Device, error) {
+	return &fakeRaceDevice{uuid: f.fakeInfoUUID, parent: f}, nil
+}
+
+type fakeRaceDevice struct {
+	uuid   string
+	parent *fakeRaceNVML
+}
+
+func (d *fakeRaceDevice) Info() (types.GPUDevice, error) {
+	return types.GPUDevice{UUID: d.uuid}, nil
+}
+func (d *fakeRaceDevice) Snapshot() (types.GPUSnapshot, error) {
+	return types.GPUSnapshot{Device: types.GPUDevice{UUID: d.uuid}}, nil
+}
+func (d *fakeRaceDevice) RunningProcesses() ([]types.GPUProcess, error) { return nil, nil }
+func (d *fakeRaceDevice) Close() error                                  { d.parent.closeCount++; return nil }
+
+func TestDeviceSet_ReorderUpdatesIndex(t *testing.T) {
+	// hot-remove 후 NVML 이 remaining device 의 index 를 재배치할 때, 본 셋은 기존 UUID 의 index 를
+	// updateIndex 로 갱신해 Info().Index 가 stale 되지 않게 해야 한다.
+	nv := newFakeDeviceSetNVML("GPU-A", "GPU-B")
+	set := NewDeviceSet(nv)
+	if err := set.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	// GPU-A 가 사라지고 GPU-B 가 idx 0 으로 재배치된 상태.
+	nv.setIndexUUIDs("GPU-B")
+	if err := set.Sync(); err != nil {
+		t.Fatalf("Sync after reorder: %v", err)
+	}
+
+	// snapshot 의 Device.Index 가 1 (이전 값) 이 아닌 0 (현재 NVML index) 이어야 한다.
+	devs := set.Snapshot()
+	if len(devs) != 1 {
+		t.Fatalf("after reorder Len=%d want 1", len(devs))
+	}
+	info, _ := devs[0].Info()
+	if info.UUID != "GPU-B" {
+		t.Fatalf("survived UUID=%s want GPU-B", info.UUID)
+	}
+	if info.Index != 0 {
+		t.Errorf("Info().Index=%d want 0 (NVML index reorder must be reflected via updateIndex)", info.Index)
 	}
 }
 
