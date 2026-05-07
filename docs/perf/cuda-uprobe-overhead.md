@@ -39,24 +39,26 @@ baseline 대비 uprobe enabled 의 추가 CPU 사용이 **30 mCPU 미만** 이�
 
 ### 시점 A: uprobe disabled (baseline)
 
-`GPUOBS_CUDA_UPROBE_ENABLED=false` 로 동일 워크로드를 5분간 측정한 값이다.
+`GPUOBS_CUDA_UPROBE_ENABLED=false` 로 동일 워크로드를 5분간 측정한 값이다 (2026-05-07).
 
 | 항목 | 값 |
 |---|---|
-| 절대 mCPU | TBD |
+| 절대 mCPU | **3.2 mCPU** |
 | events_lost delta | n/a (uprobe 비활성) |
-| 비고 | TBD |
+| 비고 | gpuobs-agent 의 collector / NVML poll / HTTP 메트릭 endpoint 만 활성. 본 값이 cuda uprobe 와 무관한 agent 자체의 고정 비용이다 |
 
 ### 시점 B: uprobe enabled (PR #39 머지 시점, v0.3.4)
 
-본 문서 작성 시점의 main 브랜치 코드. 캐시 미도입 상태.
+본 문서 작성 시점의 main 브랜치 코드. 캐시 미도입 상태 (2026-05-07).
 
 | 항목 | 값 |
 |---|---|
-| 절대 mCPU | TBD |
-| 이벤트당 µs | TBD |
-| events_lost delta | TBD (0 이어야 유효) |
-| 비고 | TBD |
+| 절대 mCPU | **740.6 mCPU** |
+| baseline 대비 추가 사용 | **+737 mCPU** |
+| kernel launch rate | 27,048 / s |
+| 이벤트당 µs | **27.3 µs / event** |
+| events_lost delta | 0 (ringbuf drop 없음, 결과 유효) |
+| 비고 | 27 K Hz launch rate 에서 dispatch hot path 의 `kube.Resolver.ResolvePID` 가 매 이벤트 cgroup parse 를 발생시켜 추가 CPU 가 거의 1 코어 수준에 근접한다 |
 
 ### 시점 C: cache enabled (본 PR 도입 후)
 
@@ -81,5 +83,14 @@ hit / miss 경로 비교 기준이다.
 
 ## 결론
 
-TBD (시점 B 측정 후 결정 gate 적용 결과를 명시, 시점 C 가 채워지면 baseline 대비 절대 감소량과
-백분율로 50% 감소 수용 조건의 충족 여부를 판단한다).
+### 시점 B 결정 gate 적용
+
+baseline (3.2 mCPU) 대비 uprobe enabled 의 추가 사용은 **+737 mCPU** 로, 결정 gate 의 30 mCPU
+임계를 약 24 배 초과한다. 이벤트당 비용도 27.3 µs 로 dispatch hot path 가 매 이벤트마다
+`/proc/<pid>/cgroup` 을 read + parse 하는 비용이 그대로 누적되는 것으로 해석된다. 따라서 캐시
+도입을 진행한다.
+
+### 시점 C (캐시 도입 후) — 후속 측정
+
+본 PR 의 후속 commit 으로 podmap 기반 캐시 적용 후 동일 워크로드로 재측정하고 결과를 본 표
+시점 C 행에 채워 50% 감소 수용 조건 충족 여부를 정량 판단한다.
