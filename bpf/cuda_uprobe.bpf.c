@@ -230,20 +230,28 @@ static __always_inline __u8 dir_from_memtype(__u32 src, __u32 dst)
 
 /* emit_memcpy2d / emit_memcpy3d 는 user-space 의 CUDA_MEMCPY2D / 3D 구조체 포인터에서 srcMemoryType /
  * dstMemoryType / WidthInBytes / Height (3D 는 Depth 까지) 만 bpf_probe_read_user 로 읽어 명시 방향이면
- * 총 byte 크기와 함께 emit 한다. pCopy 가 NULL 이거나 read 실패 시 0 으로 남아 자연 skip 된다.
+ * 총 byte 크기와 함께 emit 한다. pCopy 가 NULL 이거나 어느 하나라도 read 가 실패하면 emit 하지 않아
+ * userspace 측에 0-byte unknown_dir 시리즈가 헛생성되지 않게 한다. width / height (3D 는 depth 포함) 중
+ * 하나라도 0 인 경우도 동일 이유로 skip — 카운터에 0 을 더하면 값은 변하지 않지만 라벨 키는
+ * seenCudaKeys 에 박혀 cleanup 사이클이 영구히 도는 데드 시리즈가 된다.
  */
 static __always_inline void emit_memcpy2d(__u64 pCopy)
 {
     if (!pCopy)
         return;
     __u32 src_mt = 0, dst_mt = 0;
-    bpf_probe_read_user(&src_mt, sizeof(src_mt), (const void *)(pCopy + MEMCPY2D_SRC_MEMTYPE_OFF));
-    bpf_probe_read_user(&dst_mt, sizeof(dst_mt), (const void *)(pCopy + MEMCPY2D_DST_MEMTYPE_OFF));
-    __u8 kind = dir_from_memtype(src_mt, dst_mt);
+    if (bpf_probe_read_user(&src_mt, sizeof(src_mt), (const void *)(pCopy + MEMCPY2D_SRC_MEMTYPE_OFF)) < 0)
+        return;
+    if (bpf_probe_read_user(&dst_mt, sizeof(dst_mt), (const void *)(pCopy + MEMCPY2D_DST_MEMTYPE_OFF)) < 0)
+        return;
     __u64 width = 0, height = 0;
-    bpf_probe_read_user(&width, sizeof(width), (const void *)(pCopy + MEMCPY2D_WIDTH_BYTES_OFF));
-    bpf_probe_read_user(&height, sizeof(height), (const void *)(pCopy + MEMCPY2D_HEIGHT_OFF));
-    emit_event(kind, width * height);
+    if (bpf_probe_read_user(&width, sizeof(width), (const void *)(pCopy + MEMCPY2D_WIDTH_BYTES_OFF)) < 0)
+        return;
+    if (bpf_probe_read_user(&height, sizeof(height), (const void *)(pCopy + MEMCPY2D_HEIGHT_OFF)) < 0)
+        return;
+    if (width == 0 || height == 0)
+        return;
+    emit_event(dir_from_memtype(src_mt, dst_mt), width * height);
 }
 
 static __always_inline void emit_memcpy3d(__u64 pCopy)
@@ -251,14 +259,20 @@ static __always_inline void emit_memcpy3d(__u64 pCopy)
     if (!pCopy)
         return;
     __u32 src_mt = 0, dst_mt = 0;
-    bpf_probe_read_user(&src_mt, sizeof(src_mt), (const void *)(pCopy + MEMCPY3D_SRC_MEMTYPE_OFF));
-    bpf_probe_read_user(&dst_mt, sizeof(dst_mt), (const void *)(pCopy + MEMCPY3D_DST_MEMTYPE_OFF));
-    __u8 kind = dir_from_memtype(src_mt, dst_mt);
+    if (bpf_probe_read_user(&src_mt, sizeof(src_mt), (const void *)(pCopy + MEMCPY3D_SRC_MEMTYPE_OFF)) < 0)
+        return;
+    if (bpf_probe_read_user(&dst_mt, sizeof(dst_mt), (const void *)(pCopy + MEMCPY3D_DST_MEMTYPE_OFF)) < 0)
+        return;
     __u64 width = 0, height = 0, depth = 0;
-    bpf_probe_read_user(&width, sizeof(width), (const void *)(pCopy + MEMCPY3D_WIDTH_BYTES_OFF));
-    bpf_probe_read_user(&height, sizeof(height), (const void *)(pCopy + MEMCPY3D_HEIGHT_OFF));
-    bpf_probe_read_user(&depth, sizeof(depth), (const void *)(pCopy + MEMCPY3D_DEPTH_OFF));
-    emit_event(kind, width * height * depth);
+    if (bpf_probe_read_user(&width, sizeof(width), (const void *)(pCopy + MEMCPY3D_WIDTH_BYTES_OFF)) < 0)
+        return;
+    if (bpf_probe_read_user(&height, sizeof(height), (const void *)(pCopy + MEMCPY3D_HEIGHT_OFF)) < 0)
+        return;
+    if (bpf_probe_read_user(&depth, sizeof(depth), (const void *)(pCopy + MEMCPY3D_DEPTH_OFF)) < 0)
+        return;
+    if (width == 0 || height == 0 || depth == 0)
+        return;
+    emit_event(dir_from_memtype(src_mt, dst_mt), width * height * depth);
 }
 
 /*
