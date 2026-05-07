@@ -130,11 +130,11 @@ func BenchmarkReaderDispatch_CacheHit(b *testing.B) {
 func BenchmarkReaderBuildActiveCudaKeys(b *testing.B) {
 	const pidCount = 64
 	table := make(map[uint32]kube.PodIdentity, pidCount)
-	pidMap := make(map[uint32]string, pidCount)
+	pidMap := make(map[uint32][]string, pidCount)
 	for i := 0; i < pidCount; i++ {
 		pid := uint32(1000 + i)
 		table[pid] = samplePod("ml", "p"+strconv.Itoa(i), "u"+strconv.Itoa(i))
-		pidMap[pid] = "GPU-A"
+		pidMap[pid] = []string{"GPU-A"}
 	}
 	resolver := slowResolver{table: table, delay: 30 * time.Microsecond}
 	r := New("/unused", "", "node-A", nil, resolver, 0)

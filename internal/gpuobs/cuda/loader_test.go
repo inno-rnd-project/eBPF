@@ -49,6 +49,16 @@ func newReaderForDispatch(resolver PodResolver, recorder *captureRecorder) *Read
 	return r
 }
 
+// toUUIDList 는 단일값 PID→UUID 맵을 buildActiveCudaKeys 가 받는 PID→[]UUID 형식으로 lift 한다.
+// 단위 테스트가 단일 GPU PID 케이스를 그대로 표현하기 위한 어댑터다.
+func toUUIDList(in map[uint32]string) map[uint32][]string {
+	out := make(map[uint32][]string, len(in))
+	for pid, uuid := range in {
+		out[pid] = []string{uuid}
+	}
+	return out
+}
+
 func TestReaderDispatch_ResolvesPodAndGPUFromMaps(t *testing.T) {
 	rec := &captureRecorder{}
 	resolver := fakeResolver{table: map[uint32]kube.PodIdentity{
@@ -123,7 +133,7 @@ func TestReaderBuildActiveCudaKeys_NilResolverReturnsEmpty(t *testing.T) {
 	// resolver 가 nil 이면 RetainCudaSeries 호출 시 모든 시리즈가 제거되도록 빈 셋을 반환해야 한다.
 	r := New("/unused", "", "node-A", nil, nil, 0)
 
-	keys := r.buildActiveCudaKeys(map[uint32]string{1: "G"})
+	keys := r.buildActiveCudaKeys(toUUIDList(map[uint32]string{1: "G"}))
 
 	if len(keys) != 0 {
 		t.Errorf("nil resolver must yield empty active set; got %d keys", len(keys))
@@ -137,7 +147,7 @@ func TestReaderBuildActiveCudaKeys_NonPodIdentitySkipped(t *testing.T) {
 		2: {IdentityClass: kube.IdentityClassExternal},
 	}}, 0)
 
-	keys := r.buildActiveCudaKeys(map[uint32]string{1: "G", 2: "G"})
+	keys := r.buildActiveCudaKeys(toUUIDList(map[uint32]string{1: "G", 2: "G"}))
 
 	if len(keys) != 0 {
 		t.Errorf("non-pod identities must be skipped; got %d keys", len(keys))
@@ -150,7 +160,7 @@ func TestReaderBuildActiveCudaKeys_KeyFormatMatchesRecordCudaEvent(t *testing.T)
 	id := samplePod("ml", "p", "u")
 	r := New("/unused", "", "node-A", nil, fakeResolver{table: map[uint32]kube.PodIdentity{1: id}}, 0)
 
-	keys := r.buildActiveCudaKeys(map[uint32]string{1: "G"})
+	keys := r.buildActiveCudaKeys(toUUIDList(map[uint32]string{1: "G"}))
 
 	want := metrics.CudaActiveKey("node-A", "ml", "p", "u", "G")
 	if _, ok := keys[want]; !ok {
@@ -161,7 +171,7 @@ func TestReaderBuildActiveCudaKeys_KeyFormatMatchesRecordCudaEvent(t *testing.T)
 	// 폴백과 동일한 "unknown" 으로 키가 만들어져야 한다.
 	idEmpty := kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml"}
 	r2 := New("/unused", "", "node-A", nil, fakeResolver{table: map[uint32]kube.PodIdentity{2: idEmpty}}, 0)
-	keys2 := r2.buildActiveCudaKeys(map[uint32]string{2: "G"})
+	keys2 := r2.buildActiveCudaKeys(toUUIDList(map[uint32]string{2: "G"}))
 	want2 := metrics.CudaActiveKey("node-A", "ml", "unknown", "unknown", "G")
 	if _, ok := keys2[want2]; !ok {
 		t.Errorf("empty pod name/uid must fallback to 'unknown'; got %v", keys2)
@@ -174,7 +184,7 @@ func TestReaderBuildActiveCudaKeys_DuplicatePidDeduped(t *testing.T) {
 	id := samplePod("ml", "p", "u")
 	r := New("/unused", "", "node-A", nil, fakeResolver{table: map[uint32]kube.PodIdentity{1: id}}, 0)
 
-	keys := r.buildActiveCudaKeys(map[uint32]string{1: "G"})
+	keys := r.buildActiveCudaKeys(toUUIDList(map[uint32]string{1: "G"}))
 	if len(keys) != 1 {
 		t.Errorf("single pid → single key; got %d", len(keys))
 	}
@@ -207,7 +217,7 @@ func TestReaderCollectPidToUUID_LastWinsAndCountsMultiGPU(t *testing.T) {
 	devB := &fakeNvmlDevice{uuid: "GPU-B", pids: []uint32{2, 3}}
 	r := New("/unused", "", "node-A", nil, nil, 0)
 
-	fresh, multi := r.collectPidToUUID([]nvml.Device{devA, devB})
+	fresh, freshAll, multi := r.collectPidToUUID([]nvml.Device{devA, devB})
 
 	if got := fresh[1]; got != "GPU-A" {
 		t.Errorf("pid=1 uuid=%q want GPU-A", got)
@@ -221,6 +231,13 @@ func TestReaderCollectPidToUUID_LastWinsAndCountsMultiGPU(t *testing.T) {
 	if multi != 1 {
 		t.Errorf("multiGPUCount=%d want 1 (only pid 2 is on >1 GPU)", multi)
 	}
+	// freshAll 의 multi-GPU PID 는 본 GPU 들이 모두 나열되어야 한다.
+	if got := freshAll[2]; len(got) != 2 {
+		t.Errorf("pid=2 freshAll=%v want 2 entries", got)
+	}
+	if got := freshAll[1]; len(got) != 1 || got[0] != "GPU-A" {
+		t.Errorf("pid=1 freshAll=%v want [GPU-A]", got)
+	}
 }
 
 func TestReaderCollectPidToUUID_AllSingleGPUYieldsZeroCount(t *testing.T) {
@@ -229,7 +246,7 @@ func TestReaderCollectPidToUUID_AllSingleGPUYieldsZeroCount(t *testing.T) {
 	devB := &fakeNvmlDevice{uuid: "GPU-B", pids: []uint32{3, 4}}
 	r := New("/unused", "", "node-A", nil, nil, 0)
 
-	_, multi := r.collectPidToUUID([]nvml.Device{devA, devB})
+	_, _, multi := r.collectPidToUUID([]nvml.Device{devA, devB})
 
 	if multi != 0 {
 		t.Errorf("multiGPUCount=%d want 0", multi)
