@@ -93,8 +93,8 @@ struct {
 } cuda_dropped SEC(".maps");
 
 /* cuda_tid_device 는 호스트 TID 를 컨테이너 CUDA driver 의 device ordinal 로 매핑한다.
- * cudaSetDevice / cuCtxSetCurrent / cuCtxPushCurrent uprobe 가 본 map 을 갱신하고, kernel
- * launch / memcpy uprobe 가 emit 직전에 lookup 해 이벤트에 device ordinal 을 첨부한다.
+ * cudaSetDevice / cuCtxSetCurrent uprobe 가 본 map 을 갱신하고, kernel launch / memcpy uprobe
+ * 가 emit 직전에 lookup 해 이벤트에 device ordinal 을 첨부한다.
  *
  * LRU_HASH 를 사용해 종료된 thread 의 stale 엔트리가 자동 evict 되도록 한다 (별도 cleanup
  * 경로 불요). max_entries 는 동시 활성 CUDA thread 수의 worst case 를 16384 로 잡는다 —
@@ -106,6 +106,36 @@ struct {
     __type(key, __u32);
     __type(value, __u32);
 } cuda_tid_device SEC(".maps");
+
+/* cuctx_to_device 는 CUDA Driver API 의 CUcontext 포인터를 device ordinal 로 매핑한다.
+ * cuCtxCreate_v2 의 uprobe + uretprobe 페어가 (출력 ctx 포인터, PARM3 device) 를 본 map 에
+ * 적재하고, cuCtxSetCurrent uprobe 가 인자로 받은 ctx 를 lookup 해 cuda_tid_device 의 TID
+ * 매핑을 갱신한다. cuCtxDestroy 같은 정리 hook 은 두지 않으며, LRU 정책으로 stale entry 가
+ * 자동 evict 된다.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 4096);
+    __type(key, __u64);
+    __type(value, __u32);
+} cuctx_to_device SEC(".maps");
+
+/* cuctx_create_args 는 cuCtxCreate_v2 의 uprobe (entry) 가 capture 한 출력 포인터 + device
+ * ordinal 을 같은 호출의 uretprobe (exit) 로 전달하는 임시 map 이다. uretprobe 시점에는
+ * x86_64 ABI 규약상 entry 의 PARM 레지스터가 전부 clobber 되어 있어 entry 에서 상태를 보관해
+ * 두지 않으면 (pctx 출력 위치, dev) 를 알 수 없다. exit 가 lookup 후 즉시 delete 한다.
+ */
+struct ctx_create_args {
+    __u64 pctx_addr;
+    __u32 dev;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 4096);
+    __type(key, __u32);
+    __type(value, struct ctx_create_args);
+} cuctx_create_args SEC(".maps");
 
 static __always_inline void inc_dropped(void)
 {
@@ -419,5 +449,64 @@ int BPF_UPROBE(handle_cuda_set_device)
     __u32 tid = (__u32)bpf_get_current_pid_tgid();
     __u32 device = (__u32)PT_REGS_PARM1(ctx);
     bpf_map_update_elem(&cuda_tid_device, &tid, &device, BPF_ANY);
+    return 0;
+}
+
+/*
+ * CUresult cuCtxCreate_v2(CUcontext *pctx, unsigned int flags, CUdevice dev)
+ *
+ * uprobe (entry) 는 PARM1 (pctx 출력 포인터 주소) 와 PARM3 (CUdevice ordinal) 를 cuctx_create_args
+ * 임시 map 에 보관한다. uretprobe (exit) 는 *pctx_addr 의 resolved CUcontext 값을 bpf_probe_read_user
+ * 로 읽어 cuctx_to_device 매핑을 완성한다. cuCtxCreate_v3 등 다른 v 변형은 본 PR 의 scope 외로
+ * 미루며 (인자 위치가 다름), Driver API 사용자가 v2 를 거의 항상 쓰는 일반 가정에 의존한다.
+ */
+SEC("uprobe/cuCtxCreate_v2")
+int BPF_UPROBE(handle_cu_ctx_create_v2_entry)
+{
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    struct ctx_create_args args = {
+        .pctx_addr = (__u64)PT_REGS_PARM1(ctx),
+        .dev = (__u32)PT_REGS_PARM3(ctx),
+    };
+    bpf_map_update_elem(&cuctx_create_args, &tid, &args, BPF_ANY);
+    return 0;
+}
+
+SEC("uretprobe/cuCtxCreate_v2")
+int BPF_URETPROBE(handle_cu_ctx_create_v2_exit)
+{
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    struct ctx_create_args *args = bpf_map_lookup_elem(&cuctx_create_args, &tid);
+    if (!args)
+        return 0;
+    __u64 cuctx_val = 0;
+    if (bpf_probe_read_user(&cuctx_val, sizeof(cuctx_val), (const void *)args->pctx_addr) == 0 && cuctx_val != 0) {
+        __u32 dev = args->dev;
+        bpf_map_update_elem(&cuctx_to_device, &cuctx_val, &dev, BPF_ANY);
+    }
+    bpf_map_delete_elem(&cuctx_create_args, &tid);
+    return 0;
+}
+
+/*
+ * CUresult cuCtxSetCurrent(CUcontext ctx)
+ *
+ * 본 thread 의 current CUcontext 를 변경한다. PARM1 의 ctx 를 cuctx_to_device 에서 lookup 해
+ * cuda_tid_device 의 TID → device 매핑을 갱신한다. cuCtxCreate_v2 hook 이 없는 (예: cuCtxCreate_v3
+ * 또는 cuDevicePrimaryCtxRetain 으로 만들어진) 컨텍스트에 대해서는 lookup miss 라 매핑 갱신이
+ * 일어나지 않고 dispatch 시점에는 cuda_tid_device 의 직전 매핑이 유지된다. 이 케이스는 본 PR 의
+ * scope 외로 한계 note 에 명시한다.
+ */
+SEC("uprobe/cuCtxSetCurrent")
+int BPF_UPROBE(handle_cu_ctx_set_current)
+{
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    __u64 cuctx_val = (__u64)PT_REGS_PARM1(ctx);
+    if (cuctx_val == 0)
+        return 0;
+    __u32 *dev = bpf_map_lookup_elem(&cuctx_to_device, &cuctx_val);
+    if (!dev)
+        return 0;
+    bpf_map_update_elem(&cuda_tid_device, &tid, dev, BPF_ANY);
     return 0;
 }

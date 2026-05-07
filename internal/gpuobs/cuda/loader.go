@@ -30,6 +30,14 @@ type PodResolver interface {
 // attach 루프와 metrics 의 symbol_available 라벨에 그대로 노출된다.
 //
 // 추가 심볼은 BPF 측 SEC 정의와 progBySymbol 매핑을 함께 동시에 갱신해야 한다.
+// trackedUretprobes 는 libcuda.so 에 attach 시도할 uretprobe 심볼이다. uprobe 와 다르게 함수 return
+// 시점에 fire 하며, 본 PR 은 cuCtxCreate_v2 의 출력 ctx 포인터를 capture 해 ctx-to-device 매핑을 만드는
+// 한 가지 용도로만 사용한다 (#33). 동일 심볼이 trackedSymbols 에도 들어 있으면 entry 와 exit 양쪽에
+// uprobe / uretprobe 가 함께 attach 되어야 한다.
+var trackedUretprobes = []string{
+	"cuCtxCreate_v2",
+}
+
 var trackedSymbols = []string{
 	"cuLaunchKernel",
 	"cuLaunchKernelEx",
@@ -45,6 +53,10 @@ var trackedSymbols = []string{
 	"cuMemcpy3D_v2",
 	"cuMemcpy3DAsync_v2",
 	"cuMemcpy",
+	// 아래는 #33 의 multi-GPU attribution 용 control-plane uprobe 들이다. 이벤트를 emit 하지 않고
+	// BPF map 만 갱신해 dispatch 시점의 GPU ordinal 분리 정확도를 높인다.
+	"cuCtxCreate_v2",
+	"cuCtxSetCurrent",
 }
 
 // cudartTrackedSymbols 는 libcudart.so 에 attach 시도할 CUDA Runtime API 심볼이다.
@@ -130,6 +142,14 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 		"cuMemcpy3D_v2":             objs.HandleCuMemcpy3d,
 		"cuMemcpy3DAsync_v2":        objs.HandleCuMemcpy3dAsync,
 		"cuMemcpy":                  objs.HandleCuMemcpy,
+		"cuCtxCreate_v2":            objs.HandleCuCtxCreateV2Entry,
+		"cuCtxSetCurrent":           objs.HandleCuCtxSetCurrent,
+	}
+
+	// progByUretprobeSymbol 은 uretprobe 로 attach 할 program 을 묶는다. 현재는 cuCtxCreate_v2 의 exit
+	// 한 가지 용도로만 사용된다.
+	progByUretprobeSymbol := map[string]*cebpf.Program{
+		"cuCtxCreate_v2": objs.HandleCuCtxCreateV2Exit,
 	}
 
 	// libcudart 의 program 매핑은 libcudart 경로가 비어 있어도 항상 노출되며, 실제 attach 는 libcudartPath
@@ -184,6 +204,22 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 	}
 	if attached == 0 {
 		return fmt.Errorf("no cuda uprobe attached; check libcuda path %q and CAP_BPF/CAP_PERFMON/CAP_SYS_PTRACE", r.libcudaPath)
+	}
+
+	// uretprobe attach 루프. 실패는 warn 로깅 후 진행해 multi-GPU attribution 일부가 비활성이어도
+	// 본 PR 의 다른 기능 (kernel launch / memcpy 카운터, podMap 캐시) 이 그대로 작동하게 한다.
+	for _, sym := range trackedUretprobes {
+		prog, ok := progByUretprobeSymbol[sym]
+		if !ok || prog == nil {
+			log.Printf("cuda uretprobe attach %s: missing ebpf program mapping", sym)
+			continue
+		}
+		l, err := ex.Uretprobe(sym, prog, nil)
+		if err != nil {
+			log.Printf("cuda uretprobe attach %s: %v", sym, err)
+			continue
+		}
+		links = append(links, l)
 	}
 	log.Printf("cuda uprobe attached %d/%d libcuda symbols on %s", attached, len(trackedSymbols), r.libcudaPath)
 
