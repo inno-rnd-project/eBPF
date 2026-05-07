@@ -92,6 +92,21 @@ struct {
     __type(value, __u64);
 } cuda_dropped SEC(".maps");
 
+/* cuda_tid_device 는 호스트 TID 를 컨테이너 CUDA driver 의 device ordinal 로 매핑한다.
+ * cudaSetDevice / cuCtxSetCurrent / cuCtxPushCurrent uprobe 가 본 map 을 갱신하고, kernel
+ * launch / memcpy uprobe 가 emit 직전에 lookup 해 이벤트에 device ordinal 을 첨부한다.
+ *
+ * LRU_HASH 를 사용해 종료된 thread 의 stale 엔트리가 자동 evict 되도록 한다 (별도 cleanup
+ * 경로 불요). max_entries 는 동시 활성 CUDA thread 수의 worst case 를 16384 로 잡는다 —
+ * PyTorch 류의 일반 워크로드는 코어 수 + worker thread 수 합계가 수백 단위라 충분.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 16384);
+    __type(key, __u32);
+    __type(value, __u32);
+} cuda_tid_device SEC(".maps");
+
 static __always_inline void inc_dropped(void)
 {
     __u32 key = 0;
@@ -384,5 +399,25 @@ int BPF_UPROBE(handle_cuda_memcpy_async)
     __u64 count = (__u64)PT_REGS_PARM3(ctx);
     __u32 kind = (__u32)PT_REGS_PARM4(ctx);
     emit_event(cudart_dir_from_kind(kind), count);
+    return 0;
+}
+
+/*
+ * cudaError_t cudaSetDevice(int device)
+ *
+ * thread-local current device 를 설정한다. 본 thread 의 후속 cudaLaunchKernel / cudaMemcpy*
+ * 호출은 모두 본 device 에서 실행되므로, TID → device ordinal 매핑을 cuda_tid_device map 에
+ * 기록해 dispatch 시점의 GPU attribution 을 정확히 분리한다 (#33).
+ *
+ * device 값은 4 bytes signed int 이지만 64-bit 레지스터의 하위 32 비트에서 읽어 unsigned 으로
+ * 다룬다. 음수 값 (예: cudaInvalidDeviceId == -1) 은 매우 큰 unsigned 으로 해석되어 NVML
+ * device count 범위 밖이라 ordinal-to-UUID 매핑 단계에서 자연스럽게 빈 문자열로 폴백된다.
+ */
+SEC("uprobe/cudaSetDevice")
+int BPF_UPROBE(handle_cuda_set_device)
+{
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    __u32 device = (__u32)PT_REGS_PARM1(ctx);
+    bpf_map_update_elem(&cuda_tid_device, &tid, &device, BPF_ANY);
     return 0;
 }

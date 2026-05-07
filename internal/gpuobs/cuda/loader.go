@@ -47,12 +47,15 @@ var trackedSymbols = []string{
 	"cuMemcpy",
 }
 
-// cudartTrackedSymbols 는 libcudart.so 에 attach 시도할 CUDA Runtime API 심볼 3종이다.
+// cudartTrackedSymbols 는 libcudart.so 에 attach 시도할 CUDA Runtime API 심볼이다.
 // libcuda 와 분리된 OpenExecutable 로 처리되며, libcudartPath 가 빈 값이면 본 attach 자체가 skip 된다.
+// cudaSetDevice 는 dispatch 의 GPU attribution 정확도를 위해 TID → device 매핑을 BPF map 에
+// 기록하는 용도라 이벤트를 emit 하지 않는다 (#33).
 var cudartTrackedSymbols = []string{
 	"cudaLaunchKernel",
 	"cudaMemcpy",
 	"cudaMemcpyAsync",
+	"cudaSetDevice",
 }
 
 // Reader 는 cuda uprobe 가 emit 한 ringbuf 이벤트의 소비자다. lifecycle 은 Run 이 소유한다.
@@ -135,6 +138,7 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 		"cudaLaunchKernel": objs.HandleCudaLaunchKernel,
 		"cudaMemcpy":       objs.HandleCudaMemcpy,
 		"cudaMemcpyAsync":  objs.HandleCudaMemcpyAsync,
+		"cudaSetDevice":    objs.HandleCudaSetDevice,
 	}
 
 	// 진단 시그널 일관성: attach 시도 자체가 일어나기 전에 모든 심볼을 0 으로 선등록해 둔다.
