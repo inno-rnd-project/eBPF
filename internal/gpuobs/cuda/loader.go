@@ -341,7 +341,8 @@ func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap, d
 		if err := devSet.Sync(); err != nil {
 			log.Printf("cuda: device sync: %v", err)
 		}
-		fresh := r.collectPidToUUID(devSet.Snapshot())
+		fresh, multiGPUCount := r.collectPidToUUID(devSet.Snapshot())
+		metrics.SetCudaPidMultiGPUCount(r.nodeName, multiGPUCount)
 		// active PID 셋에 대해 ResolvePID 를 본 사이클에서 한 번씩만 호출해 podMap 을 통째 교체한다.
 		// dispatch hot path 는 다음 사이클까지의 모든 이벤트를 캐시 hit 로 처리하고, 종료된 PID 는
 		// 본 replace 로 자연스럽게 제거되어 별도 cleanup 호출이 필요하지 않다.
@@ -450,8 +451,15 @@ func (r *Reader) resolvePidToPod(pidToUUID map[uint32]string) map[uint32]kube.Po
 	return fresh
 }
 
-func (r *Reader) collectPidToUUID(devices []nvml.Device) map[uint32]string {
+// collectPidToUUID 는 NVML 의 모든 device 에서 RunningProcesses 를 수집해 PID 를 GPU UUID 로
+// 매핑한다. 같은 PID 가 여러 GPU 에 동시 등장하면 마지막으로 본 GPU 가 매핑에 남으며 (last-wins),
+// 그런 PID 개수 (multiGPUCount) 를 같이 반환해 호출자가 운영 메트릭으로 노출할 수 있게 한다.
+// last-wins 동작은 단일 프로세스 multi-GPU 워크로드 (nn.DataParallel, 모델 병렬 등) 에서만 정확도가
+// 떨어지며, DDP 류 GPU 당 1 프로세스 패턴은 영향 없다. 정확한 per-event GPU attribution 은 후속
+// commit 의 BPF TID→device 추적으로 보강된다 (#33).
+func (r *Reader) collectPidToUUID(devices []nvml.Device) (map[uint32]string, int) {
 	fresh := make(map[uint32]string)
+	pidGPUCount := make(map[uint32]int)
 	for _, dev := range devices {
 		info, err := dev.Info()
 		if err != nil {
@@ -463,7 +471,14 @@ func (r *Reader) collectPidToUUID(devices []nvml.Device) map[uint32]string {
 		}
 		for _, p := range procs {
 			fresh[p.PID] = info.UUID
+			pidGPUCount[p.PID]++
 		}
 	}
-	return fresh
+	multiGPUCount := 0
+	for _, n := range pidGPUCount {
+		if n > 1 {
+			multiGPUCount++
+		}
+	}
+	return fresh, multiGPUCount
 }

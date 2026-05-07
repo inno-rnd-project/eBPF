@@ -794,6 +794,7 @@ func resetCudaMetricsState(t *testing.T) {
 	cudaUnknownDirBytesTotal.Reset()
 	cudaSymbolAvailable.Reset()
 	cudaEventsLostTotal.Reset()
+	cudaPidMultiGPUCount.Reset()
 	seenCudaKeys = make(map[CudaLabelKey]struct{})
 }
 
@@ -1098,5 +1099,28 @@ func TestSetCudaSymbolAvailability_BothStates(t *testing.T) {
 	}
 	if got := testutil.CollectAndCount(cudaSymbolAvailable); got != 2 {
 		t.Errorf("series count=%d want 2", got)
+	}
+}
+
+func TestSetCudaPidMultiGPUCount_OverwritesByNode(t *testing.T) {
+	resetCudaMetricsState(t)
+
+	SetCudaPidMultiGPUCount("n1", 0)
+	if got := testutil.ToFloat64(cudaPidMultiGPUCount.WithLabelValues("n1")); got != 0 {
+		t.Errorf("initial n1=%v want 0", got)
+	}
+
+	SetCudaPidMultiGPUCount("n1", 3)
+	if got := testutil.ToFloat64(cudaPidMultiGPUCount.WithLabelValues("n1")); got != 3 {
+		t.Errorf("n1=%v want 3", got)
+	}
+
+	// 새 사이클이 multi-GPU PID 수를 다시 0 으로 발행하면 idempotent Set 으로 같은 시리즈에 덮어써져야 한다.
+	SetCudaPidMultiGPUCount("n1", 0)
+	if got := testutil.ToFloat64(cudaPidMultiGPUCount.WithLabelValues("n1")); got != 0 {
+		t.Errorf("n1 after reset=%v want 0", got)
+	}
+	if got := testutil.CollectAndCount(cudaPidMultiGPUCount); got != 1 {
+		t.Errorf("series count=%d want 1 (single node)", got)
 	}
 }

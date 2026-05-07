@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"netobs/internal/gpuobs/metrics"
+	"netobs/internal/gpuobs/nvml"
 	"netobs/internal/gpuobs/types"
 	"netobs/internal/kube"
 )
@@ -176,6 +177,62 @@ func TestReaderBuildActiveCudaKeys_DuplicatePidDeduped(t *testing.T) {
 	keys := r.buildActiveCudaKeys(map[uint32]string{1: "G"})
 	if len(keys) != 1 {
 		t.Errorf("single pid → single key; got %d", len(keys))
+	}
+}
+
+// fakeNvmlDevice 는 cuda 패키지가 nvml.Device 인터페이스를 통해 다루는 device 를 단위 테스트용으로
+// 모사한다. Info / RunningProcesses 만 collectPidToUUID 가 호출하므로 나머지 메서드는 zero return 으로 둔다.
+type fakeNvmlDevice struct {
+	uuid string
+	pids []uint32
+}
+
+func (f *fakeNvmlDevice) Info() (types.GPUDevice, error) {
+	return types.GPUDevice{UUID: f.uuid}, nil
+}
+func (f *fakeNvmlDevice) Snapshot() (types.GPUSnapshot, error) {
+	return types.GPUSnapshot{}, nil
+}
+func (f *fakeNvmlDevice) RunningProcesses() ([]types.GPUProcess, error) {
+	out := make([]types.GPUProcess, 0, len(f.pids))
+	for _, p := range f.pids {
+		out = append(out, types.GPUProcess{PID: p})
+	}
+	return out, nil
+}
+func (f *fakeNvmlDevice) Close() error { return nil }
+
+func TestReaderCollectPidToUUID_LastWinsAndCountsMultiGPU(t *testing.T) {
+	devA := &fakeNvmlDevice{uuid: "GPU-A", pids: []uint32{1, 2}}
+	devB := &fakeNvmlDevice{uuid: "GPU-B", pids: []uint32{2, 3}}
+	r := New("/unused", "", "node-A", nil, nil, 0)
+
+	fresh, multi := r.collectPidToUUID([]nvml.Device{devA, devB})
+
+	if got := fresh[1]; got != "GPU-A" {
+		t.Errorf("pid=1 uuid=%q want GPU-A", got)
+	}
+	if got := fresh[2]; got != "GPU-B" {
+		t.Errorf("pid=2 uuid=%q want GPU-B (last-wins)", got)
+	}
+	if got := fresh[3]; got != "GPU-B" {
+		t.Errorf("pid=3 uuid=%q want GPU-B", got)
+	}
+	if multi != 1 {
+		t.Errorf("multiGPUCount=%d want 1 (only pid 2 is on >1 GPU)", multi)
+	}
+}
+
+func TestReaderCollectPidToUUID_AllSingleGPUYieldsZeroCount(t *testing.T) {
+	// DDP 류 GPU 당 1 프로세스 패턴: 어떤 PID 도 둘 이상 GPU 에 등장하지 않는다.
+	devA := &fakeNvmlDevice{uuid: "GPU-A", pids: []uint32{1, 2}}
+	devB := &fakeNvmlDevice{uuid: "GPU-B", pids: []uint32{3, 4}}
+	r := New("/unused", "", "node-A", nil, nil, 0)
+
+	_, multi := r.collectPidToUUID([]nvml.Device{devA, devB})
+
+	if multi != 0 {
+		t.Errorf("multiGPUCount=%d want 0", multi)
 	}
 }
 
