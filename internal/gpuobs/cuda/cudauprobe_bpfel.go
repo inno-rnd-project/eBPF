@@ -57,10 +57,20 @@ type CudaUprobeProgramSpecs struct {
 	HandleCuLaunchCooperativeKernel *ebpf.ProgramSpec `ebpf:"handle_cu_launch_cooperative_kernel"`
 	HandleCuLaunchKernel            *ebpf.ProgramSpec `ebpf:"handle_cu_launch_kernel"`
 	HandleCuLaunchKernelEx          *ebpf.ProgramSpec `ebpf:"handle_cu_launch_kernel_ex"`
+	HandleCuMemcpy                  *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy"`
+	HandleCuMemcpy2d                *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_2d"`
+	HandleCuMemcpy2dAsync           *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_2d_async"`
+	HandleCuMemcpy3d                *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_3d"`
+	HandleCuMemcpy3dAsync           *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_3d_async"`
+	HandleCuMemcpyDtod              *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_dtod"`
+	HandleCuMemcpyDtodAsync         *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_dtod_async"`
 	HandleCuMemcpyDtoh              *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_dtoh"`
 	HandleCuMemcpyDtohAsync         *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_dtoh_async"`
 	HandleCuMemcpyHtod              *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_htod"`
 	HandleCuMemcpyHtodAsync         *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_htod_async"`
+	HandleCudaLaunchKernel          *ebpf.ProgramSpec `ebpf:"handle_cuda_launch_kernel"`
+	HandleCudaMemcpy                *ebpf.ProgramSpec `ebpf:"handle_cuda_memcpy"`
+	HandleCudaMemcpyAsync           *ebpf.ProgramSpec `ebpf:"handle_cuda_memcpy_async"`
 }
 
 // CudaUprobeMapSpecs contains maps before they are loaded into the kernel.
@@ -121,10 +131,20 @@ type CudaUprobePrograms struct {
 	HandleCuLaunchCooperativeKernel *ebpf.Program `ebpf:"handle_cu_launch_cooperative_kernel"`
 	HandleCuLaunchKernel            *ebpf.Program `ebpf:"handle_cu_launch_kernel"`
 	HandleCuLaunchKernelEx          *ebpf.Program `ebpf:"handle_cu_launch_kernel_ex"`
+	HandleCuMemcpy                  *ebpf.Program `ebpf:"handle_cu_memcpy"`
+	HandleCuMemcpy2d                *ebpf.Program `ebpf:"handle_cu_memcpy_2d"`
+	HandleCuMemcpy2dAsync           *ebpf.Program `ebpf:"handle_cu_memcpy_2d_async"`
+	HandleCuMemcpy3d                *ebpf.Program `ebpf:"handle_cu_memcpy_3d"`
+	HandleCuMemcpy3dAsync           *ebpf.Program `ebpf:"handle_cu_memcpy_3d_async"`
+	HandleCuMemcpyDtod              *ebpf.Program `ebpf:"handle_cu_memcpy_dtod"`
+	HandleCuMemcpyDtodAsync         *ebpf.Program `ebpf:"handle_cu_memcpy_dtod_async"`
 	HandleCuMemcpyDtoh              *ebpf.Program `ebpf:"handle_cu_memcpy_dtoh"`
 	HandleCuMemcpyDtohAsync         *ebpf.Program `ebpf:"handle_cu_memcpy_dtoh_async"`
 	HandleCuMemcpyHtod              *ebpf.Program `ebpf:"handle_cu_memcpy_htod"`
 	HandleCuMemcpyHtodAsync         *ebpf.Program `ebpf:"handle_cu_memcpy_htod_async"`
+	HandleCudaLaunchKernel          *ebpf.Program `ebpf:"handle_cuda_launch_kernel"`
+	HandleCudaMemcpy                *ebpf.Program `ebpf:"handle_cuda_memcpy"`
+	HandleCudaMemcpyAsync           *ebpf.Program `ebpf:"handle_cuda_memcpy_async"`
 }
 
 func (p *CudaUprobePrograms) Close() error {
@@ -132,10 +152,20 @@ func (p *CudaUprobePrograms) Close() error {
 		p.HandleCuLaunchCooperativeKernel,
 		p.HandleCuLaunchKernel,
 		p.HandleCuLaunchKernelEx,
+		p.HandleCuMemcpy,
+		p.HandleCuMemcpy2d,
+		p.HandleCuMemcpy2dAsync,
+		p.HandleCuMemcpy3d,
+		p.HandleCuMemcpy3dAsync,
+		p.HandleCuMemcpyDtod,
+		p.HandleCuMemcpyDtodAsync,
 		p.HandleCuMemcpyDtoh,
 		p.HandleCuMemcpyDtohAsync,
 		p.HandleCuMemcpyHtod,
 		p.HandleCuMemcpyHtodAsync,
+		p.HandleCudaLaunchKernel,
+		p.HandleCudaMemcpy,
+		p.HandleCudaMemcpyAsync,
 	)
 }
 

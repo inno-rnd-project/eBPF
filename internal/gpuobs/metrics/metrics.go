@@ -123,7 +123,10 @@ var podLabels = []string{"node", "src_namespace", "src_pod", "src_pod_uid", "gpu
 // 필요하면 podMemoryUsed 시리즈와 결합해 보강할 수 있다.
 var cudaPodLabels = []string{"node", "src_namespace", "src_pod", "src_pod_uid", "gpu_uuid"}
 
-// cudaSymbolLabels 는 libcuda 심볼 상태 gauge 의 라벨 세트다. 노드 × 추적 심볼 7종 = 노드당 7 시리즈.
+// cudaSymbolLabels 는 libcuda / libcudart 심볼 상태 gauge 의 라벨 세트다.
+// 노드 × 추적 심볼 (libcuda 14 + libcudart 3 = 17종) = 노드당 최대 17 시리즈.
+// libcudart 3종은 GPUOBS_CUDA_LIBCUDART_PATH 가 비어 있으면 attach 시도 자체를 건너뛰지만
+// availability=0 시리즈는 동일하게 발행되어 운영자가 cudart 비활성 상태를 메트릭으로 식별할 수 있게 한다.
 var cudaSymbolLabels = []string{"node", "symbol"}
 
 // podMetricsEnabled는 per-pod gauge(`gpuobs_pod_*`) 기록 여부를 결정한다.
@@ -451,10 +454,26 @@ var (
 		cudaPodLabels,
 	)
 
+	cudaDtoDBytesTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gpuobs_cuda_dtod_bytes_total",
+			Help: "Cumulative bytes copied device→device, aggregated across libcuda.so cuMemcpyDtoD_v2/cuMemcpyDtoDAsync_v2, cuMemcpy2D_v2/2DAsync_v2/3D_v2/3DAsync_v2 with device→device srcMemoryType/dstMemoryType, and libcudart cudaMemcpy/cudaMemcpyAsync with cudaMemcpyKind=DeviceToDevice",
+		},
+		cudaPodLabels,
+	)
+
+	cudaUnknownDirBytesTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gpuobs_cuda_unknown_dir_bytes_total",
+			Help: "Cumulative bytes copied via memcpy paths whose direction the BPF layer cannot determine. Includes libcuda.so cuMemcpy (UVA, both ptrs are CUdeviceptr) and cuMemcpy2D/3D variants with ARRAY/UNIFIED/HOST→HOST memory-type combinations, plus libcudart cudaMemcpy/cudaMemcpyAsync invoked with cudaMemcpyKind=HostToHost or cudaMemcpyDefault. Sustained nonzero rate is a signal to investigate the workload with cuPointerGetAttribute outside this agent",
+		},
+		cudaPodLabels,
+	)
+
 	cudaSymbolAvailable = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "gpuobs_cuda_symbol_available",
-			Help: "Whether each tracked libcuda.so symbol was successfully resolved and uprobe-attached at agent startup (1=attached, 0=missing/failed); diagnoses driver/libcuda ABI drift",
+			Help: "Whether each tracked libcuda.so / libcudart.so symbol was successfully resolved and uprobe-attached at agent startup (1=attached, 0=missing/failed/cudart-disabled); diagnoses driver/libcuda or libcudart ABI drift and cudart attach skipped via empty GPUOBS_CUDA_LIBCUDART_PATH",
 		},
 		cudaSymbolLabels,
 	)
@@ -507,6 +526,8 @@ func Register(reg prometheus.Registerer) {
 		cudaKernelLaunchesTotal,
 		cudaH2DBytesTotal,
 		cudaD2HBytesTotal,
+		cudaDtoDBytesTotal,
+		cudaUnknownDirBytesTotal,
 		cudaSymbolAvailable,
 		cudaEventsLostTotal,
 	)
@@ -856,8 +877,9 @@ type CudaEventSample struct {
 }
 
 // RecordCudaEvent 는 단일 cuda 이벤트를 적절한 카운터에 누적한다.
-//   - kernel launch  → kernel_launches_total +1
-//   - h2d / d2h      → 각 *_bytes_total += event.Bytes
+//   - kernel launch         → kernel_launches_total +1
+//   - h2d / d2h / dtod      → 각 *_bytes_total += event.Bytes
+//   - unknown_dir           → unknown_dir_bytes_total += event.Bytes
 //
 // IsPod() 가 false 인 식별자는 비-Pod 호스트 프로세스로 간주해 발행을 건너뛴다 (RecordPodSnapshot 과 동일 정책).
 // GPUUUID 가 비어 있으면 "unknown" 으로 폴백해 빈 라벨 카디널리티를 막는다.
@@ -883,6 +905,10 @@ func RecordCudaEvent(node string, s CudaEventSample) {
 		cudaH2DBytesTotal.WithLabelValues(labels[:]...).Add(float64(s.Bytes))
 	case types.CudaEventD2H:
 		cudaD2HBytesTotal.WithLabelValues(labels[:]...).Add(float64(s.Bytes))
+	case types.CudaEventDtoD:
+		cudaDtoDBytesTotal.WithLabelValues(labels[:]...).Add(float64(s.Bytes))
+	case types.CudaEventUnknownDir:
+		cudaUnknownDirBytesTotal.WithLabelValues(labels[:]...).Add(float64(s.Bytes))
 	default:
 		// 정의되지 않은 kind 는 BPF / userspace enum 이 어긋난 신호라 발행을 건너뛴다.
 		return
@@ -920,8 +946,8 @@ func CudaActiveKey(node, namespace, podName, podUID, gpuUUID string) CudaLabelKe
 
 // RetainCudaSeries 는 collector 가 이번 NVML 풀링에서 활성으로 식별한 (Pod, GPU) 라벨 키 셋
 // (activeKeys) 만 남기고, seenCudaKeys 에는 있지만 activeKeys 에는 없는 시리즈 — 즉 종료된 Pod /
-// 종료된 프로세스 — 의 카운터 3종(kernel/h2d/d2h) 시리즈를 surgical Delete 한다. Reset() 을 쓰지
-// 않아 scrape 도중 빈 시리즈가 잠깐 노출되는 race 를 회피한다.
+// 종료된 프로세스 — 의 카운터 5종(kernel / h2d / d2h / dtod / unknown_dir) 시리즈를 surgical Delete
+// 한다. Reset() 을 쓰지 않아 scrape 도중 빈 시리즈가 잠깐 노출되는 race 를 회피한다.
 //
 // 단점: NVML 풀링 주기보다 짧은 수명의 GPU 프로세스는 한 번도 activeKeys 에 들어가지 못해 시리즈가
 // 기록 직후 다음 cleanup 에서 제거될 수 있다. 컨슈머 카드 vectorAdd 류 단발 워크로드에 한해 발생하며,
@@ -937,6 +963,8 @@ func RetainCudaSeries(activeKeys map[CudaLabelKey]struct{}) {
 		cudaKernelLaunchesTotal.DeleteLabelValues(labels...)
 		cudaH2DBytesTotal.DeleteLabelValues(labels...)
 		cudaD2HBytesTotal.DeleteLabelValues(labels...)
+		cudaDtoDBytesTotal.DeleteLabelValues(labels...)
+		cudaUnknownDirBytesTotal.DeleteLabelValues(labels...)
 		delete(seenCudaKeys, key)
 	}
 }
