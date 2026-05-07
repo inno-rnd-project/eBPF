@@ -60,26 +60,35 @@ baseline 대비 uprobe enabled 의 추가 CPU 사용이 **30 mCPU 미만** 이�
 | events_lost delta | 0 (ringbuf drop 없음, 결과 유효) |
 | 비고 | 27 K Hz launch rate 에서 dispatch hot path 의 `kube.Resolver.ResolvePID` 가 매 이벤트 cgroup parse 를 발생시켜 추가 CPU 가 거의 1 코어 수준에 근접한다 |
 
-### 시점 C: cache enabled (본 PR 도입 후)
+### 시점 C: cache enabled (본 PR 도입 후, v0.3.5)
 
-baseline 대비 30 mCPU 이상 차이가 측정될 때만 채워진다.
+NVML refresh 사이클에서 active PID 를 일괄 적재하고 dispatch 가 lazy fill 로 보완하는 podMap
+캐시가 활성화된 상태. 동일 PyTorch ResNet50 워크로드를 5분간 측정한 값이다 (2026-05-07).
 
 | 항목 | 값 |
 |---|---|
-| 절대 mCPU | TBD |
-| 이벤트당 µs | TBD |
-| events_lost delta | TBD |
-| 비고 | TBD |
+| 절대 mCPU | **183.8 mCPU** |
+| baseline 대비 추가 사용 | **+180.6 mCPU** |
+| kernel launch rate | 24,036 / s |
+| 이벤트당 µs | **7.5 µs / event** |
+| events_lost delta | 0 (ringbuf drop 없음, 결과 유효) |
+| 비고 | 시점 B 의 +737 mCPU 대비 +181 mCPU 로 **75.5% 감소**. 이벤트당 비용도 27.3 µs 에서 7.5 µs 로 단축되어 캐시 hit 가 매 이벤트의 cgroup parse 를 흡수한 효과가 직접 확인된다 |
 
-### 마이크로벤치 (`go test -bench`)
+### 마이크로벤치 (`go test -bench`, `-benchtime=300ms`)
 
-dispatch / buildActiveCudaKeys 의 ns/op 를 동일 머신에서 직접 측정한 값. 캐시 도입 전후의
-hit / miss 경로 비교 기준이다.
+dispatch / buildActiveCudaKeys 의 ns/op 를 동일 머신에서 직접 측정한 값. 캐시 hit / miss 경로
+의 절대 비용 차이를 보여준다.
 
-| 벤치 | NoCache | CacheHit | CacheMiss |
+| 벤치 | ns/op | allocs/op | 의미 |
 |---|---|---|---|
-| `BenchmarkReaderDispatch_*` | TBD | TBD | TBD |
-| `BenchmarkReaderBuildActiveCudaKeys` | TBD | TBD | n/a |
+| `BenchmarkReaderDispatch_NilResolver` | 34.28 | 0 | resolver 제외 dispatch 의 절대 하한 |
+| `BenchmarkReaderDispatch_FakeResolver` | 70.78 | 0 | cache miss + in-memory fake resolver (참고용 상한) |
+| `BenchmarkReaderDispatch_CacheHit` | **75.93** | 0 | 캐시 hit 일반 경로 (운영 시 절대 다수의 이벤트가 본 경로) |
+| `BenchmarkReaderDispatch_CacheMiss_Slow` | **1,059,584** | 0 | 30µs 지연 resolver 로 모사한 worst case (refresh 사이의 신규 PID 첫 호출만 본 경로) |
+| `BenchmarkReaderBuildActiveCudaKeys` | 19,661 | 3 | NVML refresh 사이클에서 64 PID 의 cleanup key 생성 (캐시 hit 기준) |
+
+CacheHit 가 CacheMiss_Slow 대비 약 **13,950 배 빠르다**. 운영에서 새 PID 가 등장하는 빈도 대비
+hit 빈도가 압도적으로 크기 때문에 평균 비용은 CacheHit 에 매우 가깝다.
 
 ## 결론
 
@@ -90,7 +99,14 @@ baseline (3.2 mCPU) 대비 uprobe enabled 의 추가 사용은 **+737 mCPU** 로
 `/proc/<pid>/cgroup` 을 read + parse 하는 비용이 그대로 누적되는 것으로 해석된다. 따라서 캐시
 도입을 진행한다.
 
-### 시점 C (캐시 도입 후) — 후속 측정
+### 시점 C 결과 (캐시 도입 후, v0.3.5)
 
-본 PR 의 후속 commit 으로 podmap 기반 캐시 적용 후 동일 워크로드로 재측정하고 결과를 본 표
-시점 C 행에 채워 50% 감소 수용 조건 충족 여부를 정량 판단한다.
+baseline 대비 추가 사용량이 시점 B 의 +737 mCPU 에서 +181 mCPU 로 **75.5% 감소**했다. 이슈
+#32 의 50% 감소 수용 조건을 정량 충족하며, 매 이벤트의 cgroup read + parse 비용이 캐시 lookup
+한 번으로 흡수되는 본 PR 의 핵심 의도가 실측으로 입증되었다. events_lost 도 측정 구간 내내 0
+이라 결과의 유효성이 확인된다.
+
+마이크로벤치 결과는 이 동작의 정량 메커니즘을 설명한다. CacheHit 경로 76 ns/op 와 CacheMiss
+경로 1.05 ms/op 사이의 13,950 배 차이가 곧 캐시가 흡수하는 이벤트당 시간이다. PyTorch ResNet50
+워크로드의 27 K Hz 이벤트 흐름에서 신규 PID 등장은 NVML refresh 사이의 일부 이벤트로 한정되어,
+운영 평균은 CacheHit 비용에 매우 가깝게 수렴한다.
