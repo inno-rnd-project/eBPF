@@ -241,6 +241,10 @@ On NVML initialization failure (non-GPU node, driver missing) or when `GPU_METRI
 
 > **GPU device hot-plug**: Both the device-level collector and the CUDA uprobe reader rebuild their device handle set every NVML poll via `nvml.DeviceSet.Sync`, which keys on GPU UUID rather than NVML index. Newly added GPUs are picked up on the next sync and removed GPUs have their handles closed automatically; index reordering after a hot-remove is absorbed without re-attaching probes for surviving devices. GPU device reset / driver reload that re-introduces the same UUID is out of scope and is tracked separately.
 
+## Performance & overhead measurement
+
+The CUDA uprobe dispatch hot path includes a PID-to-PodIdentity cache (introduced in v0.3.5) that absorbs the per-event `/proc/<pid>/cgroup` parse cost; without the cache, a single PyTorch ResNet50 inference loop drove the agent container to ~740 mCPU on a 27 K Hz kernel launch rate, which dropped to ~184 mCPU after the cache landed (75% reduction). The measurement methodology, PromQL queries, decision gate, and full results across baseline / uprobe-enabled / cache-enabled snapshots are in [`docs/perf/cuda-uprobe-overhead.md`](docs/perf/cuda-uprobe-overhead.md). Reproducible workload manifests (PyTorch ResNet50, Conv2d-only, cuda-sample vectorAdd) live under [`test/perf/`](test/perf/) for any follow-up overhead measurement on a different cluster or workload mix.
+
 ## Observability — netobs/gpuobs Correlation
 
 netobs와 gpuobs는 동일한 4개 라벨 키 (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) 를 노출해 PromQL `* on(node, src_namespace, src_pod, src_pod_uid) group_left(...)` 패턴으로 join 가능하다. 이 절은 양쪽 메트릭 라벨 일치성 표, recording rule 카탈로그, dashboard 작성 시 즉시 활용 가능한 PromQL 예제 9종을 정의한다.
