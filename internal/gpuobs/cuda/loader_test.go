@@ -179,6 +179,39 @@ func TestReaderBuildActiveCudaKeys_DuplicatePidDeduped(t *testing.T) {
 	}
 }
 
+func TestReaderResolvePidToPod_NilResolverReturnsEmpty(t *testing.T) {
+	r := New("/unused", "", "node-A", nil, nil, 0)
+	got := r.resolvePidToPod(map[uint32]string{1: "G"})
+	if len(got) != 0 {
+		t.Errorf("nil resolver must yield empty map; got %d entries", len(got))
+	}
+}
+
+func TestReaderResolvePidToPod_CallsResolverForEachPid(t *testing.T) {
+	resolver := &countingResolver{
+		PodResolver: fakeResolver{table: map[uint32]kube.PodIdentity{
+			1: samplePod("ml", "p1", "u1"),
+			2: samplePod("ml", "p2", "u2"),
+		}},
+	}
+	r := New("/unused", "", "node-A", nil, resolver, 0)
+
+	got := r.resolvePidToPod(map[uint32]string{1: "G", 2: "G", 3: "G"})
+
+	if resolver.count != 3 {
+		t.Errorf("ResolvePID count=%d want 3", resolver.count)
+	}
+	if len(got) != 3 {
+		t.Errorf("result size=%d want 3", len(got))
+	}
+	if got[1].PodName != "p1" {
+		t.Errorf("got[1].PodName=%q want p1", got[1].PodName)
+	}
+	if got[3].IsPod() {
+		t.Errorf("got[3] expected zero (non-pod), got %+v", got[3])
+	}
+}
+
 // countingResolver 는 ResolvePID 호출 횟수를 추적해 캐시 히트율을 검증한다.
 type countingResolver struct {
 	PodResolver

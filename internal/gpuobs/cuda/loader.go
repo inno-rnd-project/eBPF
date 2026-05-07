@@ -342,6 +342,10 @@ func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap, d
 			log.Printf("cuda: device sync: %v", err)
 		}
 		fresh := r.collectPidToUUID(devSet.Snapshot())
+		// active PID 셋에 대해 ResolvePID 를 본 사이클에서 한 번씩만 호출해 podMap 을 통째 교체한다.
+		// dispatch hot path 는 다음 사이클까지의 모든 이벤트를 캐시 hit 로 처리하고, 종료된 PID 는
+		// 본 replace 로 자연스럽게 제거되어 별도 cleanup 호출이 필요하지 않다.
+		r.pods.replace(r.resolvePidToPod(fresh))
 		devmap.replace(fresh)
 		metrics.RetainCudaSeries(r.buildActiveCudaKeys(fresh))
 
@@ -421,6 +425,26 @@ func (r *Reader) buildActiveCudaKeys(pidToUUID map[uint32]string) map[metrics.Cu
 		active[metrics.CudaActiveKey(r.nodeName, id.NamespaceLabel(), metrics.PodNameOrUnknown(id), metrics.PodUIDOrUnknown(id), uuid)] = struct{}{}
 	}
 	return active
+}
+
+// resolvePidToPod 는 NVML refresh 사이클에서 active PID 셋을 받아 ResolvePID 를 PID 당 한
+// 번씩만 호출해 fresh PodIdentity 매핑을 만든다. 결과는 podMap.replace 로 통째 적재되어
+// dispatch hot path 가 다음 refresh 까지의 모든 이벤트를 캐시 hit 로 처리하게 한다.
+//
+// resolver 가 nil 인 경우 빈 매핑을 반환해 podMap 도 빈 상태로 통째 교체된다 (dispatch 가
+// resolver==nil 분기로 분기되므로 lookup 결과가 사용되지 않는다).
+//
+// negative result (비-Pod) 도 zero PodIdentity 그대로 적재해 dispatch 가 동일 PID 에 대해
+// ResolvePID 를 다시 호출하지 않게 한다 (lazy fill 경로의 negative caching 과 동일 의미).
+func (r *Reader) resolvePidToPod(pidToUUID map[uint32]string) map[uint32]kube.PodIdentity {
+	if r.resolver == nil {
+		return map[uint32]kube.PodIdentity{}
+	}
+	fresh := make(map[uint32]kube.PodIdentity, len(pidToUUID))
+	for pid := range pidToUUID {
+		fresh[pid] = r.resolver.ResolvePID(pid)
+	}
+	return fresh
 }
 
 func (r *Reader) collectPidToUUID(devices []nvml.Device) map[uint32]string {
