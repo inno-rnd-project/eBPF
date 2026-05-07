@@ -365,31 +365,44 @@ func (r *Reader) dispatch(raw rawEvent, devmap *deviceMap) {
 // PID-level devmap.lookup 으로 폴백한다. 본 함수가 dispatch hot path 의 GPU attribution 분리 결정
 // 지점이며, multi-GPU PID 의 per-event 정확도를 visDev hit 로 끌어올리고 single-GPU PID 의 회귀를
 // devmap fallback 으로 보존한다 (#33).
+//
+// hot path 비용 최소화를 위해 visDev 는 단일 lookup 만 거친다. UNKNOWN sentinel 은 분기 직전에
+// 거른다.
 func (r *Reader) resolveGPUUUID(raw rawEvent, devmap *deviceMap) string {
-	if raw.DeviceOrd != CudaDeviceOrdUnknown {
-		if uuid := r.visDev.resolve(raw.PID, int(raw.DeviceOrd)); uuid != "" {
-			return uuid
-		}
+	if raw.DeviceOrd == CudaDeviceOrdUnknown {
+		return devmap.lookup(raw.PID)
+	}
+	ords, ok := r.visDev.lookup(raw.PID)
+	if !ok {
 		// visDev miss: NVIDIA_VISIBLE_DEVICES 매핑이 적재되지 않은 신규 PID 의 경우 lazy fill 로
 		// /proc/<pid>/environ 을 한 번 읽어 캐시한 뒤 같은 ordinal 을 재시도한다. 두 번째 이벤트부터
-		// hit 경로로 들어간다.
-		if _, ok := r.visDev.lookup(raw.PID); !ok {
-			r.hostUUIDMu.RLock()
-			hostByIdx := r.hostUUIDByIndex
-			hostSet := r.hostUUIDSet
-			r.hostUUIDMu.RUnlock()
-			value, err := readNVIDIAVisibleDevices(raw.PID)
-			if err != nil {
-				r.visDev.store(raw.PID, nil)
-			} else {
-				r.visDev.store(raw.PID, parseVisibleDevices(value, hostByIdx, hostSet))
-				if uuid := r.visDev.resolve(raw.PID, int(raw.DeviceOrd)); uuid != "" {
-					return uuid
-				}
-			}
-		}
+		// hit 경로로 들어간다. 같은 PID 의 lazy fill 이 동시 다발해도 podMap.store 와 동일하게
+		// Lock 으로 직렬화되어 정합성 문제 없다.
+		ords = r.lazyFillVisDev(raw.PID)
+	}
+	idx := int(raw.DeviceOrd)
+	if idx >= 0 && idx < len(ords) && ords[idx] != "" {
+		return ords[idx]
 	}
 	return devmap.lookup(raw.PID)
+}
+
+// lazyFillVisDev 는 visDev 캐시 miss 시 /proc/<pid>/environ 을 읽어 해석 결과를 적재하고
+// 적재한 슬라이스를 그대로 반환한다. environ read 실패는 nil 슬라이스로 negative cache 에
+// 적재해 동일 PID 의 후속 이벤트가 lazy fill 을 다시 시도하지 않게 한다.
+func (r *Reader) lazyFillVisDev(pid uint32) []string {
+	r.hostUUIDMu.RLock()
+	hostByIdx := r.hostUUIDByIndex
+	hostSet := r.hostUUIDSet
+	r.hostUUIDMu.RUnlock()
+	value, err := readNVIDIAVisibleDevices(pid)
+	if err != nil {
+		r.visDev.store(pid, nil)
+		return nil
+	}
+	ords := parseVisibleDevices(value, hostByIdx, hostSet)
+	r.visDev.store(pid, ords)
+	return ords
 }
 
 // runDeviceMapRefresher 는 r.refreshEvery 주기로 NVML RunningProcesses 를 모든 device 에서

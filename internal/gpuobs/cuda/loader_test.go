@@ -112,6 +112,85 @@ func TestReaderDispatch_UnknownGPUUUIDPassedAsEmpty(t *testing.T) {
 	}
 }
 
+func TestReaderDispatch_DeviceOrdResolvesViaVisDev(t *testing.T) {
+	// BPF 가 capture 한 device_ord 가 visDev 캐시에 적재된 컨테이너 ordinal → 호스트 UUID 매핑으로
+	// 변환되어 GPU 라벨이 나오는지 검증한다. multi-GPU PID 의 per-event 정확 분리의 본질 경로다.
+	rec := &captureRecorder{}
+	resolver := fakeResolver{table: map[uint32]kube.PodIdentity{
+		1234: samplePod("ml", "p", "u"),
+	}}
+	r := newReaderForDispatch(resolver, rec)
+	devmap := newDeviceMap()
+	// devmap 은 last-wins 로 GPU-X 만 보유. visDev 가 ordinal 0 → GPU-A 로 분리해야 한다.
+	devmap.replace(map[uint32]string{1234: "GPU-X"})
+	r.visDev.replace(map[uint32][]string{1234: {"GPU-A", "GPU-B"}})
+
+	r.dispatch(rawEvent{PID: 1234, Kind: uint8(types.CudaEventKernelLaunch), DeviceOrd: 1}, devmap)
+
+	if len(rec.calls) != 1 {
+		t.Fatalf("calls=%d want 1", len(rec.calls))
+	}
+	if got := rec.calls[0].sample.GPUUUID; got != "GPU-B" {
+		t.Errorf("gpu=%q want GPU-B (ordinal=1)", got)
+	}
+}
+
+func TestReaderDispatch_DeviceOrdUnknownFallsBackToDevmap(t *testing.T) {
+	// BPF 의 cuda_tid_device 매핑이 없어 device_ord 가 UNKNOWN sentinel 로 발행되면 dispatch 가
+	// 기존 PID-level devmap.lookup 으로 폴백해 단일 GPU PID 의 회귀 없이 동작해야 한다.
+	rec := &captureRecorder{}
+	resolver := fakeResolver{table: map[uint32]kube.PodIdentity{1: samplePod("ml", "p", "u")}}
+	r := newReaderForDispatch(resolver, rec)
+	devmap := newDeviceMap()
+	devmap.replace(map[uint32]string{1: "GPU-A"})
+	// visDev 에는 매핑이 있지만 device_ord = UNKNOWN 이라 visDev 경로 자체가 skip 되어야 한다.
+	r.visDev.replace(map[uint32][]string{1: {"GPU-X"}})
+
+	r.dispatch(rawEvent{PID: 1, Kind: uint8(types.CudaEventKernelLaunch), DeviceOrd: CudaDeviceOrdUnknown}, devmap)
+
+	if got := rec.calls[0].sample.GPUUUID; got != "GPU-A" {
+		t.Errorf("gpu=%q want GPU-A (devmap fallback)", got)
+	}
+}
+
+func TestReaderDispatch_DeviceOrdOutOfRangeFallsBackToDevmap(t *testing.T) {
+	// visDev 에 매핑은 있지만 ordinal 이 슬라이스 길이를 벗어나면 visDev 가 빈 문자열을 반환하고
+	// dispatch 가 devmap fallback 으로 분기해야 한다 (#33).
+	rec := &captureRecorder{}
+	resolver := fakeResolver{table: map[uint32]kube.PodIdentity{1: samplePod("ml", "p", "u")}}
+	r := newReaderForDispatch(resolver, rec)
+	devmap := newDeviceMap()
+	devmap.replace(map[uint32]string{1: "GPU-FB"})
+	r.visDev.replace(map[uint32][]string{1: {"GPU-A"}})
+
+	r.dispatch(rawEvent{PID: 1, Kind: uint8(types.CudaEventKernelLaunch), DeviceOrd: 5}, devmap)
+
+	if got := rec.calls[0].sample.GPUUUID; got != "GPU-FB" {
+		t.Errorf("gpu=%q want GPU-FB (out-of-range ordinal falls back)", got)
+	}
+}
+
+func TestReaderBuildActiveCudaKeys_MultiGPUPidYieldsAllPairs(t *testing.T) {
+	// 한 PID 가 두 GPU 에 동시 등장하면 active 셋에 두 (PID, GPU) 키가 모두 들어가야 RetainCudaSeries 가
+	// dispatch 가 발행한 두 시리즈를 모두 보존한다 (#33).
+	id := samplePod("ml", "p", "u")
+	r := New("/unused", "", "node-A", nil, fakeResolver{table: map[uint32]kube.PodIdentity{1: id}}, 0)
+
+	keys := r.buildActiveCudaKeys(map[uint32][]string{1: {"GPU-A", "GPU-B"}})
+
+	if len(keys) != 2 {
+		t.Fatalf("len(keys)=%d want 2", len(keys))
+	}
+	wantA := metrics.CudaActiveKey("node-A", "ml", "p", "u", "GPU-A")
+	wantB := metrics.CudaActiveKey("node-A", "ml", "p", "u", "GPU-B")
+	if _, ok := keys[wantA]; !ok {
+		t.Errorf("missing GPU-A key in %v", keys)
+	}
+	if _, ok := keys[wantB]; !ok {
+		t.Errorf("missing GPU-B key in %v", keys)
+	}
+}
+
 func TestReaderDispatch_NilResolverPassesEmptyIdentity(t *testing.T) {
 	// resolver 가 nil 이면 ID 는 zero value (IsPod=false). metrics 측이 발행을 skip 한다 (metrics 측에서 검증됨).
 	rec := &captureRecorder{}
