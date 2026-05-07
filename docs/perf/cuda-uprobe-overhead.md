@@ -83,10 +83,10 @@ dispatch / buildActiveCudaKeys 의 ns/op 를 동일 머신에서 직접 측정�
 | 벤치 | ns/op | allocs/op | 의미 |
 |---|---|---|---|
 | `BenchmarkReaderDispatch_NilResolver` | 34.25 | 0 | resolver 제외 dispatch 의 절대 하한 |
-| `BenchmarkReaderDispatch_FakeResolver` | 70.37 | 0 | cache miss + in-memory fake resolver (참고용 상한) |
+| `BenchmarkReaderDispatch_FakeResolver` | 70.37 | 0 | 동일 PID 반복 호출이라 첫 iter 한 번 miss 후 나머지는 hit 로 동작. 사실상 캐시 hit 경로의 또 다른 측정점이며 CacheHit 와 거의 같은 값으로 수렴한다 |
 | `BenchmarkReaderDispatch_CacheHit` | **75.28** | 0 | 캐시 hit 일반 경로 (운영 시 절대 다수의 이벤트가 본 경로) |
 | `BenchmarkReaderDispatch_CacheMiss_Slow` | **618,403** | 0 | blocking-syscall 모델 worst case. resolver 가 30 µs sleep 을 호출하지만 Linux time.Sleep 의 OS 스케줄러 그라뉼러리티 영향으로 실측 ns/op 는 수백 µs 수준까지 늘어난다. 캐시 hit 와의 절대 차이가 의미 있는 비교 기준이며, 실제 cgroup parse 비용 (~30 µs) 자체는 본 벤치 환경에서 정확히 재현되지 않는다 |
-| `BenchmarkReaderBuildActiveCudaKeys` | 16,633 | 3 | NVML refresh 사이클에서 64 PID 의 cleanup key 생성 (캐시 hit 기준) |
+| `BenchmarkReaderBuildActiveCudaKeys` | 16,633 | 3 | NVML refresh 사이클에서 64 PID 의 cleanup key 생성. 첫 iter 만 miss 비용을 내고 그 이후 모두 hit 라 평균은 hit 경로 비용에 수렴한다 |
 
 CacheHit 가 CacheMiss_Slow 대비 약 **8,200 배 빠르다**. 다만 위 표의 CacheMiss_Slow 절대 ns/op
 는 time.Sleep 기반 모델의 한계 때문에 실측마다 변동이 있고 실제 cgroup parse 비용을 그대로
