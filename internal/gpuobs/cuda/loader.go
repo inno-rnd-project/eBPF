@@ -64,6 +64,11 @@ type Reader struct {
 	resolver      PodResolver
 	refreshEvery  time.Duration
 
+	// pods 는 PID 를 kube.PodIdentity 로 캐시하는 podMap 이다. dispatch hot path 가 매 이벤트
+	// /proc/<pid>/cgroup parse 를 호출하지 않도록 lookup 우선, miss 시 ResolvePID 후 store 한다.
+	// runDeviceMapRefresher 가 NVML refresh 사이클마다 active PID 셋 기반으로 통째 교체한다.
+	pods *podMap
+
 	// recordEvent 는 metrics.RecordCudaEvent 를 위한 test seam 이다.
 	// 운영 코드는 New 에서 metrics.RecordCudaEvent 를 기본값으로 받고, 단위 테스트에서는
 	// spy 함수로 교체해 dispatch 가 산출한 sample 을 검증한다.
@@ -85,6 +90,7 @@ func New(libcudaPath, libcudartPath, nodeName string, nv nvml.NVML, resolver Pod
 		nv:            nv,
 		resolver:      resolver,
 		refreshEvery:  refreshEvery,
+		pods:          newPodMap(),
 		recordEvent:   metrics.RecordCudaEvent,
 	}
 }
@@ -281,7 +287,15 @@ func decodeRawEvent(b []byte) (rawEvent, bool) {
 func (r *Reader) dispatch(raw rawEvent, devmap *deviceMap) {
 	var id kube.PodIdentity
 	if r.resolver != nil {
-		id = r.resolver.ResolvePID(raw.PID)
+		// hot path: 캐시 hit 가 일반적이며 RLock 한 번으로 끝난다. miss 인 경우에만 ResolvePID
+		// (cgroup read + parse) 를 거쳐 결과를 즉석 store 한다. negative result (비-Pod) 도 적재해
+		// 동일 PID 에 대한 ResolvePID 호출이 한 번을 넘지 않게 한다.
+		if cached, ok := r.pods.lookup(raw.PID); ok {
+			id = cached
+		} else {
+			id = r.resolver.ResolvePID(raw.PID)
+			r.pods.store(raw.PID, id)
+		}
 	}
 	r.recordEvent(r.nodeName, metrics.CudaEventSample{
 		ID:      id,
@@ -393,7 +407,14 @@ func (r *Reader) buildActiveCudaKeys(pidToUUID map[uint32]string) map[metrics.Cu
 	}
 	active := make(map[metrics.CudaLabelKey]struct{}, len(pidToUUID))
 	for pid, uuid := range pidToUUID {
-		id := r.resolver.ResolvePID(pid)
+		// dispatch hot path 와 동일한 캐시를 공유한다. NVML refresh 가 직전에 podMap.replace 를
+		// 통과시켜 두므로 여기서는 hit 가 일반이며, refresh 사이에 새로 등장한 PID 는 miss 분기로
+		// ResolvePID 를 1회 호출한 뒤 즉석 store 해 다음 dispatch 호출이 hit 로 들어가게 한다.
+		id, ok := r.pods.lookup(pid)
+		if !ok {
+			id = r.resolver.ResolvePID(pid)
+			r.pods.store(pid, id)
+		}
 		if !id.IsPod() {
 			continue
 		}

@@ -72,10 +72,33 @@ func BenchmarkReaderDispatch_FakeResolver(b *testing.B) {
 	}
 }
 
-// BenchmarkReaderDispatch_SlowResolver 는 실제 cgroup parse 비용을 모사한 30µs 지연 resolver 다.
-// 본 수치가 캐시 도입 전 dispatch 의 baseline ns/op 다. 캐시 적용 후 hit 경로 (FakeResolver 수준)
-// 와의 차이가 그대로 hot path 가 줄이는 시간이 된다.
-func BenchmarkReaderDispatch_SlowResolver(b *testing.B) {
+// BenchmarkReaderDispatch_CacheMiss_Slow 는 매 iteration 마다 다른 PID 를 사용해 캐시를 항상
+// miss 시킨다. 본 수치는 캐시가 무효화된 최악 경로 (예: PID wraparound, 또는 모든 이벤트가
+// 신규 PID 인 가상의 worst case) 의 ns/op 를 보여주며, 30µs 지연 resolver 가 lazy fill 비용을
+// 그대로 노출한다. 캐시 hit 경로 벤치와 비교했을 때 캐시 도입이 흡수하는 시간이 그대로 ns/op
+// 차이로 드러난다.
+func BenchmarkReaderDispatch_CacheMiss_Slow(b *testing.B) {
+	const tableSize = 1 << 20
+	table := make(map[uint32]kube.PodIdentity, tableSize)
+	for i := uint32(0); i < tableSize; i++ {
+		table[i] = samplePod("ml", "p", "u")
+	}
+	resolver := slowResolver{table: table, delay: 30 * time.Microsecond}
+	r := newReaderForBench(resolver)
+	devmap := newDeviceMap()
+	raw := rawEvent{Bytes: 4096, Kind: uint8(types.CudaEventH2D)}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		raw.PID = uint32(i) & (tableSize - 1)
+		r.dispatch(raw, devmap)
+	}
+}
+
+// BenchmarkReaderDispatch_CacheHit 는 podMap 에 PID 가 이미 적재된 상태의 hot path 를 측정한다.
+// SlowResolver baseline 과 비교했을 때 캐시 도입이 절감하는 시간이 ns/op 차이로 직접 드러난다.
+func BenchmarkReaderDispatch_CacheHit(b *testing.B) {
 	resolver := slowResolver{
 		table: map[uint32]kube.PodIdentity{1234: samplePod("ml", "p", "u")},
 		delay: 30 * time.Microsecond,
@@ -83,6 +106,8 @@ func BenchmarkReaderDispatch_SlowResolver(b *testing.B) {
 	r := newReaderForBench(resolver)
 	devmap := newDeviceMap()
 	devmap.replace(map[uint32]string{1234: "GPU-A"})
+	// 미리 캐시를 채워 모든 dispatch 가 hit 경로로 들어가게 만든다.
+	r.pods.store(1234, samplePod("ml", "p", "u"))
 	raw := rawEvent{PID: 1234, Bytes: 4096, Kind: uint8(types.CudaEventH2D)}
 
 	b.ReportAllocs()

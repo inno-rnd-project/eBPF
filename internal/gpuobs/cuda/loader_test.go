@@ -179,6 +179,61 @@ func TestReaderBuildActiveCudaKeys_DuplicatePidDeduped(t *testing.T) {
 	}
 }
 
+// countingResolver 는 ResolvePID 호출 횟수를 추적해 캐시 히트율을 검증한다.
+type countingResolver struct {
+	PodResolver
+	count int
+}
+
+func (c *countingResolver) ResolvePID(pid uint32) kube.PodIdentity {
+	c.count++
+	return c.PodResolver.ResolvePID(pid)
+}
+
+// TestReaderDispatch_CacheMissThenHit 는 dispatch 가 첫 이벤트에서 ResolvePID 를 호출해
+// 캐시에 적재하고, 같은 PID 의 후속 이벤트가 캐시 hit 경로로 들어가 ResolvePID 가 한 번만
+// 호출되는지 검증한다. 이 동작이 PID→Pod 캐시의 본질이다.
+func TestReaderDispatch_CacheMissThenHit(t *testing.T) {
+	rec := &captureRecorder{}
+	resolver := &countingResolver{
+		PodResolver: fakeResolver{table: map[uint32]kube.PodIdentity{
+			1234: samplePod("ml", "p", "u"),
+		}},
+	}
+	r := newReaderForDispatch(resolver, rec)
+	devmap := newDeviceMap()
+	devmap.replace(map[uint32]string{1234: "GPU-A"})
+
+	for i := 0; i < 5; i++ {
+		r.dispatch(rawEvent{PID: 1234, Kind: uint8(types.CudaEventKernelLaunch)}, devmap)
+	}
+
+	if got := resolver.count; got != 1 {
+		t.Errorf("ResolvePID called %d times across 5 dispatches; want 1 (cache hit)", got)
+	}
+	if len(rec.calls) != 5 {
+		t.Errorf("captured calls=%d want 5", len(rec.calls))
+	}
+}
+
+// TestReaderDispatch_NegativeResultCached 는 비-Pod PID 에 대한 zero PodIdentity 도 캐시되어
+// 후속 이벤트에서 ResolvePID 가 다시 호출되지 않는지 검증한다. 호스트 프로세스가 이벤트를
+// 발생시키는 환경에서 동일 PID 의 cgroup parse 가 반복되지 않게 하는 핵심 동작이다.
+func TestReaderDispatch_NegativeResultCached(t *testing.T) {
+	rec := &captureRecorder{}
+	resolver := &countingResolver{PodResolver: fakeResolver{table: map[uint32]kube.PodIdentity{}}}
+	r := newReaderForDispatch(resolver, rec)
+	devmap := newDeviceMap()
+
+	for i := 0; i < 3; i++ {
+		r.dispatch(rawEvent{PID: 9999, Kind: uint8(types.CudaEventKernelLaunch)}, devmap)
+	}
+
+	if got := resolver.count; got != 1 {
+		t.Errorf("ResolvePID for non-pod PID called %d times; want 1 (negative cache)", got)
+	}
+}
+
 func TestReaderDispatch_KindPassThrough(t *testing.T) {
 	// rawEvent.Kind(uint8) 가 types.CudaEventKind 로 그대로 전달되어야 한다.
 	rec := &captureRecorder{}
