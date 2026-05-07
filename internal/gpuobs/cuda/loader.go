@@ -411,9 +411,12 @@ func (r *Reader) buildActiveCudaKeys(pidToUUID map[uint32]string) map[metrics.Cu
 	}
 	active := make(map[metrics.CudaLabelKey]struct{}, len(pidToUUID))
 	for pid, uuid := range pidToUUID {
-		// dispatch hot path 와 동일한 캐시를 공유한다. NVML refresh 가 직전에 podMap.replace 를
-		// 통과시켜 두므로 여기서는 hit 가 일반이며, refresh 사이에 새로 등장한 PID 는 miss 분기로
-		// ResolvePID 를 1회 호출한 뒤 즉석 store 해 다음 dispatch 호출이 hit 로 들어가게 한다.
+		// dispatch hot path 와 동일한 캐시를 공유한다. production refresh cycle 에서 호출된
+		// 경우에는 직전에 r.pods.replace(r.resolvePidToPod(fresh)) 가 동일 fresh 셋으로 캐시를
+		// 일괄 적재하므로 모든 lookup 이 hit 로 끝나며 fallback 분기는 도달하지 않는다.
+		// fallback 은 unit test 등 캐시 사전 적재 없이 본 함수를 직접 호출하는 경로의 함수
+		// 계약 (self-contained) 을 유지하기 위한 robustness 가드다 — 이 분기를 제거하려면
+		// 모든 호출자가 사전 replace 를 책임지도록 결합도가 올라간다.
 		id, ok := r.pods.lookup(pid)
 		if !ok {
 			id = r.resolver.ResolvePID(pid)

@@ -11,7 +11,7 @@
 | 항목 | 값 |
 |---|---|
 | 노드 | dev 클러스터 `gpu` 노드 (RTX 3090, Ubuntu 24.04, kernel 6.8.0-60-generic) |
-| GPU 드라이버 | NVML 버전은 측정 시점에 `nvidia-smi --query-gpu=driver_version` 으로 캡처 |
+| GPU 드라이버 | NVIDIA driver 560.35.03, NVML 560.35 (`nvidia-smi --version` 으로 캡처) |
 | 에이전트 버전 | 측정 시점의 `gpuobs-agent` VERSION 을 본문에 함께 명시 |
 | 워크로드 | [pytorch-resnet50-bench](../../test/perf/pytorch-resnet50-bench.yaml) |
 | 워크로드 지속 시간 | warmup 30초 후 steady state 5분 측정 |
