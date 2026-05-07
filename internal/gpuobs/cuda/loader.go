@@ -84,6 +84,17 @@ type Reader struct {
 	// runDeviceMapRefresher 가 NVML refresh 사이클마다 active PID 셋 기반으로 통째 교체한다.
 	pods *podMap
 
+	// visDev 는 PID 별 NVIDIA_VISIBLE_DEVICES 해석 결과 (컨테이너 ordinal → 호스트 UUID) 를 캐시한다.
+	// dispatch 가 BPF 의 device_ord 를 호스트 NVML UUID 로 변환할 때 lookup 한다 (#33).
+	visDev *visDevMap
+
+	// hostUUIDByIndex / hostUUIDSet 은 NVML 이 반환하는 호스트 GPU UUID 를 NVML index 와 함께 보관한
+	// 매핑이며, NVIDIA_VISIBLE_DEVICES 의 "all" / index list / UUID list 해석에 사용된다. NVML
+	// refresh 사이클에서 갱신된다.
+	hostUUIDByIndex map[int]string
+	hostUUIDSet     map[string]struct{}
+	hostUUIDMu      sync.RWMutex
+
 	// recordEvent 는 metrics.RecordCudaEvent 를 위한 test seam 이다.
 	// 운영 코드는 New 에서 metrics.RecordCudaEvent 를 기본값으로 받고, 단위 테스트에서는
 	// spy 함수로 교체해 dispatch 가 산출한 sample 을 검증한다.
@@ -99,14 +110,17 @@ type Reader struct {
 //   - refreshEvery:  device map refresh 주기. 0 이하 값은 호출자가 사전 검증해야 한다.
 func New(libcudaPath, libcudartPath, nodeName string, nv nvml.NVML, resolver PodResolver, refreshEvery time.Duration) *Reader {
 	return &Reader{
-		libcudaPath:   libcudaPath,
-		libcudartPath: libcudartPath,
-		nodeName:      nodeName,
-		nv:            nv,
-		resolver:      resolver,
-		refreshEvery:  refreshEvery,
-		pods:          newPodMap(),
-		recordEvent:   metrics.RecordCudaEvent,
+		libcudaPath:     libcudaPath,
+		libcudartPath:   libcudartPath,
+		nodeName:        nodeName,
+		nv:              nv,
+		resolver:        resolver,
+		refreshEvery:    refreshEvery,
+		pods:            newPodMap(),
+		visDev:          newVisDevMap(),
+		hostUUIDByIndex: map[int]string{},
+		hostUUIDSet:     map[string]struct{}{},
+		recordEvent:     metrics.RecordCudaEvent,
 	}
 }
 
@@ -313,11 +327,12 @@ func decodeRawEvent(b []byte) (rawEvent, bool) {
 		return rawEvent{}, false
 	}
 	return rawEvent{
-		TsNs:  binary.NativeEndian.Uint64(b[0:8]),
-		Bytes: binary.NativeEndian.Uint64(b[8:16]),
-		PID:   binary.NativeEndian.Uint32(b[16:20]),
-		TID:   binary.NativeEndian.Uint32(b[20:24]),
-		Kind:  b[24],
+		TsNs:      binary.NativeEndian.Uint64(b[0:8]),
+		Bytes:     binary.NativeEndian.Uint64(b[8:16]),
+		PID:       binary.NativeEndian.Uint32(b[16:20]),
+		TID:       binary.NativeEndian.Uint32(b[20:24]),
+		Kind:      b[24],
+		DeviceOrd: binary.NativeEndian.Uint32(b[28:32]),
 	}, true
 }
 
@@ -339,10 +354,42 @@ func (r *Reader) dispatch(raw rawEvent, devmap *deviceMap) {
 	}
 	r.recordEvent(r.nodeName, metrics.CudaEventSample{
 		ID:      id,
-		GPUUUID: devmap.lookup(raw.PID),
+		GPUUUID: r.resolveGPUUUID(raw, devmap),
 		Kind:    types.CudaEventKind(raw.Kind),
 		Bytes:   raw.Bytes,
 	})
+}
+
+// resolveGPUUUID 는 BPF 가 capture 한 device_ord 와 visDev 캐시를 우선 사용해 GPU UUID 를 분리하고,
+// ordinal 매핑이 없을 때 (BPF map miss / NVIDIA_VISIBLE_DEVICES 비어 있음 / unknown index) 기존
+// PID-level devmap.lookup 으로 폴백한다. 본 함수가 dispatch hot path 의 GPU attribution 분리 결정
+// 지점이며, multi-GPU PID 의 per-event 정확도를 visDev hit 로 끌어올리고 single-GPU PID 의 회귀를
+// devmap fallback 으로 보존한다 (#33).
+func (r *Reader) resolveGPUUUID(raw rawEvent, devmap *deviceMap) string {
+	if raw.DeviceOrd != CudaDeviceOrdUnknown {
+		if uuid := r.visDev.resolve(raw.PID, int(raw.DeviceOrd)); uuid != "" {
+			return uuid
+		}
+		// visDev miss: NVIDIA_VISIBLE_DEVICES 매핑이 적재되지 않은 신규 PID 의 경우 lazy fill 로
+		// /proc/<pid>/environ 을 한 번 읽어 캐시한 뒤 같은 ordinal 을 재시도한다. 두 번째 이벤트부터
+		// hit 경로로 들어간다.
+		if _, ok := r.visDev.lookup(raw.PID); !ok {
+			r.hostUUIDMu.RLock()
+			hostByIdx := r.hostUUIDByIndex
+			hostSet := r.hostUUIDSet
+			r.hostUUIDMu.RUnlock()
+			value, err := readNVIDIAVisibleDevices(raw.PID)
+			if err != nil {
+				r.visDev.store(raw.PID, nil)
+			} else {
+				r.visDev.store(raw.PID, parseVisibleDevices(value, hostByIdx, hostSet))
+				if uuid := r.visDev.resolve(raw.PID, int(raw.DeviceOrd)); uuid != "" {
+					return uuid
+				}
+			}
+		}
+	}
+	return devmap.lookup(raw.PID)
 }
 
 // runDeviceMapRefresher 는 r.refreshEvery 주기로 NVML RunningProcesses 를 모든 device 에서
@@ -387,6 +434,9 @@ func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap, d
 		// dispatch hot path 는 다음 사이클까지의 모든 이벤트를 캐시 hit 로 처리하고, 종료된 PID 는
 		// 본 replace 로 자연스럽게 제거되어 별도 cleanup 호출이 필요하지 않다.
 		r.pods.replace(r.resolvePidToPod(fresh))
+		// active PID 의 NVIDIA_VISIBLE_DEVICES 를 일괄 해석해 visDev 캐시도 통째 교체한다.
+		// dispatch 의 ordinal-to-UUID 변환이 hit 경로로 들어가게 한다 (#33).
+		r.visDev.replace(r.resolveVisibleDevices(fresh))
 		devmap.replace(fresh)
 		metrics.RetainCudaSeries(r.buildActiveCudaKeys(fresh))
 
@@ -494,17 +544,24 @@ func (r *Reader) resolvePidToPod(pidToUUID map[uint32]string) map[uint32]kube.Po
 // collectPidToUUID 는 NVML 의 모든 device 에서 RunningProcesses 를 수집해 PID 를 GPU UUID 로
 // 매핑한다. 같은 PID 가 여러 GPU 에 동시 등장하면 마지막으로 본 GPU 가 매핑에 남으며 (last-wins),
 // 그런 PID 개수 (multiGPUCount) 를 같이 반환해 호출자가 운영 메트릭으로 노출할 수 있게 한다.
-// last-wins 동작은 단일 프로세스 multi-GPU 워크로드 (nn.DataParallel, 모델 병렬 등) 에서만 정확도가
-// 떨어지며, DDP 류 GPU 당 1 프로세스 패턴은 영향 없다. 정확한 per-event GPU attribution 은 후속
-// commit 의 BPF TID→device 추적으로 보강된다 (#33).
+// last-wins 동작은 BPF 의 cuda_tid_device 매핑이 없을 때 dispatch 가 폴백하는 PID-level 라벨이며,
+// 본 PR 의 multi-GPU attribution 은 dispatch 시점에 BPF 가 capture 한 device_ord + visDev resolver
+// 로 우선 분리되고 ordinal lookup 이 실패할 때만 본 fresh map 에 폴백한다 (#33).
+//
+// 본 함수는 collect 도중 hostUUIDByIndex / hostUUIDSet 도 함께 갱신해 visDev 의 NVIDIA_VISIBLE_DEVICES
+// 파싱이 최신 NVML index 매핑을 사용하게 한다.
 func (r *Reader) collectPidToUUID(devices []nvml.Device) (map[uint32]string, int) {
 	fresh := make(map[uint32]string)
 	pidGPUCount := make(map[uint32]int)
+	hostByIdx := make(map[int]string, len(devices))
+	hostSet := make(map[string]struct{}, len(devices))
 	for _, dev := range devices {
 		info, err := dev.Info()
 		if err != nil {
 			continue
 		}
+		hostByIdx[int(info.Index)] = info.UUID
+		hostSet[info.UUID] = struct{}{}
 		procs, err := dev.RunningProcesses()
 		if err != nil {
 			continue
@@ -520,5 +577,31 @@ func (r *Reader) collectPidToUUID(devices []nvml.Device) (map[uint32]string, int
 			multiGPUCount++
 		}
 	}
+	r.hostUUIDMu.Lock()
+	r.hostUUIDByIndex = hostByIdx
+	r.hostUUIDSet = hostSet
+	r.hostUUIDMu.Unlock()
 	return fresh, multiGPUCount
+}
+
+// resolveVisibleDevices 는 active PID 셋에 대해 /proc/<pid>/environ 에서 NVIDIA_VISIBLE_DEVICES 를
+// 읽고 호스트 UUID 슬라이스로 해석해 fresh 맵을 만든다. NVML refresh 사이클이 visDev.replace 로
+// 통째 교체할 때 사용된다. environ read 실패 (PID 종료 등) 는 nil 슬라이스로 negative cache 에
+// 적재해 dispatch 가 동일 PID 에 대해 다시 read 를 시도하지 않게 한다.
+func (r *Reader) resolveVisibleDevices(pidToUUID map[uint32]string) map[uint32][]string {
+	r.hostUUIDMu.RLock()
+	hostByIdx := r.hostUUIDByIndex
+	hostSet := r.hostUUIDSet
+	r.hostUUIDMu.RUnlock()
+
+	fresh := make(map[uint32][]string, len(pidToUUID))
+	for pid := range pidToUUID {
+		raw, err := readNVIDIAVisibleDevices(pid)
+		if err != nil {
+			fresh[pid] = nil
+			continue
+		}
+		fresh[pid] = parseVisibleDevices(raw, hostByIdx, hostSet)
+	}
+	return fresh
 }

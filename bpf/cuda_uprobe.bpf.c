@@ -63,15 +63,22 @@ enum cuda_event_kind {
 #define CU_MEMORYTYPE_UNIFIED 4
 
 // userspace 의 Go 측 구조체와 layout 이 정확히 일치해야 한다 (binary.NativeEndian Read).
-// 32 bytes 고정 — 8(ts) + 8(bytes) + 4(pid) + 4(tid) + 1(kind) + 7(pad).
+// 32 bytes 고정 — 8(ts) + 8(bytes) + 4(pid) + 4(tid) + 1(kind) + 3(pad) + 4(device_ord).
+//
+// device_ord 는 emit 시점에 cuda_tid_device map 에서 lookup 한 컨테이너 CUDA driver 의 ordinal
+// 이며, 매핑이 없으면 CUDA_DEVICE_ORD_UNKNOWN (= 0xFFFFFFFF) 로 발행되어 userspace 가 기존
+// PID-level devmap.lookup 폴백을 적용한다 (#33).
 struct cuda_event {
     __u64 ts_ns;
     __u64 bytes;     /* memcpy 시 ByteCount; kernel launch 시 0 */
     __u32 pid;
     __u32 tid;
     __u8  kind;
-    __u8  pad[7];
+    __u8  pad[3];
+    __u32 device_ord;
 };
+
+#define CUDA_DEVICE_ORD_UNKNOWN 0xFFFFFFFFU
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -157,18 +164,23 @@ static __always_inline void emit_event(__u8 kind, __u64 bytes)
     }
 
     pid_tgid = bpf_get_current_pid_tgid();
+    __u32 tid = (__u32)pid_tgid;
     e->ts_ns = bpf_ktime_get_ns();
     e->bytes = bytes;
     e->pid   = pid_tgid >> 32;
-    e->tid   = (__u32)pid_tgid;
+    e->tid   = tid;
     e->kind  = kind;
     e->pad[0] = 0;
     e->pad[1] = 0;
     e->pad[2] = 0;
-    e->pad[3] = 0;
-    e->pad[4] = 0;
-    e->pad[5] = 0;
-    e->pad[6] = 0;
+
+    /* cuda_tid_device 에 매핑이 없으면 (cudaSetDevice / cuCtxSetCurrent 가 한 번도 호출되지 않은
+     * 단일 GPU 워크로드, 또는 cuCtxCreate_v3 / cuDevicePrimaryCtxRetain 등 본 PR scope 외 경로로
+     * context 가 만들어진 경우) UNKNOWN sentinel 로 발행해 userspace 가 PID-level devmap.lookup
+     * 폴백을 적용하게 한다.
+     */
+    __u32 *dev = bpf_map_lookup_elem(&cuda_tid_device, &tid);
+    e->device_ord = dev ? *dev : CUDA_DEVICE_ORD_UNKNOWN;
 
     bpf_ringbuf_submit(e, 0);
 }

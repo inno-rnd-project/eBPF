@@ -12,6 +12,12 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type CudaUprobeCtxCreateArgs struct {
+	PctxAddr uint64
+	Dev      uint32
+	_        [4]byte
+}
+
 // LoadCudaUprobe returns the embedded CollectionSpec for CudaUprobe.
 func LoadCudaUprobe() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_CudaUprobeBytes)
@@ -54,6 +60,9 @@ type CudaUprobeSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type CudaUprobeProgramSpecs struct {
+	HandleCuCtxCreateV2Entry        *ebpf.ProgramSpec `ebpf:"handle_cu_ctx_create_v2_entry"`
+	HandleCuCtxCreateV2Exit         *ebpf.ProgramSpec `ebpf:"handle_cu_ctx_create_v2_exit"`
+	HandleCuCtxSetCurrent           *ebpf.ProgramSpec `ebpf:"handle_cu_ctx_set_current"`
 	HandleCuLaunchCooperativeKernel *ebpf.ProgramSpec `ebpf:"handle_cu_launch_cooperative_kernel"`
 	HandleCuLaunchKernel            *ebpf.ProgramSpec `ebpf:"handle_cu_launch_kernel"`
 	HandleCuLaunchKernelEx          *ebpf.ProgramSpec `ebpf:"handle_cu_launch_kernel_ex"`
@@ -71,14 +80,18 @@ type CudaUprobeProgramSpecs struct {
 	HandleCudaLaunchKernel          *ebpf.ProgramSpec `ebpf:"handle_cuda_launch_kernel"`
 	HandleCudaMemcpy                *ebpf.ProgramSpec `ebpf:"handle_cuda_memcpy"`
 	HandleCudaMemcpyAsync           *ebpf.ProgramSpec `ebpf:"handle_cuda_memcpy_async"`
+	HandleCudaSetDevice             *ebpf.ProgramSpec `ebpf:"handle_cuda_set_device"`
 }
 
 // CudaUprobeMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type CudaUprobeMapSpecs struct {
-	CudaDropped *ebpf.MapSpec `ebpf:"cuda_dropped"`
-	CudaEvents  *ebpf.MapSpec `ebpf:"cuda_events"`
+	CuctxCreateArgs *ebpf.MapSpec `ebpf:"cuctx_create_args"`
+	CuctxToDevice   *ebpf.MapSpec `ebpf:"cuctx_to_device"`
+	CudaDropped     *ebpf.MapSpec `ebpf:"cuda_dropped"`
+	CudaEvents      *ebpf.MapSpec `ebpf:"cuda_events"`
+	CudaTidDevice   *ebpf.MapSpec `ebpf:"cuda_tid_device"`
 }
 
 // CudaUprobeVariableSpecs contains global variables before they are loaded into the kernel.
@@ -107,14 +120,20 @@ func (o *CudaUprobeObjects) Close() error {
 //
 // It can be passed to LoadCudaUprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type CudaUprobeMaps struct {
-	CudaDropped *ebpf.Map `ebpf:"cuda_dropped"`
-	CudaEvents  *ebpf.Map `ebpf:"cuda_events"`
+	CuctxCreateArgs *ebpf.Map `ebpf:"cuctx_create_args"`
+	CuctxToDevice   *ebpf.Map `ebpf:"cuctx_to_device"`
+	CudaDropped     *ebpf.Map `ebpf:"cuda_dropped"`
+	CudaEvents      *ebpf.Map `ebpf:"cuda_events"`
+	CudaTidDevice   *ebpf.Map `ebpf:"cuda_tid_device"`
 }
 
 func (m *CudaUprobeMaps) Close() error {
 	return _CudaUprobeClose(
+		m.CuctxCreateArgs,
+		m.CuctxToDevice,
 		m.CudaDropped,
 		m.CudaEvents,
+		m.CudaTidDevice,
 	)
 }
 
@@ -128,6 +147,9 @@ type CudaUprobeVariables struct {
 //
 // It can be passed to LoadCudaUprobeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type CudaUprobePrograms struct {
+	HandleCuCtxCreateV2Entry        *ebpf.Program `ebpf:"handle_cu_ctx_create_v2_entry"`
+	HandleCuCtxCreateV2Exit         *ebpf.Program `ebpf:"handle_cu_ctx_create_v2_exit"`
+	HandleCuCtxSetCurrent           *ebpf.Program `ebpf:"handle_cu_ctx_set_current"`
 	HandleCuLaunchCooperativeKernel *ebpf.Program `ebpf:"handle_cu_launch_cooperative_kernel"`
 	HandleCuLaunchKernel            *ebpf.Program `ebpf:"handle_cu_launch_kernel"`
 	HandleCuLaunchKernelEx          *ebpf.Program `ebpf:"handle_cu_launch_kernel_ex"`
@@ -145,10 +167,14 @@ type CudaUprobePrograms struct {
 	HandleCudaLaunchKernel          *ebpf.Program `ebpf:"handle_cuda_launch_kernel"`
 	HandleCudaMemcpy                *ebpf.Program `ebpf:"handle_cuda_memcpy"`
 	HandleCudaMemcpyAsync           *ebpf.Program `ebpf:"handle_cuda_memcpy_async"`
+	HandleCudaSetDevice             *ebpf.Program `ebpf:"handle_cuda_set_device"`
 }
 
 func (p *CudaUprobePrograms) Close() error {
 	return _CudaUprobeClose(
+		p.HandleCuCtxCreateV2Entry,
+		p.HandleCuCtxCreateV2Exit,
+		p.HandleCuCtxSetCurrent,
 		p.HandleCuLaunchCooperativeKernel,
 		p.HandleCuLaunchKernel,
 		p.HandleCuLaunchKernelEx,
@@ -166,6 +192,7 @@ func (p *CudaUprobePrograms) Close() error {
 		p.HandleCudaLaunchKernel,
 		p.HandleCudaMemcpy,
 		p.HandleCudaMemcpyAsync,
+		p.HandleCudaSetDevice,
 	)
 }
 
