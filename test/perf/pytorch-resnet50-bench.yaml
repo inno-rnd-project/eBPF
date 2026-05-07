@@ -1,0 +1,54 @@
+# pytorch-resnet50-bench 는 ResNet50 inference 를 단일 프로세스 안에서 무한 루프로 돌려
+# 높은 kernel launch rate (수천 Hz) 와 지속적 h2d / d2h memcpy 를 발생시킨다. 본 워크로드가
+# cuda dispatch hot path 의 실측 baseline 을 만든다.
+#
+# 이미지: pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime (약 6.5 GB). nvcr.io/nvidia/pytorch
+# 의 23.x / 24.x 시리즈는 15 GB 가 넘어 dev 노드 ephemeral storage 를 압박해 디스크 압력 eviction 을
+# 유발한 전례가 있어 의도적으로 더 작은 이미지를 선택한다.
+#
+# 측정 방법:
+#   - 본 Pod 기동 후 5분 이상 대기해 NVML poll / 메트릭 수집 정상화 확인
+#   - kubectl top pod -n ebpf-project gpuobs-agent 로 mCPU 측정
+#   - gpuobs_cuda_kernel_launches_total 의 rate(...[1m]) 으로 launch rate 산출
+#   - gpuobs_cuda_events_lost_total 의 delta 가 0 인지 확인
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pytorch-resnet50-bench
+  namespace: ebpf-project
+  labels:
+    app: pytorch-resnet50-bench
+    perf-workload: cuda-uprobe
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    accelerator: nvidia
+  containers:
+  - name: bench
+    image: pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
+    imagePullPolicy: IfNotPresent
+    command: ["python", "-c"]
+    args:
+    - |
+      import torch
+      import torchvision.models as models
+
+      device = torch.device("cuda")
+      model = models.resnet50(weights=None).to(device).eval()
+      x = torch.randn(8, 3, 224, 224, device=device)
+      print(f"warmup: device={torch.cuda.get_device_name(0)}", flush=True)
+      with torch.inference_mode():
+          for _ in range(20):
+              _ = model(x)
+          torch.cuda.synchronize()
+          print("warmup done; entering steady-state loop", flush=True)
+          while True:
+              _ = model(x)
+              # synchronize 를 매 step 호출하지 않아 GPU stream 큐가 풀로 채워지고 launch rate 가 최대화된다
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+        memory: 4Gi
+      requests:
+        cpu: 200m
+        memory: 1Gi

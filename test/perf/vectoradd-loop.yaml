@@ -1,0 +1,37 @@
+# vectoradd-loop 는 cuda-sample vectorAdd 를 단일 컨테이너 안에서 무한 반복해 실행한다.
+# 이 워크로드는 cuLaunchKernel + cuMemcpyHtoD_v2 + cuMemcpyDtoH_v2 세 심볼을 모두 fire 시켜
+# kernel launch / h2d / d2h 카운터의 기본 신호를 만든다. 이미지 크기가 작아 dev 노드 디스크에
+# 부담을 주지 않으며, 이전 PR 검증에서도 동일 이미지로 회귀 테스트된 검증된 경로다.
+#
+# 한계: vectorAdd 한 회 실행이 약 50ms 라 NVML 1s poll 사이클 안에서 PID 가 번갈아 나타난다.
+# kernel launch rate 가 PyTorch 워크로드 대비 낮아 본 매니페스트는 dispatch hot path 자체를
+# 측정하기보다 이벤트가 정상적으로 흐르는지 확인하는 smoke 신호 용도로 사용한다.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vectoradd-loop
+  namespace: ebpf-project
+  labels:
+    app: vectoradd-loop
+    perf-workload: cuda-uprobe
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    accelerator: nvidia
+  containers:
+  - name: vectoradd
+    image: nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda11.7.1
+    imagePullPolicy: IfNotPresent
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      while true; do
+        /cuda-samples/vectorAdd > /dev/null
+      done
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
