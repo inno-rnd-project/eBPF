@@ -11,9 +11,13 @@ import (
 )
 
 // slowResolver 는 실제 kube.Resolver.ResolvePID 가 /proc/<pid>/cgroup 을 read + parse 하는
-// I/O 비용을 마이크로벤치에서 재현하기 위한 고정 지연 fake 다. 기본 30µs 지연으로 사용하며,
-// 본 수치는 dev 노드에서 cgroup 파일 read + 라인 파싱이 통상적으로 보이는 범위의 중앙값이다.
-// 캐시 적용 후 lookup 경로의 ns/op 가 본 지연을 상수배 단축해야 한다는 비교 기준선이 된다.
+// I/O 비용을 마이크로벤치에서 재현하기 위한 blocking-syscall 모델 fake 다. 기본 30µs sleep
+// 으로 호출하지만, Linux time.Sleep 의 OS 스케줄러 그라뉼러리티 (HZ 설정 / hrtimer 정밀도)
+// 영향으로 실측 ns/op 는 약 1 ms 수준까지 늘어난다. 이는 dev 노드의 실제 cgroup parse 비용
+// (~30 µs) 보다 크지만, 본 벤치의 본질은 캐시 hit (RWMutex.RLock 기반) 와 캐시 miss
+// (blocking-syscall 시뮬레이션) 의 상대 ns/op 비율이라 절대값 자체에는 의미를 두지 않는다.
+// busy-wait 으로 정확히 30 µs 를 만들 수도 있지만, 그 경우 CPU 점유 모델로 바뀌어 실제 cgroup
+// parse 의 I/O wait 특성을 모사하지 못해 채택하지 않는다.
 type slowResolver struct {
 	table map[uint32]kube.PodIdentity
 	delay time.Duration
@@ -74,11 +78,14 @@ func BenchmarkReaderDispatch_FakeResolver(b *testing.B) {
 
 // BenchmarkReaderDispatch_CacheMiss_Slow 는 매 iteration 마다 다른 PID 를 사용해 캐시를 항상
 // miss 시킨다. 본 수치는 캐시가 무효화된 최악 경로 (예: PID wraparound, 또는 모든 이벤트가
-// 신규 PID 인 가상의 worst case) 의 ns/op 를 보여주며, 30µs 지연 resolver 가 lazy fill 비용을
-// 그대로 노출한다. 캐시 hit 경로 벤치와 비교했을 때 캐시 도입이 흡수하는 시간이 그대로 ns/op
-// 차이로 드러난다.
+// 신규 PID 인 가상의 worst case) 의 ns/op 를 보여준다. 캐시 hit 경로 벤치와 비교했을 때 캐시
+// 도입이 흡수하는 시간이 그대로 ns/op 차이로 드러난다.
+//
+// tableSize 는 4096 으로 한정해 fake resolver 의 메모리 footprint 를 작게 유지한다. 30 µs sleep
+// 기반 resolver 의 실측 비용이 ~1 ms 수준이라 benchtime 300 ms 에서 b.N 은 수백 단위 정도이며,
+// 4096 PID cycle 만으로도 모든 iter 의 PID 가 unique 함이 보장된다.
 func BenchmarkReaderDispatch_CacheMiss_Slow(b *testing.B) {
-	const tableSize = 1 << 20
+	const tableSize = 1 << 12
 	table := make(map[uint32]kube.PodIdentity, tableSize)
 	for i := uint32(0); i < tableSize; i++ {
 		table[i] = samplePod("ml", "p", "u")
