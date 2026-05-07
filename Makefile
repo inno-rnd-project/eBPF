@@ -102,7 +102,7 @@ build-%-agent: $$(PREREQS_$$*-agent)
 	go fmt ./...
 	CGO_ENABLED=$(CGO_$*-agent) go build -o ./bin/$*-agent ./cmd/$*-agent
 
-image-build-%-agent:
+image-build-%-agent: $$(PREREQS_$$*-agent)
 	docker build \
 		--build-arg TARGET_AGENT=$*-agent \
 		--build-arg AGENT_PORT=$(PORT_$*-agent) \
