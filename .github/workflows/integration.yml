@@ -59,7 +59,15 @@ jobs:
           ASSETS=$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use $ENVTEST_K8S_VERSION -p path)
           echo "assets=$ASSETS" >> "$GITHUB_OUTPUT"
 
+      # -Wl,-z,lazy 는 host gcc 가 강제하는 BIND_NOW 플래그를 override 한다. 통합 테스트 binary 가
+      # cuda 패키지를 통해 go-nvml CGO PLT 엔트리를 가지지만 libnvidia-ml.so 가 없는 ubuntu-latest
+      # runner 에서는 BIND_NOW 가 startup 시점에 NVML 심볼 해상을 강제해 binary 가 깨진다. lazy
+      # binding 으로 변경하면 NVML 심볼은 runtime 의 dlopen / dlsym 경로로만 접근되어 production
+      # 동작 (go-nvml 의 dlopen) 과 일치한다.
       - name: Run integration tests
         env:
           KUBEBUILDER_ASSETS: ${{ steps.envtest.outputs.assets }}
-        run: go test -tags=integration -race -timeout=60s ./internal/gpuobs/integration/...
+        run: |
+          go test -tags=integration -race -timeout=60s \
+            -ldflags='-extldflags "-Wl,-z,lazy"' \
+            ./internal/gpuobs/integration/...

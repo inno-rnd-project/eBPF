@@ -80,7 +80,15 @@ test:
 test-integration:
 	@echo "preparing envtest binaries via setup-envtest (k8s $(ENVTEST_K8S_VERSION))"
 	@KUBEBUILDER_ASSETS="$$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use $(ENVTEST_K8S_VERSION) -p path)" \
-		go test -tags=integration -race -timeout=60s ./internal/gpuobs/integration/...
+		go test -tags=integration -race -timeout=60s \
+		-ldflags='-extldflags "-Wl,-z,lazy"' \
+		./internal/gpuobs/integration/...
+
+# 통합 테스트 빌드시 host 의 gcc / ld 가 강제하는 BIND_NOW 플래그가 cuda 패키지의 go-nvml CGO PLT
+# 엔트리를 binary load 시점에 strict 해상하려 해 libnvidia-ml.so 미존재 환경 (CI / 일반 dev 호스트)
+# 에서 `undefined symbol: nvmlDeviceSetDriverModel` 류 오류로 startup 자체가 깨진다. lazy binding
+# 으로 override 해 NVML 심볼은 runtime 의 dlopen / dlsym 경로로만 접근되도록 한다 (production 의
+# go-nvml 도 dlopen 경로만 사용).
 
 setup-envtest:
 	@go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use $(ENVTEST_K8S_VERSION) -p path

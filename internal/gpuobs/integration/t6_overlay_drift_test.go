@@ -4,11 +4,13 @@ package integration
 
 import (
 	"bytes"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"sigs.k8s.io/kustomize/api/krusty"
+	kustomizetypes "sigs.k8s.io/kustomize/api/types"
+	"sigs.k8s.io/kustomize/kyaml/filesys"
 	"sigs.k8s.io/yaml"
 )
 
@@ -101,12 +103,22 @@ func TestT6_OverlayDriftDevVsProd(t *testing.T) {
 
 // ---- 헬퍼 ----
 
+// kustomizeBuild 는 krusty in-process API 로 overlay 를 build 한다. 외부 kubectl / kustomize
+// binary 의존을 제거해 ubuntu-latest GHA runner 처럼 kubectl 미설치 환경에서도 본 테스트가
+// silent skip 되지 않도록 한다. krusty 의 PluginConfig 는 LoadRestrictions 를 그대로 두어
+// kustomize CLI 의 기본 보안 정책 (overlay 외부 경로 참조 금지) 과 동일하게 동작한다.
 func kustomizeBuild(t *testing.T, path string) [][]byte {
 	t.Helper()
-	cmd := exec.Command("kubectl", "kustomize", path)
-	out, err := cmd.CombinedOutput()
+	opts := krusty.MakeDefaultOptions()
+	opts.PluginConfig = kustomizetypes.DisabledPluginConfig()
+	k := krusty.MakeKustomizer(opts)
+	resmap, err := k.Run(filesys.MakeFsOnDisk(), path)
 	if err != nil {
-		t.Skipf("kubectl kustomize unavailable or failed: %v\n%s", err, out)
+		t.Fatalf("krusty build %q: %v", path, err)
+	}
+	out, err := resmap.AsYaml()
+	if err != nil {
+		t.Fatalf("resmap to yaml: %v", err)
 	}
 	return splitYAMLDocs(out)
 }
