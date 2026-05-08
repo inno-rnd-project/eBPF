@@ -36,3 +36,40 @@ func GetCudaEventsLostForTest(node string) float64 {
 func GetCudaPidMultiGPUCountForTest(node string) float64 {
 	return testutil.ToFloat64(cudaPidMultiGPUCount.WithLabelValues(node))
 }
+
+// CountDeviceMetricSeriesForTest 는 device 단위 gauge 가 노출하는 시리즈 수를 반환한다.
+// GPU_METRICS_ENABLED=false 토글 검증에 사용된다.
+func CountDeviceMetricSeriesForTest() int {
+	return testutil.CollectAndCount(deviceUtilization) +
+		testutil.CollectAndCount(deviceMemoryUsed) +
+		testutil.CollectAndCount(deviceMemoryTotal)
+}
+
+// CountPodMetricSeriesForTest 는 podMemoryUsed gauge 의 시리즈 수를 반환한다.
+// GPUOBS_POD_METRICS_ENABLED=false 토글 검증에 사용된다.
+func CountPodMetricSeriesForTest() int {
+	return testutil.CollectAndCount(podMemoryUsed)
+}
+
+// CountCudaCounterSeriesForTest 는 cuda 카운터 5종이 발행한 시리즈 합계를 반환한다.
+// CUDA uprobe 비활성 시점에 0 이 유지되어야 한다.
+func CountCudaCounterSeriesForTest() int {
+	return testutil.CollectAndCount(cudaKernelLaunchesTotal) +
+		testutil.CollectAndCount(cudaH2DBytesTotal) +
+		testutil.CollectAndCount(cudaD2HBytesTotal) +
+		testutil.CollectAndCount(cudaDtoDBytesTotal) +
+		testutil.CollectAndCount(cudaUnknownDirBytesTotal)
+}
+
+// ResetDeviceMetricsForTest 는 device 단위 gauge / counter 시리즈를 초기화한다. 테스트 격리를 위해
+// 토글 검증 전에 호출한다.
+func ResetDeviceMetricsForTest() {
+	deviceUtilization.Reset()
+	deviceMemoryUsed.Reset()
+	deviceMemoryTotal.Reset()
+}
+
+// ResetPodMetricsForTest 는 podMemoryUsed gauge 를 초기화한다.
+func ResetPodMetricsForTest() {
+	podMemoryUsed.Reset()
+}
