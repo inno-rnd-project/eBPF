@@ -60,7 +60,34 @@ type serviceCacheEntry struct {
 // client 초기화에 실패해도 Resolver 자체는 비활성 상태로 반환되며, Start 시 disabled 로그를 남긴다.
 // 이 graceful 동작은 클러스터 외부 개발 환경에서 바이너리가 멈추지 않게 한다.
 func NewResolver(localNode string, resyncPeriod time.Duration) *Resolver {
-	r := &Resolver{
+	cfg, err := kubeConfig()
+	if err != nil {
+		r := newEmptyResolver(localNode, resyncPeriod)
+		r.startupErr = err
+		return r
+	}
+	clientset, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		r := newEmptyResolver(localNode, resyncPeriod)
+		r.startupErr = err
+		return r
+	}
+	return NewResolverWithClient(clientset, localNode, resyncPeriod)
+}
+
+// NewResolverWithClient 는 외부에서 미리 구성한 kubernetes 클라이언트로 Resolver 를 만든다.
+// envtest 기반 통합 테스트가 in-process kube-apiserver 의 *rest.Config 로 만든 clientset 을
+// 그대로 주입해 informer 경로 전체를 검증할 때 사용한다.
+func NewResolverWithClient(client kubernetes.Interface, localNode string, resyncPeriod time.Duration) *Resolver {
+	r := newEmptyResolver(localNode, resyncPeriod)
+	r.client = client
+	return r
+}
+
+// newEmptyResolver 는 empty cache map 만 초기화한 Resolver 를 반환한다. NewResolver / NewResolverWithClient
+// 가 공유하는 초기화 로직이며, 외부에는 노출하지 않는다.
+func newEmptyResolver(localNode string, resyncPeriod time.Duration) *Resolver {
+	return &Resolver{
 		localNode:       localNode,
 		resyncPeriod:    resyncPeriod,
 		podByIP:         make(map[string]podCacheEntry),
@@ -71,21 +98,6 @@ func NewResolver(localNode string, resyncPeriod time.Duration) *Resolver {
 		nodeByIP:        make(map[string]string),
 		nodeIPsByKey:    make(map[string][]string),
 	}
-
-	cfg, err := kubeConfig()
-	if err != nil {
-		r.startupErr = err
-		return r
-	}
-
-	clientset, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		r.startupErr = err
-		return r
-	}
-
-	r.client = clientset
-	return r
 }
 
 // LocalNode는 NewResolver에 전달된 관측 노드 이름을 반환한다.
