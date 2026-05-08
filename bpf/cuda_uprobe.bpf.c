@@ -495,10 +495,17 @@ int BPF_URETPROBE(handle_cu_ctx_create_v2_exit)
     struct ctx_create_args *args = bpf_map_lookup_elem(&cuctx_create_args, &tid);
     if (!args)
         return 0;
-    __u64 cuctx_val = 0;
-    if (bpf_probe_read_user(&cuctx_val, sizeof(cuctx_val), (const void *)args->pctx_addr) == 0 && cuctx_val != 0) {
-        __u32 dev = args->dev;
-        bpf_map_update_elem(&cuctx_to_device, &cuctx_val, &dev, BPF_ANY);
+    /* cuCtxCreate_v2 의 반환값이 CUDA_SUCCESS (0) 인 경우에만 *pctx_addr 가 갱신된다. 실패 케이스
+     * (CUDA_ERROR_OUT_OF_MEMORY 등) 에서는 출력 포인터가 그대로 남아 호출자가 같은 변수를 재사용
+     * 했을 경우 stale CUcontext 가 들어 있을 수 있으므로 매핑 적재를 건너뛴다. cuctx_val != 0
+     * 가드만으로는 호출자 변수의 사전 값이 0 이 아닌 모든 케이스를 막지 못한다.
+     */
+    if (PT_REGS_RC(ctx) == 0) {
+        __u64 cuctx_val = 0;
+        if (bpf_probe_read_user(&cuctx_val, sizeof(cuctx_val), (const void *)args->pctx_addr) == 0 && cuctx_val != 0) {
+            __u32 dev = args->dev;
+            bpf_map_update_elem(&cuctx_to_device, &cuctx_val, &dev, BPF_ANY);
+        }
     }
     bpf_map_delete_elem(&cuctx_create_args, &tid);
     return 0;
