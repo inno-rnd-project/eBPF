@@ -60,7 +60,30 @@ BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 # 탐색을 건너뛰므로 매치가 일어나지 않는다. 해당 타깃들은 동일 이름의 실제 파일이
 # 없어 매 호출마다 recipe가 재실행되므로 phony와 동등 동작이다.
 .PHONY: deps generate generate-gpuobs clean tree bump \
-	build-all image-build-all image-push-all
+	build-all image-build-all image-push-all \
+	test test-integration setup-envtest
+
+# ============================================================================
+# Tests
+# ----------------------------------------------------------------------------
+# test           - 일반 단위 테스트 (race detector 항상 on, integration build tag 미포함)
+# test-integration - envtest binary 를 setup-envtest 로 준비한 뒤 통합 테스트 실행 (#36)
+# setup-envtest   - controller-runtime envtest binary 를 다운로드 / 캐싱하고 KUBEBUILDER_ASSETS
+#                   경로를 stdout 으로 출력. 본 타깃은 test-integration 의 prerequisite 이며
+#                   CI 가 캐시 키 산출 등에 직접 호출할 수도 있다.
+# ============================================================================
+ENVTEST_K8S_VERSION ?= 1.31.0
+
+test:
+	go test -race ./...
+
+test-integration:
+	@echo "preparing envtest binaries via setup-envtest (k8s $(ENVTEST_K8S_VERSION))"
+	@KUBEBUILDER_ASSETS="$$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use $(ENVTEST_K8S_VERSION) -p path)" \
+		go test -tags=integration -race -timeout=60s ./internal/gpuobs/integration/...
+
+setup-envtest:
+	@go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use $(ENVTEST_K8S_VERSION) -p path
 
 # ============================================================================
 # Core utilities
