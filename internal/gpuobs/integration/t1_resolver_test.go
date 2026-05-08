@@ -31,6 +31,14 @@ func TestT1_ResolverIndexConsistency(t *testing.T) {
 		t.Fatal("Resolver.HasSynced did not become true within 5s")
 	}
 
+	// envtest 의 in-process apiserver 는 namespace 를 자동 생성하지 않는다. Pod 생성 전에 ml 네임스페이스를
+	// 명시적으로 만든다.
+	if _, err := cs.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ml"},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+
 	// Pod 생성: ResolveIP 가 PodIdentity 를 반환해야 한다.
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "trainer-0", Namespace: "ml", UID: "uid-trainer-0"},

@@ -112,11 +112,15 @@ func (f *fakeNVML) DeviceCount() (uint, error) {
 	return uint(len(f.devices)), nil
 }
 
+// Device 는 fakeNvmlDevice 를 반환하지만 인스턴스가 부모 fakeNVML 의 현재 device 슬롯을 동적으로
+// 다시 lookup 하도록 만든다. nvml.DeviceSet 이 같은 UUID 의 Device 인스턴스를 캐시 후 재사용하기
+// 때문에, 인스턴스가 자기 생성 시점의 pids 스냅샷을 그대로 들고 있으면 setDevices 로 갱신한 pids
+// 가 후속 RunningProcesses 호출에 반영되지 않는다. 부모 lookup 패턴으로 캐시 정합성을 확보한다.
 func (f *fakeNVML) Device(index uint) (nvml.Device, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	d := f.devices[index]
-	return &fakeNvmlDevice{uuid: d.uuid, index: d.index, pids: d.pids}, nil
+	return &fakeNvmlDevice{uuid: d.uuid, parent: f}, nil
 }
 
 func (f *fakeNVML) DeviceUUID(index uint) (string, error) {
@@ -127,19 +131,38 @@ func (f *fakeNVML) DeviceUUID(index uint) (string, error) {
 
 func (f *fakeNVML) Shutdown() error { return nil }
 
+// currentForUUID 는 부모 fakeNVML 에서 주어진 UUID 의 현재 device 슬롯 정보를 반환한다.
+// 슬롯이 사라졌으면 found=false 를 반환해 호출자 (RunningProcesses) 가 빈 결과로 처리한다.
+func (f *fakeNVML) currentForUUID(uuid string) (fakeDevice, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, d := range f.devices {
+		if d.uuid == uuid {
+			return d, true
+		}
+	}
+	return fakeDevice{}, false
+}
+
 type fakeNvmlDevice struct {
-	uuid  string
-	index uint
-	pids  []uint32
+	uuid   string
+	parent *fakeNVML
 }
 
 func (f *fakeNvmlDevice) Info() (types.GPUDevice, error) {
-	return types.GPUDevice{UUID: f.uuid, Index: f.index}, nil
+	if d, ok := f.parent.currentForUUID(f.uuid); ok {
+		return types.GPUDevice{UUID: d.uuid, Index: d.index}, nil
+	}
+	return types.GPUDevice{UUID: f.uuid}, nil
 }
 func (f *fakeNvmlDevice) Snapshot() (types.GPUSnapshot, error) { return types.GPUSnapshot{}, nil }
 func (f *fakeNvmlDevice) RunningProcesses() ([]types.GPUProcess, error) {
-	out := make([]types.GPUProcess, 0, len(f.pids))
-	for _, p := range f.pids {
+	d, ok := f.parent.currentForUUID(f.uuid)
+	if !ok {
+		return nil, nil
+	}
+	out := make([]types.GPUProcess, 0, len(d.pids))
+	for _, p := range d.pids {
 		out = append(out, types.GPUProcess{PID: p})
 	}
 	return out, nil
