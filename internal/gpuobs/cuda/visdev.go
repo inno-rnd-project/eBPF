@@ -76,8 +76,12 @@ func (v *visDevMap) resolve(pid uint32, ordinal int) string {
 // readNVIDIAVisibleDevices 는 /proc/<pid>/environ 을 읽어 NVIDIA_VISIBLE_DEVICES 환경변수의
 // 값을 추출한다. environ 파일은 NUL byte 로 구분된 KEY=VALUE 셋이라 bytes 패키지로 byte-slice
 // 상태에서 직접 분해해 string(data) 의 전체 복사 alloc 을 피한다. 매칭된 항목의 값 부분만
-// string 으로 변환해 반환 alloc 을 최소화한다. 파일 자체가 없거나 (PID 종료) 환경변수가 설정되지
-// 않은 경우 빈 문자열을 반환해 호출자가 negative cache 로 처리할 수 있게 한다.
+// string 으로 변환해 반환 alloc 을 최소화한다.
+//
+// 반환 의미: /proc/<pid>/environ 을 읽지 못하면 (PID 종료 / 권한 부족 등) 그대로 에러를
+// 반환하고, 파일은 읽혔지만 NVIDIA_VISIBLE_DEVICES 항목이 없으면 ("", nil) 을 반환한다. 호출자
+// (lazyFillVisDev / resolveVisibleDevices) 는 두 케이스를 구분하지 않고 둘 다 nil 슬라이스로
+// 적재해 negative cache 로 처리한다.
 func readNVIDIAVisibleDevices(pid uint32) (string, error) {
 	path := fmt.Sprintf("/proc/%d/environ", pid)
 	data, err := os.ReadFile(path)

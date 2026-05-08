@@ -271,13 +271,18 @@ func TestReaderBuildActiveCudaKeys_DuplicatePidDeduped(t *testing.T) {
 
 // fakeNvmlDevice 는 cuda 패키지가 nvml.Device 인터페이스를 통해 다루는 device 를 단위 테스트용으로
 // 모사한다. Info / RunningProcesses 만 collectPidToUUID 가 호출하므로 나머지 메서드는 zero return 으로 둔다.
+//
+// index 필드는 collectPidToUUID 가 hostUUIDByIndex 매핑에 사용하는 NVML index 를 별도 시뮬레이션
+// 한다. 본 필드를 두지 않으면 모든 fake device 가 Index=0 을 반환해 multi-device 테스트에서
+// hostUUIDByIndex[0] 가 마지막 device UUID 로 덮어써져 실제 NVML 동작과 어긋난다.
 type fakeNvmlDevice struct {
-	uuid string
-	pids []uint32
+	uuid  string
+	index uint
+	pids  []uint32
 }
 
 func (f *fakeNvmlDevice) Info() (types.GPUDevice, error) {
-	return types.GPUDevice{UUID: f.uuid}, nil
+	return types.GPUDevice{UUID: f.uuid, Index: f.index}, nil
 }
 func (f *fakeNvmlDevice) Snapshot() (types.GPUSnapshot, error) {
 	return types.GPUSnapshot{}, nil
@@ -292,8 +297,8 @@ func (f *fakeNvmlDevice) RunningProcesses() ([]types.GPUProcess, error) {
 func (f *fakeNvmlDevice) Close() error { return nil }
 
 func TestReaderCollectPidToUUID_LastWinsAndCountsMultiGPU(t *testing.T) {
-	devA := &fakeNvmlDevice{uuid: "GPU-A", pids: []uint32{1, 2}}
-	devB := &fakeNvmlDevice{uuid: "GPU-B", pids: []uint32{2, 3}}
+	devA := &fakeNvmlDevice{uuid: "GPU-A", index: 0, pids: []uint32{1, 2}}
+	devB := &fakeNvmlDevice{uuid: "GPU-B", index: 1, pids: []uint32{2, 3}}
 	r := New("/unused", "", "node-A", nil, nil, 0)
 
 	fresh, freshAll, multi := r.collectPidToUUID([]nvml.Device{devA, devB})
@@ -317,12 +322,23 @@ func TestReaderCollectPidToUUID_LastWinsAndCountsMultiGPU(t *testing.T) {
 	if got := freshAll[1]; len(got) != 1 || got[0] != "GPU-A" {
 		t.Errorf("pid=1 freshAll=%v want [GPU-A]", got)
 	}
+	// hostUUIDByIndex 가 device 별 NVML index 를 정확히 반영해야 visDev 의 "all" 케이스 / index list
+	// 케이스 해석이 의미를 갖는다.
+	r.hostUUIDMu.RLock()
+	hostByIdx := r.hostUUIDByIndex
+	r.hostUUIDMu.RUnlock()
+	if got := hostByIdx[0]; got != "GPU-A" {
+		t.Errorf("hostUUIDByIndex[0]=%q want GPU-A", got)
+	}
+	if got := hostByIdx[1]; got != "GPU-B" {
+		t.Errorf("hostUUIDByIndex[1]=%q want GPU-B", got)
+	}
 }
 
 func TestReaderCollectPidToUUID_AllSingleGPUYieldsZeroCount(t *testing.T) {
 	// DDP 류 GPU 당 1 프로세스 패턴: 어떤 PID 도 둘 이상 GPU 에 등장하지 않는다.
-	devA := &fakeNvmlDevice{uuid: "GPU-A", pids: []uint32{1, 2}}
-	devB := &fakeNvmlDevice{uuid: "GPU-B", pids: []uint32{3, 4}}
+	devA := &fakeNvmlDevice{uuid: "GPU-A", index: 0, pids: []uint32{1, 2}}
+	devB := &fakeNvmlDevice{uuid: "GPU-B", index: 1, pids: []uint32{3, 4}}
 	r := New("/unused", "", "node-A", nil, nil, 0)
 
 	_, _, multi := r.collectPidToUUID([]nvml.Device{devA, devB})
