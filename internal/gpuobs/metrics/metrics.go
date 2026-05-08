@@ -485,6 +485,14 @@ var (
 		},
 		[]string{"node"},
 	)
+
+	cudaPidMultiGPUCount = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_cuda_pid_multi_gpu_count",
+			Help: "Number of host PIDs that were observed by NVML RunningProcesses on more than one GPU during the most recent device-map refresh. Per-GPU CUDA attribution is best-effort while this gauge is non-zero (see #33). DDP-style workloads with one process per GPU keep this gauge at 0; single-process multi-GPU usage (nn.DataParallel, model parallelism, custom multi-context CUDA programs) drives it above 0",
+		},
+		[]string{"node"},
+	)
 )
 
 // Register는 gpuobs 지표를 주어진 Prometheus Registerer에 등록한다.
@@ -530,6 +538,7 @@ func Register(reg prometheus.Registerer) {
 		cudaUnknownDirBytesTotal,
 		cudaSymbolAvailable,
 		cudaEventsLostTotal,
+		cudaPidMultiGPUCount,
 	)
 }
 
@@ -967,6 +976,14 @@ func RetainCudaSeries(activeKeys map[CudaLabelKey]struct{}) {
 		cudaUnknownDirBytesTotal.DeleteLabelValues(labels...)
 		delete(seenCudaKeys, key)
 	}
+}
+
+// SetCudaPidMultiGPUCount 는 NVML refresh 사이클이 활성 PID 셋을 GPU 별 RunningProcesses 결과로 구성하면서
+// 복수 GPU 에 동시 등장한 PID 수를 매 사이클마다 발행한다. 본 gauge 가 0 이 아니라는 것은 한 PID 가 동시에
+// 여러 GPU 를 사용해 현재의 단일값 pidToUUID 매핑이 last-GPU-wins 로 동작 중이라는 신호다 (#33).
+// DDP 류 GPU 당 1 프로세스 패턴은 NVML 이 PID 를 한 GPU 에만 등록하므로 0 으로 유지된다.
+func SetCudaPidMultiGPUCount(node string, count int) {
+	cudaPidMultiGPUCount.WithLabelValues(node).Set(float64(count))
 }
 
 // SetCudaSymbolAvailability 는 libcuda 심볼 한 개의 uprobe attach 결과를 0/1 gauge 로 발행한다.

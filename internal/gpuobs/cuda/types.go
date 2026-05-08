@@ -12,14 +12,20 @@ package cuda
 // binary.Read(NativeEndian) 로 디코드하므로 필드 순서 / 정렬 / 패딩이 BPF 헤더와 동기화 유지되어야 하며,
 // types_test.go 의 size 검증이 실제 wire 크기와 본 구조체 크기가 일치하는지 매 빌드에서 검사한다.
 type rawEvent struct {
-	TsNs  uint64
-	Bytes uint64
-	PID   uint32
-	TID   uint32
-	Kind  uint8
-	Pad   [7]uint8
+	TsNs      uint64
+	Bytes     uint64
+	PID       uint32
+	TID       uint32
+	Kind      uint8
+	Pad       [3]uint8
+	DeviceOrd uint32
 }
 
 // rawEventSize 는 BPF 측 struct cuda_event 의 고정 wire 크기다.
 // 컴파일 단계에서 unsafe.Sizeof(rawEvent{}) 와 일치하는지 확인해 layout drift 를 차단한다.
 const rawEventSize = 32
+
+// CudaDeviceOrdUnknown 은 BPF 측 CUDA_DEVICE_ORD_UNKNOWN 과 동일한 sentinel 값이다.
+// cuda_tid_device 에 매핑이 없을 때 emit_event 가 본 값을 device_ord 에 채워 발행하며,
+// dispatch 가 본 값을 발견하면 PID-level devmap.lookup 폴백 경로로 분기한다 (#33).
+const CudaDeviceOrdUnknown uint32 = 0xFFFFFFFF

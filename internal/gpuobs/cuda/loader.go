@@ -30,6 +30,14 @@ type PodResolver interface {
 // attach 루프와 metrics 의 symbol_available 라벨에 그대로 노출된다.
 //
 // 추가 심볼은 BPF 측 SEC 정의와 progBySymbol 매핑을 함께 동시에 갱신해야 한다.
+// trackedUretprobes 는 libcuda.so 에 attach 시도할 uretprobe 심볼이다. uprobe 와 다르게 함수 return
+// 시점에 fire 하며, 본 PR 은 cuCtxCreate_v2 의 출력 ctx 포인터를 capture 해 ctx-to-device 매핑을 만드는
+// 한 가지 용도로만 사용한다 (#33). 동일 심볼이 trackedSymbols 에도 들어 있으면 entry 와 exit 양쪽에
+// uprobe / uretprobe 가 함께 attach 되어야 한다.
+var trackedUretprobes = []string{
+	"cuCtxCreate_v2",
+}
+
 var trackedSymbols = []string{
 	"cuLaunchKernel",
 	"cuLaunchKernelEx",
@@ -45,14 +53,21 @@ var trackedSymbols = []string{
 	"cuMemcpy3D_v2",
 	"cuMemcpy3DAsync_v2",
 	"cuMemcpy",
+	// 아래는 #33 의 multi-GPU attribution 용 control-plane uprobe 들이다. 이벤트를 emit 하지 않고
+	// BPF map 만 갱신해 dispatch 시점의 GPU ordinal 분리 정확도를 높인다.
+	"cuCtxCreate_v2",
+	"cuCtxSetCurrent",
 }
 
-// cudartTrackedSymbols 는 libcudart.so 에 attach 시도할 CUDA Runtime API 심볼 3종이다.
+// cudartTrackedSymbols 는 libcudart.so 에 attach 시도할 CUDA Runtime API 심볼이다.
 // libcuda 와 분리된 OpenExecutable 로 처리되며, libcudartPath 가 빈 값이면 본 attach 자체가 skip 된다.
+// cudaSetDevice 는 dispatch 의 GPU attribution 정확도를 위해 TID → device 매핑을 BPF map 에
+// 기록하는 용도라 이벤트를 emit 하지 않는다 (#33).
 var cudartTrackedSymbols = []string{
 	"cudaLaunchKernel",
 	"cudaMemcpy",
 	"cudaMemcpyAsync",
+	"cudaSetDevice",
 }
 
 // Reader 는 cuda uprobe 가 emit 한 ringbuf 이벤트의 소비자다. lifecycle 은 Run 이 소유한다.
@@ -69,6 +84,17 @@ type Reader struct {
 	// runDeviceMapRefresher 가 NVML refresh 사이클마다 active PID 셋 기반으로 통째 교체한다.
 	pods *podMap
 
+	// visDev 는 PID 별 NVIDIA_VISIBLE_DEVICES 해석 결과 (컨테이너 ordinal → 호스트 UUID) 를 캐시한다.
+	// dispatch 가 BPF 의 device_ord 를 호스트 NVML UUID 로 변환할 때 lookup 한다 (#33).
+	visDev *visDevMap
+
+	// hostUUIDByIndex / hostUUIDSet 은 NVML 이 반환하는 호스트 GPU UUID 를 NVML index 와 함께 보관한
+	// 매핑이며, NVIDIA_VISIBLE_DEVICES 의 "all" / index list / UUID list 해석에 사용된다. NVML
+	// refresh 사이클에서 갱신된다.
+	hostUUIDByIndex map[int]string
+	hostUUIDSet     map[string]struct{}
+	hostUUIDMu      sync.RWMutex
+
 	// recordEvent 는 metrics.RecordCudaEvent 를 위한 test seam 이다.
 	// 운영 코드는 New 에서 metrics.RecordCudaEvent 를 기본값으로 받고, 단위 테스트에서는
 	// spy 함수로 교체해 dispatch 가 산출한 sample 을 검증한다.
@@ -84,14 +110,17 @@ type Reader struct {
 //   - refreshEvery:  device map refresh 주기. 0 이하 값은 호출자가 사전 검증해야 한다.
 func New(libcudaPath, libcudartPath, nodeName string, nv nvml.NVML, resolver PodResolver, refreshEvery time.Duration) *Reader {
 	return &Reader{
-		libcudaPath:   libcudaPath,
-		libcudartPath: libcudartPath,
-		nodeName:      nodeName,
-		nv:            nv,
-		resolver:      resolver,
-		refreshEvery:  refreshEvery,
-		pods:          newPodMap(),
-		recordEvent:   metrics.RecordCudaEvent,
+		libcudaPath:     libcudaPath,
+		libcudartPath:   libcudartPath,
+		nodeName:        nodeName,
+		nv:              nv,
+		resolver:        resolver,
+		refreshEvery:    refreshEvery,
+		pods:            newPodMap(),
+		visDev:          newVisDevMap(),
+		hostUUIDByIndex: map[int]string{},
+		hostUUIDSet:     map[string]struct{}{},
+		recordEvent:     metrics.RecordCudaEvent,
 	}
 }
 
@@ -127,6 +156,14 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 		"cuMemcpy3D_v2":             objs.HandleCuMemcpy3d,
 		"cuMemcpy3DAsync_v2":        objs.HandleCuMemcpy3dAsync,
 		"cuMemcpy":                  objs.HandleCuMemcpy,
+		"cuCtxCreate_v2":            objs.HandleCuCtxCreateV2Entry,
+		"cuCtxSetCurrent":           objs.HandleCuCtxSetCurrent,
+	}
+
+	// progByUretprobeSymbol 은 uretprobe 로 attach 할 program 을 묶는다. 현재는 cuCtxCreate_v2 의 exit
+	// 한 가지 용도로만 사용된다.
+	progByUretprobeSymbol := map[string]*cebpf.Program{
+		"cuCtxCreate_v2": objs.HandleCuCtxCreateV2Exit,
 	}
 
 	// libcudart 의 program 매핑은 libcudart 경로가 비어 있어도 항상 노출되며, 실제 attach 는 libcudartPath
@@ -135,6 +172,7 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 		"cudaLaunchKernel": objs.HandleCudaLaunchKernel,
 		"cudaMemcpy":       objs.HandleCudaMemcpy,
 		"cudaMemcpyAsync":  objs.HandleCudaMemcpyAsync,
+		"cudaSetDevice":    objs.HandleCudaSetDevice,
 	}
 
 	// 진단 시그널 일관성: attach 시도 자체가 일어나기 전에 모든 심볼을 0 으로 선등록해 둔다.
@@ -180,6 +218,28 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 	}
 	if attached == 0 {
 		return fmt.Errorf("no cuda uprobe attached; check libcuda path %q and CAP_BPF/CAP_PERFMON/CAP_SYS_PTRACE", r.libcudaPath)
+	}
+
+	// uretprobe attach 루프. 실패는 warn 로깅 후 진행해 multi-GPU attribution 일부가 비활성이어도
+	// 본 PR 의 다른 기능 (kernel launch / memcpy 카운터, podMap 캐시) 이 그대로 작동하게 한다.
+	// 단, 본 PR 의 cuCtxCreate_v2 같은 entry+exit 페어 심볼은 둘 중 하나라도 실패하면 ctx-to-device
+	// 매핑이 만들어지지 않아 multi-GPU attribution 의 Driver API 경로가 작동하지 않는다.
+	// gpuobs_cuda_symbol_available 가 운영자 진단의 1차 신호라 entry 만 attach 된 half-attached
+	// 상태를 0 으로 override 해 진단 정확성을 보존한다.
+	for _, sym := range trackedUretprobes {
+		prog, ok := progByUretprobeSymbol[sym]
+		if !ok || prog == nil {
+			log.Printf("cuda uretprobe attach %s: missing ebpf program mapping", sym)
+			metrics.SetCudaSymbolAvailability(r.nodeName, sym, false)
+			continue
+		}
+		l, err := ex.Uretprobe(sym, prog, nil)
+		if err != nil {
+			log.Printf("cuda uretprobe attach %s: %v", sym, err)
+			metrics.SetCudaSymbolAvailability(r.nodeName, sym, false)
+			continue
+		}
+		links = append(links, l)
 	}
 	log.Printf("cuda uprobe attached %d/%d libcuda symbols on %s", attached, len(trackedSymbols), r.libcudaPath)
 
@@ -273,11 +333,12 @@ func decodeRawEvent(b []byte) (rawEvent, bool) {
 		return rawEvent{}, false
 	}
 	return rawEvent{
-		TsNs:  binary.NativeEndian.Uint64(b[0:8]),
-		Bytes: binary.NativeEndian.Uint64(b[8:16]),
-		PID:   binary.NativeEndian.Uint32(b[16:20]),
-		TID:   binary.NativeEndian.Uint32(b[20:24]),
-		Kind:  b[24],
+		TsNs:      binary.NativeEndian.Uint64(b[0:8]),
+		Bytes:     binary.NativeEndian.Uint64(b[8:16]),
+		PID:       binary.NativeEndian.Uint32(b[16:20]),
+		TID:       binary.NativeEndian.Uint32(b[20:24]),
+		Kind:      b[24],
+		DeviceOrd: binary.NativeEndian.Uint32(b[28:32]),
 	}, true
 }
 
@@ -299,10 +360,55 @@ func (r *Reader) dispatch(raw rawEvent, devmap *deviceMap) {
 	}
 	r.recordEvent(r.nodeName, metrics.CudaEventSample{
 		ID:      id,
-		GPUUUID: devmap.lookup(raw.PID),
+		GPUUUID: r.resolveGPUUUID(raw, devmap),
 		Kind:    types.CudaEventKind(raw.Kind),
 		Bytes:   raw.Bytes,
 	})
+}
+
+// resolveGPUUUID 는 BPF 가 capture 한 device_ord 와 visDev 캐시를 우선 사용해 GPU UUID 를 분리하고,
+// ordinal 매핑이 없을 때 (BPF map miss / NVIDIA_VISIBLE_DEVICES 비어 있음 / unknown index) 기존
+// PID-level devmap.lookup 으로 폴백한다. 본 함수가 dispatch hot path 의 GPU attribution 분리 결정
+// 지점이며, multi-GPU PID 의 per-event 정확도를 visDev hit 로 끌어올리고 single-GPU PID 의 회귀를
+// devmap fallback 으로 보존한다 (#33).
+//
+// hot path 비용 최소화를 위해 visDev 는 단일 lookup 만 거친다. UNKNOWN sentinel 은 분기 직전에
+// 거른다.
+func (r *Reader) resolveGPUUUID(raw rawEvent, devmap *deviceMap) string {
+	if raw.DeviceOrd == CudaDeviceOrdUnknown {
+		return devmap.lookup(raw.PID)
+	}
+	ords, ok := r.visDev.lookup(raw.PID)
+	if !ok {
+		// visDev miss: NVIDIA_VISIBLE_DEVICES 매핑이 적재되지 않은 신규 PID 의 경우 lazy fill 로
+		// /proc/<pid>/environ 을 한 번 읽어 캐시한 뒤 같은 ordinal 을 재시도한다. 두 번째 이벤트부터
+		// hit 경로로 들어간다. 같은 PID 의 lazy fill 이 동시 다발해도 podMap.store 와 동일하게
+		// Lock 으로 직렬화되어 정합성 문제 없다.
+		ords = r.lazyFillVisDev(raw.PID)
+	}
+	idx := int(raw.DeviceOrd)
+	if idx >= 0 && idx < len(ords) && ords[idx] != "" {
+		return ords[idx]
+	}
+	return devmap.lookup(raw.PID)
+}
+
+// lazyFillVisDev 는 visDev 캐시 miss 시 /proc/<pid>/environ 을 읽어 해석 결과를 적재하고
+// 적재한 슬라이스를 그대로 반환한다. environ read 실패는 nil 슬라이스로 negative cache 에
+// 적재해 동일 PID 의 후속 이벤트가 lazy fill 을 다시 시도하지 않게 한다.
+func (r *Reader) lazyFillVisDev(pid uint32) []string {
+	r.hostUUIDMu.RLock()
+	hostByIdx := r.hostUUIDByIndex
+	hostSet := r.hostUUIDSet
+	r.hostUUIDMu.RUnlock()
+	value, err := readNVIDIAVisibleDevices(pid)
+	if err != nil {
+		r.visDev.store(pid, nil)
+		return nil
+	}
+	ords := parseVisibleDevices(value, hostByIdx, hostSet)
+	r.visDev.store(pid, ords)
+	return ords
 }
 
 // runDeviceMapRefresher 는 r.refreshEvery 주기로 NVML RunningProcesses 를 모든 device 에서
@@ -341,13 +447,17 @@ func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap, d
 		if err := devSet.Sync(); err != nil {
 			log.Printf("cuda: device sync: %v", err)
 		}
-		fresh := r.collectPidToUUID(devSet.Snapshot())
+		fresh, freshAll, multiGPUCount := r.collectPidToUUID(devSet.Snapshot())
+		metrics.SetCudaPidMultiGPUCount(r.nodeName, multiGPUCount)
 		// active PID 셋에 대해 ResolvePID 를 본 사이클에서 한 번씩만 호출해 podMap 을 통째 교체한다.
 		// dispatch hot path 는 다음 사이클까지의 모든 이벤트를 캐시 hit 로 처리하고, 종료된 PID 는
 		// 본 replace 로 자연스럽게 제거되어 별도 cleanup 호출이 필요하지 않다.
 		r.pods.replace(r.resolvePidToPod(fresh))
+		// active PID 의 NVIDIA_VISIBLE_DEVICES 를 일괄 해석해 visDev 캐시도 통째 교체한다.
+		// dispatch 의 ordinal-to-UUID 변환이 hit 경로로 들어가게 한다 (#33).
+		r.visDev.replace(r.resolveVisibleDevices(fresh))
 		devmap.replace(fresh)
-		metrics.RetainCudaSeries(r.buildActiveCudaKeys(fresh))
+		metrics.RetainCudaSeries(r.buildActiveCudaKeys(freshAll))
 
 		current := readDroppedTotal(droppedMap)
 		switch {
@@ -403,20 +513,24 @@ func readDroppedTotal(droppedMap *cebpf.Map) uint64 {
 // 의 stale 시리즈 cleanup 기준으로 사용한다. resolver 가 nil 이거나 어떤 PID 도 Pod 으로
 // 해석되지 않으면 빈 셋을 반환해 모든 시리즈가 제거된다.
 //
+// pidToUUIDs 는 PID 당 본 모든 GPU UUID 의 리스트라 multi-GPU PID 의 모든 (PID, GPU) 시리즈가
+// active 셋에 포함된다. dispatch 가 device_ord + visDev 로 정확한 GPU 라벨로 발행한 시리즈가
+// cleanup 사이클에서 부당하게 제거되지 않게 한다 (#33). 단일 GPU PID 는 길이 1 슬라이스로 들어와
+// 기존 동작과 동일하게 한 키만 만든다.
+//
 // PodName/PodUID 폴백은 metrics.PodNameOrUnknown / PodUIDOrUnknown 을 그대로 사용해
 // RecordCudaEvent 가 만드는 라벨 키와 정확히 동일한 형식이 보장된다 (cleanup 매칭 정합성).
-func (r *Reader) buildActiveCudaKeys(pidToUUID map[uint32]string) map[metrics.CudaLabelKey]struct{} {
+func (r *Reader) buildActiveCudaKeys(pidToUUIDs map[uint32][]string) map[metrics.CudaLabelKey]struct{} {
 	if r.resolver == nil {
 		return map[metrics.CudaLabelKey]struct{}{}
 	}
-	active := make(map[metrics.CudaLabelKey]struct{}, len(pidToUUID))
-	for pid, uuid := range pidToUUID {
+	active := make(map[metrics.CudaLabelKey]struct{}, len(pidToUUIDs))
+	for pid, uuids := range pidToUUIDs {
 		// dispatch hot path 와 동일한 캐시를 공유한다. production refresh cycle 에서 호출된
 		// 경우에는 직전에 r.pods.replace(r.resolvePidToPod(fresh)) 가 동일 fresh 셋으로 캐시를
 		// 일괄 적재하므로 모든 lookup 이 hit 로 끝나며 fallback 분기는 도달하지 않는다.
 		// fallback 은 unit test 등 캐시 사전 적재 없이 본 함수를 직접 호출하는 경로의 함수
-		// 계약 (self-contained) 을 유지하기 위한 robustness 가드다 — 이 분기를 제거하려면
-		// 모든 호출자가 사전 replace 를 책임지도록 결합도가 올라간다.
+		// 계약 (self-contained) 을 유지하기 위한 robustness 가드다.
 		id, ok := r.pods.lookup(pid)
 		if !ok {
 			id = r.resolver.ResolvePID(pid)
@@ -425,7 +539,9 @@ func (r *Reader) buildActiveCudaKeys(pidToUUID map[uint32]string) map[metrics.Cu
 		if !id.IsPod() {
 			continue
 		}
-		active[metrics.CudaActiveKey(r.nodeName, id.NamespaceLabel(), metrics.PodNameOrUnknown(id), metrics.PodUIDOrUnknown(id), uuid)] = struct{}{}
+		for _, uuid := range uuids {
+			active[metrics.CudaActiveKey(r.nodeName, id.NamespaceLabel(), metrics.PodNameOrUnknown(id), metrics.PodUIDOrUnknown(id), uuid)] = struct{}{}
+		}
 	}
 	return active
 }
@@ -450,20 +566,72 @@ func (r *Reader) resolvePidToPod(pidToUUID map[uint32]string) map[uint32]kube.Po
 	return fresh
 }
 
-func (r *Reader) collectPidToUUID(devices []nvml.Device) map[uint32]string {
+// collectPidToUUID 는 NVML 의 모든 device 에서 RunningProcesses 를 수집해 PID 를 GPU UUID 로
+// 매핑한다. 세 가지 결과를 반환한다.
+//
+//   - pidToUUID: PID 당 마지막으로 본 GPU UUID (last-wins). devmap 폴백 라벨로 사용된다.
+//   - pidToUUIDs: PID 당 본 모든 GPU UUID 의 정렬된 리스트. RetainCudaSeries 가 multi-GPU PID
+//     의 모든 (PID, GPU) 시리즈를 active key 셋으로 보존하도록 buildActiveCudaKeys 가 사용한다.
+//   - multiGPUCount: 둘 이상 GPU 에 등장한 PID 수. SetCudaPidMultiGPUCount 발행에 사용된다.
+//
+// last-wins 동작은 BPF 의 cuda_tid_device 매핑이 없을 때 dispatch 가 폴백하는 PID-level 라벨이며,
+// 본 PR 의 multi-GPU attribution 은 dispatch 시점에 BPF 가 capture 한 device_ord + visDev resolver
+// 로 우선 분리되고 ordinal lookup 이 실패할 때만 본 fresh map 에 폴백한다 (#33).
+//
+// 본 함수는 collect 도중 hostUUIDByIndex / hostUUIDSet 도 함께 갱신해 visDev 의 NVIDIA_VISIBLE_DEVICES
+// 파싱이 최신 NVML index 매핑을 사용하게 한다.
+func (r *Reader) collectPidToUUID(devices []nvml.Device) (map[uint32]string, map[uint32][]string, int) {
 	fresh := make(map[uint32]string)
+	freshAll := make(map[uint32][]string)
+	hostByIdx := make(map[int]string, len(devices))
+	hostSet := make(map[string]struct{}, len(devices))
 	for _, dev := range devices {
 		info, err := dev.Info()
 		if err != nil {
 			continue
 		}
+		hostByIdx[int(info.Index)] = info.UUID
+		hostSet[info.UUID] = struct{}{}
 		procs, err := dev.RunningProcesses()
 		if err != nil {
 			continue
 		}
 		for _, p := range procs {
 			fresh[p.PID] = info.UUID
+			freshAll[p.PID] = append(freshAll[p.PID], info.UUID)
 		}
+	}
+	multiGPUCount := 0
+	for _, uuids := range freshAll {
+		if len(uuids) > 1 {
+			multiGPUCount++
+		}
+	}
+	r.hostUUIDMu.Lock()
+	r.hostUUIDByIndex = hostByIdx
+	r.hostUUIDSet = hostSet
+	r.hostUUIDMu.Unlock()
+	return fresh, freshAll, multiGPUCount
+}
+
+// resolveVisibleDevices 는 active PID 셋에 대해 /proc/<pid>/environ 에서 NVIDIA_VISIBLE_DEVICES 를
+// 읽고 호스트 UUID 슬라이스로 해석해 fresh 맵을 만든다. NVML refresh 사이클이 visDev.replace 로
+// 통째 교체할 때 사용된다. environ read 실패 (PID 종료 등) 는 nil 슬라이스로 negative cache 에
+// 적재해 dispatch 가 동일 PID 에 대해 다시 read 를 시도하지 않게 한다.
+func (r *Reader) resolveVisibleDevices(pidToUUID map[uint32]string) map[uint32][]string {
+	r.hostUUIDMu.RLock()
+	hostByIdx := r.hostUUIDByIndex
+	hostSet := r.hostUUIDSet
+	r.hostUUIDMu.RUnlock()
+
+	fresh := make(map[uint32][]string, len(pidToUUID))
+	for pid := range pidToUUID {
+		raw, err := readNVIDIAVisibleDevices(pid)
+		if err != nil {
+			fresh[pid] = nil
+			continue
+		}
+		fresh[pid] = parseVisibleDevices(raw, hostByIdx, hostSet)
 	}
 	return fresh
 }

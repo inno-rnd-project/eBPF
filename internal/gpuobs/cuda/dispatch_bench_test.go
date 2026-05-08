@@ -103,6 +103,25 @@ func BenchmarkReaderDispatch_CacheMiss_Slow(b *testing.B) {
 	}
 }
 
+// BenchmarkReaderDispatch_VisDevHit 는 BPF 가 capture 한 device_ord 가 visDev 의 hit 경로로
+// 변환되는 multi-GPU attribution 분리의 hot path 비용을 측정한다. CacheHit 와 비교했을 때
+// visDev resolve 의 추가 RLock + 슬라이스 인덱싱 비용이 ns/op 차이로 직접 드러난다.
+func BenchmarkReaderDispatch_VisDevHit(b *testing.B) {
+	resolver := fakeResolver{table: map[uint32]kube.PodIdentity{1234: samplePod("ml", "p", "u")}}
+	r := newReaderForBench(resolver)
+	devmap := newDeviceMap()
+	devmap.replace(map[uint32]string{1234: "GPU-A"})
+	r.pods.store(1234, samplePod("ml", "p", "u"))
+	r.visDev.replace(map[uint32][]string{1234: {"GPU-A", "GPU-B"}})
+	raw := rawEvent{PID: 1234, Bytes: 4096, Kind: uint8(types.CudaEventH2D), DeviceOrd: 1}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r.dispatch(raw, devmap)
+	}
+}
+
 // BenchmarkReaderDispatch_CacheHit 는 podMap 에 PID 가 이미 적재된 상태의 hot path 를 측정한다.
 // SlowResolver baseline 과 비교했을 때 캐시 도입이 절감하는 시간이 ns/op 차이로 직접 드러난다.
 func BenchmarkReaderDispatch_CacheHit(b *testing.B) {
@@ -130,11 +149,11 @@ func BenchmarkReaderDispatch_CacheHit(b *testing.B) {
 func BenchmarkReaderBuildActiveCudaKeys(b *testing.B) {
 	const pidCount = 64
 	table := make(map[uint32]kube.PodIdentity, pidCount)
-	pidMap := make(map[uint32]string, pidCount)
+	pidMap := make(map[uint32][]string, pidCount)
 	for i := 0; i < pidCount; i++ {
 		pid := uint32(1000 + i)
 		table[pid] = samplePod("ml", "p"+strconv.Itoa(i), "u"+strconv.Itoa(i))
-		pidMap[pid] = "GPU-A"
+		pidMap[pid] = []string{"GPU-A"}
 	}
 	resolver := slowResolver{table: table, delay: 30 * time.Microsecond}
 	r := New("/unused", "", "node-A", nil, resolver, 0)
