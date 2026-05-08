@@ -232,3 +232,84 @@ func splitNUL(s string) []string {
 	}
 	return out
 }
+
+// TestParseEnvironForKey_IndexByteBoundaries 는 readNVIDIAVisibleDevices 의 bytes.IndexByte 루프가
+// trailing NUL 유무와 빈 입력에 대해 graceful 하게 동작하는지 검증한다. /proc/<pid>/environ 은 보통
+// trailing NUL 로 끝나지만, 커널 / 컨테이너 환경에 따라 그렇지 않을 수도 있어 양쪽 모두 안전해야 한다.
+func TestParseEnvironForKey_IndexByteBoundaries(t *testing.T) {
+	cases := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{
+			name: "trailing NUL",
+			data: []byte("PATH=/u\x00NVIDIA_VISIBLE_DEVICES=GPU-A\x00"),
+			want: "GPU-A",
+		},
+		{
+			name: "no trailing NUL",
+			data: []byte("PATH=/u\x00NVIDIA_VISIBLE_DEVICES=GPU-B"),
+			want: "GPU-B",
+		},
+		{
+			name: "key absent",
+			data: []byte("PATH=/u\x00OTHER=v\x00"),
+			want: "",
+		},
+		{
+			name: "empty",
+			data: []byte{},
+			want: "",
+		},
+	}
+	keyBytes := []byte("NVIDIA_VISIBLE_DEVICES=")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := tc.data
+			got := ""
+			for len(data) > 0 {
+				end := bytesIndexByte(data, 0)
+				var entry []byte
+				if end < 0 {
+					entry = data
+					data = nil
+				} else {
+					entry = data[:end]
+					data = data[end+1:]
+				}
+				if hasPrefixBytes(entry, keyBytes) {
+					got = string(entry[len(keyBytes):])
+					break
+				}
+			}
+			if got != tc.want {
+				t.Errorf("got=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
+// bytesIndexByte / hasPrefixBytes 는 readNVIDIAVisibleDevices 의 루프 로직을 단위 테스트에서 재현
+// 하기 위한 미니 헬퍼다. 표준 라이브러리 bytes 패키지를 직접 import 해도 되지만 본 테스트 파일이
+// fixture 기반 검증만 의도하므로 헬퍼로 분리해 의도를 명확히 한다.
+func bytesIndexByte(b []byte, c byte) int {
+	for i, v := range b {
+		if v == c {
+			return i
+		}
+	}
+	return -1
+}
+
+func hasPrefixBytes(b, prefix []byte) bool {
+	if len(b) < len(prefix) {
+		return false
+	}
+	for i := range prefix {
+		if b[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
+}

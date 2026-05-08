@@ -74,9 +74,11 @@ func (v *visDevMap) resolve(pid uint32, ordinal int) string {
 }
 
 // readNVIDIAVisibleDevices 는 /proc/<pid>/environ 을 읽어 NVIDIA_VISIBLE_DEVICES 환경변수의
-// 값을 추출한다. environ 파일은 NUL byte 로 구분된 KEY=VALUE 셋이라 bytes 패키지로 byte-slice
-// 상태에서 직접 분해해 string(data) 의 전체 복사 alloc 을 피한다. 매칭된 항목의 값 부분만
-// string 으로 변환해 반환 alloc 을 최소화한다.
+// 값을 추출한다. environ 파일은 NUL byte 로 구분된 KEY=VALUE 셋이라 bytes.IndexByte 로 다음
+// NUL 위치를 찾아가며 entry 단위로 직접 순회한다. bytes.Split 이 만들어내는 [][]byte 슬라이스
+// 헤더 alloc (entry 수 × 24 bytes) 까지 회피해 매칭 entry 의 값 부분 string 변환 1 회만 alloc
+// 발생시킨다. NVML refresh / dispatch lazy fill 두 경로 모두에서 호출되므로 alloc 최소화가
+// 누적 GC 부담을 낮춘다.
 //
 // 반환 의미: /proc/<pid>/environ 을 읽지 못하면 (PID 종료 / 권한 부족 등) 그대로 에러를
 // 반환하고, 파일은 읽혔지만 NVIDIA_VISIBLE_DEVICES 항목이 없으면 ("", nil) 을 반환한다. 호출자
@@ -89,7 +91,16 @@ func readNVIDIAVisibleDevices(pid uint32) (string, error) {
 		return "", err
 	}
 	keyBytes := []byte("NVIDIA_VISIBLE_DEVICES=")
-	for _, entry := range bytes.Split(data, []byte{0}) {
+	for len(data) > 0 {
+		end := bytes.IndexByte(data, 0)
+		var entry []byte
+		if end < 0 {
+			entry = data
+			data = nil
+		} else {
+			entry = data[:end]
+			data = data[end+1:]
+		}
 		if bytes.HasPrefix(entry, keyBytes) {
 			return string(entry[len(keyBytes):]), nil
 		}
