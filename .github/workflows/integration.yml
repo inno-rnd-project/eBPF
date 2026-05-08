@@ -35,10 +35,13 @@ jobs:
       # GHA runner 환경에서 깨짐). libbpf 의 prebuilt static bpftool binary 를 GitHub Releases 에서
       # 받아 /usr/local/bin 에 둔다. release tag 고정으로 재현성 확보. 통합 테스트는 본 .o 를 실제
       # BPF 로 load 하지 않지만 Go 컴파일 단계의 embed 검증 때문에 파일이 반드시 있어야 한다.
-      - name: Install clang / llvm
+      # libbpf-dev 는 bpf/bpf_helpers.h / bpf_core_read.h / bpf_tracing.h 등 BPF 프로그램이 include
+      # 하는 헤더를 /usr/include/bpf/ 에 제공한다. clang 만 설치하면 이 헤더를 못 찾아 BPF 컴파일이
+      # "bpf/bpf_helpers.h file not found" 로 즉시 실패한다.
+      - name: Install clang / llvm / libbpf-dev
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang llvm
+          sudo apt-get install -y -qq clang llvm libbpf-dev
 
       - name: Install bpftool (libbpf prebuilt static)
         env:
