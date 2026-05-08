@@ -411,6 +411,29 @@ func (r *Reader) lazyFillVisDev(pid uint32) []string {
 	return ords
 }
 
+// droppedSource 는 BPF cuda_dropped percpu map 의 누적값을 추상화해 통합 테스트가 BPF kernel
+// 호출 없이 fake 카운터를 주입할 수 있게 한다. production 경로는 bpfDroppedSource 가 *cebpf.Map
+// 을 감싸 동일한 의미를 보존한다.
+type droppedSource interface {
+	Total() uint64
+}
+
+// bpfDroppedSource 는 production 의 cuda_dropped percpu map 어댑터다.
+type bpfDroppedSource struct {
+	m *cebpf.Map
+}
+
+func (b bpfDroppedSource) Total() uint64 { return readDroppedTotal(b.m) }
+
+// droppedBaseline 은 metrics ECC / Violation / Energy / PcieReplay 와 동일한 baseline-then-delta
+// 추적기다. 첫 호출은 baseline 만 저장하고 add 를 건너뛰며, current < last 인 reset 케이스는
+// 거짓 spike 회피를 위해 가산 skip + 새 baseline 으로 갱신한다. 통합 테스트가 사이클 단위 호출을
+// 하기 위해 closure 변수를 외부 struct 로 격상시켰다.
+type droppedBaseline struct {
+	last        uint64
+	initialized bool
+}
+
 // runDeviceMapRefresher 는 r.refreshEvery 주기로 NVML RunningProcesses 를 모든 device 에서
 // 모은 뒤 deviceMap 을 atomic replace 하고, 같은 사이클에서 RetainCudaSeries 호출로 종료된
 // (Pod, GPU) 의 metric 시리즈를 surgical Delete 한다. 같은 ticker 에서 BPF percpu cuda_dropped
@@ -433,50 +456,11 @@ func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap, d
 		}
 	}()
 
-	// dropped counter 는 metrics 측 ECC / Violation / Energy / PcieReplay 와 동일한 baseline-then-delta
-	// 패턴으로 처리한다. 첫 refresh() 시점에 BPF percpu map 이 0 이 아닐 가능성 (cuda reader 가 attach 보다
-	// 먼저 map 을 만들고 다른 프로세스가 그 사이 reserve 실패한 케이스 / agent 재시작 시 map 잔존 등) 이
-	// 있으므로, 첫 호출은 baseline 만 저장하고 delta 가산은 두 번째 호출부터 시작한다.
-	var (
-		lastDroppedTotal uint64
-		droppedBaselined bool
-	)
-	refresh := func() {
-		// 매 cycle 에 device 셋을 동기화해 hot-plug 변화를 흡수한다. Sync 실패는 warn 로그만 남기고
-		// 직전까지의 device 슬라이스를 그대로 사용한다 (다음 cycle 에서 재시도).
-		if err := devSet.Sync(); err != nil {
-			log.Printf("cuda: device sync: %v", err)
-		}
-		fresh, freshAll, multiGPUCount := r.collectPidToUUID(devSet.Snapshot())
-		metrics.SetCudaPidMultiGPUCount(r.nodeName, multiGPUCount)
-		// active PID 셋에 대해 ResolvePID 를 본 사이클에서 한 번씩만 호출해 podMap 을 통째 교체한다.
-		// dispatch hot path 는 다음 사이클까지의 모든 이벤트를 캐시 hit 로 처리하고, 종료된 PID 는
-		// 본 replace 로 자연스럽게 제거되어 별도 cleanup 호출이 필요하지 않다.
-		r.pods.replace(r.resolvePidToPod(fresh))
-		// active PID 의 NVIDIA_VISIBLE_DEVICES 를 일괄 해석해 visDev 캐시도 통째 교체한다.
-		// dispatch 의 ordinal-to-UUID 변환이 hit 경로로 들어가게 한다 (#33).
-		r.visDev.replace(r.resolveVisibleDevices(fresh))
-		devmap.replace(fresh)
-		metrics.RetainCudaSeries(r.buildActiveCudaKeys(freshAll))
-
-		current := readDroppedTotal(droppedMap)
-		switch {
-		case !droppedBaselined:
-			// 첫 호출: baseline 만 저장하고 add 건너뜀.
-			lastDroppedTotal = current
-			droppedBaselined = true
-		case current < lastDroppedTotal:
-			// BPF map reset 등 정상적으로는 일어나기 어려운 케이스. 거짓 spike 회피 위해 가산 skip + 새 baseline.
-			lastDroppedTotal = current
-		case current > lastDroppedTotal:
-			metrics.AddCudaEventsLost(r.nodeName, current-lastDroppedTotal)
-			lastDroppedTotal = current
-		}
-		// current == lastDroppedTotal 인 케이스 (drop 변화 없음) 는 모든 분기를 통과하지 않아 자연 no-op.
-	}
+	dropped := bpfDroppedSource{m: droppedMap}
+	var baseline droppedBaseline
 
 	// 첫 풀링을 즉시 1회 수행해 reader 가 첫 이벤트를 받기 전 매핑이 채워지도록 한다.
-	refresh()
+	r.refreshOnce(devSet, devmap, dropped, &baseline)
 
 	t := time.NewTicker(r.refreshEvery)
 	defer t.Stop()
@@ -485,9 +469,51 @@ func (r *Reader) runDeviceMapRefresher(ctx context.Context, devmap *deviceMap, d
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			refresh()
+			r.refreshOnce(devSet, devmap, dropped, &baseline)
 		}
 	}
+}
+
+// refreshOnce 는 한 ticker 사이클의 모든 작업을 수행한다. NVML device 동기화, PID→UUID 수집,
+// podMap / visDev / devmap 통째 교체, RetainCudaSeries cleanup, dropped counter delta 발행이
+// 단일 호출 안에서 끝난다. runDeviceMapRefresher 가 ticker 와 lifecycle 만 담당하고 본 함수가
+// 비즈니스 로직 전체를 책임지는 구조라 통합 테스트가 본 함수를 직접 호출해 사이클 단위 정합성을
+// 검증할 수 있다.
+//
+// 첫 호출 시점에 BPF percpu map 이 0 이 아닐 가능성 (cuda reader 가 attach 보다 먼저 map 을
+// 만들고 다른 프로세스가 그 사이 reserve 실패한 케이스 / agent 재시작 시 map 잔존 등) 이 있어
+// baseline.initialized=false 인 첫 호출은 last 만 저장하고 delta 가산을 건너뛴다.
+func (r *Reader) refreshOnce(devSet *nvml.DeviceSet, devmap *deviceMap, dropped droppedSource, baseline *droppedBaseline) {
+	// 매 cycle 에 device 셋을 동기화해 hot-plug 변화를 흡수한다. Sync 실패는 warn 로그만 남기고
+	// 직전까지의 device 슬라이스를 그대로 사용한다 (다음 cycle 에서 재시도).
+	if err := devSet.Sync(); err != nil {
+		log.Printf("cuda: device sync: %v", err)
+	}
+	fresh, freshAll, multiGPUCount := r.collectPidToUUID(devSet.Snapshot())
+	metrics.SetCudaPidMultiGPUCount(r.nodeName, multiGPUCount)
+	// active PID 셋에 대해 ResolvePID 를 본 사이클에서 한 번씩만 호출해 podMap 을 통째 교체한다.
+	// dispatch hot path 는 다음 사이클까지의 모든 이벤트를 캐시 hit 로 처리하고, 종료된 PID 는
+	// 본 replace 로 자연스럽게 제거되어 별도 cleanup 호출이 필요하지 않다.
+	r.pods.replace(r.resolvePidToPod(fresh))
+	// active PID 의 NVIDIA_VISIBLE_DEVICES 를 일괄 해석해 visDev 캐시도 통째 교체한다.
+	// dispatch 의 ordinal-to-UUID 변환이 hit 경로로 들어가게 한다 (#33).
+	r.visDev.replace(r.resolveVisibleDevices(fresh))
+	devmap.replace(fresh)
+	metrics.RetainCudaSeries(r.buildActiveCudaKeys(freshAll))
+
+	current := dropped.Total()
+	switch {
+	case !baseline.initialized:
+		baseline.last = current
+		baseline.initialized = true
+	case current < baseline.last:
+		// BPF map reset 등 정상적으로는 일어나기 어려운 케이스. 거짓 spike 회피 위해 가산 skip + 새 baseline.
+		baseline.last = current
+	case current > baseline.last:
+		metrics.AddCudaEventsLost(r.nodeName, current-baseline.last)
+		baseline.last = current
+	}
+	// current == baseline.last 인 케이스 (drop 변화 없음) 는 모든 분기를 통과하지 않아 자연 no-op.
 }
 
 // readDroppedTotal 은 cuda_dropped percpu array (key=0) 슬롯을 모든 CPU 에서 읽어 합산한다.
