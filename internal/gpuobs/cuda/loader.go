@@ -222,15 +222,21 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 
 	// uretprobe attach 루프. 실패는 warn 로깅 후 진행해 multi-GPU attribution 일부가 비활성이어도
 	// 본 PR 의 다른 기능 (kernel launch / memcpy 카운터, podMap 캐시) 이 그대로 작동하게 한다.
+	// 단, 본 PR 의 cuCtxCreate_v2 같은 entry+exit 페어 심볼은 둘 중 하나라도 실패하면 ctx-to-device
+	// 매핑이 만들어지지 않아 multi-GPU attribution 의 Driver API 경로가 작동하지 않는다.
+	// gpuobs_cuda_symbol_available 가 운영자 진단의 1차 신호라 entry 만 attach 된 half-attached
+	// 상태를 0 으로 override 해 진단 정확성을 보존한다.
 	for _, sym := range trackedUretprobes {
 		prog, ok := progByUretprobeSymbol[sym]
 		if !ok || prog == nil {
 			log.Printf("cuda uretprobe attach %s: missing ebpf program mapping", sym)
+			metrics.SetCudaSymbolAvailability(r.nodeName, sym, false)
 			continue
 		}
 		l, err := ex.Uretprobe(sym, prog, nil)
 		if err != nil {
 			log.Printf("cuda uretprobe attach %s: %v", sym, err)
+			metrics.SetCudaSymbolAvailability(r.nodeName, sym, false)
 			continue
 		}
 		links = append(links, l)

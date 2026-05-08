@@ -131,6 +131,10 @@ struct {
  * ordinal 을 같은 호출의 uretprobe (exit) 로 전달하는 임시 map 이다. uretprobe 시점에는
  * x86_64 ABI 규약상 entry 의 PARM 레지스터가 전부 clobber 되어 있어 entry 에서 상태를 보관해
  * 두지 않으면 (pctx 출력 위치, dev) 를 알 수 없다. exit 가 lookup 후 즉시 delete 한다.
+ *
+ * LRU_HASH 로 잡아 uretprobe attach 가 실패하거나 longjmp / 비정상 return 등으로 exit 가
+ * 못 fire 한 경우의 stale entry 가 자동 evict 되도록 한다. 정상 경로에서는 exit 가 즉시
+ * delete 하므로 LRU 동작이 동작 의미에 영향을 주지 않는다.
  */
 struct ctx_create_args {
     __u64 pctx_addr;
@@ -138,7 +142,7 @@ struct ctx_create_args {
 };
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 4096);
     __type(key, __u32);
     __type(value, struct ctx_create_args);
