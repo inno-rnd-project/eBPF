@@ -1,0 +1,45 @@
+name: integration
+
+# 본 워크플로우는 #36 의 통합 테스트 6종 (T1~T6) 을 GitHub-hosted runner 에서 실행해 main 브랜치
+# 머지 게이트로 동작한다. 실 BPF kernel attach / 실 multi-GPU 노드 / 실 NVML 의존성은 별도 e2e
+# 이슈로 분리되어 있어 본 워크플로우는 그 항목들을 포함하지 않는다.
+#
+# 실행 시간 예산: setup-envtest binary 다운로드 / 캐시 hit 시 60 초 이내, race detector 항상 on,
+# 재시도 정책 없음 (fail-fast). 이 ceiling 을 깨지면 본 워크플로우 자체를 따로 분할한다.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ENVTEST_K8S_VERSION: 1.31.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # envtest binary (etcd / kube-apiserver) 를 setup-envtest 로 받아 KUBEBUILDER_ASSETS 경로를
+      # 산출한다. setup-envtest 가 자체 캐시 디렉토리 (~/.local/share/kubebuilder-envtest) 를 두므로
+      # actions/cache 는 별도 적용하지 않고, setup-go 의 모듈 캐시만 활용한다.
+      - name: Resolve envtest assets path
+        id: envtest
+        run: |
+          set -euo pipefail
+          ASSETS=$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use $ENVTEST_K8S_VERSION -p path)
+          echo "assets=$ASSETS" >> "$GITHUB_OUTPUT"
+
+      - name: Run integration tests
+        env:
+          KUBEBUILDER_ASSETS: ${{ steps.envtest.outputs.assets }}
+        run: go test -tags=integration -race -timeout=60s ./internal/gpuobs/integration/...
