@@ -3,6 +3,7 @@ package cuda
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -109,16 +110,18 @@ func parseVisibleDevices(value string, hostUUIDByIndex map[int]string, hostUUIDS
 	case "", "void", "none":
 		return nil
 	case "all":
-		// NVML index 순서대로 호스트 UUID 를 나열. 누락된 index 는 빈 문자열로 채워 ordinal 위치를 보존한다.
-		size := 0
+		// 컨테이너 CUDA driver 는 NVIDIA_VISIBLE_DEVICES=all 일 때 호스트의 가용 GPU 를 dense ordinal
+		// (0, 1, ..., N-1) 로 인식한다. 호스트 NVML index 에 gap (예: MIG 분할 / hot-remove 후) 이
+		// 있어도 컨테이너 ordinal 에는 그대로 전달되지 않으므로, NVML index 를 ASC 정렬해 dense
+		// packing 한 결과를 반환한다. 콤마 구분 케이스 (아래 분기) 와 의미가 일관된다.
+		indices := make([]int, 0, len(hostUUIDByIndex))
 		for idx := range hostUUIDByIndex {
-			if idx+1 > size {
-				size = idx + 1
-			}
+			indices = append(indices, idx)
 		}
-		result := make([]string, size)
-		for idx, uuid := range hostUUIDByIndex {
-			result[idx] = uuid
+		sort.Ints(indices)
+		result := make([]string, len(indices))
+		for i, idx := range indices {
+			result[i] = hostUUIDByIndex[idx]
 		}
 		return result
 	}

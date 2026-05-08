@@ -81,18 +81,20 @@ func TestParseVisibleDevices_UnknownEntryKeepsSlot(t *testing.T) {
 	}
 }
 
-func TestParseVisibleDevices_AllWithGap(t *testing.T) {
-	// hostUUIDByIndex 에 0, 2 만 있고 1 이 비어 있어도 ordinal 위치를 유지해야 한다.
+func TestParseVisibleDevices_AllPacksDenselyAcrossHostIndexGaps(t *testing.T) {
+	// hostUUIDByIndex 가 {0, 2} 로 호스트 NVML index 1 이 비어 있어도, 컨테이너 CUDA driver 는
+	// 가용 GPU 2 개를 dense ordinal (0, 1) 로 인식한다. parseVisibleDevices 는 NVML index 를 ASC
+	// 정렬한 뒤 dense packing 해 ordinal 0=GPU-A, 1=GPU-C 가 되어야 한다 (gappy 채우기 ❌).
 	hostByIdx := map[int]string{0: "GPU-A", 2: "GPU-C"}
 	hostSet := map[string]struct{}{"GPU-A": {}, "GPU-C": {}}
 
 	got := parseVisibleDevices("all", hostByIdx, hostSet)
 
-	if len(got) != 3 {
-		t.Fatalf("len=%d want 3", len(got))
+	if len(got) != 2 {
+		t.Fatalf("len=%d want 2 (dense packing across gap)", len(got))
 	}
-	if got[0] != "GPU-A" || got[1] != "" || got[2] != "GPU-C" {
-		t.Errorf("got=%v want [GPU-A '' GPU-C]", got)
+	if got[0] != "GPU-A" || got[1] != "GPU-C" {
+		t.Errorf("got=%v want [GPU-A GPU-C]", got)
 	}
 }
 
