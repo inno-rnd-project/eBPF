@@ -19,6 +19,10 @@ jobs:
     timeout-minutes: 10
     env:
       ENVTEST_K8S_VERSION: 1.31.0
+      # setup-envtest 는 controller-runtime 에서 분리된 별도 Go 모듈로 자체 태그 (v0.24.0~) 를 가진다.
+      # 본체 v0.19.4 와 태그 체계가 다르며 현재 발행된 단일 안정 태그인 v0.24.0 으로 고정해 비결정성
+      # (자산 해석 동작 변경 / 업스트림 회귀) 을 차단한다.
+      SETUP_ENVTEST_VERSION: v0.24.0
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,7 +74,7 @@ jobs:
         id: envtest
         run: |
           set -euo pipefail
-          ASSETS=$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use $ENVTEST_K8S_VERSION -p path)
+          ASSETS=$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@$SETUP_ENVTEST_VERSION use $ENVTEST_K8S_VERSION -p path)
           echo "assets=$ASSETS" >> "$GITHUB_OUTPUT"
 
       # -Wl,-z,lazy 는 host gcc 가 강제하는 BIND_NOW 플래그를 override 한다. 통합 테스트 binary 가

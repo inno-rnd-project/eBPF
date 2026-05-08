@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -16,8 +17,10 @@ import (
 // kubernetes.Interface 와 cleanup 함수를 반환한다. 통합 테스트가 envtest binary (etcd / kube-apiserver)
 // 의 setup-envtest 캐시 경로를 KUBEBUILDER_ASSETS 환경변수로 받아 사용한다는 가정에 의존한다.
 //
-// envtest binary 가 환경에 없으면 t.Skip 으로 자연 폴백한다. CI 워크플로우는 setup-envtest 가
-// 사전에 binary 를 준비하므로 본 skip 분기에 도달하지 않는다.
+// 부팅 실패 분기는 KUBEBUILDER_ASSETS 설정 여부에 따라 다르게 처리한다. CI 처럼 자산이 사전 준비된
+// 환경에서 부팅이 실패하면 apiserver / etcd 회귀가 발생한 상황이므로 t.Fatalf 로 즉시 fail 시킨다.
+// 자산이 비어 있으면 binary 가 없는 로컬 환경이므로 t.Skip 으로 자연 폴백한다. 자산 설정 여부와
+// 무관하게 모두 skip 으로 처리하면 회귀가 silent green 으로 통과해 머지 게이트 의미가 사라진다.
 func startEnvtest(t *testing.T) (kubernetes.Interface, *rest.Config, func()) {
 	t.Helper()
 	env := &envtest.Environment{
@@ -25,6 +28,9 @@ func startEnvtest(t *testing.T) (kubernetes.Interface, *rest.Config, func()) {
 	}
 	cfg, err := env.Start()
 	if err != nil {
+		if assets := os.Getenv("KUBEBUILDER_ASSETS"); assets != "" {
+			t.Fatalf("envtest start failed despite KUBEBUILDER_ASSETS=%s: %v", assets, err)
+		}
 		t.Skipf("envtest unavailable (run `make test-integration` to set up): %v", err)
 	}
 	cs, err := kubernetes.NewForConfig(cfg)

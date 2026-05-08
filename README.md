@@ -37,10 +37,10 @@ sudo ./bin/netobs-agent -listen :9810 -print-events=true
 
 ## Tests
 
-Two test layers run in this repo. Unit tests run on every `go test ./...` and cover individual package logic. Integration tests live under [`internal/gpuobs/integration/`](internal/gpuobs/integration/) behind a `//go:build integration` tag and verify cross-package behavior (kube.Resolver informer ordering, NVML refresh cycle consistency, dispatch hot path branches, opt-out toggle effects, `/metrics` Prometheus text format, kustomize overlay drift) without requiring real BPF kernel attach or real NVIDIA GPUs.
+Two test layers run in this repo. Unit tests run via `make test`, which regenerates the bpf2go embed artifacts (`internal/netobs/ebpf/*.o`, `internal/gpuobs/cuda/cudauprobe_*.o`) before invoking `go test -race ./...`; the artifacts are gitignored, so a raw `go test ./...` on a fresh checkout fails to compile until `make generate` and `make generate-gpuobs` have run. Integration tests live under [`internal/gpuobs/integration/`](internal/gpuobs/integration/) behind a `//go:build integration` tag and verify cross-package behavior (kube.Resolver informer ordering, NVML refresh cycle consistency, dispatch hot path branches, opt-out toggle effects, `/metrics` Prometheus text format, kustomize overlay drift) without requiring real BPF kernel attach or real NVIDIA GPUs.
 
 ```bash
-# Unit tests (race detector always on)
+# Unit tests (regenerates BPF artifacts as prereq, race detector always on)
 make test
 
 # Integration tests (sets up envtest binaries via setup-envtest, race detector on, 60s ceiling)

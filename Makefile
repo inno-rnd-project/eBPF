@@ -73,13 +73,23 @@ BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 #                   CI 가 캐시 키 산출 등에 직접 호출할 수도 있다.
 # ============================================================================
 ENVTEST_K8S_VERSION ?= 1.31.0
+# setup-envtest 는 controller-runtime 본체에서 떨어져 나온 별도 Go 모듈
+# (sigs.k8s.io/controller-runtime/tools/setup-envtest) 로 자체 태그 (v0.24.0~) 를 가진다. controller-runtime
+# 본체 (v0.19.4) 와 태그 체계가 다르며 본체 태그로는 모듈 해상이 안 된다. 현재 발행된 단일 안정
+# 태그인 v0.24.0 으로 고정해 시간 경과에 따른 재현성 흔들림 (자산 해석 동작 변경 / 업스트림 회귀)
+# 을 차단한다. v0.24.0 의 go.mod 가 Go 1.26 을 요구하지만 modern `go run` 의 toolchain 자동 다운로드
+# 로 1.22 host 에서도 정상 실행된다.
+SETUP_ENVTEST_VERSION ?= v0.24.0
 
-test:
+# test 는 단위 테스트 스위트. cuda / netobs ebpf 패키지가 //go:embed 로 bpf2go 산출물 (.o) 을 참조
+# 하므로 fresh checkout 에서 컴파일 단계가 실패하지 않도록 generate / generate-gpuobs 를 선행 의존
+# 으로 둔다. host 에 bpftool 이 없으면 generate 단계에서 명확한 오류로 즉시 멈춘다.
+test: generate generate-gpuobs
 	go test -race ./...
 
 test-integration:
 	@echo "preparing envtest binaries via setup-envtest (k8s $(ENVTEST_K8S_VERSION))"
-	@KUBEBUILDER_ASSETS="$$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use $(ENVTEST_K8S_VERSION) -p path)" \
+	@KUBEBUILDER_ASSETS="$$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION) use $(ENVTEST_K8S_VERSION) -p path)" \
 		go test -tags=integration -race -timeout=60s \
 		-ldflags='-extldflags "-Wl,-z,lazy"' \
 		./internal/gpuobs/integration/...
@@ -91,7 +101,7 @@ test-integration:
 # go-nvml 도 dlopen 경로만 사용).
 
 setup-envtest:
-	@go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use $(ENVTEST_K8S_VERSION) -p path
+	@go run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION) use $(ENVTEST_K8S_VERSION) -p path
 
 # ============================================================================
 # Core utilities
