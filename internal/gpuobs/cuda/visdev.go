@@ -1,6 +1,7 @@
 package cuda
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"sort"
@@ -73,19 +74,20 @@ func (v *visDevMap) resolve(pid uint32, ordinal int) string {
 }
 
 // readNVIDIAVisibleDevices 는 /proc/<pid>/environ 을 읽어 NVIDIA_VISIBLE_DEVICES 환경변수의
-// 값을 추출한다. environ 파일은 NUL byte 로 구분된 KEY=VALUE 셋이라 strings.Split 으로 단순
-// 분해한다. 파일 자체가 없거나 (PID 종료) 환경변수가 설정되지 않은 경우 빈 문자열을 반환해
-// 호출자가 negative cache 로 처리할 수 있게 한다.
+// 값을 추출한다. environ 파일은 NUL byte 로 구분된 KEY=VALUE 셋이라 bytes 패키지로 byte-slice
+// 상태에서 직접 분해해 string(data) 의 전체 복사 alloc 을 피한다. 매칭된 항목의 값 부분만
+// string 으로 변환해 반환 alloc 을 최소화한다. 파일 자체가 없거나 (PID 종료) 환경변수가 설정되지
+// 않은 경우 빈 문자열을 반환해 호출자가 negative cache 로 처리할 수 있게 한다.
 func readNVIDIAVisibleDevices(pid uint32) (string, error) {
 	path := fmt.Sprintf("/proc/%d/environ", pid)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	const key = "NVIDIA_VISIBLE_DEVICES="
-	for _, entry := range strings.Split(string(data), "\x00") {
-		if strings.HasPrefix(entry, key) {
-			return entry[len(key):], nil
+	keyBytes := []byte("NVIDIA_VISIBLE_DEVICES=")
+	for _, entry := range bytes.Split(data, []byte{0}) {
+		if bytes.HasPrefix(entry, keyBytes) {
+			return string(entry[len(keyBytes):]), nil
 		}
 	}
 	return "", nil
