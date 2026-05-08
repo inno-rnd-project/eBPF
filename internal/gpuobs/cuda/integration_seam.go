@@ -3,6 +3,7 @@
 package cuda
 
 import (
+	"sync"
 	"time"
 
 	"netobs/internal/gpuobs/metrics"
@@ -109,8 +110,15 @@ type CudaEventSampleForTest struct {
 // CaptureRecordEventForTest 는 dispatch 가 호출하는 recordEvent 를 spy 로 교체해 capture 한
 // sample 을 호출자 슬라이스에 기록한다. 통합 테스트가 dispatch hot path 의 분기 결과를 metric
 // 쪽 변환 없이 직접 검증할 수 있게 한다.
+//
+// production 의 dispatch 는 ringbuf reader goroutine 에서 호출되므로 호출자가 Run 을 띄운 상태에서
+// sink 를 별도 goroutine 에서 읽거나 여러 dispatch 호출이 병렬로 일어나는 시나리오 (현재 T3 에는
+// 없지만 후속 통합 테스트가 도입할 수 있음) 에 대비해 mutex 로 sink append 를 직렬화한다.
 func (r *Reader) CaptureRecordEventForTest(sink *[]CudaEventSampleForTest) {
+	var mu sync.Mutex
 	r.recordEvent = func(node string, sample metrics.CudaEventSample) {
+		mu.Lock()
+		defer mu.Unlock()
 		*sink = append(*sink, CudaEventSampleForTest{
 			Node:    node,
 			GPUUUID: sample.GPUUUID,

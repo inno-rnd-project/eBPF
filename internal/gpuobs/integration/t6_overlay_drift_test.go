@@ -54,7 +54,7 @@ func TestT6_OverlayDriftDevVsProd(t *testing.T) {
 		if prodManifest == nil {
 			continue
 		}
-		if strings.HasPrefix(key, "DaemonSet/") {
+		if strings.HasPrefix(key, "DaemonSet/ebpf-project/gpuobs-agent") {
 			continue
 		}
 		if !bytes.Equal(devManifest, prodManifest) {
@@ -63,8 +63,8 @@ func TestT6_OverlayDriftDevVsProd(t *testing.T) {
 	}
 
 	// DaemonSet 의 의도된 차이를 정확히 검증한다.
-	devDS := mustFindManifest(t, devByKey, "DaemonSet/gpuobs-agent")
-	prodDS := mustFindManifest(t, prodByKey, "DaemonSet/gpuobs-agent")
+	devDS := mustFindManifest(t, devByKey, "DaemonSet/ebpf-project/gpuobs-agent")
+	prodDS := mustFindManifest(t, prodByKey, "DaemonSet/ebpf-project/gpuobs-agent")
 
 	devImage := getDaemonSetImage(t, devDS)
 	prodImage := getDaemonSetImage(t, prodDS)
@@ -139,7 +139,12 @@ func indexManifests(t *testing.T, docs [][]byte) map[string][]byte {
 		if err := yaml.Unmarshal(doc, &h); err != nil {
 			t.Fatalf("manifest header parse: %v", err)
 		}
+		// namespaced 객체와 cluster-scoped 객체가 같은 Kind + Name 을 가질 수 있어 namespace 를
+		// 키에 포함해 silent collision 을 방지한다 (예: 두 다른 namespace 의 ConfigMap/X).
 		key := h.Kind + "/" + h.Metadata.Name
+		if h.Metadata.Namespace != "" {
+			key = h.Kind + "/" + h.Metadata.Namespace + "/" + h.Metadata.Name
+		}
 		out[key] = doc
 	}
 	return out
