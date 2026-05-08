@@ -29,6 +29,26 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # cuda 패키지의 cudauprobe_bpfel.o 가 //go:embed 로 참조되지만 .o 와 bpf/vmlinux.h 는 gitignore
+      # 대상이라 CI 환경에는 존재하지 않는다. clang / bpftool 을 설치한 뒤 make generate-gpuobs 가
+      # vmlinux.h 를 host BTF 에서 dump 하고 bpf2go 가 .o 를 컴파일 / embed 하도록 한다. 통합 테스트는
+      # 본 .o 를 실제 BPF 로 load 하지 않지만 Go 컴파일 단계의 embed 검증 때문에 파일이 반드시 있어야
+      # 한다.
+      - name: Install BPF toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang llvm bpftool
+
+      - name: Verify host BTF availability
+        run: |
+          if [ ! -r /sys/kernel/btf/vmlinux ]; then
+            echo "::error::/sys/kernel/btf/vmlinux not readable on this runner; BPF generation cannot proceed"
+            exit 1
+          fi
+
+      - name: Generate BPF artifacts (vmlinux.h + .o)
+        run: make generate-gpuobs
+
       # envtest binary (etcd / kube-apiserver) 를 setup-envtest 로 받아 KUBEBUILDER_ASSETS 경로를
       # 산출한다. setup-envtest 가 자체 캐시 디렉토리 (~/.local/share/kubebuilder-envtest) 를 두므로
       # actions/cache 는 별도 적용하지 않고, setup-go 의 모듈 캐시만 활용한다.
