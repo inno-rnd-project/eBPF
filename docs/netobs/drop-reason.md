@@ -1,23 +1,24 @@
 # netobs drop reason 매핑
 
-netobs 가 emit 하는 `netobs_drop_total` 과 `netobs_drop_events_labeled_total` 메트릭의 `reason` 코드와 `drop_reason` 이름, `drop_category` 분류의 의미를 정리한다. 매핑은 런타임에 호스트 kernel 의 tracepoint format 파일을 파싱해 동적으로 구성되므로 본 문서는 검증 환경 (kernel 6.8.0-60-generic) 기준 스냅샷이다.
+netobs가 emit하는 `netobs_drop_total`과 `netobs_drop_events_labeled_total` 메트릭의 `reason` 코드와 `drop_reason` 이름, `drop_category` 분류의 의미를 정리한다. 매핑은 런타임에 호스트 kernel의 tracepoint format 파일을 파싱해 동적으로 구성되므로 본 문서는 검증 환경(kernel 6.8.0-60-generic) 기준 스냅샷이다.
 
 ## 메트릭 표면
 
-netobs 는 drop 이벤트를 두 종류의 메트릭으로 emit 한다. 카디널리티가 다르므로 용도에 맞게 골라 쓴다.
+netobs는 drop 이벤트를 두 종류의 메트릭으로 emit한다. 카디널리티가 다르므로 용도에 맞게 골라 쓴다.
 
 | 메트릭 | 라벨 | 용도 |
 |---|---|---|
 | `netobs_drop_total` | `reason` (kernel 정수 코드) | 전체 drop 추세 추적. 카디널리티 최소. |
-| `netobs_drop_events_labeled_total` | `node`, `src_namespace`, `src_workload`, `traffic_scope`, `direction`, `drop_reason` (정규화된 이름), `drop_category` (분류) | 운영 진단. Pod attribution + 사람이 읽는 이름 + 카테고리. |
+| `netobs_drop_events_labeled_total` | `node`, `src_namespace`, `src_workload`, `traffic_scope`, `direction`, `drop_reason` (정규화된 이름), `drop_category` (분류) | 운영 진단. Pod attribution과 사람이 읽는 이름, 카테고리. |
 
 ## 동적 매핑 메커니즘
 
-netobs agent 는 시작 시 다음 우선순위로 kernel 의 reason 테이블을 로드한다.
+netobs agent의 `internal/netobs/drop/reasons.go`는 시작 시 호스트 kernel의 reason 테이블을 로드한다. 경로 우선순위는 `DROP_REASON_FORMAT_PATH` 환경변수 (override) 설정 여부에 따라 다음 두 분기 중 하나가 적용된다.
 
-1. `DROP_REASON_FORMAT_PATH` 환경변수 (override 경로) 가 가리키는 파일
-2. `/sys/kernel/tracing/events/skb/kfree_skb/format`
-3. `/sys/kernel/debug/tracing/events/skb/kfree_skb/format`
+| override 설정 여부 | 시도 순서 |
+|---|---|
+| 설정됨 (`DROP_REASON_FORMAT_PATH` 비어있지 않음) | (1) override 경로 (2) `/sys/kernel/debug/tracing/events/skb/kfree_skb/format` |
+| 설정 안 됨 (default) | (1) `/sys/kernel/tracing/events/skb/kfree_skb/format` (2) `/sys/kernel/debug/tracing/events/skb/kfree_skb/format` |
 
 위 파일의 `{ <code>, "<name>" }` 패턴을 정규식으로 추출하고 `SKB_DROP_REASON_` 또는 `SKB_` 접두어를 제거해 정규화된 이름을 만든다. 로드 실패 시 `REASON_<code>` 형식의 fallback 이름을 사용한다. agent 로그에 다음 한 줄로 적재 결과가 남는다.
 
@@ -25,11 +26,11 @@ netobs agent 는 시작 시 다음 우선순위로 kernel 의 reason 테이블�
 drop reason runtime map loaded from /sys/kernel/tracing/events/skb/kfree_skb/format (86 entries)
 ```
 
-`/sys/kernel/tracing` 마운트는 kernel 의 tracefs 로 별도 마운트 없이 호스트에 항상 노출된다. agent 가 `hostPID` 를 사용하므로 컨테이너 안에서도 접근 가능하다.
+`/sys/kernel/tracing`은 대부분의 Linux 배포판에서 tracefs로 자동 마운트되어 노출되지만, 배포판/설정에 따라 미마운트이거나 접근 권한이 제한될 수 있다. 마운트가 없으면 위 두 번째 경로 `/sys/kernel/debug/tracing` (debugfs 안의 tracing) 을 통해 동일 파일이 노출되는 경우가 많고, 둘 다 없으면 운영자가 호스트에서 `mount -t tracefs nodev /sys/kernel/tracing` 으로 명시 마운트해야 한다. agent가 `hostPID`를 사용해 호스트 PID 네임스페이스를 공유하지만 호스트의 마운트 상태나 LSM 정책까지 자동 해소되지는 않는다.
 
 ## drop_category 분류
 
-`drop_category` 는 정규화된 이름에 대한 부분 문자열 매칭 우선순위에 따라 결정된다. 운영자가 가장 자주 묻는 "어떤 종류의 drop 인가" 를 한 라벨로 답하기 위한 분류다. 매칭 순서가 결과를 결정한다 (앞 카테고리가 먼저 매칭되면 뒤 카테고리는 검사하지 않는다).
+`drop_category`는 정규화된 이름에 대한 부분 문자열 매칭 우선순위에 따라 결정된다. 운영자가 가장 자주 묻는 "어떤 종류의 drop인가"를 한 라벨로 답하기 위한 분류다. 매칭 순서가 결과를 결정한다 (앞 카테고리가 먼저 매칭되면 뒤 카테고리는 검사하지 않는다).
 
 | 순서 | 카테고리 | 매칭 패턴 | 의미 |
 |---|---|---|---|
@@ -43,9 +44,9 @@ drop reason runtime map loaded from /sys/kernel/tracing/events/skb/kfree_skb/for
 | 8 | `device` | `TAP`, `DEV_`, `OTHERHOST` 포함 | 디바이스 헤더 / TAP / 자신 앞이 아닌 패킷 |
 | 9 | `unknown` | 위 어느 것도 매칭 안 됨 | 분류 보류 (TCP 상태 머신 관련 다수가 여기에 속함) |
 
-## kernel 6.8.0-60-generic 의 reason 표
+## kernel 6.8.0-60-generic의 reason 표
 
-코드 2 부터 86 까지의 86 개 reason (코드 87 `MAX` 는 sentinel). `정규화된 이름` 열은 agent 가 emit 하는 `drop_reason` 라벨 값이다. `분류` 열은 위 표의 우선순위를 적용한 결과다.
+아래 표는 코드 2부터 86까지의 85개 reason을 정리한 것이다 (코드 87 `MAX`는 sentinel이라 표에서 제외). agent 로그의 `(86 entries)` 카운트는 sentinel을 포함한 런타임 map 크기다. `정규화된 이름` 열은 agent가 emit하는 `drop_reason` 라벨 값이다. `분류` 열은 위 표의 우선순위를 적용한 결과다.
 
 | 코드 | 정규화된 이름 | 분류 | 한글 설명 |
 |---:|---|---|---|
@@ -76,7 +77,7 @@ drop reason runtime map loaded from /sys/kernel/tracing/events/skb/kfree_skb/for
 | 26 | `SOCKET_BACKLOG` | socket | 소켓 백로그 큐 포화 |
 | 27 | `TCP_FLAGS` | unknown | TCP 플래그 조합 부적합 |
 | 28 | `TCP_ZEROWINDOW` | unknown | TCP zero window 상태 |
-| 29 | `TCP_OLD_DATA` | unknown | 이미 ACK 된 옛 TCP 데이터 |
+| 29 | `TCP_OLD_DATA` | unknown | 이미 ACK된 옛 TCP 데이터 |
 | 30 | `TCP_OVERWINDOW` | unknown | TCP 수신 윈도우 초과 |
 | 31 | `TCP_OFOMERGE` | unknown | TCP OFO 큐 병합 중 drop |
 | 32 | `TCP_RFC7323_PAWS` | unknown | RFC 7323 PAWS 검증 실패 |
@@ -93,13 +94,13 @@ drop reason runtime map loaded from /sys/kernel/tracing/events/skb/kfree_skb/for
 | 43 | `TCP_OFO_DROP` | unknown | TCP OFO 큐 포화로 drop |
 | 44 | `IP_OUTNOROUTES` | routing | 송신 경로 없음 |
 | 45 | `BPF_CGROUP_EGRESS` | unknown | cgroup BPF 프로그램이 egress drop |
-| 46 | `IPV6DISABLED` | unknown | IPv6 가 인터페이스에서 비활성 |
+| 46 | `IPV6DISABLED` | unknown | IPv6가 인터페이스에서 비활성 |
 | 47 | `NEIGH_CREATEFAIL` | routing | 이웃 엔트리 생성 실패 |
 | 48 | `NEIGH_FAILED` | routing | 이웃 해상 실패 (ARP / NDISC 시간초과) |
 | 49 | `NEIGH_QUEUEFULL` | queue | 이웃 큐 포화 |
 | 50 | `NEIGH_DEAD` | routing | 사망 상태 이웃 |
 | 51 | `TC_EGRESS` | policy | tc egress qdisc/filter drop |
-| 52 | `QDISC_DROP` | queue | qdisc 가 drop 결정 (예: bfifo 한계) |
+| 52 | `QDISC_DROP` | queue | qdisc가 drop 결정 (예: bfifo 한계) |
 | 53 | `CPU_BACKLOG` | queue | per-CPU 백로그 포화 |
 | 54 | `XDP` | policy | XDP 프로그램이 drop 결정 |
 | 55 | `TC_INGRESS` | policy | tc ingress qdisc/filter drop |
@@ -128,14 +129,14 @@ drop reason runtime map loaded from /sys/kernel/tracing/events/skb/kfree_skb/for
 | 78 | `IPV6_NDISC_HOP_LIMIT` | unknown | NDISC hop limit 부적합 |
 | 79 | `IPV6_NDISC_BAD_CODE` | unknown | 잘못된 NDISC 코드 |
 | 80 | `IPV6_NDISC_BAD_OPTIONS` | unknown | 잘못된 NDISC 옵션 |
-| 81 | `IPV6_NDISC_NS_OTHERHOST` | device | NDISC NS 가 다른 호스트 대상 |
+| 81 | `IPV6_NDISC_NS_OTHERHOST` | device | NDISC NS가 다른 호스트 대상 |
 | 82 | `QUEUE_PURGE` | queue | 큐 비우기 중 drop |
 | 83 | `TC_COOKIE_ERROR` | policy | tc cookie 오류 |
 | 84 | `PACKET_SOCK_ERROR` | unknown | AF_PACKET 소켓 오류 |
 | 85 | `TC_CHAIN_NOTFOUND` | policy | tc chain 미발견 |
 | 86 | `TC_RECLASSIFY_LOOP` | policy | tc 재분류 루프 한계 |
 
-코드 1 은 kernel format 파일에 정의되지 않으나 BPF 경로에서 일부 호출 site 가 보고할 수 있다. 이 경우 agent 는 `REASON_1` fallback 이름을 부여하며 분류는 `unknown` 이 된다.
+코드 1은 kernel format 파일에 정의되지 않으나 BPF 경로에서 일부 호출 site가 보고할 수 있다. 이 경우 agent는 `REASON_1` fallback 이름을 부여하며 분류는 `unknown`이 된다.
 
 ## PromQL 예시
 
@@ -145,12 +146,12 @@ drop reason runtime map loaded from /sys/kernel/tracing/events/skb/kfree_skb/for
 # 노드별 카테고리별 drop rate (5분 평균, 초당 이벤트)
 sum by (node, drop_category) (rate(netobs_drop_events_labeled_total[5m]))
 
-# 정책 위반 (NetworkPolicy / iptables / tc) drop 만 추적
+# 정책 위반 (NetworkPolicy / iptables / tc) drop만 추적
 sum by (src_namespace, src_workload) (
   rate(netobs_drop_events_labeled_total{drop_category="policy"}[5m])
 )
 
-# TCP 상태 머신 관련 drop (분류 unknown 중 이름이 TCP_ 로 시작) Top-N
+# TCP 상태 머신 관련 drop (분류 unknown 중 이름이 TCP_로 시작) Top-N
 topk(10, sum by (drop_reason, src_workload) (
   rate(netobs_drop_events_labeled_total{drop_category="unknown", drop_reason=~"TCP_.*"}[5m])
 ))
@@ -166,10 +167,10 @@ sum by (src_namespace, src_workload, traffic_scope) (
 )
 ```
 
-`netobs_drop_total` 은 `reason` 정수 라벨만 가지므로 카테고리 필터링이 불가하다. 카테고리 분석에는 항상 `netobs_drop_events_labeled_total` 을 사용한다.
+`netobs_drop_total`은 `reason` 정수 라벨만 가지므로 카테고리 필터링이 불가하다. 카테고리 분석에는 항상 `netobs_drop_events_labeled_total`을 사용한다.
 
 ## 한계와 운영 노트
 
-본 표는 kernel 6.8.0-60-generic 의 `enum skb_drop_reason` 정의를 기준으로 작성됐다. kernel 버전이 다르면 코드와 이름의 매핑이 달라지므로 agent 로그의 `drop reason runtime map loaded ... (N entries)` 한 줄이 본 표보다 우선한다. 코드의 의미가 바뀌는 회귀는 드물지만 N 값이 본 문서의 86 과 크게 다르면 호스트 kernel 의 `/sys/kernel/tracing/events/skb/kfree_skb/format` 을 직접 확인해 표를 재작성한다.
+본 표는 kernel 6.8.0-60-generic의 `enum skb_drop_reason` 정의를 기준으로 작성됐다. kernel 버전이 다르면 코드와 이름의 매핑이 달라지므로 agent 로그의 `drop reason runtime map loaded ... (N entries)` 한 줄이 본 표보다 우선한다. 코드의 의미가 바뀌는 회귀는 드물지만 N 값이 본 문서의 86과 크게 다르면 호스트 kernel의 `/sys/kernel/tracing/events/skb/kfree_skb/format`을 직접 확인해 표를 재작성한다.
 
-`drop_category` 분류기는 부분 문자열 매칭 기반이라 새로운 reason 이름이 들어와도 동작하지만, 분류 정확도가 의도와 다를 수 있다. 예를 들어 `PACKET_SOCK_ERROR` 는 의미상 소켓 관련이지만 `SOCKET` 이 아닌 `SOCK` 만 포함해 현재 `unknown` 으로 분류된다. 이런 분류 갭이 운영에서 문제 되는 경우 `internal/netobs/drop/reasons.go` 의 `Category` 함수에 패턴을 추가한다.
+`drop_category` 분류기는 부분 문자열 매칭 기반이라 새로운 reason 이름이 들어와도 동작하지만, 분류 정확도가 의도와 다를 수 있다. 예를 들어 `PACKET_SOCK_ERROR`는 의미상 소켓 관련이지만 `SOCKET`이 아닌 `SOCK`만 포함해 현재 `unknown`으로 분류된다. 이런 분류 갭이 운영에서 문제 되는 경우 `internal/netobs/drop/reasons.go`의 `Category` 함수에 패턴을 추가한다.
