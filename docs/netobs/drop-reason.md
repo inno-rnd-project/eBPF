@@ -37,7 +37,7 @@ drop reason runtime map loaded from /sys/kernel/tracing/events/skb/kfree_skb/for
 | 2 | `checksum` | `CSUM` 포함 | L3/L4 체크섬 실패 |
 | 3 | `policy` | `NETFILTER`, `FILTER`, `TC_`, `XDP` 포함 | 네트워크 정책 (iptables / nftables / tc / XDP / cgroup BPF) |
 | 4 | `queue` | `QDISC`, `QUEUE`, `BACKLOG`, `RING` 포함 | 큐 / 백로그 / NIC ring 포화 |
-| 5 | `resource` | `NOMEM`, `MEM`, `FULL_RING` 포함 | 메모리 압박, 프로토콜 글로벌 메모리 한계 |
+| 5 | `resource` | `NOMEM`, `MEM` 포함 | 메모리 압박, 프로토콜 글로벌 메모리 한계 |
 | 6 | `routing` | `ROUTE`, `NOROUTES`, `RPFILTER`, `NEIGH` 포함 | 라우팅 / RPF / 이웃 (ARP / NDISC) 해상 실패 |
 | 7 | `protocol` | `PROTO`, `IP_`, `PKT_`, `HDR` 포함 | 프로토콜 헤더 / 패킷 크기 / 알 수 없는 L4 |
 | 8 | `device` | `TAP`, `DEV_`, `OTHERHOST` 포함 | 디바이스 헤더 / TAP / 자신 앞이 아닌 패킷 |
@@ -152,7 +152,7 @@ sum by (src_namespace, src_workload) (
 
 # TCP 상태 머신 관련 drop (분류 unknown 중 이름이 TCP_ 로 시작) Top-N
 topk(10, sum by (drop_reason, src_workload) (
-  rate(netobs_drop_events_labeled_total{drop_reason=~"TCP_.*"}[5m])
+  rate(netobs_drop_events_labeled_total{drop_category="unknown", drop_reason=~"TCP_.*"}[5m])
 ))
 
 # 큐 포화 (NIC ring / qdisc / CPU backlog) 워크로드별
