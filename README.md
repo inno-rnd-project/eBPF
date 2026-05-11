@@ -73,10 +73,25 @@ The CI workflow [`integration.yml`](.github/workflows/integration.yml) runs the 
 | `GPU_METRICS_ENABLED` | `-gpu-metrics` | `true` | Emit `gpuobs_device_*` metrics; set false to skip device polling entirely |
 | `GPUOBS_POD_METRICS_ENABLED` | `-pod-metrics` | `true` | Emit `gpuobs_pod_*` metrics via PID → Pod resolution; disable on large clusters to cap Prometheus cardinality |
 | `KUBE_METADATA_REFRESH` | `-metadata-refresh` | `30s` | Kubernetes informer resync interval; must be > 0 |
-| `GPUOBS_CUDA_UPROBE_ENABLED` | `-cuda-uprobe` | `true` | Enable libcuda.so uprobe module emitting `gpuobs_cuda_*` counters; requires `CAP_BPF`/`CAP_PERFMON`/`CAP_SYS_PTRACE` and a libcuda hostPath mount. Pair with `GPUOBS_POD_METRICS_ENABLED=false` to fully suppress per-pod cardinality on large clusters |
+| `GPUOBS_CUDA_UPROBE_ENABLED` | `-cuda-uprobe` | `true` | Enable libcuda.so uprobe module emitting `gpuobs_cuda_*` counters; requires the host capabilities listed under "Host requirements" below and a libcuda hostPath mount. Pair with `GPUOBS_POD_METRICS_ENABLED=false` to fully suppress per-pod cardinality on large clusters |
 | `GPUOBS_CUDA_LIBCUDA_PATH` | `-cuda-libcuda-path` | `/host/usr/lib/x86_64-linux-gnu/libcuda.so.1` | Absolute path to host libcuda.so.1 reachable from inside the container; must match the DaemonSet hostPath mount |
 | `GPUOBS_CUDA_DEVICEMAP_REFRESH` | `-cuda-devicemap-refresh` | `1s` | Interval between NVML `RunningProcesses` sweeps that rebuild the PID→GPU map and clean up stale `gpuobs_cuda_*` series; must be > 0 |
 | `GPUOBS_CUDA_LIBCUDART_PATH` | `-cuda-libcudart-path` | *(empty)* | Absolute path to host `libcudart.so` reachable from inside the container. Empty disables CUDA Runtime API attach. libcudart is part of the CUDA Toolkit (not the driver), so host attach only fires when the workload mmaps the same inode (containers that bundle their own libcudart are not covered, see the limitations note below) |
+
+#### Host requirements
+
+gpuobs-agent runs unprivileged (`privileged: false`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`) and relies on a narrow capability set rather than container privilege. The host kernel and Linux capabilities must satisfy the following.
+
+| Requirement | Reason |
+|---|---|
+| Linux kernel ≥ 6.6 | The cuda uprobe module attaches via the `uprobe_multi` BPF link (`BPF_LINK_CREATE` with `BPF_TRACE_UPROBE_MULTI`), introduced in 6.6. The older `perf_event_open` uprobe PMU path is intentionally avoided because it is blocked by `kernel.perf_event_paranoid` ≥ 2 on hardened distros (Ubuntu defaults to 4) and would otherwise require `CAP_SYS_ADMIN` or sysctl tuning. |
+| `CAP_BPF` | Issuing the `bpf()` syscall to load programs, create maps, and create the uprobe_multi link. |
+| `CAP_PERFMON` | Loading tracing-class BPF programs (`BPF_PROG_TYPE_KPROBE` covers uprobes). This capability is unrelated to `perf_event_open` paranoid checks in the uprobe_multi path. |
+| `CAP_SYS_PTRACE` | Reading `/proc/<pid>/environ` (mode `0400`, cross-uid access guarded by `PTRACE_MODE_READ`) to extract `NVIDIA_VISIBLE_DEVICES` for multi-GPU ordinal-to-UUID mapping when the workload Pod runs as a non-root user. Pod UID extraction from `/proc/<pid>/cgroup` (mode `0444`) does not require this capability but relies on the same `hostPID: true` setting so that NVML-reported PIDs match `/proc` entries. |
+| `kernel.perf_event_paranoid` (any value) | Not a constraint after the uprobe_multi switch. The agent has been verified against the Ubuntu default of 4. |
+| Host BTF (`/sys/kernel/btf/vmlinux`) readable | CO-RE relocation at load time. Kernel must be built with `CONFIG_DEBUG_INFO_BTF=y`. |
+
+Hosts on kernels older than 6.6 cannot run the cuda uprobe module under this capability set. The simplest mitigation is to disable the module via `GPUOBS_CUDA_UPROBE_ENABLED=false`; device-level NVML metrics and PID-to-Pod resolution continue to work.
 
 ## Versioning
 
