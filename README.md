@@ -87,7 +87,7 @@ gpuobs-agent runs unprivileged (`privileged: false`, `allowPrivilegeEscalation: 
 | Linux kernel ≥ 6.6 | The cuda uprobe module attaches via the `uprobe_multi` BPF link (`BPF_LINK_CREATE` with `BPF_TRACE_UPROBE_MULTI`), introduced in 6.6. The older `perf_event_open` uprobe PMU path is intentionally avoided because it is blocked by `kernel.perf_event_paranoid` ≥ 2 on hardened distros (Ubuntu defaults to 4) and would otherwise require `CAP_SYS_ADMIN` or sysctl tuning. |
 | `CAP_BPF` | Issuing the `bpf()` syscall to load programs, create maps, and create the uprobe_multi link. |
 | `CAP_PERFMON` | Loading tracing-class BPF programs (`BPF_PROG_TYPE_KPROBE` covers uprobes). This capability is unrelated to `perf_event_open` paranoid checks in the uprobe_multi path. |
-| `CAP_SYS_PTRACE` | Reading `/proc/<pid>/cgroup` to map host PIDs to Pod UIDs for per-pod attribution. Requires `hostPID: true` on the DaemonSet so that NVML-reported PIDs match `/proc` entries. |
+| `CAP_SYS_PTRACE` | Reading `/proc/<pid>/environ` (mode `0400`, cross-uid access guarded by `PTRACE_MODE_READ`) to extract `NVIDIA_VISIBLE_DEVICES` for multi-GPU ordinal-to-UUID mapping when the workload Pod runs as a non-root user. Pod UID extraction from `/proc/<pid>/cgroup` (mode `0444`) does not require this capability but relies on the same `hostPID: true` setting so that NVML-reported PIDs match `/proc` entries. |
 | `kernel.perf_event_paranoid` (any value) | Not a constraint after the uprobe_multi switch. The agent has been verified against the Ubuntu default of 4. |
 | Host BTF (`/sys/kernel/btf/vmlinux`) readable | CO-RE relocation at load time. Kernel must be built with `CONFIG_DEBUG_INFO_BTF=y`. |
 

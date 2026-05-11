@@ -50,7 +50,10 @@ spec:
           # 따라서 kernel.perf_event_paranoid 정책 (Ubuntu default 4) 의 차단을 받지 않으며
           # privileged: false 로도 attach 가 성립한다. drop ALL 후 본 워크로드가 실제 필요로 하는 세
           # capability 만 명시한다. CAP_BPF 는 bpf() syscall, CAP_PERFMON 은 tracing-class BPF program
-          # 로드, CAP_SYS_PTRACE 는 /proc/<pid>/cgroup 파싱 (PID → Pod 귀속) 에 각각 사용된다.
+          # 로드, CAP_SYS_PTRACE 는 non-root GPU 워크로드의 /proc/<pid>/environ (mode 0400) 에서
+          # NVIDIA_VISIBLE_DEVICES 를 추출해 multi-GPU ordinal-to-UUID 매핑 정확도를 유지하는 데
+          # 사용된다. /proc/<pid>/cgroup (Pod UID 추출, mode 0444) 은 cap 없이 읽히지만 hostPID: true
+          # 가 있어야 NVML 이 보고한 host PID 와 /proc 항목이 매칭된다.
           # readOnlyRootFilesystem 은 cuda uprobe 모듈이 디스크 쓰기를 하지 않는다는 사실 위에서 함께
           # 강화한다 (기본 false 였던 부분을 명시적으로 true 로 끌어올림). kernel 6.6+ 가 uprobe_multi
           # link 전제이므로 호스트 요구 사양은 README 의 gpuobs-agent 섹션에서 명시한다.
