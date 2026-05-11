@@ -207,7 +207,12 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 			log.Printf("cuda uprobe attach %s: missing ebpf program mapping", sym)
 			continue
 		}
-		l, err := ex.Uprobe(sym, prog, nil)
+		// uprobe_multi link 경로 (kernel 6.6+, BPF_LINK_CREATE with BPF_TRACE_UPROBE_MULTI) 를 사용한다.
+		// 기존 link.Uprobe 는 perf_event_open uprobe PMU 를 호출해 kernel.perf_event_paranoid 정책의
+		// 차단을 받는데 (Ubuntu 의 paranoid=4 환경에서 EACCES), uprobe_multi link 는 perf 경로 자체를
+		// 우회해 CAP_BPF + CAP_PERFMON + CAP_SYS_PTRACE 만으로 attach 가 성립한다. 심볼 단위 호출이라
+		// "multi" 라는 이름과 달리 batch 효과는 없지만 attach mechanism 만 교체하는 게 본 변경의 목적이다.
+		l, err := ex.UprobeMulti([]string{sym}, prog, nil)
 		if err != nil {
 			log.Printf("cuda uprobe attach %s: %v", sym, err)
 			continue
@@ -217,7 +222,7 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 		attached++
 	}
 	if attached == 0 {
-		return fmt.Errorf("no cuda uprobe attached; check libcuda path %q and CAP_BPF/CAP_PERFMON/CAP_SYS_PTRACE", r.libcudaPath)
+		return fmt.Errorf("no cuda uprobe attached; check libcuda path %q, kernel >= 6.6 (uprobe_multi link), and CAP_BPF/CAP_PERFMON/CAP_SYS_PTRACE", r.libcudaPath)
 	}
 
 	// uretprobe attach 루프. 실패는 warn 로깅 후 진행해 multi-GPU attribution 일부가 비활성이어도
@@ -233,7 +238,7 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 			metrics.SetCudaSymbolAvailability(r.nodeName, sym, false)
 			continue
 		}
-		l, err := ex.Uretprobe(sym, prog, nil)
+		l, err := ex.UretprobeMulti([]string{sym}, prog, nil)
 		if err != nil {
 			log.Printf("cuda uretprobe attach %s: %v", sym, err)
 			metrics.SetCudaSymbolAvailability(r.nodeName, sym, false)
@@ -258,7 +263,7 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 					log.Printf("cuda uprobe attach %s: missing ebpf program mapping", sym)
 					continue
 				}
-				l, err := cudartEx.Uprobe(sym, prog, nil)
+				l, err := cudartEx.UprobeMulti([]string{sym}, prog, nil)
 				if err != nil {
 					log.Printf("cuda uprobe attach %s: %v", sym, err)
 					continue

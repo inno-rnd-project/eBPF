@@ -190,21 +190,21 @@ static __always_inline void emit_event(__u8 kind, __u64 bytes)
 }
 
 /* kernel launch 3종은 인자에서 추출할 정보가 없어 단순 카운트 이벤트만 발행한다. */
-SEC("uprobe/cuLaunchKernel")
+SEC("uprobe.multi/cuLaunchKernel")
 int BPF_UPROBE(handle_cu_launch_kernel)
 {
     emit_event(CUDA_EVENT_KERNEL_LAUNCH, 0);
     return 0;
 }
 
-SEC("uprobe/cuLaunchKernelEx")
+SEC("uprobe.multi/cuLaunchKernelEx")
 int BPF_UPROBE(handle_cu_launch_kernel_ex)
 {
     emit_event(CUDA_EVENT_KERNEL_LAUNCH, 0);
     return 0;
 }
 
-SEC("uprobe/cuLaunchCooperativeKernel")
+SEC("uprobe.multi/cuLaunchCooperativeKernel")
 int BPF_UPROBE(handle_cu_launch_cooperative_kernel)
 {
     emit_event(CUDA_EVENT_KERNEL_LAUNCH, 0);
@@ -219,7 +219,7 @@ int BPF_UPROBE(handle_cu_launch_cooperative_kernel)
  *
  * 모두 ByteCount 가 3번째 인자 (x86_64 SysV: rdx, PT_REGS_PARM3) 에 위치.
  */
-SEC("uprobe/cuMemcpyHtoD_v2")
+SEC("uprobe.multi/cuMemcpyHtoD_v2")
 int BPF_UPROBE(handle_cu_memcpy_htod)
 {
     __u64 bytes = (__u64)PT_REGS_PARM3(ctx);
@@ -227,7 +227,7 @@ int BPF_UPROBE(handle_cu_memcpy_htod)
     return 0;
 }
 
-SEC("uprobe/cuMemcpyHtoDAsync_v2")
+SEC("uprobe.multi/cuMemcpyHtoDAsync_v2")
 int BPF_UPROBE(handle_cu_memcpy_htod_async)
 {
     __u64 bytes = (__u64)PT_REGS_PARM3(ctx);
@@ -235,7 +235,7 @@ int BPF_UPROBE(handle_cu_memcpy_htod_async)
     return 0;
 }
 
-SEC("uprobe/cuMemcpyDtoH_v2")
+SEC("uprobe.multi/cuMemcpyDtoH_v2")
 int BPF_UPROBE(handle_cu_memcpy_dtoh)
 {
     __u64 bytes = (__u64)PT_REGS_PARM3(ctx);
@@ -243,7 +243,7 @@ int BPF_UPROBE(handle_cu_memcpy_dtoh)
     return 0;
 }
 
-SEC("uprobe/cuMemcpyDtoHAsync_v2")
+SEC("uprobe.multi/cuMemcpyDtoHAsync_v2")
 int BPF_UPROBE(handle_cu_memcpy_dtoh_async)
 {
     __u64 bytes = (__u64)PT_REGS_PARM3(ctx);
@@ -258,7 +258,7 @@ int BPF_UPROBE(handle_cu_memcpy_dtoh_async)
  * 두 심볼 모두 ByteCount 가 3번째 인자 (x86_64 SysV: rdx, PT_REGS_PARM3) 에 위치하며 방향이 항상 dtod 다.
  * 단일 GPU 안의 device-to-device copy 와 cudaMemcpyDeviceToDevice 의 driver API 백엔드를 모두 커버한다.
  */
-SEC("uprobe/cuMemcpyDtoD_v2")
+SEC("uprobe.multi/cuMemcpyDtoD_v2")
 int BPF_UPROBE(handle_cu_memcpy_dtod)
 {
     __u64 bytes = (__u64)PT_REGS_PARM3(ctx);
@@ -266,7 +266,7 @@ int BPF_UPROBE(handle_cu_memcpy_dtod)
     return 0;
 }
 
-SEC("uprobe/cuMemcpyDtoDAsync_v2")
+SEC("uprobe.multi/cuMemcpyDtoDAsync_v2")
 int BPF_UPROBE(handle_cu_memcpy_dtod_async)
 {
     __u64 bytes = (__u64)PT_REGS_PARM3(ctx);
@@ -344,28 +344,28 @@ static __always_inline void emit_memcpy3d(__u64 pCopy)
  *
  * 모두 PARM1 이 구조체 포인터다. async 변형의 stream 인자는 본 모듈에서 사용하지 않아 무시한다.
  */
-SEC("uprobe/cuMemcpy2D_v2")
+SEC("uprobe.multi/cuMemcpy2D_v2")
 int BPF_UPROBE(handle_cu_memcpy_2d)
 {
     emit_memcpy2d((__u64)PT_REGS_PARM1(ctx));
     return 0;
 }
 
-SEC("uprobe/cuMemcpy2DAsync_v2")
+SEC("uprobe.multi/cuMemcpy2DAsync_v2")
 int BPF_UPROBE(handle_cu_memcpy_2d_async)
 {
     emit_memcpy2d((__u64)PT_REGS_PARM1(ctx));
     return 0;
 }
 
-SEC("uprobe/cuMemcpy3D_v2")
+SEC("uprobe.multi/cuMemcpy3D_v2")
 int BPF_UPROBE(handle_cu_memcpy_3d)
 {
     emit_memcpy3d((__u64)PT_REGS_PARM1(ctx));
     return 0;
 }
 
-SEC("uprobe/cuMemcpy3DAsync_v2")
+SEC("uprobe.multi/cuMemcpy3DAsync_v2")
 int BPF_UPROBE(handle_cu_memcpy_3d_async)
 {
     emit_memcpy3d((__u64)PT_REGS_PARM1(ctx));
@@ -380,7 +380,7 @@ int BPF_UPROBE(handle_cu_memcpy_3d_async)
  * 필요하지만 BPF 안에서 호출할 수 없으므로 본 심볼의 모든 이벤트는 UNKNOWN_DIR 로 emit 한다.
  * 운영자는 metric 으로 비중을 보고 추가 분석을 결정한다.
  */
-SEC("uprobe/cuMemcpy")
+SEC("uprobe.multi/cuMemcpy")
 int BPF_UPROBE(handle_cu_memcpy)
 {
     __u64 bytes = (__u64)PT_REGS_PARM3(ctx);
@@ -415,7 +415,7 @@ static __always_inline __u8 cudart_dir_from_kind(__u32 kind)
  *
  * Runtime API 의 커널 런치. driver API 의 cuLaunchKernel 과 동일하게 카운터 이벤트만 emit 한다.
  */
-SEC("uprobe/cudaLaunchKernel")
+SEC("uprobe.multi/cudaLaunchKernel")
 int BPF_UPROBE(handle_cuda_launch_kernel)
 {
     emit_event(CUDA_EVENT_KERNEL_LAUNCH, 0);
@@ -430,7 +430,7 @@ int BPF_UPROBE(handle_cuda_launch_kernel)
  * 두 심볼 모두 PARM3 = count, PARM4 = cudaMemcpyKind enum (4 bytes signed int 이지만 64-bit 레지스터
  * 의 하위 32 비트만 의미). cudart_dir_from_kind 가 enum 을 cuda_event_kind 로 변환한다.
  */
-SEC("uprobe/cudaMemcpy")
+SEC("uprobe.multi/cudaMemcpy")
 int BPF_UPROBE(handle_cuda_memcpy)
 {
     __u64 count = (__u64)PT_REGS_PARM3(ctx);
@@ -439,7 +439,7 @@ int BPF_UPROBE(handle_cuda_memcpy)
     return 0;
 }
 
-SEC("uprobe/cudaMemcpyAsync")
+SEC("uprobe.multi/cudaMemcpyAsync")
 int BPF_UPROBE(handle_cuda_memcpy_async)
 {
     __u64 count = (__u64)PT_REGS_PARM3(ctx);
@@ -459,7 +459,7 @@ int BPF_UPROBE(handle_cuda_memcpy_async)
  * 다룬다. 음수 값 (예: cudaInvalidDeviceId == -1) 은 매우 큰 unsigned 으로 해석되어 NVML
  * device count 범위 밖이라 ordinal-to-UUID 매핑 단계에서 자연스럽게 빈 문자열로 폴백된다.
  */
-SEC("uprobe/cudaSetDevice")
+SEC("uprobe.multi/cudaSetDevice")
 int BPF_UPROBE(handle_cuda_set_device)
 {
     __u32 tid = (__u32)bpf_get_current_pid_tgid();
@@ -476,7 +476,7 @@ int BPF_UPROBE(handle_cuda_set_device)
  * 로 읽어 cuctx_to_device 매핑을 완성한다. cuCtxCreate_v3 등 다른 v 변형은 본 PR 의 scope 외로
  * 미루며 (인자 위치가 다름), Driver API 사용자가 v2 를 거의 항상 쓰는 일반 가정에 의존한다.
  */
-SEC("uprobe/cuCtxCreate_v2")
+SEC("uprobe.multi/cuCtxCreate_v2")
 int BPF_UPROBE(handle_cu_ctx_create_v2_entry)
 {
     __u32 tid = (__u32)bpf_get_current_pid_tgid();
@@ -488,7 +488,7 @@ int BPF_UPROBE(handle_cu_ctx_create_v2_entry)
     return 0;
 }
 
-SEC("uretprobe/cuCtxCreate_v2")
+SEC("uretprobe.multi/cuCtxCreate_v2")
 int BPF_URETPROBE(handle_cu_ctx_create_v2_exit)
 {
     __u32 tid = (__u32)bpf_get_current_pid_tgid();
@@ -520,7 +520,7 @@ int BPF_URETPROBE(handle_cu_ctx_create_v2_exit)
  * 일어나지 않고 dispatch 시점에는 cuda_tid_device 의 직전 매핑이 유지된다. 이 케이스는 본 PR 의
  * scope 외로 한계 note 에 명시한다.
  */
-SEC("uprobe/cuCtxSetCurrent")
+SEC("uprobe.multi/cuCtxSetCurrent")
 int BPF_UPROBE(handle_cu_ctx_set_current)
 {
     __u32 tid = (__u32)bpf_get_current_pid_tgid();
