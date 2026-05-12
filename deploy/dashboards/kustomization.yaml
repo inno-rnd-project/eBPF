@@ -1,0 +1,36 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Grafana sidecar (kiwigrid/k8s-sidecar) 가 NAMESPACE=ALL + LABEL=grafana_dashboard=1 조건으로
+# 클러스터 전체 ConfigMap 을 감시한다. 본 패키지는 netobs / gpuobs 에이전트의 메트릭을 즉시
+# 시각화 가능한 두 dashboard 를 생성해 운영자가 별도 패널 작성 없이 진단을 시작하도록 한다.
+# 네임스페이스는 ebpf-project 로 두어 두 에이전트 매니페스트와 동일 위치에서 관리한다.
+namespace: ebpf-project
+
+# JSON 파일을 직접 임베드하는 configMapGenerator 패턴을 쓴다. dashboard JSON 변경 시
+# kustomize 가 자동으로 ConfigMap data 를 재생성한다. disableNameSuffixHash=true 로 두어
+# 운영자가 항상 같은 이름 (netobs-dashboard / gpuobs-dashboard) 으로 ConfigMap 을 식별할
+# 수 있게 한다 (Grafana sidecar 는 hash 접미사가 붙어도 동작하지만, kubectl 진단 흐름에서
+# 안정된 이름이 더 편하다).
+configMapGenerator:
+  - name: netobs-dashboard
+    files:
+      - netobs.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+        app.kubernetes.io/name: netobs-agent
+        app.kubernetes.io/component: grafana-dashboard
+        app.kubernetes.io/part-of: ebpf-project
+  - name: gpuobs-dashboard
+    files:
+      - gpuobs.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+        app.kubernetes.io/name: gpuobs-agent
+        app.kubernetes.io/component: grafana-dashboard
+        app.kubernetes.io/part-of: ebpf-project
+
+generatorOptions:
+  disableNameSuffixHash: true

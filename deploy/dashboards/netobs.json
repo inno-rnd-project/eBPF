@@ -1,0 +1,156 @@
+{
+  "title": "netobs",
+  "uid": "netobs-overview",
+  "tags": ["netobs", "ebpf"],
+  "schemaVersion": 38,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 0,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "timezone": "browser",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Datasource",
+        "hide": 0,
+        "current": {},
+        "refresh": 1
+      },
+      {
+        "name": "node",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(netobs_stage_latency_labeled_seconds_count, node)",
+        "multi": true,
+        "includeAll": true,
+        "label": "Node",
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "src_namespace",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(netobs_pod_stage_latency_labeled_seconds_count{node=~\"$node\"}, src_namespace)",
+        "multi": true,
+        "includeAll": true,
+        "label": "Source namespace",
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "src_pod",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(netobs_pod_stage_latency_labeled_seconds_count{node=~\"$node\",src_namespace=~\"$src_namespace\"}, src_pod)",
+        "multi": true,
+        "includeAll": true,
+        "label": "Source pod",
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Stage latency p99 by stage (filtered by node)",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, stage, node) (rate(netobs_stage_latency_labeled_seconds_bucket{node=~\"$node\"}[5m])))",
+          "legendFormat": "{{stage}} ({{node}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Stage latency p95 by stage (filtered by node)",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, stage, node) (rate(netobs_stage_latency_labeled_seconds_bucket{node=~\"$node\"}[5m])))",
+          "legendFormat": "{{stage}} ({{node}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Drop rate by category (events/s)",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [
+        {
+          "expr": "sum by (drop_category) (rate(netobs_drop_events_labeled_total{node=~\"$node\",src_namespace=~\"$src_namespace\",src_workload=~\".*\"}[5m]))",
+          "legendFormat": "{{drop_category}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Top drop reasons by workload (5m rate)",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "transformations": [
+        { "id": "organize", "options": { "indexByName": { "Time": 0, "drop_reason": 1, "drop_category": 2, "src_namespace": 3, "src_workload": 4, "node": 5, "Value": 6 } } }
+      ],
+      "targets": [
+        {
+          "expr": "topk(20, sum by (drop_reason, drop_category, src_namespace, src_workload, node) (rate(netobs_drop_events_labeled_total{node=~\"$node\",src_namespace=~\"$src_namespace\"}[5m])))",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "TCP retransmission rate by workload (events/s)",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [
+        {
+          "expr": "sum by (node, src_namespace, src_workload) (rate(netobs_retrans_events_labeled_total{node=~\"$node\",src_namespace=~\"$src_namespace\"}[5m]))",
+          "legendFormat": "{{src_namespace}}/{{src_workload}} ({{node}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Per-pod stage latency p95 (filtered by src_pod)",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, stage, src_pod, src_namespace) (rate(netobs_pod_stage_latency_labeled_seconds_bucket{node=~\"$node\",src_namespace=~\"$src_namespace\",src_pod=~\"$src_pod\"}[5m])))",
+          "legendFormat": "{{src_namespace}}/{{src_pod}} {{stage}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,210 @@
+{
+  "title": "gpuobs",
+  "uid": "gpuobs-overview",
+  "tags": ["gpuobs", "ebpf", "nvml"],
+  "schemaVersion": 38,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 0,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "timezone": "browser",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Datasource",
+        "hide": 0,
+        "current": {},
+        "refresh": 1
+      },
+      {
+        "name": "node",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(gpuobs_device_utilization_percent, node)",
+        "multi": true,
+        "includeAll": true,
+        "label": "Node",
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "gpu_uuid",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(gpuobs_device_utilization_percent{node=~\"$node\"}, gpu_uuid)",
+        "multi": true,
+        "includeAll": true,
+        "label": "GPU UUID",
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "src_pod",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(gpuobs_pod_memory_used_bytes{node=~\"$node\"}, src_pod)",
+        "multi": true,
+        "includeAll": true,
+        "label": "Pod (GPU 워크로드)",
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "GPU utilization %",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [
+        {
+          "expr": "gpuobs_device_utilization_percent{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}",
+          "legendFormat": "{{node}} gpu{{gpu_index}} ({{gpu_model}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "GPU memory used / total",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [
+        {
+          "expr": "gpuobs_device_memory_used_bytes{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}",
+          "legendFormat": "used {{node}} gpu{{gpu_index}}",
+          "refId": "A"
+        },
+        {
+          "expr": "gpuobs_device_memory_total_bytes{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}",
+          "legendFormat": "total {{node}} gpu{{gpu_index}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Temperature (current vs threshold)",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "celsius" } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [
+        {
+          "expr": "gpuobs_device_temperature_celsius{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}",
+          "legendFormat": "current {{node}} gpu{{gpu_index}}",
+          "refId": "A"
+        },
+        {
+          "expr": "gpuobs_device_temperature_threshold_celsius{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}",
+          "legendFormat": "{{threshold}} {{node}} gpu{{gpu_index}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Power usage vs limit (W)",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "watt" } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [
+        {
+          "expr": "gpuobs_device_power_usage_watts{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}",
+          "legendFormat": "usage {{node}} gpu{{gpu_index}}",
+          "refId": "A"
+        },
+        {
+          "expr": "gpuobs_device_power_limit_watts{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}",
+          "legendFormat": "limit {{node}} gpu{{gpu_index}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Throttle active reasons",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "transformations": [
+        { "id": "organize", "options": { "indexByName": { "node": 0, "gpu_index": 1, "reason": 2, "Value": 3 } } }
+      ],
+      "targets": [
+        {
+          "expr": "gpuobs_device_throttle_active{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"} == 1",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Per-pod GPU memory used",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [
+        {
+          "expr": "gpuobs_pod_memory_used_bytes{node=~\"$node\",src_pod=~\"$src_pod\"}",
+          "legendFormat": "{{src_namespace}}/{{src_pod}} gpu{{gpu_index}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "CUDA kernel launch rate by pod",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [
+        {
+          "expr": "sum by (src_namespace, src_pod, gpu_uuid) (rate(gpuobs_cuda_kernel_launches_total{node=~\"$node\",src_pod=~\"$src_pod\"}[5m]))",
+          "legendFormat": "{{src_namespace}}/{{src_pod}} {{gpu_uuid}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "CUDA H2D / D2H transfer bytes/s by pod",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "Bps" } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [
+        {
+          "expr": "sum by (src_namespace, src_pod) (rate(gpuobs_cuda_h2d_bytes_total{node=~\"$node\",src_pod=~\"$src_pod\"}[5m]))",
+          "legendFormat": "H2D {{src_namespace}}/{{src_pod}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (src_namespace, src_pod) (rate(gpuobs_cuda_d2h_bytes_total{node=~\"$node\",src_pod=~\"$src_pod\"}[5m]))",
+          "legendFormat": "D2H {{src_namespace}}/{{src_pod}}",
+          "refId": "B"
+        }
+      ]
+    }
+  ]
+}
