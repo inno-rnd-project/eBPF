@@ -81,3 +81,111 @@ spec:
         # 두 원본 메트릭의 라벨 차이는 LHS의 threshold 라벨 하나뿐이라 ignoring(threshold) group_left() 로 many-to-one 매칭한 뒤 노드로 rollup한다.
         - record: node:gpu_temperature_headroom_celsius
           expr: min by(node, threshold) (gpuobs_device_temperature_threshold_celsius - ignoring(threshold) group_left() gpuobs_device_temperature_celsius)
+
+    # netobs-gpuobs.alerts 그룹은 운영 임계 초과를 Alertmanager로 전달하는 alert rule을 모은다.
+    # severity 라벨로 critical(즉시 대응)과 warning(추세 관찰)을 구분한다. for 절은 false-positive
+    # 차단 목적으로 2분 이상을 기본으로 둔다. ECC와 PCIe replay 알람은 본 그룹에서 제외했다.
+    # 두 메트릭(gpuobs_device_ecc_errors_total, gpuobs_device_pcie_replay_errors_total)의
+    # emit 경로가 아직 구현되지 않아 알람이 dead alert가 되기 때문이며, 메트릭 emit이 추가되는
+    # 시점에 본 그룹에 함께 들여온다.
+    - name: netobs-gpuobs.alerts
+      interval: 30s
+      rules:
+        # NetObsHighStageLatencyP99
+        # 5분 윈도우 p99 stage latency가 1초를 초과하고 동시에 해당 stage의 이벤트 발생률이
+        # 1event/s 이상일 때만 발화한다. 발생률 필터는 sparse 시리즈에서 +Inf 버킷 fallback이
+        # 만드는 노이즈를 차단한다. 임계 1초는 현재 histogram bucket의 최상위 finite 경계
+        # (0.524288s)보다 위로 두어 bucket fallback 값(0.524288)이 baseline에서 발화하지 않도록
+        # 한다. 더 세밀한 임계가 필요하면 netobs의 histogram bucket 범위를 확장한 뒤 임계를
+        # 낮추는 follow-up이 필요하다.
+        - alert: NetObsHighStageLatencyP99
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le, stage, src_workload, src_namespace, node) (
+                rate(netobs_stage_latency_labeled_seconds_bucket[5m])
+              )
+            ) > 1.0
+            and
+            sum by (stage, src_workload, src_namespace, node) (
+              rate(netobs_stage_latency_labeled_seconds_count[5m])
+            ) > 1
+          for: 5m
+          labels:
+            severity: warning
+            component: netobs
+          annotations:
+            summary: "netobs stage latency p99 over 1s (node={{ $labels.node }} workload={{ $labels.src_namespace }}/{{ $labels.src_workload }} stage={{ $labels.stage }})"
+            description: "stage {{ $labels.stage }} latency p99 of workload {{ $labels.src_namespace }}/{{ $labels.src_workload }} on node {{ $labels.node }} is {{ $value | humanizeDuration }} over the last 5 minutes."
+
+        # NetObsHighDropRate
+        # drop_category별 drop rate가 10event/s를 초과하면 발화한다. 카테고리별로 분리해
+        # 정책(policy)/큐 포화(queue)/checksum 등 원인 그룹을 즉시 식별할 수 있게 한다.
+        - alert: NetObsHighDropRate
+          expr: |
+            sum by (node, drop_category, src_namespace, src_workload) (
+              rate(netobs_drop_events_labeled_total[5m])
+            ) > 10
+          for: 2m
+          labels:
+            severity: warning
+            component: netobs
+          annotations:
+            summary: "netobs drop rate over 10/s (node={{ $labels.node }} category={{ $labels.drop_category }})"
+            description: "drop category {{ $labels.drop_category }} for workload {{ $labels.src_namespace }}/{{ $labels.src_workload }} on node {{ $labels.node }} is {{ $value }} events/sec sustained over 2 minutes. Reference docs/netobs/drop-reason.md for category semantics."
+
+        # NetObsHighRetransmissionRate
+        # TCP 재전송 rate가 5event/s를 넘으면 발화. 네트워크 혼잡, peer 처리 지연, 경로 패킷
+        # 손실 셋 중 하나의 시그널이다.
+        - alert: NetObsHighRetransmissionRate
+          expr: |
+            sum by (node, src_namespace, src_workload) (
+              rate(netobs_retrans_events_labeled_total[5m])
+            ) > 5
+          for: 2m
+          labels:
+            severity: warning
+            component: netobs
+          annotations:
+            summary: "netobs retransmission rate over 5/s (node={{ $labels.node }} workload={{ $labels.src_namespace }}/{{ $labels.src_workload }})"
+            description: "TCP retransmission rate for workload {{ $labels.src_namespace }}/{{ $labels.src_workload }} on node {{ $labels.node }} is {{ $value }} events/sec sustained over 2 minutes."
+
+        # GPUObsThrottleActive
+        # hw_* / sw_thermal_slowdown / sw_power_cap reason은 운영상 문제 시그널이라 활성이면 critical.
+        # gpu_idle / applications_clocks_setting / display_clock_setting / sync_boost는 정상 동작 신호라
+        # reason 필터로 제외한다. for: 1m은 다른 critical보다 짧게 두어 throttle 발생을 즉시 포착한다.
+        - alert: GPUObsThrottleActive
+          expr: |
+            gpuobs_device_throttle_active{reason=~"hw_slowdown|hw_thermal_slowdown|hw_power_brake_slowdown|sw_thermal_slowdown|sw_power_cap"} == 1
+          for: 1m
+          labels:
+            severity: critical
+            component: gpuobs
+          annotations:
+            summary: "GPU throttle active ({{ $labels.reason }}) on {{ $labels.node }} gpu_index={{ $labels.gpu_index }}"
+            description: "GPU {{ $labels.gpu_index }} ({{ $labels.gpu_model }} uuid={{ $labels.gpu_uuid }}) on node {{ $labels.node }} is throttling due to {{ $labels.reason }}. Throughput is reduced. Check thermal headroom, power budget, or downstream hardware limits."
+
+        # GPUObsThermalHeadroomLow
+        # threshold(slowdown/hwslowdown/shutdown) 대비 5℃ 이내로 좁혀지면 발화. 기존 recording
+        # rule node:gpu_temperature_headroom_celsius를 재사용해 노드 단위 최악 GPU 기준으로 평가한다.
+        - alert: GPUObsThermalHeadroomLow
+          expr: node:gpu_temperature_headroom_celsius < 5
+          for: 2m
+          labels:
+            severity: critical
+            component: gpuobs
+          annotations:
+            summary: "GPU thermal headroom below 5C on {{ $labels.node }} (threshold={{ $labels.threshold }})"
+            description: "Thermal headroom for the worst GPU on node {{ $labels.node }} against threshold {{ $labels.threshold }} is {{ $value }}C. Thermal slowdown or shutdown is imminent. Check cooling, fan speed, or reduce GPU load."
+
+        # GPUObsPowerHeadroomLow
+        # power limit과 현재 사용량 차이가 10W 이내면 발화. 기존 recording rule
+        # node:gpu_power_headroom_watts를 재사용한다. sw_power_cap throttle이 곧 발생할 수 있는 사전 시그널.
+        - alert: GPUObsPowerHeadroomLow
+          expr: node:gpu_power_headroom_watts < 10
+          for: 2m
+          labels:
+            severity: warning
+            component: gpuobs
+          annotations:
+            summary: "GPU power headroom below 10W on {{ $labels.node }}"
+            description: "Power headroom (limit minus current usage) for the worst GPU on node {{ $labels.node }} is {{ $value }}W. The GPU is approaching its power limit and may start power-cap throttling. Consider reducing concurrent CUDA workloads."
