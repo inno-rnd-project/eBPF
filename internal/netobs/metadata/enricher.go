@@ -168,6 +168,14 @@ func (e *Enricher) maybeSweepRuntimeLocked(now time.Time) {
 	e.lastRuntimeSweep = now
 }
 
+// ResolveCgroup은 외부 컴포넌트 (예: podbytes collector) 가 BPF map의 cgroup_id 키를 Pod 정체성으로
+// 풀어쓸 때 사용하는 thread-safe lookup이다. 내부적으로는 lookupCgroupHint를 호출해 동일 runtime 캐시를
+// 공유하므로 event 흐름으로 학습된 cgroup_id 매핑이 즉시 활용된다. 캐시 miss는 (zero, false) 반환이며
+// 호출자가 다음 scrape에서 자연 재시도하는 패턴을 가정한다.
+func (e *Enricher) ResolveCgroup(cgroupID uint64) (kube.PodIdentity, bool) {
+	return e.lookupCgroupHint(cgroupID, time.Now())
+}
+
 func (e *Enricher) lookupCgroupHint(cgroupID uint64, now time.Time) (kube.PodIdentity, bool) {
 	if cgroupID == 0 {
 		return kube.PodIdentity{}, false

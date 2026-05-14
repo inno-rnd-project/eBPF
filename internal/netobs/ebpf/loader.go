@@ -57,9 +57,17 @@ func attachOptionalKprobe(symbol string, prog *cebpf.Program, links *[]link.Link
 	log.Printf("attached kprobe/%s", symbol)
 }
 
+// Runtime은 Run이 onReady 콜백으로 상위에 넘기는 BPF 런타임 핸들이다. ringbuf events는 채널로 따로
+// 흘러가므로 Runtime에는 외부 컴포넌트가 scrape 등 다른 lifecycle에서 직접 읽어야 하는 BPF 맵만 노출한다.
+type Runtime struct {
+	// PodBytes는 (cgroup_id, direction, layer) 키로 누적되는 LRU PERCPU HASH 맵으로,
+	// podbytes collector가 scrape 시점에 iterate해 Prometheus counter로 emit한다.
+	PodBytes *cebpf.Map
+}
+
 // Run은 BPF 오브젝트 로드, 프로브 attach, ringbuf reader 준비가 모두 끝난 시점에
-// onReady를 호출해 상위에 readiness를 알린다. onReady가 nil이면 무시한다.
-func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady func()) error {
+// onReady를 호출해 상위에 readiness를 알리고 Runtime 핸들을 넘긴다. onReady가 nil이면 무시한다.
+func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady func(*Runtime)) error {
 	defer close(out)
 
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -104,6 +112,7 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 	attachOptionalKprobe("__dev_queue_xmit", objs.HandleDevQueueXmit, &links)
 	attachOptionalKprobe("tcp_retransmit_skb", objs.HandleTcpRetransmitSkb, &links)
 	attachOptionalKprobe("kfree_skb_reason", objs.HandleKfreeSkbReason, &links)
+	attachOptionalKprobe("tcp_cleanup_rbuf", objs.HandleTcpCleanupRbuf, &links)
 
 	rd, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
@@ -117,7 +126,9 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 	}()
 
 	if onReady != nil {
-		onReady()
+		onReady(&Runtime{
+			PodBytes: objs.PodBytes,
+		})
 	}
 
 	for {

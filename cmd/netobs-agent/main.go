@@ -18,6 +18,7 @@ import (
 	ebpfx "netobs/internal/netobs/ebpf"
 	"netobs/internal/netobs/metadata"
 	"netobs/internal/netobs/metrics"
+	"netobs/internal/netobs/podbytes"
 	"netobs/internal/netobs/types"
 	"netobs/internal/server"
 )
@@ -38,6 +39,12 @@ func main() {
 	var ebpfReady atomic.Bool
 	kr := kube.NewResolver(cfg.NodeName, cfg.MetadataRefresh)
 	enricher := metadata.NewEnricher(kr)
+
+	// podbytes collector는 BPF의 pod_bytes 누적 맵을 scrape 시점에 iterate해 netobs_pod_bytes_total
+	// 과 netobs_pod_packets_total을 emit한다. BPF가 준비되기 전 scrape는 빈 결과만 반환하며,
+	// PodMetricsEnabled가 false면 어떤 시리즈도 emit하지 않는다 (enricher와 동일 토글 정합).
+	podBytesCollector := podbytes.New(enricher, cfg.NodeName, cfg.PodMetricsEnabled)
+	reg.MustRegister(podBytesCollector)
 
 	ready := func() (bool, string) {
 		if !kr.HasSynced() {
@@ -75,8 +82,11 @@ func main() {
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- ebpfx.Run(ctx, cfg.TargetIP, events, func() {
+		errCh <- ebpfx.Run(ctx, cfg.TargetIP, events, func(rt *ebpfx.Runtime) {
 			ebpfReady.Store(true)
+			if rt != nil {
+				podBytesCollector.SetMap(rt.PodBytes)
+			}
 		})
 		close(errCh)
 	}()
