@@ -18,6 +18,7 @@ import (
 	ebpfx "netobs/internal/netobs/ebpf"
 	"netobs/internal/netobs/metadata"
 	"netobs/internal/netobs/metrics"
+	"netobs/internal/netobs/podbytes"
 	"netobs/internal/netobs/types"
 	"netobs/internal/server"
 )
@@ -38,6 +39,12 @@ func main() {
 	var ebpfReady atomic.Bool
 	kr := kube.NewResolver(cfg.NodeName, cfg.MetadataRefresh)
 	enricher := metadata.NewEnricher(kr)
+
+	// podbytes collector는 BPF의 pod_bytes 누적 맵을 scrape 시점에 iterate해 netobs_pod_bytes_total
+	// 과 netobs_pod_packets_total을 emit한다. BPF가 준비되기 전 scrape는 빈 결과만 반환하며,
+	// PodMetricsEnabled가 false면 어떤 시리즈도 emit하지 않는다 (enricher와 동일 토글 정합).
+	podBytesCollector := podbytes.New(enricher, cfg.NodeName, cfg.PodMetricsEnabled)
+	reg.MustRegister(podBytesCollector)
 
 	ready := func() (bool, string) {
 		if !kr.HasSynced() {
@@ -75,8 +82,11 @@ func main() {
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- ebpfx.Run(ctx, cfg.TargetIP, events, func() {
+		errCh <- ebpfx.Run(ctx, cfg.TargetIP, events, func(rt *ebpfx.Runtime) {
 			ebpfReady.Store(true)
+			if rt != nil {
+				podBytesCollector.SetMap(rt.PodBytes)
+			}
 		})
 		close(errCh)
 	}()
@@ -134,6 +144,10 @@ func main() {
 			if ok && err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("ebpf runner error: %v", err)
 			}
+			// ebpfx.Run 반환 시점에 deferred objs.Close()가 이미 PodBytes 맵 FD를 닫았다.
+			// Collector가 stale pointer로 매 scrape마다 EBADF errno를 받지 않도록 명시적으로
+			// invalidate한다. 이후 Collect는 nil-map 가드로 빈 결과를 반환한다.
+			podBytesCollector.SetMap(nil)
 			errCh = nil
 
 		case <-doneSignal:

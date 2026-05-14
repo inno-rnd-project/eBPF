@@ -28,6 +28,18 @@ struct {
     __type(value, __u32);
 } target_daddr SEC(".maps");
 
+/* pod_bytes 는 Pod 단위 RX/TX bytes / packets 누적 맵이다. LRU_PERCPU_HASH 라 hot path 의 CPU 간
+ * contention 이 없고, max_entries 도달 시 오래된 entry 가 자연 evict 되어 종료 Pod 의 stale 시리즈
+ * cleanup 부담을 BPF 측에서 자동 해소한다. max_entries 16384 는 (활성 Pod 4096) x (direction 2) x
+ * (layer 2) = 16384 슬롯 예산으로 산정했다. Go 측 collector 가 scrape 시점에 본 맵을 iterate 해
+ * 누적치를 그대로 Prometheus counter 로 emit 한다. */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_PERCPU_HASH);
+    __uint(max_entries, 16384);
+    __type(key, struct netobs_pod_bytes_key);
+    __type(value, struct netobs_pod_bytes_value);
+} pod_bytes SEC(".maps");
+
 static __always_inline int match_target(__u32 daddr_net)
 {
     __u32 key = 0;
@@ -96,6 +108,44 @@ static __always_inline void fill_dev_from_skb(struct sk_buff *skb, struct netobs
         s->skb_iif = skb_iif;
 }
 
+/* inc_pod_bytes는 (cgroup_id, direction, layer) 삼중 키로 bytes/packets를 누적한다.
+ * BPF_MAP_TYPE_LRU_PERCPU_HASH는 lookup이 per-CPU 슬롯을 반환하므로 atomic 연산 없이 단순 덧셈으로
+ * race가 없다. cgroup_id가 0이면 host 작업 또는 cgroup v2 미지원 컨텍스트라 무시한다.
+ *
+ * packets_delta가 호출자별로 분리된 이유: NIC layer (__dev_queue_xmit/veth_xmit) hook은 1회 호출이
+ * 1개 skb와 정확히 대응되어 packets += 1이 패킷 수와 일치한다. 반면 L4 layer (tcp_sendmsg/
+ * tcp_cleanup_rbuf) hook은 syscall 또는 cleanup 호출 1회가 여러 TCP segment 또는 read 배치에
+ * 대응되므로 packets += 1이 "패킷 수"가 아니라 syscall 수가 되어 메트릭 의미가 깨진다. 따라서 L4
+ * 경로는 packets_delta=0으로 호출하고, Collector가 packets==0인 entry는 packets 시리즈를 emit하지
+ * 않아 NIC layer만 packets를 노출한다. */
+static __always_inline void inc_pod_bytes(__u64 cgroup_id, __u8 direction, __u8 layer,
+                                          __u64 bytes_delta, __u64 packets_delta)
+{
+    struct netobs_pod_bytes_key key;
+    struct netobs_pod_bytes_value *val;
+    struct netobs_pod_bytes_value init;
+
+    if (!cgroup_id)
+        return;
+
+    __builtin_memset(&key, 0, sizeof(key));
+    key.cgroup_id = cgroup_id;
+    key.direction = direction;
+    key.layer     = layer;
+
+    val = bpf_map_lookup_elem(&pod_bytes, &key);
+    if (val) {
+        val->bytes   += bytes_delta;
+        val->packets += packets_delta;
+        return;
+    }
+
+    __builtin_memset(&init, 0, sizeof(init));
+    init.bytes   = bytes_delta;
+    init.packets = packets_delta;
+    bpf_map_update_elem(&pod_bytes, &key, &init, BPF_ANY);
+}
+
 static __always_inline void emit_event(const struct netobs_start_info *s,
                                        __u8 stage,
                                        __u32 reason,
@@ -148,6 +198,10 @@ int BPF_KPROBE(handle_tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t s
     if (!match_target(s.daddr))
         return 0;
 
+    /* L4 egress 바이트 누적은 kretprobe로 이동했다. entry의 size 인자는 사용자가 send에 넘긴 요청량
+     * (헤더 제외)이라 ret로 실제 전송 바이트를 받아 누적해야 partial send/실패(-errno)에서 과대계상이
+     * 발생하지 않는다. */
+
     bpf_get_current_comm(&s.comm, sizeof(s.comm));
     bpf_map_update_elem(&starts, &s.tid, &s, BPF_ANY);
     return 0;
@@ -170,6 +224,13 @@ int BPF_KRETPROBE(handle_tcp_sendmsg_ret, int ret)
 
     emit_event(s, NETOBS_STAGE_SENDMSG_RET, 0, ret, latency_us);
     s->ret_seen = 1;
+
+    /* L4 egress 바이트는 ret > 0 (실제 전송 바이트) 일 때만 누적한다. ret <= 0 은 -errno 또는
+     * 0바이트 전송으로 카운터에 반영하면 안 된다. cgroup_id는 entry 시점에 stash 된 값을 사용해
+     * sync syscall 컨텍스트의 task cgroup과 일관성을 유지한다. packets_delta=0인 이유는
+     * inc_pod_bytes 주석 참고. */
+    if (ret > 0)
+        inc_pod_bytes(s->cgroup_id, NETOBS_DIR_EGRESS, NETOBS_LAYER_L4, (__u64)ret, 0);
 
     if (s->seen_veth && s->seen_devq)
         bpf_map_delete_elem(&starts, &tid);
@@ -210,12 +271,22 @@ int BPF_KPROBE(handle_dev_queue_xmit, struct sk_buff *skb)
     struct netobs_start_info *s;
     __u64 now;
     __u32 latency_us;
+    __u64 skb_len;
 
     s = bpf_map_lookup_elem(&starts, &tid);
-    if (!s || s->seen_devq)
+    if (!s)
         return 0;
 
+    /* NIC layer egress 바이트는 sendmsg 한 번이 만들어내는 모든 segment에 대해 누적해야 cAdvisor의
+     * container_network_*_bytes_total과 정합 가능하다. seen_devq는 NETOBS_STAGE_TO_DEVQ 이벤트
+     * 중복 방출만 가드하는 플래그이므로 bytes 누적은 본 플래그와 분리해 매 진입마다 수행한다. */
     fill_dev_from_skb(skb, s);
+    skb_len = (__u64)BPF_CORE_READ(skb, len);
+    /* NIC layer 는 1 skb = 1 packet 이 자연 대응되어 packets_delta=1 이 정확한 패킷 수다. */
+    inc_pod_bytes(s->cgroup_id, NETOBS_DIR_EGRESS, NETOBS_LAYER_NIC, skb_len, 1);
+
+    if (s->seen_devq)
+        return 0;
 
     now = bpf_ktime_get_ns();
     latency_us = (__u32)((now - s->ts_ns) / 1000);
@@ -248,6 +319,34 @@ int BPF_KPROBE(handle_tcp_retransmit_skb, struct sock *sk, struct sk_buff *skb, 
 
     bpf_get_current_comm(&s.comm, sizeof(s.comm));
     emit_event(&s, NETOBS_STAGE_RETRANS, 0, 0, 0);
+    return 0;
+}
+
+/* tcp_cleanup_rbuf는 사용자 공간이 TCP 수신 버퍼에서 실제로 읽어간 바이트를 보고하는 시점에
+ * 호출된다. recvmsg 경로에서 process context로 실행되어 bpf_get_current_cgroup_id()가 수신 Pod의
+ * cgroup_id를 정확히 반환하므로 ingress L4 카운터의 표준 hook으로 적합하다. copied 인자는
+ * 음수일 때 에러 신호이므로 양수일 때만 누적한다. NIC layer ingress는 softirq context에서
+ * cgroup 해상이 복잡해 본 PR 범위 밖이며 follow-up 이슈에서 다룬다.
+ *
+ * match_target 필터는 본 hook에서 적용하지 않는다. target_daddr는 egress 흐름의 목적지 IP를
+ * 좁히는 테스트용 변수로 ingress에서는 skc_daddr가 원격 peer (송신자) 주소라 같은 변수에 빗대면
+ * 의미가 어긋난다. ingress 전수 카운팅이 본 카운터의 의도이며 production에선 target_daddr=""
+ * default라 어차피 무영향이다. */
+SEC("kprobe/tcp_cleanup_rbuf")
+int BPF_KPROBE(handle_tcp_cleanup_rbuf, struct sock *sk, int copied)
+{
+    __u64 cgroup_id;
+
+    if (copied <= 0)
+        return 0;
+
+    cgroup_id = bpf_get_current_cgroup_id();
+    if (!cgroup_id)
+        return 0;
+
+    /* L4 ingress 바이트만 누적한다. tcp_cleanup_rbuf는 userspace read 1회마다 호출되어 packets
+     * 단위와 무관해서 packets_delta=0. inc_pod_bytes 주석 참고. */
+    inc_pod_bytes(cgroup_id, NETOBS_DIR_INGRESS, NETOBS_LAYER_L4, (__u64)copied, 0);
     return 0;
 }
 
