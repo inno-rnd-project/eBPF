@@ -7,7 +7,9 @@
 package podbytes
 
 import (
+	"log"
 	"sync/atomic"
+	"time"
 
 	cebpf "github.com/cilium/ebpf"
 	"github.com/prometheus/client_golang/prometheus"
@@ -15,6 +17,10 @@ import (
 	"netobs/internal/kube"
 	ebpfx "netobs/internal/netobs/ebpf"
 )
+
+// errLogMinInterval은 silent-skip 에러 로그의 최소 간격이다. scrape는 보통 15-30초 주기로 들어와
+// 같은 실패가 분당 수 회 찍히지 않도록 1분 throttle을 둔다.
+const errLogMinInterval = time.Minute
 
 // PodResolver는 cgroup_id를 Pod 정체성으로 풀어주는 lookup 인터페이스다. metadata.Enricher가
 // 본 인터페이스를 만족하며 단위 테스트에서는 가짜 구현으로 대체 가능하다.
@@ -67,6 +73,12 @@ type Collector struct {
 
 	bytesDesc   *prometheus.Desc
 	packetsDesc *prometheus.Desc
+
+	// lastCPUErrLogNs / lastIterErrLogNs는 PossibleCPU / iter.Err 실패를 errLogMinInterval 간격으로
+	// 로그하기 위한 최근 로그 unix nano 타임스탬프다. 무한 throttle 없이 운영자가 silent skip 원인을
+	// 파악할 수 있도록 한다.
+	lastCPUErrLogNs  atomic.Int64
+	lastIterErrLogNs atomic.Int64
 }
 
 // New는 Collector를 구성한다. enabled가 false면 본 Collector는 어떤 시리즈도 emit하지 않으며,
@@ -99,6 +111,20 @@ func (c *Collector) SetMap(m *cebpf.Map) {
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.bytesDesc
 	ch <- c.packetsDesc
+}
+
+// throttledLog는 last가 가리키는 unix nano 타임스탬프를 기준으로 errLogMinInterval 안의 중복 로그를
+// 차단한다. CAS로 update에 성공한 호출만 실제 로그를 찍어 동시 scrape에서 같은 에러가 다중 출력
+// 되지 않는다.
+func throttledLog(last *atomic.Int64, format string, args ...any) {
+	now := time.Now().UnixNano()
+	prev := last.Load()
+	if now-prev < int64(errLogMinInterval) {
+		return
+	}
+	if last.CompareAndSwap(prev, now) {
+		log.Printf(format, args...)
+	}
 }
 
 // aggKey는 emit 단계의 Prometheus 라벨 셋과 동일 단위로 BPF map entry들을 합산하기 위한 키다.
@@ -140,6 +166,13 @@ func mergeEntry(
 	if !ok || !pod.IsPod() {
 		return
 	}
+	// PodUID 빈 문자열 entry는 aggKey가 동일 빈 키로 충돌해 서로 다른 Pod의 bytes/packets가
+	// 첫 entry의 라벨 (namespace, podName) 로 새서 나갈 위험이 있다. informer race로 IsPod=true /
+	// PodUID="" 가 가능한 짧은 윈도우가 있어 가드한다. 다음 scrape에서 enricher가 UID를 채우면
+	// 자연 emit된다.
+	if pod.PodUID == "" {
+		return
+	}
 
 	ak := aggKey{direction: key.Direction, layer: key.Layer, podUID: pod.PodUID}
 	if existing, ok := agg[ak]; ok {
@@ -168,6 +201,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	// PossibleCPUs 조회가 실패하면 본 scrape는 안전하게 건너뛴다 (Prometheus는 다음 주기에 재시도).
 	ncpus, err := cebpf.PossibleCPU()
 	if err != nil {
+		throttledLog(&c.lastCPUErrLogNs, "podbytes: PossibleCPU lookup failed, skipping scrape: %v", err)
 		return
 	}
 
@@ -182,8 +216,10 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	}
 	// cilium/ebpf 공식 doc: "You must check the result of Err afterwards." 반복 중 ErrIterationAborted
 	// 등으로 조기 종료된 경우 부분 결과를 emit하면 Prometheus가 직전 scrape보다 작은 counter 값을
-	// 받아 카운터 reset으로 오해할 수 있어, 에러 발생 시 본 scrape는 통째로 폐기한다.
+	// 받아 카운터 reset으로 오해할 수 있어, 에러 발생 시 본 scrape는 통째로 폐기한다. EBADF 등
+	// shutdown 직후 stale FD 케이스 포함 진단을 위해 throttle 로그를 남긴다.
 	if err := iter.Err(); err != nil {
+		throttledLog(&c.lastIterErrLogNs, "podbytes: bpf map iterate failed, discarding scrape: %v", err)
 		return
 	}
 

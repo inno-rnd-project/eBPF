@@ -156,6 +156,29 @@ func TestMergeEntrySkipsUnknownCgroup(t *testing.T) {
 	}
 }
 
+// TestMergeEntrySkipsEmptyPodUID는 IsPod=true 이지만 PodUID가 빈 문자열인 entry를 skip하는지
+// 검증한다. informer race로 잠시 발생 가능한 케이스이며, 가드 없이 통과시키면 서로 다른 Pod 두 개
+// 이상이 동일 빈 aggKey 아래로 합쳐져 첫 entry의 라벨 (namespace, podName) 로 emit되는 라벨
+// cross-pollination 결함이 생긴다.
+func TestMergeEntrySkipsEmptyPodUID(t *testing.T) {
+	podA := kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ns", PodName: "a"}
+	podB := kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ns", PodName: "b"}
+	resolver := &fakeResolver{table: map[uint64]kube.PodIdentity{
+		100: podA,
+		200: podB,
+	}}
+	agg := make(map[aggKey]*aggValue)
+
+	mergeEntry(agg, ebpfx.NetObsNetobsPodBytesKey{CgroupId: 100, Direction: 0, Layer: 0},
+		[]ebpfx.NetObsNetobsPodBytesValue{{Bytes: 1000, Packets: 1}}, resolver)
+	mergeEntry(agg, ebpfx.NetObsNetobsPodBytesKey{CgroupId: 200, Direction: 0, Layer: 0},
+		[]ebpfx.NetObsNetobsPodBytesValue{{Bytes: 2000, Packets: 2}}, resolver)
+
+	if got := len(agg); got != 0 {
+		t.Errorf("agg size=%d want 0 (empty PodUID must be skipped to prevent label cross-pollination)", got)
+	}
+}
+
 // TestMergeEntrySkipsNonPodIdentity는 resolver가 service/node 등 Pod 이외 IdentityClass를 반환한
 // entry를 skip하는지 검증한다. pod_bytes는 Pod 단위 카운터이므로 비-Pod 정체성은 라벨 채우기가
 // 불가능해 emit하지 않는다.
