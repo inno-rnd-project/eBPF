@@ -126,10 +126,16 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 
-	var (
-		key    ebpfx.NetObsNetobsPodBytesKey
-		values []ebpfx.NetObsNetobsPodBytesValue
-	)
+	// PERCPU 맵은 lookup마다 CPU 수만큼의 슬롯을 반환한다. values를 미리 PossibleCPUs 길이로
+	// 잡아 두면 cilium/ebpf 내부의 reflect 기반 슬라이스 재할당을 entry마다 반복하지 않는다.
+	// PossibleCPUs 조회가 실패하면 본 scrape는 안전하게 건너뛴다 (Prometheus는 다음 주기에 재시도).
+	ncpus, err := cebpf.PossibleCPU()
+	if err != nil {
+		return
+	}
+
+	var key ebpfx.NetObsNetobsPodBytesKey
+	values := make([]ebpfx.NetObsNetobsPodBytesValue, ncpus)
 
 	agg := make(map[aggKey]*aggValue)
 
@@ -161,6 +167,12 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			packets: totalPackets,
 			pod:     pod,
 		}
+	}
+	// cilium/ebpf 공식 doc: "You must check the result of Err afterwards." 반복 중 ErrIterationAborted
+	// 등으로 조기 종료된 경우 부분 결과를 emit하면 Prometheus가 직전 scrape보다 작은 counter 값을
+	// 받아 카운터 reset으로 오해할 수 있어, 에러 발생 시 본 scrape는 통째로 폐기한다.
+	if err := iter.Err(); err != nil {
+		return
 	}
 
 	for ak, av := range agg {
