@@ -27,18 +27,22 @@ CGO_netobs-agent := 0
 CGO_gpuobs-agent := 1
 
 # ============================================================================
-# Overlay registry — <agent-domain>-<rollout-stage> 형식
+# Overlay registry — 기본은 <agent-domain>-<rollout-stage> 형식이지만 dev/prod 분기가
+# 없는 클러스터 공용 패키지는 단일 이름 (예: dashboards) 으로 등록한다.
 # 새 overlay 추가 시:
 #   1) OVERLAYS에 이름 추가
 #   2) OVERLAY_PATH_<name>에 kustomize 경로 지정
 # 이후 render-<name>, deploy-<name>, delete-<name>이 자동으로 매치된다.
 # ============================================================================
-OVERLAYS := netobs-dev netobs-prod gpuobs-dev gpuobs-prod
+OVERLAYS := netobs-dev netobs-prod gpuobs-dev gpuobs-prod dashboards
 
 OVERLAY_PATH_netobs-dev  := deploy/netobs/overlays/dev
 OVERLAY_PATH_netobs-prod := deploy/netobs/overlays/prod
 OVERLAY_PATH_gpuobs-dev  := deploy/gpuobs/overlays/dev
 OVERLAY_PATH_gpuobs-prod := deploy/gpuobs/overlays/prod
+# dashboards 는 dev/prod 분기가 없는 클러스터 공용 패키지다. Grafana sidecar 가 cluster 전체
+# ConfigMap 을 watch 하므로 단일 배포로 충분하다.
+OVERLAY_PATH_dashboards  := deploy/dashboards
 
 # ============================================================================
 # Architecture detection (BPF 컴파일용)
