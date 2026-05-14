@@ -144,6 +144,10 @@ func main() {
 			if ok && err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("ebpf runner error: %v", err)
 			}
+			// ebpfx.Run 반환 시점에 deferred objs.Close()가 이미 PodBytes 맵 FD를 닫았다.
+			// Collector가 stale pointer로 매 scrape마다 EBADF errno를 받지 않도록 명시적으로
+			// invalidate한다. 이후 Collect는 nil-map 가드로 빈 결과를 반환한다.
+			podBytesCollector.SetMap(nil)
 			errCh = nil
 
 		case <-doneSignal:
