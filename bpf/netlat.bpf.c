@@ -326,22 +326,22 @@ int BPF_KPROBE(handle_tcp_retransmit_skb, struct sock *sk, struct sk_buff *skb, 
  * 호출된다. recvmsg 경로에서 process context로 실행되어 bpf_get_current_cgroup_id()가 수신 Pod의
  * cgroup_id를 정확히 반환하므로 ingress L4 카운터의 표준 hook으로 적합하다. copied 인자는
  * 음수일 때 에러 신호이므로 양수일 때만 누적한다. NIC layer ingress는 softirq context에서
- * cgroup 해상이 복잡해 본 PR 범위 밖이며 follow-up 이슈에서 다룬다. */
+ * cgroup 해상이 복잡해 본 PR 범위 밖이며 follow-up 이슈에서 다룬다.
+ *
+ * match_target 필터는 본 hook에서 적용하지 않는다. target_daddr는 egress 흐름의 목적지 IP를
+ * 좁히는 테스트용 변수로 ingress에서는 skc_daddr가 원격 peer (송신자) 주소라 같은 변수에 빗대면
+ * 의미가 어긋난다. ingress 전수 카운팅이 본 카운터의 의도이며 production에선 target_daddr=""
+ * default라 어차피 무영향이다. */
 SEC("kprobe/tcp_cleanup_rbuf")
 int BPF_KPROBE(handle_tcp_cleanup_rbuf, struct sock *sk, int copied)
 {
     __u64 cgroup_id;
-    __u32 daddr;
 
     if (copied <= 0)
         return 0;
 
     cgroup_id = bpf_get_current_cgroup_id();
     if (!cgroup_id)
-        return 0;
-
-    daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
-    if (!match_target(daddr))
         return 0;
 
     /* L4 ingress 바이트만 누적한다. tcp_cleanup_rbuf는 userspace read 1회마다 호출되어 packets
