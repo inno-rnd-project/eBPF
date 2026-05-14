@@ -12,6 +12,18 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type NetObsNetobsPodBytesKey struct {
+	CgroupId  uint64
+	Direction uint8
+	Layer     uint8
+	Pad       [6]uint8
+}
+
+type NetObsNetobsPodBytesValue struct {
+	Bytes   uint64
+	Packets uint64
+}
+
 type NetObsNetobsStartInfo struct {
 	TsNs         uint64
 	CgroupId     uint64
@@ -75,6 +87,7 @@ type NetObsSpecs struct {
 type NetObsProgramSpecs struct {
 	HandleDevQueueXmit     *ebpf.ProgramSpec `ebpf:"handle_dev_queue_xmit"`
 	HandleKfreeSkbReason   *ebpf.ProgramSpec `ebpf:"handle_kfree_skb_reason"`
+	HandleTcpCleanupRbuf   *ebpf.ProgramSpec `ebpf:"handle_tcp_cleanup_rbuf"`
 	HandleTcpRetransmitSkb *ebpf.ProgramSpec `ebpf:"handle_tcp_retransmit_skb"`
 	HandleTcpSendmsg       *ebpf.ProgramSpec `ebpf:"handle_tcp_sendmsg"`
 	HandleTcpSendmsgRet    *ebpf.ProgramSpec `ebpf:"handle_tcp_sendmsg_ret"`
@@ -86,6 +99,7 @@ type NetObsProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type NetObsMapSpecs struct {
 	Events      *ebpf.MapSpec `ebpf:"events"`
+	PodBytes    *ebpf.MapSpec `ebpf:"pod_bytes"`
 	Starts      *ebpf.MapSpec `ebpf:"starts"`
 	TargetDaddr *ebpf.MapSpec `ebpf:"target_daddr"`
 }
@@ -117,6 +131,7 @@ func (o *NetObsObjects) Close() error {
 // It can be passed to LoadNetObsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NetObsMaps struct {
 	Events      *ebpf.Map `ebpf:"events"`
+	PodBytes    *ebpf.Map `ebpf:"pod_bytes"`
 	Starts      *ebpf.Map `ebpf:"starts"`
 	TargetDaddr *ebpf.Map `ebpf:"target_daddr"`
 }
@@ -124,6 +139,7 @@ type NetObsMaps struct {
 func (m *NetObsMaps) Close() error {
 	return _NetObsClose(
 		m.Events,
+		m.PodBytes,
 		m.Starts,
 		m.TargetDaddr,
 	)
@@ -141,6 +157,7 @@ type NetObsVariables struct {
 type NetObsPrograms struct {
 	HandleDevQueueXmit     *ebpf.Program `ebpf:"handle_dev_queue_xmit"`
 	HandleKfreeSkbReason   *ebpf.Program `ebpf:"handle_kfree_skb_reason"`
+	HandleTcpCleanupRbuf   *ebpf.Program `ebpf:"handle_tcp_cleanup_rbuf"`
 	HandleTcpRetransmitSkb *ebpf.Program `ebpf:"handle_tcp_retransmit_skb"`
 	HandleTcpSendmsg       *ebpf.Program `ebpf:"handle_tcp_sendmsg"`
 	HandleTcpSendmsgRet    *ebpf.Program `ebpf:"handle_tcp_sendmsg_ret"`
@@ -151,6 +168,7 @@ func (p *NetObsPrograms) Close() error {
 	return _NetObsClose(
 		p.HandleDevQueueXmit,
 		p.HandleKfreeSkbReason,
+		p.HandleTcpCleanupRbuf,
 		p.HandleTcpRetransmitSkb,
 		p.HandleTcpSendmsg,
 		p.HandleTcpSendmsgRet,
