@@ -108,10 +108,18 @@ static __always_inline void fill_dev_from_skb(struct sk_buff *skb, struct netobs
         s->skb_iif = skb_iif;
 }
 
-/* inc_pod_bytes는 (cgroup_id, direction, layer) 삼중 키로 bytes/packets를 1회 누적한다.
+/* inc_pod_bytes는 (cgroup_id, direction, layer) 삼중 키로 bytes/packets를 누적한다.
  * BPF_MAP_TYPE_LRU_PERCPU_HASH는 lookup이 per-CPU 슬롯을 반환하므로 atomic 연산 없이 단순 덧셈으로
- * race가 없다. cgroup_id가 0이면 host 작업 또는 cgroup v2 미지원 컨텍스트라 무시한다. */
-static __always_inline void inc_pod_bytes(__u64 cgroup_id, __u8 direction, __u8 layer, __u64 bytes_delta)
+ * race가 없다. cgroup_id가 0이면 host 작업 또는 cgroup v2 미지원 컨텍스트라 무시한다.
+ *
+ * packets_delta가 호출자별로 분리된 이유: NIC layer (__dev_queue_xmit/veth_xmit) hook은 1회 호출이
+ * 1개 skb와 정확히 대응되어 packets += 1이 패킷 수와 일치한다. 반면 L4 layer (tcp_sendmsg/
+ * tcp_cleanup_rbuf) hook은 syscall 또는 cleanup 호출 1회가 여러 TCP segment 또는 read 배치에
+ * 대응되므로 packets += 1이 "패킷 수"가 아니라 syscall 수가 되어 메트릭 의미가 깨진다. 따라서 L4
+ * 경로는 packets_delta=0으로 호출하고, Collector가 packets==0인 entry는 packets 시리즈를 emit하지
+ * 않아 NIC layer만 packets를 노출한다. */
+static __always_inline void inc_pod_bytes(__u64 cgroup_id, __u8 direction, __u8 layer,
+                                          __u64 bytes_delta, __u64 packets_delta)
 {
     struct netobs_pod_bytes_key key;
     struct netobs_pod_bytes_value *val;
@@ -128,13 +136,13 @@ static __always_inline void inc_pod_bytes(__u64 cgroup_id, __u8 direction, __u8 
     val = bpf_map_lookup_elem(&pod_bytes, &key);
     if (val) {
         val->bytes   += bytes_delta;
-        val->packets += 1;
+        val->packets += packets_delta;
         return;
     }
 
     __builtin_memset(&init, 0, sizeof(init));
     init.bytes   = bytes_delta;
-    init.packets = 1;
+    init.packets = packets_delta;
     bpf_map_update_elem(&pod_bytes, &key, &init, BPF_ANY);
 }
 
@@ -190,10 +198,9 @@ int BPF_KPROBE(handle_tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t s
     if (!match_target(s.daddr))
         return 0;
 
-    /* L4 syscall layer egress 바이트 누적. tcp_sendmsg의 size 인자는 사용자가 send에 넘긴 페이로드
-     * 크기로 헤더가 빠져 있어 cAdvisor의 NIC layer bytes와는 헤더 분량만큼 차이가 난다. L4 layer는
-     * 워크로드 자체의 데이터 송신량 정량화에 쓰인다. */
-    inc_pod_bytes(s.cgroup_id, NETOBS_DIR_EGRESS, NETOBS_LAYER_L4, (__u64)size);
+    /* L4 egress 바이트 누적은 kretprobe로 이동했다. entry의 size 인자는 사용자가 send에 넘긴 요청량
+     * (헤더 제외)이라 ret로 실제 전송 바이트를 받아 누적해야 partial send/실패(-errno)에서 과대계상이
+     * 발생하지 않는다. */
 
     bpf_get_current_comm(&s.comm, sizeof(s.comm));
     bpf_map_update_elem(&starts, &s.tid, &s, BPF_ANY);
@@ -217,6 +224,13 @@ int BPF_KRETPROBE(handle_tcp_sendmsg_ret, int ret)
 
     emit_event(s, NETOBS_STAGE_SENDMSG_RET, 0, ret, latency_us);
     s->ret_seen = 1;
+
+    /* L4 egress 바이트는 ret > 0 (실제 전송 바이트) 일 때만 누적한다. ret <= 0 은 -errno 또는
+     * 0바이트 전송으로 카운터에 반영하면 안 된다. cgroup_id는 entry 시점에 stash 된 값을 사용해
+     * sync syscall 컨텍스트의 task cgroup과 일관성을 유지한다. packets_delta=0인 이유는
+     * inc_pod_bytes 주석 참고. */
+    if (ret > 0)
+        inc_pod_bytes(s->cgroup_id, NETOBS_DIR_EGRESS, NETOBS_LAYER_L4, (__u64)ret, 0);
 
     if (s->seen_veth && s->seen_devq)
         bpf_map_delete_elem(&starts, &tid);
@@ -268,7 +282,8 @@ int BPF_KPROBE(handle_dev_queue_xmit, struct sk_buff *skb)
      * 중복 방출만 가드하는 플래그이므로 bytes 누적은 본 플래그와 분리해 매 진입마다 수행한다. */
     fill_dev_from_skb(skb, s);
     skb_len = (__u64)BPF_CORE_READ(skb, len);
-    inc_pod_bytes(s->cgroup_id, NETOBS_DIR_EGRESS, NETOBS_LAYER_NIC, skb_len);
+    /* NIC layer 는 1 skb = 1 packet 이 자연 대응되어 packets_delta=1 이 정확한 패킷 수다. */
+    inc_pod_bytes(s->cgroup_id, NETOBS_DIR_EGRESS, NETOBS_LAYER_NIC, skb_len, 1);
 
     if (s->seen_devq)
         return 0;
@@ -329,7 +344,9 @@ int BPF_KPROBE(handle_tcp_cleanup_rbuf, struct sock *sk, int copied)
     if (!match_target(daddr))
         return 0;
 
-    inc_pod_bytes(cgroup_id, NETOBS_DIR_INGRESS, NETOBS_LAYER_L4, (__u64)copied);
+    /* L4 ingress 바이트만 누적한다. tcp_cleanup_rbuf는 userspace read 1회마다 호출되어 packets
+     * 단위와 무관해서 packets_delta=0. inc_pod_bytes 주석 참고. */
+    inc_pod_bytes(cgroup_id, NETOBS_DIR_INGRESS, NETOBS_LAYER_L4, (__u64)copied, 0);
     return 0;
 }
 
