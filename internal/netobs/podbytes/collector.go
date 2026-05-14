@@ -84,7 +84,7 @@ func New(resolver PodResolver, node string, enabled bool) *Collector {
 		),
 		packetsDesc: prometheus.NewDesc(
 			"netobs_pod_packets_total",
-			"Packets transferred per source pod by direction (egress/ingress) and observation layer (nic/l4)",
+			"Packets transferred per source pod by direction (egress/ingress). Emitted only at layer=nic where one BPF hook call corresponds to one skb",
 			labels, nil,
 		),
 	}
@@ -117,6 +117,43 @@ type aggValue struct {
 	pod     kube.PodIdentity
 }
 
+// mergeEntry는 BPF map iteration의 한 entry를 agg 맵에 합산한다. Collect 본문에서 BPF map iterator
+// 호출과 PERCPU 슬라이스 길이 처리만 떼어내, 합산/Pod 해상/중복 처리 로직을 단위 테스트로 격리해
+// 가드 가능하도록 분리한 헬퍼다. perCPU에는 cilium/ebpf가 LRU_PERCPU_HASH lookup에서 반환한 CPU 수
+// 만큼의 슬롯이 들어오고, 모든 슬롯을 합산해 단일 (cgroup_id, direction, layer) entry의 누적치를
+// 만든다. resolver가 cgroup_id를 Pod로 해상하지 못한 entry는 skip되며, 같은 PodUID로 해상되는 다른
+// cgroup_id entry가 이미 agg에 있으면 동일 (direction, layer, podUID) 키 아래로 합쳐 Prometheus가
+// 동일 라벨 셋 중복 시리즈로 거부하는 상황을 방지한다.
+func mergeEntry(
+	agg map[aggKey]*aggValue,
+	key ebpfx.NetObsNetobsPodBytesKey,
+	perCPU []ebpfx.NetObsNetobsPodBytesValue,
+	resolver PodResolver,
+) {
+	var totalBytes, totalPackets uint64
+	for _, v := range perCPU {
+		totalBytes += v.Bytes
+		totalPackets += v.Packets
+	}
+
+	pod, ok := resolver.ResolveCgroup(key.CgroupId)
+	if !ok || !pod.IsPod() {
+		return
+	}
+
+	ak := aggKey{direction: key.Direction, layer: key.Layer, podUID: pod.PodUID}
+	if existing, ok := agg[ak]; ok {
+		existing.bytes += totalBytes
+		existing.packets += totalPackets
+		return
+	}
+	agg[ak] = &aggValue{
+		bytes:   totalBytes,
+		packets: totalPackets,
+		pod:     pod,
+	}
+}
+
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	if !c.enabled {
 		return
@@ -141,32 +178,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 
 	iter := m.Iterate()
 	for iter.Next(&key, &values) {
-		// LRU_PERCPU_HASH는 lookup이 CPU 수만큼의 slice를 반환한다. 모든 CPU의 슬롯을 합산해
-		// 단일 (cgroup_id, direction, layer) entry의 누적치를 만든다.
-		var totalBytes, totalPackets uint64
-		for _, v := range values {
-			totalBytes += v.Bytes
-			totalPackets += v.Packets
-		}
-
-		pod, ok := c.resolver.ResolveCgroup(key.CgroupId)
-		if !ok || !pod.IsPod() {
-			// cgroup_id가 아직 enricher 캐시에 학습되지 않은 경우 본 entry는 skip한다.
-			// event 흐름으로 캐시가 채워지면 다음 scrape에서 정상 emit된다.
-			continue
-		}
-
-		ak := aggKey{direction: key.Direction, layer: key.Layer, podUID: pod.PodUID}
-		if existing, ok := agg[ak]; ok {
-			existing.bytes += totalBytes
-			existing.packets += totalPackets
-			continue
-		}
-		agg[ak] = &aggValue{
-			bytes:   totalBytes,
-			packets: totalPackets,
-			pod:     pod,
-		}
+		mergeEntry(agg, key, values, c.resolver)
 	}
 	// cilium/ebpf 공식 doc: "You must check the result of Err afterwards." 반복 중 ErrIterationAborted
 	// 등으로 조기 종료된 경우 부분 결과를 emit하면 Prometheus가 직전 scrape보다 작은 counter 값을
@@ -175,6 +187,18 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 
+	c.emitFromAgg(agg, ch)
+}
+
+// emitFromAgg는 합산이 끝난 aggKey/aggValue 맵을 Prometheus metric 채널로 emit한다. Collect 본문의
+// emit 단계를 단위 테스트로 분리하기 위한 헬퍼이며 (특히 layer=l4 packets 시리즈 차단 가드의 회귀
+// 방지), Collect는 본 메서드를 직접 호출한다.
+//
+// packets는 NIC layer hook에서만 1 skb = 1 packet 의미가 성립한다 (BPF inc_pod_bytes 주석 참고).
+// L4 layer hook (tcp_sendmsg/tcp_cleanup_rbuf) 은 packets_delta=0으로 누적하므로 packets > 0 가드는
+// 사실상 layer=l4 entry의 packets 시리즈 emit을 차단하며, 미래에 다른 L4 hook이 추가되어도 의미가
+// 깨지지 않게 한다.
+func (c *Collector) emitFromAgg(agg map[aggKey]*aggValue, ch chan<- prometheus.Metric) {
 	for ak, av := range agg {
 		labels := []string{
 			directionLabel(ak.direction),
@@ -185,6 +209,8 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			av.pod.PodUID,
 		}
 		ch <- prometheus.MustNewConstMetric(c.bytesDesc, prometheus.CounterValue, float64(av.bytes), labels...)
-		ch <- prometheus.MustNewConstMetric(c.packetsDesc, prometheus.CounterValue, float64(av.packets), labels...)
+		if av.packets > 0 {
+			ch <- prometheus.MustNewConstMetric(c.packetsDesc, prometheus.CounterValue, float64(av.packets), labels...)
+		}
 	}
 }
