@@ -46,7 +46,7 @@
         "name": "src_pod",
         "type": "query",
         "datasource": "${datasource}",
-        "query": "label_values(gpuobs_pod_memory_used_bytes{node=~\"$node\"}, src_pod)",
+        "query": "label_values(gpuobs_pod_memory_used_bytes{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}, src_pod)",
         "multi": true,
         "includeAll": true,
         "label": "Pod (GPU 워크로드)",
@@ -163,7 +163,7 @@
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
       "targets": [
         {
-          "expr": "gpuobs_pod_memory_used_bytes{node=~\"$node\",src_pod=~\"$src_pod\"}",
+          "expr": "gpuobs_pod_memory_used_bytes{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",src_pod=~\"$src_pod\"}",
           "legendFormat": "{{src_namespace}}/{{src_pod}} gpu{{gpu_index}}",
           "refId": "A"
         }
@@ -179,7 +179,7 @@
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
       "targets": [
         {
-          "expr": "sum by (src_namespace, src_pod, gpu_uuid) (rate(gpuobs_cuda_kernel_launches_total{node=~\"$node\",src_pod=~\"$src_pod\"}[5m]))",
+          "expr": "sum by (src_namespace, src_pod, gpu_uuid) (rate(gpuobs_cuda_kernel_launches_total{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",src_pod=~\"$src_pod\"}[5m]))",
           "legendFormat": "{{src_namespace}}/{{src_pod}} {{gpu_uuid}}",
           "refId": "A"
         }
@@ -195,13 +195,13 @@
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
       "targets": [
         {
-          "expr": "sum by (src_namespace, src_pod) (rate(gpuobs_cuda_h2d_bytes_total{node=~\"$node\",src_pod=~\"$src_pod\"}[5m]))",
-          "legendFormat": "H2D {{src_namespace}}/{{src_pod}}",
+          "expr": "sum by (src_namespace, src_pod, gpu_uuid) (rate(gpuobs_cuda_h2d_bytes_total{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",src_pod=~\"$src_pod\"}[5m]))",
+          "legendFormat": "H2D {{src_namespace}}/{{src_pod}} {{gpu_uuid}}",
           "refId": "A"
         },
         {
-          "expr": "sum by (src_namespace, src_pod) (rate(gpuobs_cuda_d2h_bytes_total{node=~\"$node\",src_pod=~\"$src_pod\"}[5m]))",
-          "legendFormat": "D2H {{src_namespace}}/{{src_pod}}",
+          "expr": "sum by (src_namespace, src_pod, gpu_uuid) (rate(gpuobs_cuda_d2h_bytes_total{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",src_pod=~\"$src_pod\"}[5m]))",
+          "legendFormat": "D2H {{src_namespace}}/{{src_pod}} {{gpu_uuid}}",
           "refId": "B"
         }
       ]

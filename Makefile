@@ -27,7 +27,8 @@ CGO_netobs-agent := 0
 CGO_gpuobs-agent := 1
 
 # ============================================================================
-# Overlay registry — <agent-domain>-<rollout-stage> 형식
+# Overlay registry — 기본은 <agent-domain>-<rollout-stage> 형식이지만 dev/prod 분기가
+# 없는 클러스터 공용 패키지는 단일 이름 (예: dashboards) 으로 등록한다.
 # 새 overlay 추가 시:
 #   1) OVERLAYS에 이름 추가
 #   2) OVERLAY_PATH_<name>에 kustomize 경로 지정

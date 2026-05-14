@@ -35,7 +35,7 @@
         "name": "src_namespace",
         "type": "query",
         "datasource": "${datasource}",
-        "query": "label_values(netobs_pod_stage_latency_labeled_seconds_count{node=~\"$node\"}, src_namespace)",
+        "query": "label_values(netobs_stage_latency_labeled_seconds_count{node=~\"$node\"}, src_namespace)",
         "multi": true,
         "includeAll": true,
         "label": "Source namespace",
@@ -47,6 +47,7 @@
         "type": "query",
         "datasource": "${datasource}",
         "query": "label_values(netobs_pod_stage_latency_labeled_seconds_count{node=~\"$node\",src_namespace=~\"$src_namespace\"}, src_pod)",
+        "description": "netobs-agent의 Pod metrics가 비활성(POD_METRICS_ENABLED=false)인 환경에서는 본 변수가 비게 된다. 그 경우 'Per-pod stage latency p95' 패널만 영향을 받고 stage / drop / retransmission 패널은 정상 동작한다.",
         "multi": true,
         "includeAll": true,
         "label": "Source pod",
@@ -65,7 +66,7 @@
       "fieldConfig": { "defaults": { "unit": "s" } },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum by (le, stage, node) (rate(netobs_stage_latency_labeled_seconds_bucket{node=~\"$node\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le, stage, node) (rate(netobs_stage_latency_labeled_seconds_bucket{node=~\"$node\",src_namespace=~\"$src_namespace\"}[5m])))",
           "legendFormat": "{{stage}} ({{node}})",
           "refId": "A"
         }
@@ -80,7 +81,7 @@
       "fieldConfig": { "defaults": { "unit": "s" } },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le, stage, node) (rate(netobs_stage_latency_labeled_seconds_bucket{node=~\"$node\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, stage, node) (rate(netobs_stage_latency_labeled_seconds_bucket{node=~\"$node\",src_namespace=~\"$src_namespace\"}[5m])))",
           "legendFormat": "{{stage}} ({{node}})",
           "refId": "A"
         }
@@ -96,7 +97,7 @@
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
       "targets": [
         {
-          "expr": "sum by (drop_category) (rate(netobs_drop_events_labeled_total{node=~\"$node\",src_namespace=~\"$src_namespace\",src_workload=~\".*\"}[5m]))",
+          "expr": "sum by (drop_category) (rate(netobs_drop_events_labeled_total{node=~\"$node\",src_namespace=~\"$src_namespace\"}[5m]))",
           "legendFormat": "{{drop_category}}",
           "refId": "A"
         }
