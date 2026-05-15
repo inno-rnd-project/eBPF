@@ -60,8 +60,9 @@ func getenvDuration(key string, def time.Duration) (time.Duration, error) {
 
 // parseNamespaceList는 콤마 구분 namespace 문자열을 정규화된 슬라이스로 변환한다. 공백 trim과 빈
 // 토큰 제거, 중복 dedup을 수행해 startup 시점 1회 결정으로 운영자가 안전하게 multi-line yaml 또는
-// env로 주입 가능하게 한다. 입력 순서는 유지하지 않고 결정적 출력 (정렬) 으로 단위 테스트가 안정적
-// 으로 비교 가능하게 한다.
+// env로 주입 가능하게 한다. 입력에 등장한 첫 occurrence 순서를 보존해 운영자가 의도한 우선순위
+// (예: 자주 매칭되는 namespace 를 앞쪽에 배치하는 휴리스틱) 가 출력에 그대로 반영되며, 단위 테스트
+// 도 본 순서 가정을 가드한다.
 func parseNamespaceList(raw string) []string {
 	if strings.TrimSpace(raw) == "" {
 		return nil

@@ -38,6 +38,7 @@ func main() {
 	// dst 라벨 정책 단일 진입점. master switch off / allow-list 비어 있으면 dst_namespace, dst_workload,
 	// dst_pod_uid 가 빈 문자열로 emit 되어 cardinality 가 도입 전 수준으로 유지된다.
 	metrics.SetDstClassifier(metadata.NewDstLabelClassifier(cfg.PodFlowDstEnabled, cfg.PodFlowDstUIDAllowNamespaces))
+	log.Printf("pod flow dst labels: enabled=%t dst_pod_uid_allow_namespaces=%v", cfg.PodFlowDstEnabled, cfg.PodFlowDstUIDAllowNamespaces)
 
 	var ebpfReady atomic.Bool
 	kr := kube.NewResolver(cfg.NodeName, cfg.MetadataRefresh)

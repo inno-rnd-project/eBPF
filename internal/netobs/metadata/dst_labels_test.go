@@ -113,3 +113,83 @@ func TestDstLabelClassifierEmptyAllowListSkipsUID(t *testing.T) {
 		t.Errorf("empty allow-list=(ns=%q,wl=%q,uid=%q) want (any-ns,any-pod,\"\")", ns, wl, uid)
 	}
 }
+
+// TestDstLabelClassifierCardinalityGate는 이슈 #48 수용 조건 "카디널리티 폭발 안전장치 단위 테스트"
+// 의 직접 가드다. 100 개의 서로 다른 PodUID 를 가진 dst Pod 들을 동일 namespace 에 흘렸을 때,
+// (a) allow-list 미포함이면 모든 entry 의 UID 가 빈 값으로 collapse 되어 unique 라벨 셋 1개로
+// 통제되고, (b) allow-list 포함이면 각 UID 가 그대로 노출되어 100 개 unique 라벨 셋이 됨을 확인
+// 한다. cardinality 가 토글로 명시적으로 제어된다는 본 PR 핵심 invariant 의 회귀 가드다.
+func TestDstLabelClassifierCardinalityGate(t *testing.T) {
+	const n = 100
+
+	// (a) allow-list 미포함: 모든 UID 가 빈 값으로 collapse
+	c := NewDstLabelClassifier(true, []string{"other-ns"})
+	uidSet := make(map[string]struct{})
+	for i := 0; i < n; i++ {
+		_, _, uid := c.Labels(podID("kube-system", "pod-x", "uid-"+string(rune('a'+i%26))+"-"+string(rune('0'+i%10))))
+		uidSet[uid] = struct{}{}
+	}
+	if len(uidSet) != 1 {
+		t.Errorf("disabled-namespace unique UIDs=%d want 1 (cardinality must collapse to empty)", len(uidSet))
+	}
+	if _, ok := uidSet[""]; !ok {
+		t.Errorf("disabled-namespace UID set=%v want only empty string", uidSet)
+	}
+
+	// (b) allow-list 포함: 각 UID 가 그대로 emit 되어 cardinality 가 의도된 만큼 노출
+	c = NewDstLabelClassifier(true, []string{"kube-system"})
+	uidSet = make(map[string]struct{})
+	for i := 0; i < n; i++ {
+		uniqueUID := "uid-pod-" + string(rune('a'+(i/26)%26)) + string(rune('a'+i%26))
+		_, _, uid := c.Labels(podID("kube-system", "pod-x", uniqueUID))
+		uidSet[uid] = struct{}{}
+	}
+	if len(uidSet) != n {
+		t.Errorf("enabled-namespace unique UIDs=%d want %d (each distinct UID should emit)", len(uidSet), n)
+	}
+}
+
+// TestDstLabelClassifierServiceWithEmptyWorkload는 IdentityClassService 이지만 Workload 가 비어
+// 있는 edge 케이스에서 분류기가 panic 없이 PodIdentity.WorkloadLabel 의 fallback ("service") 을
+// 그대로 emit 하는지 검증한다. enricher informer race 등으로 잠시 발생 가능한 partial 정체성에
+// 대한 회귀 가드다.
+func TestDstLabelClassifierServiceWithEmptyWorkload(t *testing.T) {
+	c := NewDstLabelClassifier(true, nil)
+	ns, wl, uid := c.Labels(kube.PodIdentity{IdentityClass: kube.IdentityClassService, Namespace: "default"})
+	if ns != "default" || wl != "service" || uid != "" {
+		t.Errorf("service-empty-wl=(ns=%q,wl=%q,uid=%q) want (default,service,\"\")", ns, wl, uid)
+	}
+}
+
+// TestDstLabelClassifierNodeIdentity는 host network 트래픽 등 IdentityClassNode dst 가 default
+// 분기로 떨어져 host / node/<name> 라벨로 emit 되는지 검증한다. UID 게이트와 무관 (Node 는 UID
+// 개념 없음) 하므로 dst_pod_uid 는 빈 값으로 유지된다.
+func TestDstLabelClassifierNodeIdentity(t *testing.T) {
+	c := NewDstLabelClassifier(true, nil)
+	ns, wl, uid := c.Labels(kube.PodIdentity{IdentityClass: kube.IdentityClassNode, NodeName: "worker-1"})
+	if ns != "host" {
+		t.Errorf("node ns=%q want host", ns)
+	}
+	if wl != "node/worker-1" {
+		t.Errorf("node workload=%q want node/worker-1", wl)
+	}
+	if uid != "" {
+		t.Errorf("node uid=%q want empty", uid)
+	}
+}
+
+// TestDstLabelClassifierPodWithEmptyNamespace는 Pod 이지만 Namespace 필드가 비어 있는 partial
+// 정체성에서 allow-list 매칭이 raw 빈 문자열로 일어나 어떤 운영자 입력에도 매칭되지 않아 UID 가
+// emit 되지 않음을 검증한다. parseNamespaceList 가 빈 토큰을 제거하기 때문에 allow-list 에 ""
+// 가 들어올 수 없어 이 경로의 dst_pod_uid 는 항상 빈 문자열이다.
+func TestDstLabelClassifierPodWithEmptyNamespace(t *testing.T) {
+	c := NewDstLabelClassifier(true, []string{"some-ns"})
+	ns, wl, uid := c.Labels(kube.PodIdentity{IdentityClass: kube.IdentityClassPod, PodName: "p", PodUID: "uid-1"})
+	if uid != "" {
+		t.Errorf("empty-ns pod uid=%q want empty (raw namespace cannot match allow-list)", uid)
+	}
+	// dst_namespace / dst_workload 는 PodIdentity 자체의 fallback ("unknown" / "p") 을 따른다.
+	if ns == "" || wl == "" {
+		t.Errorf("empty-ns pod ns/wl=(%q,%q) want non-empty fallback labels", ns, wl)
+	}
+}
