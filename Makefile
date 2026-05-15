@@ -113,17 +113,20 @@ setup-envtest:
 # ----------------------------------------------------------------------------
 # check-prometheus-rules - deploy/gpuobs/base/prometheus-rule.yaml 의 PromQL 문법과 rule 정의 정합성
 #                          을 promtool 로 검증한다. PrometheusRule CRD wrapper 를 그대로 promtool 에 줄
-#                          수 없어 awk 로 spec.groups 만 추출해 promtool 입력 형식으로 변환한다. promtool
-#                          은 공식 prom/prometheus 컨테이너에서 실행되어 호스트 설치를 요구하지 않으며
-#                          PROMTOOL_IMAGE 변수로 버전을 pin 한다.
+#                          수 없어 awk 로 spec.groups 만 추출해 promtool 입력 형식으로 변환한다. 임시
+#                          산출물은 gitignore 대상인 ./bin 디렉토리에 두어 /tmp 공유 충돌 (병렬 CI, 다중
+#                          사용자) 을 회피한다. promtool 은 공식 prom/prometheus 컨테이너에서 실행되어
+#                          호스트 설치를 요구하지 않으며 PROMTOOL_IMAGE 변수로 버전을 pin 한다.
 # ============================================================================
 PROMTOOL_IMAGE ?= prom/prometheus:v2.55.0
 PROMETHEUS_RULE_FILE ?= deploy/gpuobs/base/prometheus-rule.yaml
+PROMTOOL_RULES_TMP ?= bin/promtool-rules.yaml
 
 check-prometheus-rules:
-	@echo "extracting spec.groups from $(PROMETHEUS_RULE_FILE)"
-	@awk '/^spec:/{f=1;next} f' $(PROMETHEUS_RULE_FILE) | sed 's/^  //' > /tmp/promtool-rules.yaml
-	@docker run --rm --entrypoint promtool -v /tmp/promtool-rules.yaml:/tmp/rules.yaml $(PROMTOOL_IMAGE) check rules /tmp/rules.yaml
+	@mkdir -p $(dir $(PROMTOOL_RULES_TMP))
+	@echo "extracting spec.groups from $(PROMETHEUS_RULE_FILE) → $(PROMTOOL_RULES_TMP)"
+	@awk '/^spec:/{f=1;next} f' $(PROMETHEUS_RULE_FILE) | sed 's/^  //' > $(PROMTOOL_RULES_TMP)
+	@docker run --rm --entrypoint promtool -v $(CURDIR)/$(PROMTOOL_RULES_TMP):/tmp/rules.yaml $(PROMTOOL_IMAGE) check rules /tmp/rules.yaml
 	@echo "promtool check rules: OK"
 
 # ============================================================================
