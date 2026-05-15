@@ -23,11 +23,14 @@ func TestGetenvFloat(t *testing.T) {
 			t.Errorf("valid env: got (%v, %v) want (2.5e9, nil)", v, err)
 		}
 	})
-	t.Run("invalid_returns_error", func(t *testing.T) {
+	t.Run("invalid_returns_default_with_error", func(t *testing.T) {
 		t.Setenv(key, "not-a-number")
-		_, err := getenvFloat(key, 1.25e9)
+		v, err := getenvFloat(key, 1.25e9)
 		if err == nil {
 			t.Errorf("invalid env: err=nil want non-nil")
+		}
+		if v != 1.25e9 {
+			t.Errorf("invalid env: got value %v want default 1.25e9 (caller must be able to fallback safely without re-reading)", v)
 		}
 	})
 }

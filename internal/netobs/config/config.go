@@ -87,9 +87,10 @@ func getenvDuration(key string, def time.Duration) (time.Duration, error) {
 	return d, nil
 }
 
-// getenvFloat는 환경 변수 값을 float64로 파싱한다. 빈 값이면 default를 반환하고 파싱 실패 시 명시적
-// 에러를 반환해 startup 시점에 fail-fast 한다. correlation tunable (NIC capacity 등) 의 env 진입점
-// 으로 쓰인다.
+// getenvFloat는 환경 변수 값을 float64로 파싱한다. 빈 값이면 default를 반환하고 파싱 실패 시 default
+// 와 함께 명시적 에러를 반환한다. caller가 err를 확인하지 않고 첫 반환값만 사용하더라도 의도된 default
+// 로 폴백되어 동작이 망가지지 않으며 gpuobs의 getenvFloat / getenvDuration 패턴과도 일관된다.
+// correlation tunable (NIC capacity 등) 의 env 진입점이다.
 func getenvFloat(key string, def float64) (float64, error) {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
@@ -97,7 +98,7 @@ func getenvFloat(key string, def float64) (float64, error) {
 	}
 	f, err := strconv.ParseFloat(v, 64)
 	if err != nil {
-		return 0, fmt.Errorf("invalid float for %s: %q", key, v)
+		return def, fmt.Errorf("invalid float for %s: %q", key, v)
 	}
 	return f, nil
 }
