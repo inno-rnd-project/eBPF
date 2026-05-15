@@ -42,7 +42,9 @@ func resetMetrics() {
 	legacyEventsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "netobs_events_total"}, []string{"stage"})
 	legacyLatencySeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "netobs_stage_latency_seconds", Buckets: prometheus.ExponentialBuckets(1e-6, 2, 20)}, []string{"stage"})
 	legacyDropTotal = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "netobs_drop_total"}, []string{"reason"})
-	dstClassifier = nil
+	dstClassifierEmits = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "netobs_dst_classifier_emits_total"}, []string{"outcome"})
+	dstClassifier.Store(nil)
+	podMetricsEnabled.Store(true)
 }
 
 func sampleEvent(src, dst kube.PodIdentity, stage uint8, stageName string) types.EnrichedEvent {
@@ -175,6 +177,32 @@ func TestRecordPodLevelDstUIDAllowListGate(t *testing.T) {
 			t.Errorf("dst_pod_uid=%q want empty (namespace not in allow-list)", v)
 		}
 	})
+}
+
+// TestRecordSelfObserveCounter는 Record 가 classifier outcome 을 그대로
+// netobs_dst_classifier_emits_total{outcome} 카운터에 위임하는지 검증한다. classifier 미설정 시점
+// 의 disabled bucket, external dst 에서 external bucket 으로 각각 +1 됨을 두 케이스로 확인한다.
+// 운영자가 cardinality bomb 징후를 본 카운터의 rate(pod_with_uid) 로 추적 가능한 기반이다.
+func TestRecordSelfObserveCounter(t *testing.T) {
+	resetMetrics()
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(dstClassifierEmits)
+
+	// 1) classifier nil → outcome=disabled
+	Record(sampleEvent(podID("ns-src", "src-pod", "uid-src"), podID("ns-dst", "dst-pod", "uid-dst"), types.StageSendmsgRet, "sendmsg_ret"))
+	if v := labelValue(t, reg, "netobs_dst_classifier_emits_total", "outcome"); v != "disabled" {
+		t.Errorf("outcome=%q want disabled (classifier nil)", v)
+	}
+
+	// 2) classifier 설정 후 external dst → outcome=external
+	resetMetrics()
+	SetDstClassifier(metadata.NewDstLabelClassifier(true, nil))
+	reg = prometheus.NewPedanticRegistry()
+	reg.MustRegister(dstClassifierEmits)
+	Record(sampleEvent(podID("ns-src", "src-pod", "uid-src"), externalID(), types.StageSendmsgRet, "sendmsg_ret"))
+	if v := labelValue(t, reg, "netobs_dst_classifier_emits_total", "outcome"); v != "external" {
+		t.Errorf("outcome=%q want external", v)
+	}
 }
 
 // podID/serviceID/externalID는 dst_labels_test.go 와 동일 형태의 헬퍼이며, 두 패키지 간 reuse 가

@@ -40,43 +40,58 @@ const (
 	dstUnresolved = "_unresolved"
 )
 
-// Labels는 dst PodIdentity 를 dst_namespace / dst_workload / dst_pod_uid 세 라벨 값으로 변환한다.
+// Outcome 라벨 값. metrics 패키지의 netobs_dst_classifier_emits_total{outcome} self-observe counter
+// 와 동일 문자열을 공유해야 패키지 간 표기가 어긋나지 않는다. metrics 패키지가 본 상수를 mirror
+// 한다 (양방향 import 회피).
+const (
+	OutcomeDisabled      = "disabled"
+	OutcomeExternal      = "external"
+	OutcomeUnresolved    = "unresolved"
+	OutcomeService       = "service"
+	OutcomePodWithUID    = "pod_with_uid"
+	OutcomePodWithoutUID = "pod_without_uid"
+	OutcomeOther         = "other"
+)
+
+// Labels는 dst PodIdentity 를 dst_namespace / dst_workload / dst_pod_uid 세 라벨 값과 outcome
+// bucket 으로 변환한다. outcome 은 self-observe counter (netobs_dst_classifier_emits_total) 에 기록
+// 되어 운영자가 분류 분포를 통해 cardinality bomb 징후를 추적할 수 있게 한다.
 //
 // 결정 규칙:
-// - master switch 꺼짐 → 세 값 모두 빈 문자열 (cardinality 가 도입 전과 동일하게 유지된다)
-// - dst.IsExternal() → "_external" / "_external" / ""
-// - dst.IsUnresolved() → "_unresolved" / "_unresolved" / ""
-// - dst.IsService() → namespace / "svc/<name>" / "" (서비스는 UID 개념 무의미)
-// - dst.IsPod() → namespace / workload / (namespace 가 allow-list 안에 있을 때만 PodUID, 그 외 빈 값)
-// - 그 외 (Node 등) → namespace / workload / "" (host network 등 UID 미정의 케이스)
+// - master switch 꺼짐 → 세 값 모두 빈 문자열, outcome=disabled (cardinality 가 도입 전 수준 유지)
+// - dst.IsExternal() → "_external" / "_external" / "", outcome=external
+// - dst.IsUnresolved() → "_unresolved" / "_unresolved" / "", outcome=unresolved
+// - dst.IsService() → namespace / "svc/<name>" / "", outcome=service
+// - dst.IsPod() & allow-list match → namespace / workload / PodUID, outcome=pod_with_uid
+// - dst.IsPod() & allow-list miss → namespace / workload / "", outcome=pod_without_uid
+// - 그 외 (Node 등) → namespace / workload / "", outcome=other
 //
-// 본 매핑 단일화 덕에 메트릭 emit 경로에서 분기 로직 없이 세 라벨을 그대로 사용 가능하며,
+// 본 매핑 단일화 덕에 메트릭 emit 경로에서 분기 로직 없이 세 라벨과 outcome 을 그대로 사용 가능하며,
 // cardinality 폭증 가드는 본 함수 내 allow-list 게이트 한 곳으로 수렴한다.
-func (c *DstLabelClassifier) Labels(dst kube.PodIdentity) (ns, workload, podUID string) {
+func (c *DstLabelClassifier) Labels(dst kube.PodIdentity) (ns, workload, podUID, outcome string) {
 	if c == nil || !c.enabled {
-		return "", "", ""
+		return "", "", "", OutcomeDisabled
 	}
 
 	switch {
 	case dst.IsExternal():
-		return dstExternal, dstExternal, ""
+		return dstExternal, dstExternal, "", OutcomeExternal
 
 	case dst.IsUnresolved():
-		return dstUnresolved, dstUnresolved, ""
+		return dstUnresolved, dstUnresolved, "", OutcomeUnresolved
 
 	case dst.IsService():
-		return dst.NamespaceLabel(), dst.WorkloadLabel(), ""
+		return dst.NamespaceLabel(), dst.WorkloadLabel(), "", OutcomeService
 
 	case dst.IsPod():
 		ns := dst.NamespaceLabel()
 		wl := dst.WorkloadLabel()
-		uid := ""
 		if _, ok := c.allow[dst.Namespace]; ok {
-			uid = dst.PodUID
+			return ns, wl, dst.PodUID, OutcomePodWithUID
 		}
-		return ns, wl, uid
+		return ns, wl, "", OutcomePodWithoutUID
 
 	default:
-		return dst.NamespaceLabel(), dst.WorkloadLabel(), ""
+		return dst.NamespaceLabel(), dst.WorkloadLabel(), "", OutcomeOther
 	}
 }

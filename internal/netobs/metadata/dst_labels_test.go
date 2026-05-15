@@ -38,7 +38,7 @@ func unresolvedID() kube.PodIdentity {
 // = false 운영 모드의 회귀 가드다.
 func TestDstLabelClassifierDisabledReturnsEmpty(t *testing.T) {
 	c := NewDstLabelClassifier(false, []string{"ns-a"})
-	ns, wl, uid := c.Labels(podID("ns-a", "p1", "uid-1"))
+	ns, wl, uid, _ := c.Labels(podID("ns-a", "p1", "uid-1"))
 	if ns != "" || wl != "" || uid != "" {
 		t.Errorf("disabled classifier=(ns=%q,wl=%q,uid=%q) want all empty", ns, wl, uid)
 	}
@@ -48,7 +48,7 @@ func TestDstLabelClassifierDisabledReturnsEmpty(t *testing.T) {
 // 합성 라벨로 잡히는지 검증한다. 실제 namespace 이름과 충돌하지 않게 underscore prefix 를 사용한다.
 func TestDstLabelClassifierExternalMarker(t *testing.T) {
 	c := NewDstLabelClassifier(true, nil)
-	ns, wl, uid := c.Labels(externalID())
+	ns, wl, uid, _ := c.Labels(externalID())
 	if ns != "_external" || wl != "_external" || uid != "" {
 		t.Errorf("external=(ns=%q,wl=%q,uid=%q) want (_external,_external,\"\")", ns, wl, uid)
 	}
@@ -59,7 +59,7 @@ func TestDstLabelClassifierExternalMarker(t *testing.T) {
 // "_unresolved" 로 표기하므로 운영자가 미해상 트래픽 비율을 쿼리로 추적 가능하다.
 func TestDstLabelClassifierUnresolvedFallback(t *testing.T) {
 	c := NewDstLabelClassifier(true, nil)
-	ns, wl, uid := c.Labels(unresolvedID())
+	ns, wl, uid, _ := c.Labels(unresolvedID())
 	if ns != "_unresolved" || wl != "_unresolved" || uid != "" {
 		t.Errorf("unresolved=(ns=%q,wl=%q,uid=%q) want (_unresolved,_unresolved,\"\")", ns, wl, uid)
 	}
@@ -70,7 +70,7 @@ func TestDstLabelClassifierUnresolvedFallback(t *testing.T) {
 // 하는 정책에 따른다.
 func TestDstLabelClassifierServiceLabel(t *testing.T) {
 	c := NewDstLabelClassifier(true, []string{"default"})
-	ns, wl, uid := c.Labels(serviceID("default", "kubernetes"))
+	ns, wl, uid, _ := c.Labels(serviceID("default", "kubernetes"))
 	if ns != "default" || wl != "svc/kubernetes" || uid != "" {
 		t.Errorf("service=(ns=%q,wl=%q,uid=%q) want (default,svc/kubernetes,\"\")", ns, wl, uid)
 	}
@@ -80,7 +80,7 @@ func TestDstLabelClassifierServiceLabel(t *testing.T) {
 // PodUID 까지 노출되는지 검증한다. dst_pod_uid 게이트의 positive path 회귀 가드다.
 func TestDstLabelClassifierPodInAllowList(t *testing.T) {
 	c := NewDstLabelClassifier(true, []string{"ebpf-project", "ns-b"})
-	ns, wl, uid := c.Labels(podID("ebpf-project", "agent-1", "uid-abc"))
+	ns, wl, uid, _ := c.Labels(podID("ebpf-project", "agent-1", "uid-abc"))
 	if ns != "ebpf-project" || wl != "agent-1" {
 		t.Errorf("pod ns/workload=(%q,%q) want (ebpf-project,agent-1)", ns, wl)
 	}
@@ -94,7 +94,7 @@ func TestDstLabelClassifierPodInAllowList(t *testing.T) {
 // Pod 시리즈에 UID 가 비어 cardinality 가 통제되는 default 동작의 회귀 가드다.
 func TestDstLabelClassifierPodNotInAllowList(t *testing.T) {
 	c := NewDstLabelClassifier(true, []string{"ebpf-project"})
-	ns, wl, uid := c.Labels(podID("kube-system", "kube-proxy-1", "uid-xyz"))
+	ns, wl, uid, _ := c.Labels(podID("kube-system", "kube-proxy-1", "uid-xyz"))
 	if ns != "kube-system" || wl != "kube-proxy-1" {
 		t.Errorf("pod ns/workload=(%q,%q) want (kube-system,kube-proxy-1)", ns, wl)
 	}
@@ -108,7 +108,7 @@ func TestDstLabelClassifierPodNotInAllowList(t *testing.T) {
 // 카디널리티 가드 회귀 보호.
 func TestDstLabelClassifierEmptyAllowListSkipsUID(t *testing.T) {
 	c := NewDstLabelClassifier(true, nil)
-	ns, wl, uid := c.Labels(podID("any-ns", "any-pod", "uid-1"))
+	ns, wl, uid, _ := c.Labels(podID("any-ns", "any-pod", "uid-1"))
 	if ns != "any-ns" || wl != "any-pod" || uid != "" {
 		t.Errorf("empty allow-list=(ns=%q,wl=%q,uid=%q) want (any-ns,any-pod,\"\")", ns, wl, uid)
 	}
@@ -126,7 +126,7 @@ func TestDstLabelClassifierCardinalityGate(t *testing.T) {
 	c := NewDstLabelClassifier(true, []string{"other-ns"})
 	uidSet := make(map[string]struct{})
 	for i := 0; i < n; i++ {
-		_, _, uid := c.Labels(podID("kube-system", "pod-x", "uid-"+string(rune('a'+i%26))+"-"+string(rune('0'+i%10))))
+		_, _, uid, _ := c.Labels(podID("kube-system", "pod-x", "uid-"+string(rune('a'+i%26))+"-"+string(rune('0'+i%10))))
 		uidSet[uid] = struct{}{}
 	}
 	if len(uidSet) != 1 {
@@ -141,7 +141,7 @@ func TestDstLabelClassifierCardinalityGate(t *testing.T) {
 	uidSet = make(map[string]struct{})
 	for i := 0; i < n; i++ {
 		uniqueUID := "uid-pod-" + string(rune('a'+(i/26)%26)) + string(rune('a'+i%26))
-		_, _, uid := c.Labels(podID("kube-system", "pod-x", uniqueUID))
+		_, _, uid, _ := c.Labels(podID("kube-system", "pod-x", uniqueUID))
 		uidSet[uid] = struct{}{}
 	}
 	if len(uidSet) != n {
@@ -155,7 +155,7 @@ func TestDstLabelClassifierCardinalityGate(t *testing.T) {
 // 대한 회귀 가드다.
 func TestDstLabelClassifierServiceWithEmptyWorkload(t *testing.T) {
 	c := NewDstLabelClassifier(true, nil)
-	ns, wl, uid := c.Labels(kube.PodIdentity{IdentityClass: kube.IdentityClassService, Namespace: "default"})
+	ns, wl, uid, _ := c.Labels(kube.PodIdentity{IdentityClass: kube.IdentityClassService, Namespace: "default"})
 	if ns != "default" || wl != "service" || uid != "" {
 		t.Errorf("service-empty-wl=(ns=%q,wl=%q,uid=%q) want (default,service,\"\")", ns, wl, uid)
 	}
@@ -166,7 +166,7 @@ func TestDstLabelClassifierServiceWithEmptyWorkload(t *testing.T) {
 // 개념 없음) 하므로 dst_pod_uid 는 빈 값으로 유지된다.
 func TestDstLabelClassifierNodeIdentity(t *testing.T) {
 	c := NewDstLabelClassifier(true, nil)
-	ns, wl, uid := c.Labels(kube.PodIdentity{IdentityClass: kube.IdentityClassNode, NodeName: "worker-1"})
+	ns, wl, uid, _ := c.Labels(kube.PodIdentity{IdentityClass: kube.IdentityClassNode, NodeName: "worker-1"})
 	if ns != "host" {
 		t.Errorf("node ns=%q want host", ns)
 	}
@@ -178,13 +178,47 @@ func TestDstLabelClassifierNodeIdentity(t *testing.T) {
 	}
 }
 
+// TestDstLabelClassifierOutcomeBuckets는 분류기가 반환하는 outcome bucket 이 6 가지 결정 경로와
+// 일대일 매핑되는지 검증한다. self-observe counter netobs_dst_classifier_emits_total{outcome} 의
+// 라벨 값이 메트릭 정의와 분류기 결정 로직 사이에서 어긋나지 않게 가드한다.
+func TestDstLabelClassifierOutcomeBuckets(t *testing.T) {
+	c := NewDstLabelClassifier(true, []string{"allowed-ns"})
+	cases := []struct {
+		name string
+		dst  kube.PodIdentity
+		want string
+	}{
+		{"external", externalID(), OutcomeExternal},
+		{"unresolved", unresolvedID(), OutcomeUnresolved},
+		{"service", serviceID("default", "kubernetes"), OutcomeService},
+		{"pod_with_uid", podID("allowed-ns", "p1", "uid-1"), OutcomePodWithUID},
+		{"pod_without_uid", podID("other-ns", "p2", "uid-2"), OutcomePodWithoutUID},
+		{"other_node", kube.PodIdentity{IdentityClass: kube.IdentityClassNode, NodeName: "n"}, OutcomeOther},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, got := c.Labels(tc.dst)
+			if got != tc.want {
+				t.Errorf("outcome=%q want %q", got, tc.want)
+			}
+		})
+	}
+
+	// disabled classifier 는 어떤 dst 든 outcome=disabled 로 떨어져야 한다.
+	disabled := NewDstLabelClassifier(false, []string{"allowed-ns"})
+	_, _, _, outcome := disabled.Labels(podID("allowed-ns", "p1", "uid-1"))
+	if outcome != OutcomeDisabled {
+		t.Errorf("disabled outcome=%q want %q", outcome, OutcomeDisabled)
+	}
+}
+
 // TestDstLabelClassifierPodWithEmptyNamespace는 Pod 이지만 Namespace 필드가 비어 있는 partial
 // 정체성에서 allow-list 매칭이 raw 빈 문자열로 일어나 어떤 운영자 입력에도 매칭되지 않아 UID 가
 // emit 되지 않음을 검증한다. parseNamespaceList 가 빈 토큰을 제거하기 때문에 allow-list 에 ""
 // 가 들어올 수 없어 이 경로의 dst_pod_uid 는 항상 빈 문자열이다.
 func TestDstLabelClassifierPodWithEmptyNamespace(t *testing.T) {
 	c := NewDstLabelClassifier(true, []string{"some-ns"})
-	ns, wl, uid := c.Labels(kube.PodIdentity{IdentityClass: kube.IdentityClassPod, PodName: "p", PodUID: "uid-1"})
+	ns, wl, uid, _ := c.Labels(kube.PodIdentity{IdentityClass: kube.IdentityClassPod, PodName: "p", PodUID: "uid-1"})
 	if uid != "" {
 		t.Errorf("empty-ns pod uid=%q want empty (raw namespace cannot match allow-list)", uid)
 	}
