@@ -33,6 +33,10 @@ func main() {
 	reg := prometheus.NewRegistry()
 	metrics.Register(reg)
 	metrics.SetPodMetricsEnabled(cfg.PodMetricsEnabled)
+	// CUDA launch baseline tunable을 정적 gauge로 노출해 correlation host_compute_stall_score 의 분모
+	// 로 사용한다.
+	metrics.SetCudaLaunchBaselinePerSec(cfg.NodeName, cfg.CudaLaunchBaselinePerSec)
+	log.Printf("cuda launch baseline: %.1f hz (node=%s)", cfg.CudaLaunchBaselinePerSec, cfg.NodeName)
 
 	// kube.Resolver는 Pod/Service/Node informer를 띄우고 IP/UID 인덱스를 유지한다.
 	// gpuobs는 ResolvePID 경로만 사용하므로, PodMetricsEnabled가 false인 경우에는

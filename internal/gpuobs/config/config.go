@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -40,6 +41,12 @@ type Config struct {
 	// libcudart 는 NVIDIA driver 가 아닌 CUDA Toolkit 의 일부라 host 에 설치된 환경에서만 의미가 있고,
 	// 컨테이너가 자체 libcudart 를 번들링하는 환경에서는 host attach 가 fire 되지 않는다 (README 한계 note 참고).
 	CudaUprobeLibcudartPath string
+
+	// CudaLaunchBaselinePerSec는 워크로드의 기대 CUDA kernel launch rate (Hz) 다. correlation 진단의
+	// pod:host_compute_stall_score:5m recording rule이 본 메트릭 값을 분모로 써서 launch rate가
+	// baseline 이하로 떨어진 비율을 0-1 score로 정규화한다. default 10 hz는 inference workload
+	// 기준이며 batch training 등은 더 낮을 수 있어 운영자가 env / flag로 override 한다.
+	CudaLaunchBaselinePerSec float64
 }
 
 // Parse는 env와 CLI flag를 읽어 Config를 구성해 반환한다.
@@ -66,6 +73,11 @@ func Parse() (Config, error) {
 		log.Printf("warn: %v; using default %v", err, cudaDeviceMapRefresh)
 	}
 
+	cudaLaunchBaseline, err := getenvFloat("CUDA_LAUNCH_BASELINE_PER_SEC", 10.0)
+	if err != nil {
+		log.Printf("warn: %v; using default %v", err, cudaLaunchBaseline)
+	}
+
 	cfg := Config{
 		ListenAddr:                 getenvDefault("LISTEN_ADDR", ":9820"),
 		NodeName:                   getenvDefault("NODE_NAME", ""),
@@ -77,6 +89,7 @@ func Parse() (Config, error) {
 		CudaUprobeLibcudaPath:      getenvDefault("GPUOBS_CUDA_LIBCUDA_PATH", "/host/usr/lib/x86_64-linux-gnu/libcuda.so.1"),
 		CudaUprobeLibcudartPath:    getenvDefault("GPUOBS_CUDA_LIBCUDART_PATH", ""),
 		CudaUprobeDeviceMapRefresh: cudaDeviceMapRefresh,
+		CudaLaunchBaselinePerSec:   cudaLaunchBaseline,
 	}
 
 	fs := flag.NewFlagSet("gpuobs-agent", flag.ContinueOnError)
@@ -90,6 +103,7 @@ func Parse() (Config, error) {
 	fs.StringVar(&cfg.CudaUprobeLibcudaPath, "cuda-libcuda-path", cfg.CudaUprobeLibcudaPath, "absolute path to host libcuda.so.1 reachable from inside the container")
 	fs.StringVar(&cfg.CudaUprobeLibcudartPath, "cuda-libcudart-path", cfg.CudaUprobeLibcudartPath, "absolute path to host libcudart.so reachable from inside the container; empty disables cudart attach")
 	fs.DurationVar(&cfg.CudaUprobeDeviceMapRefresh, "cuda-devicemap-refresh", cfg.CudaUprobeDeviceMapRefresh, "interval between NVML RunningProcesses sweeps that rebuild the PID→GPU map and clean up stale cuda series")
+	fs.Float64Var(&cfg.CudaLaunchBaselinePerSec, "cuda-launch-baseline", cfg.CudaLaunchBaselinePerSec, "expected CUDA kernel launch rate (Hz) used as denominator of pod:host_compute_stall_score:5m correlation rule (default 10)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// -h/-help 요청은 flag 패키지가 usage를 출력한 뒤 ErrHelp를 반환한다.
 		// 사용자 의도된 정상 경로이므로 exit 0으로 종료한다.
@@ -109,6 +123,10 @@ func Parse() (Config, error) {
 
 	if cfg.MetadataRefresh <= 0 {
 		return Config{}, fmt.Errorf("invalid -metadata-refresh: must be > 0")
+	}
+
+	if cfg.CudaLaunchBaselinePerSec <= 0 {
+		return Config{}, fmt.Errorf("invalid -cuda-launch-baseline: must be > 0")
 	}
 
 	if cfg.CudaUprobeEnabled {
@@ -144,6 +162,21 @@ func getenvBool(key string, def bool) bool {
 		return def
 	}
 	return v == "1" || v == "true" || v == "yes" || v == "y"
+}
+
+// getenvFloat은 key env를 float64로 파싱해 반환한다. 형식 오류일 때는 호출자가 "env < flag
+// 우선순위" 약속을 유지할 수 있도록 기본값과 함께 에러를 돌려주어 호출자가 warn 로그 후 폴백을
+// 선택할 수 있게 한다. correlation tunable (CUDA launch baseline 등) 의 env 진입점이다.
+func getenvFloat(key string, def float64) (float64, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def, nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def, fmt.Errorf("invalid float for %s: %q", key, v)
+	}
+	return f, nil
 }
 
 // getenvDuration은 key env를 duration으로 파싱해 반환한다.

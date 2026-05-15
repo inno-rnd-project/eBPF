@@ -493,6 +493,18 @@ var (
 		},
 		[]string{"node"},
 	)
+
+	// cudaLaunchBaselinePerSec 는 운영자가 의도한 워크로드의 기대 CUDA kernel launch rate (Hz) 를 정적
+	// 으로 노출한다. correlation 진단의 pod:host_compute_stall_score:5m recording rule이 본 값을 분모로
+	// 써서 실제 launch rate가 baseline 이하로 떨어진 비율을 0-1 score 로 정규화한다. CUDA_LAUNCH_
+	// BASELINE_PER_SEC env / -cuda-launch-baseline CLI flag 로 노드별 override 한다. startup 1회 Set.
+	cudaLaunchBaselinePerSec = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_node_cuda_launch_baseline_per_sec",
+			Help: "Expected CUDA kernel launch rate (Hz) per node, sourced from CUDA_LAUNCH_BASELINE_PER_SEC env (default 10). Consumed by correlation recording rules (pod:host_compute_stall_score:5m) as the host stall saturation denominator. Override per node via env to match workload characteristics (inference vs batch training).",
+		},
+		[]string{"node"},
+	)
 )
 
 // Register는 gpuobs 지표를 주어진 Prometheus Registerer에 등록한다.
@@ -539,7 +551,15 @@ func Register(reg prometheus.Registerer) {
 		cudaSymbolAvailable,
 		cudaEventsLostTotal,
 		cudaPidMultiGPUCount,
+		cudaLaunchBaselinePerSec,
 	)
+}
+
+// SetCudaLaunchBaselinePerSec는 노드 CUDA launch baseline gauge를 startup 시점에 1회 설정한다. 본
+// 메트릭은 scrape 시점마다 정적 값을 반환하므로 호출 횟수와 무관하게 cardinality 가 node 단위로
+// 통제된다.
+func SetCudaLaunchBaselinePerSec(node string, baseline float64) {
+	cudaLaunchBaselinePerSec.WithLabelValues(node).Set(baseline)
 }
 
 // Record는 한 device의 현재 스냅샷을 모든 device gauge에 기록한다.
