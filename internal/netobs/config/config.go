@@ -89,9 +89,10 @@ func parseNamespaceList(raw string) []string {
 	if strings.TrimSpace(raw) == "" {
 		return nil
 	}
-	seen := make(map[string]struct{})
-	out := make([]string, 0)
-	for _, tok := range strings.Split(raw, ",") {
+	tokens := strings.Split(raw, ",")
+	seen := make(map[string]struct{}, len(tokens))
+	out := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
 		ns := strings.TrimSpace(tok)
 		if ns == "" {
 			continue
