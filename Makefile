@@ -65,7 +65,8 @@ BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 # 없어 매 호출마다 recipe가 재실행되므로 phony와 동등 동작이다.
 .PHONY: deps generate generate-gpuobs clean tree bump \
 	build-all image-build-all image-push-all \
-	test test-integration setup-envtest
+	test test-integration setup-envtest \
+	check-prometheus-rules
 
 # ============================================================================
 # Tests
@@ -106,6 +107,24 @@ test-integration:
 
 setup-envtest:
 	@go run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION) use $(ENVTEST_K8S_VERSION) -p path
+
+# ============================================================================
+# PrometheusRule lint
+# ----------------------------------------------------------------------------
+# check-prometheus-rules - deploy/gpuobs/base/prometheus-rule.yaml 의 PromQL 문법과 rule 정의 정합성
+#                          을 promtool 로 검증한다. PrometheusRule CRD wrapper 를 그대로 promtool 에 줄
+#                          수 없어 awk 로 spec.groups 만 추출해 promtool 입력 형식으로 변환한다. promtool
+#                          은 공식 prom/prometheus 컨테이너에서 실행되어 호스트 설치를 요구하지 않으며
+#                          PROMTOOL_IMAGE 변수로 버전을 pin 한다.
+# ============================================================================
+PROMTOOL_IMAGE ?= prom/prometheus:v2.55.0
+PROMETHEUS_RULE_FILE ?= deploy/gpuobs/base/prometheus-rule.yaml
+
+check-prometheus-rules:
+	@echo "extracting spec.groups from $(PROMETHEUS_RULE_FILE)"
+	@awk '/^spec:/{f=1;next} f' $(PROMETHEUS_RULE_FILE) | sed 's/^  //' > /tmp/promtool-rules.yaml
+	@docker run --rm --entrypoint promtool -v /tmp/promtool-rules.yaml:/tmp/rules.yaml $(PROMTOOL_IMAGE) check rules /tmp/rules.yaml
+	@echo "promtool check rules: OK"
 
 # ============================================================================
 # Core utilities
