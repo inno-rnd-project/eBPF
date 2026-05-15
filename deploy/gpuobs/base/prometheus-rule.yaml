@@ -84,6 +84,147 @@ spec:
         - record: node:gpu_temperature_headroom_celsius
           expr: min by(node, threshold) (gpuobs_device_temperature_threshold_celsius - ignoring(threshold) group_left() gpuobs_device_temperature_celsius)
 
+    # netobs-gpuobs.gpu-idle.recording 그룹은 GPU 유휴 정의와 원인 후보 score 6건을 산출한다.
+    # 운영자가 GPU 유휴 알림을 받았을 때 단일 진단 가이드 (docs/correlation/diagnosis-gpu-idle.md) 로
+    # 원인을 짚을 수 있게 cause score를 모두 0-1 정규화 해 모은다. score 정규화 분모는 두 tunable
+    # 메트릭 (netobs_node_nic_capacity_bytes_per_sec, gpuobs_node_cuda_launch_baseline_per_sec) 으로
+    # 클러스터별 override 가능하다. PCIe 이론치는 device 의 link generation/width 메트릭에서
+    # 동적 산출되므로 GPU 모델 혼합 클러스터에서도 정확하다.
+    - name: netobs-gpuobs.gpu-idle.recording
+      interval: 30s
+      rules:
+        # node:gpu_idle:5m
+        # 5분 윈도우에서 GPU 사용률이 20% 미만이었던 시간 비율 (0-1). 노드 내 GPU별 비율의 평균을
+        # 노드 단위로 rollup한다. avg_over_time + bool 비교 + subquery 패턴이라 evaluation 비용이
+        # 다른 rule보다 높으니 group interval 변경 시 주의.
+        - record: node:gpu_idle:5m
+          expr: |
+            avg by(node) (
+              avg_over_time((gpuobs_device_utilization_percent < bool 20)[5m:30s])
+            )
+
+        # node:gpu_pcie_theoretical_bytes_per_sec
+        # GPU device 별 PCIe 이론 throughput (bytes/sec). gpuobs_device_pcie_link_generation_current 와
+        # gpuobs_device_pcie_link_width_current 에 따라 Gen3/4/5 × x8/x16 6개 조합을 분기로 매핑한다.
+        # 다른 조합 (예: x4) 은 매칭되는 항이 없어 0이 되며 saturation score 가 NaN/Inf를 만들 수
+        # 있으므로 saturation rule에서 clamp_max 로 가드한다.
+        - record: node:gpu_pcie_theoretical_bytes_per_sec
+          expr: |
+            (gpuobs_device_pcie_link_generation_current == bool 3) * (gpuobs_device_pcie_link_width_current == bool 8) * 7.88e9
+            + (gpuobs_device_pcie_link_generation_current == bool 3) * (gpuobs_device_pcie_link_width_current == bool 16) * 15.75e9
+            + (gpuobs_device_pcie_link_generation_current == bool 4) * (gpuobs_device_pcie_link_width_current == bool 8) * 15.75e9
+            + (gpuobs_device_pcie_link_generation_current == bool 4) * (gpuobs_device_pcie_link_width_current == bool 16) * 31.5e9
+            + (gpuobs_device_pcie_link_generation_current == bool 5) * (gpuobs_device_pcie_link_width_current == bool 8) * 31.5e9
+            + (gpuobs_device_pcie_link_generation_current == bool 5) * (gpuobs_device_pcie_link_width_current == bool 16) * 63e9
+
+        # node:gpu_pcie_saturation_score:5m
+        # 노드 GPU 의 PCIe 실 throughput (RX + TX) 대비 이론치 비율 (0-1). 0.7 이상이면 PCIe가 GPU 유휴의
+        # 원인일 가능성이 높다. clamp_max로 0 또는 NaN 분모 케이스의 +Inf를 1로 saturate한다.
+        - record: node:gpu_pcie_saturation_score:5m
+          expr: |
+            clamp_max(
+              sum by(node) (gpuobs_device_pcie_rx_bytes_per_second + gpuobs_device_pcie_tx_bytes_per_second)
+              / on(node) group_left()
+              sum by(node) (node:gpu_pcie_theoretical_bytes_per_sec),
+              1
+            )
+
+        # pod:network_throughput_score:5m
+        # Pod 단위 네트워크 throughput 대비 노드 NIC 이론 capacity 비율 (0-1). egress는 NIC layer,
+        # ingress는 L4 layer (NIC ingress는 #47 follow-up) 을 합산해 양방향 traffic을 근사한다.
+        # 분모는 netobs-agent가 startup 시 노출하는 NIC capacity tunable이다.
+        - record: pod:network_throughput_score:5m
+          expr: |
+            clamp_max(
+              (
+                sum by(node, src_namespace, src_pod, src_pod_uid) (
+                  rate(netobs_pod_bytes_total{direction="egress",layer="nic"}[5m])
+                )
+                +
+                sum by(node, src_namespace, src_pod, src_pod_uid) (
+                  rate(netobs_pod_bytes_total{direction="ingress",layer="l4"}[5m])
+                )
+              )
+              / on(node) group_left()
+              netobs_node_nic_capacity_bytes_per_sec,
+              1
+            )
+
+        # pod:network_retrans_score:5m
+        # Pod 단위 TCP 재전송 비율 (retrans events/sec / total packets/sec) 을 saturate. 0.05 이상이면
+        # 네트워크 품질 저하 신호다. 분자는 netobs_pod_stage_events_labeled_total{stage="retrans"}로
+        # pod 단위 재전송을, 분모는 netobs_pod_packets_total로 pod 단위 총 패킷을 산출한다.
+        - record: pod:network_retrans_score:5m
+          expr: |
+            clamp_max(
+              sum by(node, src_namespace, src_pod, src_pod_uid) (
+                rate(netobs_pod_stage_events_labeled_total{stage="retrans"}[5m])
+              )
+              /
+              sum by(node, src_namespace, src_pod, src_pod_uid) (
+                rate(netobs_pod_packets_total[5m])
+              ),
+              1
+            )
+
+        # pod:cpu_throttle_score:5m
+        # cAdvisor의 CPU CFS throttled / total periods 비율 (0-1). 0.3 이상이면 컨테이너 CPU limit
+        # 으로 인한 throttle이 빈번하다. label_replace로 cAdvisor의 namespace/pod 라벨을 netobs/gpuobs
+        # 메트릭과 join 가능하도록 src_namespace/src_pod로 alias한다 (원본 라벨도 함께 유지).
+        - record: pod:cpu_throttle_score:5m
+          expr: |
+            clamp_max(
+              label_replace(
+                label_replace(
+                  sum by(node, namespace, pod) (rate(container_cpu_cfs_throttled_periods_total[5m]))
+                  / on(node, namespace, pod)
+                  sum by(node, namespace, pod) (rate(container_cpu_cfs_periods_total[5m])),
+                  "src_namespace", "$1", "namespace", "(.+)"
+                ),
+                "src_pod", "$1", "pod", "(.+)"
+              ),
+              1
+            )
+
+        # pod:memory_pressure_score:5m
+        # 컨테이너 메모리 working_set 대비 resource limit 비율 (0-1). 0.9 이상이면 OOM 임박 신호.
+        # kube-state-metrics의 kube_pod_container_resource_limits는 node 라벨이 없어 (namespace, pod)
+        # 로 join하고, cAdvisor 의 node 라벨은 working_set 측에서 보존된다.
+        - record: pod:memory_pressure_score:5m
+          expr: |
+            clamp_max(
+              label_replace(
+                label_replace(
+                  sum by(node, namespace, pod) (container_memory_working_set_bytes)
+                  / on(namespace, pod) group_left()
+                  sum by(namespace, pod) (kube_pod_container_resource_limits{resource="memory"}),
+                  "src_namespace", "$1", "namespace", "(.+)"
+                ),
+                "src_pod", "$1", "pod", "(.+)"
+              ),
+              1
+            )
+
+        # pod:host_compute_stall_score:5m
+        # host측 CUDA kernel launch rate 부족과 GPU device memory pressure 둘 중 큰 쪽을 채택한다.
+        # 둘 다 GPU가 호스트 측 또는 device 측 자원 한계로 추가 kernel을 실행하지 못하는 상태를
+        # 가리키므로 cross-validation 가치가 있다. 단순 max 라 두 신호가 동시에 높을 때 의미가 약화
+        # 되는 한계는 docs에 명시한다.
+        - record: pod:host_compute_stall_score:5m
+          expr: |
+            max by(node, src_namespace, src_pod, src_pod_uid) (
+              clamp_max(
+                1 - (
+                  sum by(node, src_namespace, src_pod, src_pod_uid) (rate(gpuobs_cuda_kernel_launches_total[5m]))
+                  / on(node) group_left()
+                  gpuobs_node_cuda_launch_baseline_per_sec
+                ),
+                1
+              )
+              or
+              pod:gpu_memory_utilization_ratio:5m
+            )
+
     # netobs-gpuobs.alerts 그룹은 운영 임계 초과를 Alertmanager로 전달하는 alert rule을 모은다.
     # severity 라벨로 critical(즉시 대응)과 warning(추세 관찰)을 구분한다. for 절은 false-positive
     # 차단 목적으로 2분 이상을 기본으로 둔다. ECC와 PCIe replay 알람은 본 그룹에서 제외했다.
