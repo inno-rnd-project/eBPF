@@ -23,10 +23,14 @@
 
 ### PCIe theoretical bytes/sec
 
-`node:gpu_pcie_theoretical_bytes_per_sec` recording rule이 `gpuobs_device_pcie_link_generation_current` 와 `gpuobs_device_pcie_link_width_current` 두 메트릭의 조합을 표에 매핑한다. 매핑 표는 다음과 같으며 Gen3/4/5 × x8/x16 6개 조합을 cover한다.
+`node:gpu_pcie_theoretical_bytes_per_sec` recording rule이 `gpuobs_device_pcie_link_generation_current` 와 `gpuobs_device_pcie_link_width_current` 두 메트릭의 조합을 표에 매핑한다. 매핑 표는 다음과 같으며 Gen1-5 × x8/x16 10개 조합을 cover한다. Gen1/2는 NVIDIA GPU가 idle 시 다운클록되는 link state라 saturation 계산에 반드시 포함되어야 false positive를 막을 수 있다.
 
 | Generation | Width | Theoretical |
 |---|---|---|
+| Gen1 | x8 | 2 GB/s |
+| Gen1 | x16 | 4 GB/s |
+| Gen2 | x8 | 4 GB/s |
+| Gen2 | x16 | 8 GB/s |
 | Gen3 | x8 | 7.88 GB/s |
 | Gen3 | x16 | 15.75 GB/s |
 | Gen4 | x8 | 15.75 GB/s |
@@ -34,11 +38,11 @@
 | Gen5 | x8 | 31.5 GB/s |
 | Gen5 | x16 | 63 GB/s |
 
-x4 이하 또는 매핑 표에 없는 조합은 0으로 산출되어 saturation score가 +Inf가 될 수 있다. recording rule이 `clamp_max(... , 1)` 로 가드해 1로 saturate하지만, 그 경우 false positive가 발생하므로 운영자가 Gen / Width를 PromQL로 확인해 본 매핑 표 확장을 고려한다.
+x4 이하 또는 매핑 표에 없는 조합은 theoretical bytes/sec가 0으로 산출된다. saturation rule의 분모에 `> 0` 가드를 두어 해당 노드의 series 자체가 생성되지 않으므로 `+Inf`가 `1`로 saturate되는 false positive는 발생하지 않는다. 운영자는 Gen / Width를 PromQL로 확인해 본 매핑 표 확장을 고려한다.
 
 ### NIC capacity (network throughput 분모)
 
-`netobs_node_nic_capacity_bytes_per_sec{node}` 메트릭이 noder별 NIC 이론 capacity를 노출한다. 기본값은 1.25 GB/s (10 GbE) 다. 노드별 NIC이 다르면 netobs-agent의 `NIC_CAPACITY_BYTES_PER_SEC` env 또는 `-nic-capacity-bytes` CLI flag로 override한다.
+`netobs_node_nic_capacity_bytes_per_sec{node}` 메트릭이 node별 NIC 이론 capacity를 노출한다. 기본값은 1.25 GB/s (10 GbE) 다. 노드별 NIC이 다르면 netobs-agent의 `NIC_CAPACITY_BYTES_PER_SEC` env 또는 `-nic-capacity-bytes` CLI flag로 override한다.
 
 | NIC speed | 값 (bytes/sec) |
 |---|---|
@@ -88,9 +92,9 @@ cAdvisor의 `pod` / `namespace` 라벨과 netobs / gpuobs의 `src_pod` / `src_na
 
 ```promql
 # 노드의 GPU가 유휴인 동안 어떤 pod이 cause score가 높은지 식별
-node:gpu_idle:5m > 0.5
-  * on(node) group_right()
-pod:cpu_throttle_score:5m > 0.3
+(pod:cpu_throttle_score:5m > 0.3)
+  and on(node)
+(node:gpu_idle:5m > 0.5)
 ```
 
 ### 같은 pod의 다중 cause score를 동시에 보기
