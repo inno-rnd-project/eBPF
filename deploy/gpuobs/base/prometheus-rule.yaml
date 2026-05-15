@@ -332,3 +332,92 @@ spec:
           annotations:
             summary: "GPU power headroom below 10W on {{ $labels.node }}"
             description: "Power headroom (limit minus current usage) for the worst GPU on node {{ $labels.node }} is {{ $value }}W. The GPU is approaching its power limit and may start power-cap throttling. Consider reducing concurrent CUDA workloads."
+
+    # netobs-gpuobs.gpu-idle.alerts 그룹은 GPU 유휴 상태와 5종 cause score 조합 alert을 모은다.
+    # 단일 cause는 warning, host_compute_stall 은 host와 device 양쪽 자원 한계가 동시에 의심되므로
+    # critical로 둔다. cutoff는 docs/correlation/diagnosis-gpu-idle.md 의 기본값 (warning 0.5, critical
+    # 0.7-0.9) 을 따른다. for 5m으로 spike에 의한 false-positive를 차단한다.
+    - name: netobs-gpuobs.gpu-idle.alerts
+      interval: 30s
+      rules:
+        # GPUIdleWithPCIeSaturation
+        # 노드 GPU 가 5분 평균 50% 이상 유휴이면서 PCIe saturation score 가 0.7 이상이면 발화.
+        # GPU 작업 데이터가 PCIe 대역폭에 막혀 GPU가 일을 기다리는 시나리오.
+        - alert: GPUIdleWithPCIeSaturation
+          expr: node:gpu_idle:5m > 0.5 and node:gpu_pcie_saturation_score:5m > 0.7
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle with PCIe saturation on {{ $labels.node }}"
+            description: "Node {{ $labels.node }} has GPUs idle {{ $value | humanizePercentage }} of the last 5 minutes while PCIe saturation score is elevated. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
+
+        # GPUIdleWithNetworkPressure
+        # GPU 유휴 + (네트워크 throughput 포화 또는 재전송 비율 상승). Pod 단위 score라 어떤 pod이
+        # 원인인지 src_namespace / src_pod 라벨로 식별 가능. retrans cutoff 0.05는 1% 이상 재전송 비율.
+        - alert: GPUIdleWithNetworkPressure
+          expr: |
+            (node:gpu_idle:5m > 0.5)
+              and on(node)
+            (
+              pod:network_throughput_score:5m > 0.7
+              or
+              pod:network_retrans_score:5m > 0.05
+            )
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle with network pressure on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }})"
+            description: "Node {{ $labels.node }} has GPUs idle while pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} shows elevated network throughput or retransmission. Check whether the GPU workload depends on this pod's network I/O."
+
+        # GPUIdleWithCPUThrottle
+        # GPU 유휴 + 컨테이너 CPU CFS throttle. CPU limit 으로 인해 host측이 GPU에 작업을 보내지
+        # 못하는 시나리오. cutoff 0.3은 30% 이상 period가 throttle된 상태.
+        - alert: GPUIdleWithCPUThrottle
+          expr: |
+            (node:gpu_idle:5m > 0.5)
+              and on(node)
+            (pod:cpu_throttle_score:5m > 0.3)
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle with CPU throttle on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }})"
+            description: "Node {{ $labels.node }} has GPUs idle while pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} is CPU-throttled (score={{ $value }}). Consider raising CPU limit or reducing concurrent CPU work."
+
+        # GPUIdleWithMemoryPressure
+        # GPU 유휴 + 컨테이너 메모리 working_set 이 limit에 임박. OOMKilled 전조이며 GPU 작업이 host
+        # 메모리 부족으로 stall될 수 있다. cutoff 0.9은 working_set이 limit의 90%를 넘는 상태.
+        - alert: GPUIdleWithMemoryPressure
+          expr: |
+            (node:gpu_idle:5m > 0.5)
+              and on(node)
+            (pod:memory_pressure_score:5m > 0.9)
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle with memory pressure on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }})"
+            description: "Node {{ $labels.node }} has GPUs idle while pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} memory working_set / limit ratio is {{ $value | humanizePercentage }}. Consider raising memory limit before OOMKill."
+
+        # GPUIdleWithHostComputeStall
+        # GPU 유휴 + host측 CUDA launch 부족 또는 GPU device memory 포화. host 또는 device 측에서
+        # GPU 작업을 진행할 수 없는 상태이며 다른 cause score와 무관하게 GPU 자체 활용이 막힌 critical
+        # 시그널이다. cutoff 0.7은 baseline의 30% 미만 launch rate 또는 GPU memory 70% 이상.
+        - alert: GPUIdleWithHostComputeStall
+          expr: |
+            (node:gpu_idle:5m > 0.5)
+              and on(node)
+            (pod:host_compute_stall_score:5m > 0.7)
+          for: 5m
+          labels:
+            severity: critical
+            component: correlation
+          annotations:
+            summary: "GPU idle with host compute stall on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }})"
+            description: "Node {{ $labels.node }} has GPUs idle while pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} shows host compute stall (low CUDA launch rate or GPU memory saturation, score={{ $value }}). Inspect kernel launches via gpuobs_cuda_kernel_launches_total and GPU memory via pod:gpu_memory_utilization_ratio:5m."
