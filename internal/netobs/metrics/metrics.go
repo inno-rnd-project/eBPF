@@ -84,7 +84,7 @@ var (
 	stageEventsLabeled = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "netobs_stage_events_labeled_total",
-			Help: "Enriched eBPF events by stage, node, workload, traffic scope, and dst peer. src/dst label semantics: src is the local Pod owning the cgroup, dst is the traffic peer in flow direction. Empty dst_* label values are intentional and indicate that PodFlowDstEnabled=false or the dst_pod_uid allow-list does not include the namespace (cardinality control), not failed resolution; failed resolution is marked dst_workload=\"_unresolved\". To avoid double-counting same-node Pod-to-Pod flows aggregate by direction=egress only.",
+			Help: "Enriched eBPF events by stage, node, workload, traffic scope, and dst peer. src/dst label semantics: src is the local Pod owning the cgroup, dst is the traffic peer in flow direction. All three dst_* labels are empty when PodFlowDstEnabled=false (master switch off). When the dst_pod_uid allow-list does not include a Pod destination's namespace, only dst_pod_uid is empty while dst_namespace and dst_workload remain populated (cardinality control). Failed resolution is marked dst_workload=\"_unresolved\". To avoid double-counting same-node Pod-to-Pod flows aggregate by direction=egress only.",
 		},
 		[]string{"stage", "node", "src_namespace", "src_workload", "traffic_scope", "direction", "dst_namespace", "dst_workload"},
 	)

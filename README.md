@@ -59,6 +59,8 @@ The CI workflow [`integration.yml`](.github/workflows/integration.yml) runs the 
 | `LISTEN_ADDR` | `-listen` | `:9810` | HTTP listen address |
 | `PRINT_EVENTS` | `-print-events` | `false` | Print events to stdout |
 | `POD_METRICS_ENABLED` | `-pod-metrics` | `true` | Emit per-pod-instance metrics (`netobs_pod_stage_*`); disable on large clusters to cap Prometheus cardinality |
+| `POD_FLOW_DST_ENABLED` | `-pod-flow-dst` | `true` | Emit `dst_namespace`/`dst_workload` labels on stage/drop/retrans metrics; disable to keep pre-flow-dst cardinality |
+| `POD_FLOW_DST_UID_ALLOW_NAMESPACES` | `-pod-flow-dst-uid-allow-namespaces` | *(empty)* | Comma-separated namespace allow-list whose Pods receive `dst_pod_uid` labels; empty disables UID emit cluster-wide. Each entry must match RFC1123 DNS label (lowercase alphanumeric + hyphen, 1-63 chars) and is fail-fast validated at startup |
 | `NODE_NAME` | `-node-name` | *(hostname)* | Observed Kubernetes node name |
 | `KUBE_METADATA_REFRESH` | `-metadata-refresh` | `30s` | Kubernetes informer resync interval |
 | `DROP_REASON_FORMAT_PATH` | `-drop-reason-format` | `/sys/kernel/tracing/events/skb/kfree_skb/format` | skb:kfree_skb tracepoint format path. See [docs/netobs/drop-reason.md](docs/netobs/drop-reason.md) for the kernel 6.8 reason code table, the runtime mapping mechanism, the `drop_category` taxonomy, and PromQL examples |
@@ -181,14 +183,17 @@ Both agents expose the same endpoints (netobs: `:9810`, gpuobs: `:9820`).
 | `netobs_events_total` | Counter | `stage` | Total eBPF events by stage |
 | `netobs_stage_latency_seconds` | Histogram | `stage` | Kernel stage latency |
 | `netobs_drop_total` | Counter | `reason` | Drop events by kernel reason code |
-| `netobs_stage_events_labeled_total` | Counter | `stage`, `node`, `src_namespace`, `src_workload`, `traffic_scope`, `direction` | Enriched events by workload |
-| `netobs_stage_latency_labeled_seconds` | Histogram | `stage`, `node`, `src_namespace`, `src_workload`, `traffic_scope`, `direction` | Enriched latency by workload |
-| `netobs_drop_events_labeled_total` | Counter | `node`, `src_namespace`, `src_workload`, `traffic_scope`, `direction`, `drop_reason`, `drop_category` | Enriched drop events with reason |
-| `netobs_retrans_events_labeled_total` | Counter | `node`, `src_namespace`, `src_workload`, `traffic_scope`, `direction` | Enriched retransmission events |
-| `netobs_pod_stage_events_labeled_total` | Counter | `stage`, `node`, `src_namespace`, `src_pod`, `src_pod_uid`, `traffic_scope`, `direction` | Per-pod instance events |
-| `netobs_pod_stage_latency_labeled_seconds` | Histogram | `stage`, `node`, `src_namespace`, `src_pod`, `src_pod_uid`, `traffic_scope`, `direction` | Per-pod instance latency |
+| `netobs_stage_events_labeled_total` | Counter | `stage`, `node`, `src_namespace`, `src_workload`, `traffic_scope`, `direction`, `dst_namespace`, `dst_workload` | Enriched events by workload |
+| `netobs_stage_latency_labeled_seconds` | Histogram | `stage`, `node`, `src_namespace`, `src_workload`, `traffic_scope`, `direction`, `dst_namespace`, `dst_workload` | Enriched latency by workload |
+| `netobs_drop_events_labeled_total` | Counter | `node`, `src_namespace`, `src_workload`, `traffic_scope`, `direction`, `drop_reason`, `drop_category`, `dst_namespace`, `dst_workload` | Enriched drop events with reason |
+| `netobs_retrans_events_labeled_total` | Counter | `node`, `src_namespace`, `src_workload`, `traffic_scope`, `direction`, `dst_namespace`, `dst_workload` | Enriched retransmission events |
+| `netobs_pod_stage_events_labeled_total` | Counter | `stage`, `node`, `src_namespace`, `src_pod`, `src_pod_uid`, `traffic_scope`, `direction`, `dst_namespace`, `dst_workload`, `dst_pod_uid` | Per-pod instance events |
+| `netobs_pod_stage_latency_labeled_seconds` | Histogram | `stage`, `node`, `src_namespace`, `src_pod`, `src_pod_uid`, `traffic_scope`, `direction`, `dst_namespace`, `dst_workload`, `dst_pod_uid` | Per-pod instance latency |
+| `netobs_dst_classifier_emits_total` | Counter | `outcome` | dst label classification outcome bucket counter (disabled / external / unresolved / service / pod_with_uid / pod_without_uid / other). Use `rate(...{outcome="pod_with_uid"}[5m])` to detect cardinality bombs from misconfigured allow-list namespaces with high pod churn |
 
-> **Cardinality note**: `netobs_pod_stage_*` metrics carry `src_pod` and `src_pod_uid` labels, so each pod redeployment creates a new time series. On large clusters or with frequent pod churn this can inflate Prometheus memory. Set `POD_METRICS_ENABLED=false` (or `-pod-metrics=false`) to opt out.
+> **dst label semantics**: `dst_*` 라벨은 흐름의 반대편 peer를 가리킨다. 외부 IP는 `dst_workload="_external"`, 미해상 흐름은 `dst_workload="_unresolved"`, ClusterIP는 `dst_workload="svc/<name>"`로 마킹된다. `POD_FLOW_DST_ENABLED=false`이면 `dst_namespace`/`dst_workload`/`dst_pod_uid` 셋 다 빈 값으로 emit되어 cardinality가 도입 전 수준으로 collapse된다. `POD_FLOW_DST_UID_ALLOW_NAMESPACES`에 등재되지 않은 namespace의 Pod dst는 `dst_pod_uid`만 빈 값이고 `dst_namespace`/`dst_workload`는 채워진다. 같은 노드 Pod-to-Pod 흐름은 src=A egress와 src=B ingress 두 시리즈로 잡히므로 합산 PromQL은 `direction="egress"`로 필터해 double counting을 회피한다.
+
+> **Cardinality note**: `netobs_pod_stage_*` metrics carry `src_pod`, `src_pod_uid`, and optionally `dst_pod_uid` labels, so each pod redeployment creates a new time series. On large clusters or with frequent pod churn this can inflate Prometheus memory. Set `POD_METRICS_ENABLED=false` (or `-pod-metrics=false`) to opt out of `netobs_pod_*`. Set `POD_FLOW_DST_ENABLED=false` to drop dst labels entirely, or scope `POD_FLOW_DST_UID_ALLOW_NAMESPACES` to specific namespaces only.
 
 #### Stages (netobs)
 
