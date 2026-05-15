@@ -33,10 +33,12 @@ spec:
           expr: avg_over_time(gpuobs_pod_memory_used_bytes[5m])
 
         # pod:network_egress_rate:5m
-        # netobs는 byte 카운터를 노출하지 않아 단위는 events/sec(이벤트 빈도)다. dashboard에서 "egress 트래픽 강도"
-        # 추세 지표로 사용한다. stage / traffic_scope 차원은 본 record에서 합산해 pod 단위 단일 시리즈로 만든다.
+        # #47 머지로 도입된 netobs_pod_bytes_total을 분자로 써서 pod 단위 egress 트래픽을 bytes/sec로
+        # 산출한다. direction / layer 차원은 본 record에서 합산해 pod 단위 단일 시리즈로 만든다.
+        # cAdvisor의 container_network_*_bytes 와 비교 가능한 단위이며 correlation 진단에서 network
+        # throughput score의 양적 기준으로 활용된다.
         - record: pod:network_egress_rate:5m
-          expr: sum by(node, src_namespace, src_pod, src_pod_uid) (rate(netobs_pod_stage_events_labeled_total{direction="egress"}[5m]))
+          expr: sum by(node, src_namespace, src_pod, src_pod_uid) (rate(netobs_pod_bytes_total{direction="egress"}[5m]))
 
         # node:gpu_throttle_seconds:rate5m
         # reason별 누적 throttle 시간(seconds counter)의 5분 rate. 단위는 seconds/sec — 1.0이면 해당 reason이
