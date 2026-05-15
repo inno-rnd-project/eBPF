@@ -220,13 +220,16 @@ spec:
         - record: pod:host_compute_stall_score:5m
           expr: |
             max by(node, src_namespace, src_pod, src_pod_uid) (
-              clamp_max(
-                1 - (
-                  sum by(node, src_namespace, src_pod, src_pod_uid) (rate(gpuobs_cuda_kernel_launches_total[5m]))
-                  / on(node) group_left()
-                  gpuobs_node_cuda_launch_baseline_per_sec
+              clamp_min(
+                clamp_max(
+                  1 - (
+                    sum by(node, src_namespace, src_pod, src_pod_uid) (rate(gpuobs_cuda_kernel_launches_total[5m]))
+                    / on(node) group_left()
+                    gpuobs_node_cuda_launch_baseline_per_sec
+                  ),
+                  1
                 ),
-                1
+                0
               )
               or
               pod:gpu_memory_utilization_ratio:5m
