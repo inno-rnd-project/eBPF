@@ -6,9 +6,31 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// dnsLabelRE는 Kubernetes namespace 이름이 따르는 RFC1123 DNS 라벨 규칙이다. 소문자 영숫자와
+// 하이픈으로 구성되며 첫/마지막 글자는 영숫자여야 한다. allow-list 에 들어온 namespace 이름을 본
+// 패턴으로 검증해 운영자가 오타 (대문자, 언더스코어, 공백 등) 로 silent miss 를 만드는 상황을
+// startup 시점에 차단한다.
+var dnsLabelRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// validateNamespaceName은 RFC1123 DNS 라벨 규칙 위반 시 명시적 에러를 반환한다. 길이 한계 63 자도
+// 함께 강제해 운영자가 잘못된 입력을 fail-fast 로 알 수 있게 한다.
+func validateNamespaceName(ns string) error {
+	if len(ns) == 0 {
+		return errors.New("namespace name must not be empty")
+	}
+	if len(ns) > 63 {
+		return fmt.Errorf("namespace name %q exceeds 63 chars", ns)
+	}
+	if !dnsLabelRE.MatchString(ns) {
+		return fmt.Errorf("namespace name %q must match RFC1123 DNS label (lowercase alphanumerics and hyphens, start/end with alphanumeric)", ns)
+	}
+	return nil
+}
 
 type Config struct {
 	TargetIP             string
@@ -147,6 +169,15 @@ func Parse() (Config, error) {
 	// 통과시킨다. env-only 경로와 flag-override 경로가 같은 정상화 규칙을 공유해 운영 surface가
 	// 일관되게 동작한다.
 	cfg.PodFlowDstUIDAllowNamespaces = parseNamespaceList(dstUIDNs)
+
+	// allow-list 각 entry 가 RFC1123 DNS 라벨 규칙에 맞는지 startup 시점에 fail-fast 로 검증한다.
+	// 잘못된 이름 (예: 대문자, 언더스코어 오타) 은 lookup 단계에서 silent miss 가 되어 dst_pod_uid
+	// 가 emit 안 되는 디버깅 어려운 상황을 만드므로 본 검증으로 즉시 알린다.
+	for _, ns := range cfg.PodFlowDstUIDAllowNamespaces {
+		if err := validateNamespaceName(ns); err != nil {
+			return Config{}, fmt.Errorf("invalid -pod-flow-dst-uid-allow-namespaces entry: %w", err)
+		}
+	}
 
 	return cfg, nil
 }

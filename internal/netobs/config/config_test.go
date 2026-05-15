@@ -5,6 +5,38 @@ import (
 	"testing"
 )
 
+// TestValidateNamespaceName은 RFC1123 DNS 라벨 규칙 위반이 명시적 에러로 잡히는지 검증한다.
+// 운영자가 흔히 저지르는 오타 (대문자, 언더스코어, 공백) 와 길이 초과를 startup 시점에 fail-fast
+// 로 차단해 silent miss 디버깅 시간을 줄인다.
+func TestValidateNamespaceName(t *testing.T) {
+	valid := []string{"ebpf-project", "kube-system", "a", "x-1", "ns-with-numbers-123"}
+	for _, ns := range valid {
+		if err := validateNamespaceName(ns); err != nil {
+			t.Errorf("validateNamespaceName(%q) err=%v want nil", ns, err)
+		}
+	}
+
+	invalid := []struct {
+		name string
+		in   string
+	}{
+		{"empty", ""},
+		{"uppercase", "KubeSystem"},
+		{"underscore", "kube_system"},
+		{"leading_hyphen", "-foo"},
+		{"trailing_hyphen", "foo-"},
+		{"whitespace", "foo bar"},
+		{"too_long", string(make([]byte, 64))},
+	}
+	for _, tc := range invalid {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateNamespaceName(tc.in); err == nil {
+				t.Errorf("validateNamespaceName(%q) err=nil want non-nil", tc.in)
+			}
+		})
+	}
+}
+
 // TestParseNamespaceList는 콤마 구분 namespace 입력의 정규화 (trim / 빈 토큰 제거 / 중복 dedup)
 // 가 의도대로 동작하는지 검증한다. env/CLI 두 surface가 동일 정규화를 거치므로 본 함수가 운영자
 // 입력 surface의 단일 진입점이며, 회귀가 발생하면 dst_pod_uid allow-list 게이트가 의도 외 동작
