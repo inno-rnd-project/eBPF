@@ -105,12 +105,17 @@ spec:
 
         # node:gpu_pcie_theoretical_bytes_per_sec
         # GPU device 별 PCIe 이론 throughput (bytes/sec). gpuobs_device_pcie_link_generation_current 와
-        # gpuobs_device_pcie_link_width_current 에 따라 Gen3/4/5 × x8/x16 6개 조합을 분기로 매핑한다.
-        # 다른 조합 (예: x4) 은 매칭되는 항이 없어 0이 되며 saturation score 가 NaN/Inf를 만들 수
-        # 있으므로 saturation rule에서 clamp_max 로 가드한다.
+        # gpuobs_device_pcie_link_width_current 에 따라 Gen1-5 × x8/x16 10개 조합을 분기로 매핑한다.
+        # Gen1/2는 NVIDIA GPU가 idle 시 다운클록되는 link state라 saturation 계산에 반드시 포함되어야
+        # false positive (Gen1로 다운클록된 상태에서 작은 PCIe traffic이 분모 0과 만나 +Inf로 saturate)
+        # 를 막을 수 있다. x4 이하 또는 매핑 표 외 조합은 saturation rule의 ">0" 필터로 무시된다.
         - record: node:gpu_pcie_theoretical_bytes_per_sec
           expr: |
-            (gpuobs_device_pcie_link_generation_current == bool 3) * (gpuobs_device_pcie_link_width_current == bool 8) * 7.88e9
+            (gpuobs_device_pcie_link_generation_current == bool 1) * (gpuobs_device_pcie_link_width_current == bool 8) * 2e9
+            + (gpuobs_device_pcie_link_generation_current == bool 1) * (gpuobs_device_pcie_link_width_current == bool 16) * 4e9
+            + (gpuobs_device_pcie_link_generation_current == bool 2) * (gpuobs_device_pcie_link_width_current == bool 8) * 4e9
+            + (gpuobs_device_pcie_link_generation_current == bool 2) * (gpuobs_device_pcie_link_width_current == bool 16) * 8e9
+            + (gpuobs_device_pcie_link_generation_current == bool 3) * (gpuobs_device_pcie_link_width_current == bool 8) * 7.88e9
             + (gpuobs_device_pcie_link_generation_current == bool 3) * (gpuobs_device_pcie_link_width_current == bool 16) * 15.75e9
             + (gpuobs_device_pcie_link_generation_current == bool 4) * (gpuobs_device_pcie_link_width_current == bool 8) * 15.75e9
             + (gpuobs_device_pcie_link_generation_current == bool 4) * (gpuobs_device_pcie_link_width_current == bool 16) * 31.5e9
@@ -119,13 +124,15 @@ spec:
 
         # node:gpu_pcie_saturation_score:5m
         # 노드 GPU 의 PCIe 실 throughput (RX + TX) 대비 이론치 비율 (0-1). 0.7 이상이면 PCIe가 GPU 유휴의
-        # 원인일 가능성이 높다. clamp_max로 0 또는 NaN 분모 케이스의 +Inf를 1로 saturate한다.
+        # 원인일 가능성이 높다. 분모를 ">0"으로 필터해 매핑 표 외 조합 (Gen0 등 비정상 link state) 에서
+        # 0 division으로 NaN/+Inf가 생기는 false positive를 차단한다. 그 결과 매핑 불가 노드는 series
+        # 자체가 emit되지 않아 alert에서도 자연 제외된다.
         - record: node:gpu_pcie_saturation_score:5m
           expr: |
             clamp_max(
               sum by(node) (gpuobs_device_pcie_rx_bytes_per_second + gpuobs_device_pcie_tx_bytes_per_second)
               / on(node) group_left()
-              sum by(node) (node:gpu_pcie_theoretical_bytes_per_sec),
+              (sum by(node) (node:gpu_pcie_theoretical_bytes_per_sec) > 0),
               1
             )
 
