@@ -97,6 +97,18 @@ func main() {
 		fmt.Fprintln(os.Stderr, "window and step must be positive")
 		os.Exit(exitFlagError)
 	}
+	if cfg.FetchTimeout <= 0 {
+		fmt.Fprintln(os.Stderr, "fetch-timeout must be positive (zero or negative yields immediate context expiry)")
+		os.Exit(exitFlagError)
+	}
+	if cfg.MinSamples <= 0 {
+		fmt.Fprintln(os.Stderr, "min-samples must be positive")
+		os.Exit(exitFlagError)
+	}
+	if len(cfg.LagSteps) == 0 {
+		fmt.Fprintln(os.Stderr, "lag-steps must not be empty (at least one lag step required)")
+		os.Exit(exitFlagError)
+	}
 
 	fetcher := correlation.NewPrometheusFetcher(cfg.PrometheusURL, cfg.FetchTimeout)
 	corr := correlation.New(fetcher, cfg)
