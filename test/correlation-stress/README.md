@@ -7,11 +7,13 @@ correlation-exporter 가 emit 하는 `correlation_noisy_neighbor_score` 의 Top-
 같은 노드에 3 개 Pod (`victim`, `suspect-sync`, `suspect-async`) 을 배치하고 `client` 는 nodeAffinity 의 DoesNotExist 로 `correlation-stress` 라벨이 없는 다른 노드에 배치한다. multi-node cluster 가 전제이며 single-node cluster 에서는 client Pod 가 Pending 으로 남는다.
 
 - `victim`: nginx HTTP 서버. netobs 가 본 Pod 으로 향하는 트래픽의 `netobs_pod_stage_latency` 를 측정한다.
-- `client`: 10 초 burst + 10 초 idle 주기로 victim 에 HTTP GET 을 반복한다. 다른 노드에 배치되므로 EnumeratePairs 의 페어 후보에 포함되지 않으며 단순 부하 발생기 역할만 한다.
-- `suspect-sync`: 10 초 burst + 10 초 idle 주기로 CPU stress 를 발생시킨다. client 와 동기화된 phase 라 victim latency 와 강한 cpu dimension 상관을 보여야 한다.
-- `suspect-async`: 7 초 burst + 13 초 idle 의 다른 주기로 CPU stress 를 발생시킨다. victim latency 와의 상관은 약하게 잡혀야 한다.
+- `client`: wall-clock 10 분 cycle 의 0-5 분에 victim 에 HTTP GET (RPS 10) 부하, 5-10 분 idle. 다른 노드에 배치되므로 EnumeratePairs 의 페어 후보에 포함되지 않으며 단순 부하 발생기 역할만 한다.
+- `suspect-sync`: 동일한 wall-clock 10 분 cycle 의 0-5 분에 CPU stress, 5-10 분 idle. client 와 정확히 같은 phase 라 victim latency 와 강한 cpu dimension 상관을 보여야 한다.
+- `suspect-async`: wall-clock 7 분 cycle 의 0-3 분에 CPU stress. client 의 10 분 cycle 과 lcm 이 70 분이라 phase drift 가 영구적으로 발생해 sync 보다 약한 상관이 잡혀야 한다.
 
-기대 결과는 1 시간 운영 후 다음과 같다.
+세 Pod 의 burst 주기는 모두 5 분 이상으로 exporter step 30s 의 10 배 이상이다. burst 주기가 step 보다 짧으면 step aggregation 으로 burst 의 동기성이 평균화되어 사라지므로 step × 10 이 안전한 하한이다. 또한 모든 burst 가 `date +%s` modulo 패턴으로 wall-clock 정각에 동기화되어 Pod 별 시작 시점 차이로 인한 phase drift 가 없다.
+
+기대 결과는 30 분 이상 운영 후 (`WINDOW=30m` 충족 + 최소 3 burst cycle 관측) 다음과 같다.
 
 - `correlation_noisy_neighbor_score{victim_pod="victim",suspect_pod="suspect-sync",resource_dimension="cpu",rank="1"}` 가 0.7 이상
 - 동일 victim 의 `suspect_pod="suspect-async"` series 는 rank 1 이 아니거나 score 가 sync 의 70 % 이하

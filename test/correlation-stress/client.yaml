@@ -28,14 +28,23 @@ spec:
         - sh
         - -c
         - |
-          # 10 초 burst (100 req/s) + 10 초 idle. burst phase 에 victim 의 stage_latency 가 변동한다.
+          # wall-clock 10 분 정각의 0-5 분 구간에 HTTP 부하 burst, 5-10 분 구간에 idle. suspect-sync
+          # 와 동일 phase 라 victim latency 가 burst phase 에 변동한다. 매 iteration 0.1 초 sleep 으로
+          # RPS 10 정도 (5 분 burst 에 ~3000 요청) 부하라 worker1 의 다른 Pod 에 영향을 거의 주지
+          # 않는다.
           while true; do
-            for i in $(seq 1 1000); do
-              curl -s -o /dev/null http://victim.correlation-stress.svc.cluster.local/ || true
-            done &
-            sleep 10
-            wait
-            sleep 10
+            now=$(date +%s)
+            phase=$((now % 600))
+            if [ "$phase" -lt 300 ]; then
+              end_at=$((now + 300 - phase))
+              while [ "$(date +%s)" -lt "$end_at" ]; do
+                curl -s -o /dev/null http://victim.correlation-stress.svc.cluster.local/ || true
+                sleep 0.1
+              done
+            else
+              remaining=$((600 - phase))
+              sleep $remaining
+            fi
           done
       resources:
         requests:

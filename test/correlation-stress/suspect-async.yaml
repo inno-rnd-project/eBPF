@@ -17,10 +17,18 @@ spec:
         - sh
         - -c
         - |
-          # 7/13 phase. client burst (20 초 주기) 와 비동기라 victim latency 와의 lag 0 상관이 약하다.
+          # 7 분 cycle 의 0-3 분 burst. client 의 10 분 cycle 과 lcm 이 70 분이라 phase drift 가
+          # 영구적으로 발생해 victim latency 와의 상관이 sync 보다 약하게 잡힌다.
           while true; do
-            stress --cpu 4 --timeout 7s
-            sleep 13
+            now=$(date +%s)
+            phase=$((now % 420))
+            if [ "$phase" -lt 180 ]; then
+              remaining=$((180 - phase))
+              stress --cpu 4 --timeout ${remaining}s
+            else
+              remaining=$((420 - phase))
+              sleep $remaining
+            fi
           done
       resources:
         requests:

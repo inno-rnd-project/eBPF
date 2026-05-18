@@ -17,11 +17,19 @@ spec:
         - sh
         - -c
         - |
-          # client 와 동기화된 10/10 phase. burst phase 가 정확히 client burst 와 겹쳐 cpu_throttle_score
-          # 가 victim latency 와 강한 lag 0 상관을 만든다.
+          # wall-clock 10 분 정각의 0-5 분 구간에 burst, 5-10 분 구간에 idle. client 와 동일 phase 로
+          # 정렬되어 두 시계열이 step 30s aggregation 후에도 phase 동기성을 보존한다. burst 주기 5 분
+          # = step 30s 의 10 배라 step aggregation 으로 burst 가 평균화되어 사라지지 않는다.
           while true; do
-            stress --cpu 4 --timeout 10s
-            sleep 10
+            now=$(date +%s)
+            phase=$((now % 600))
+            if [ "$phase" -lt 300 ]; then
+              remaining=$((300 - phase))
+              stress --cpu 4 --timeout ${remaining}s
+            else
+              remaining=$((600 - phase))
+              sleep $remaining
+            fi
           done
       resources:
         requests:
