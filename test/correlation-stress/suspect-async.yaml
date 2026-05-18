@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: suspect-async
+  namespace: correlation-stress
+  labels:
+    app.kubernetes.io/name: correlation-stress
+    role: suspect-async
+spec:
+  nodeSelector:
+    correlation-stress: victim
+  restartPolicy: Always
+  containers:
+    - name: stress
+      image: polinux/stress:latest
+      command:
+        - sh
+        - -c
+        - |
+          # 7/13 phase. client burst (20 초 주기) 와 비동기라 victim latency 와의 lag 0 상관이 약하다.
+          while true; do
+            stress --cpu 4 --timeout 7s
+            sleep 13
+          done
+      resources:
+        requests:
+          cpu: 100m
+          memory: 32Mi
+        limits:
+          cpu: 4000m
+          memory: 128Mi

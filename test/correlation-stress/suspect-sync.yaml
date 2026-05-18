@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: suspect-sync
+  namespace: correlation-stress
+  labels:
+    app.kubernetes.io/name: correlation-stress
+    role: suspect-sync
+spec:
+  nodeSelector:
+    correlation-stress: victim
+  restartPolicy: Always
+  containers:
+    - name: stress
+      image: polinux/stress:latest
+      command:
+        - sh
+        - -c
+        - |
+          # client 와 동기화된 10/10 phase. burst phase 가 정확히 client burst 와 겹쳐 cpu_throttle_score
+          # 가 victim latency 와 강한 lag 0 상관을 만든다.
+          while true; do
+            stress --cpu 4 --timeout 10s
+            sleep 10
+          done
+      resources:
+        requests:
+          cpu: 100m
+          memory: 32Mi
+        limits:
+          cpu: 4000m
+          memory: 128Mi

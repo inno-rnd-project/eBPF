@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: victim
+  namespace: correlation-stress
+  labels:
+    app.kubernetes.io/name: correlation-stress
+    role: victim
+spec:
+  nodeSelector:
+    correlation-stress: victim
+  restartPolicy: Always
+  containers:
+    - name: nginx
+      image: nginx:1.27-alpine
+      ports:
+        - name: http
+          containerPort: 80
+      resources:
+        requests:
+          cpu: 100m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: victim
+  namespace: correlation-stress
+spec:
+  selector:
+    role: victim
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
