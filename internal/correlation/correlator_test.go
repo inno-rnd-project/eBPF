@@ -157,15 +157,15 @@ func TestCorrelator_PartialFailureWithEmptyResults(t *testing.T) {
 	}
 }
 
-// TestDefaultConfigContainsCorrelationInputs 는 default config 가 본 시리즈의 신규 cause score 와
-// latency / node 메트릭을 포함하는지 검증한다. zero-config 운영의 기반이다.
+// TestDefaultConfigContainsCorrelationInputs 는 default config 가 본 시리즈의 신규 pod 단위 cause
+// score 를 포함하는지 검증한다. zero-config 운영의 기반이다. node-level 메트릭은 namespace / pod
+// 라벨이 없어 EnumeratePairs 의 pod 페어 schema 와 불일치라 default 에서 제외된다.
 func TestDefaultConfigContainsCorrelationInputs(t *testing.T) {
 	cfg := DefaultConfig()
 	required := []string{
 		"pod:cpu_throttle_score:5m",
 		"pod:memory_pressure_score:5m",
 		"pod:host_compute_stall_score:5m",
-		"node:gpu_idle:5m",
 	}
 	seen := make(map[string]bool, len(cfg.DefaultMetrics))
 	for _, m := range cfg.DefaultMetrics {
@@ -174,6 +174,12 @@ func TestDefaultConfigContainsCorrelationInputs(t *testing.T) {
 	for _, r := range required {
 		if !seen[r] {
 			t.Errorf("DefaultMetrics missing %q", r)
+		}
+	}
+	// node-level 메트릭은 default 에서 제외되어야 한다 (Pod 페어 schema 불일치).
+	for _, m := range cfg.DefaultMetrics {
+		if len(m) > 5 && m[:5] == "node:" {
+			t.Errorf("DefaultMetrics should NOT include node-level metric %q (Pod-pair schema mismatch)", m)
 		}
 	}
 	if cfg.Window <= 0 || cfg.Step <= 0 || cfg.MinSamples <= 0 {

@@ -48,20 +48,19 @@ func DefaultConfig() Config {
 		MinSamples:    60,
 		LagSteps:      []int{-1, 0, 1},
 		DefaultMetrics: []string{
-			// #49 의 pod 단위 cause score 6종.
+			// #49 의 pod 단위 cause score 6종. 모두 (node, src_namespace, src_pod, src_pod_uid) 라벨을
+			// 보유해 EnumeratePairs 의 pod 페어 schema 와 정합한다.
 			"pod:cpu_throttle_score:5m",
 			"pod:memory_pressure_score:5m",
 			"pod:network_throughput_score:5m",
 			"pod:network_retrans_score:5m",
 			"pod:host_compute_stall_score:5m",
-			"pod:gpu_memory_utilization_ratio:5m",
+			// pod:gpu_memory_utilization_ratio:5m 은 gpu_uuid / gpu_index 라벨을 추가로 보유해
+			// multi-GPU pod 에서 동일 (namespace, pod) 에 여러 series 가 생성되어 PairKey 중복이 발생
+			// 한다. avg by(...) 로 pod 단위 집계해 단일 series 로 normalize 한다.
+			`avg by(node, src_namespace, src_pod, src_pod_uid) (pod:gpu_memory_utilization_ratio:5m)`,
 			// netobs 의 pod-level latency p99.
 			`histogram_quantile(0.99, sum by(node, src_namespace, src_pod, src_pod_uid, le) (rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])))`,
-			// node 단위 자원.
-			"node:gpu_idle:5m",
-			"node:gpu_pcie_saturation_score:5m",
-			"node:gpu_util_p95:5m",
-			"node:gpu_throttle_seconds:rate5m",
 		},
 		FetchTimeout: 30 * time.Second,
 	}

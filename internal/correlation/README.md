@@ -15,13 +15,15 @@
 
 ## 기본 입력 메트릭
 
-`DefaultConfig`가 zero-config 호출에서 사용하는 11개 query는 다음과 같다. 본 시리즈의 #47 / #48 / #49에서 도입된 recording rule을 직접 참조한다.
+`DefaultConfig`가 zero-config 호출에서 사용하는 7개 query는 다음과 같다. 본 시리즈의 #47 / #48 / #49에서 도입된 recording rule을 직접 참조하며 모두 (node, src_namespace, src_pod, src_pod_uid) 라벨을 보유해 EnumeratePairs 의 Pod 페어 schema 와 정합한다.
 
-- pod 단위 cause score 6종: `pod:cpu_throttle_score:5m`, `pod:memory_pressure_score:5m`, `pod:network_throughput_score:5m`, `pod:network_retrans_score:5m`, `pod:host_compute_stall_score:5m`, `pod:gpu_memory_utilization_ratio:5m`
-- pod 단위 latency: `histogram_quantile(0.99, sum by(...)(rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])))`
-- node 단위 자원 4종: `node:gpu_idle:5m`, `node:gpu_pcie_saturation_score:5m`, `node:gpu_util_p95:5m`, `node:gpu_throttle_seconds:rate5m`
+- pod 단위 cause score 5종: `pod:cpu_throttle_score:5m`, `pod:memory_pressure_score:5m`, `pod:network_throughput_score:5m`, `pod:network_retrans_score:5m`, `pod:host_compute_stall_score:5m`
+- pod 단위 GPU 메모리 비율 (gpu_uuid / gpu_index 라벨을 pod 단위로 집계해 normalize): `avg by(node, src_namespace, src_pod, src_pod_uid) (pod:gpu_memory_utilization_ratio:5m)`
+- pod 단위 latency p99: `histogram_quantile(0.99, sum by(node, src_namespace, src_pod, src_pod_uid, le) (rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])))`
 
-운영자는 `-extra-metric` flag로 추가 query를 등록 가능하다. 본 11종이 cluster의 PrometheusRule (`deploy/gpuobs/base/prometheus-rule.yaml`) 에 deploy되어 있어야 fetcher가 데이터를 받는다.
+node-level 메트릭 (`node:gpu_idle:5m` 등) 은 namespace / pod 라벨이 없어 본 패키지의 Pod 페어 schema 와 불일치라 default 에서 제외된다. 운영자가 명시적으로 node × pod 분석이 필요하면 별도 도구 또는 future cross-level schema (follow-up) 를 사용한다.
+
+운영자는 `-extra-metric` flag로 추가 query를 등록 가능하다. 본 7종이 cluster의 PrometheusRule (`deploy/gpuobs/base/prometheus-rule.yaml`) 에 deploy되어 있어야 fetcher가 데이터를 받는다.
 
 ## CLI 사용
 
