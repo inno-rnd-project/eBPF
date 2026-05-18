@@ -28,14 +28,18 @@ type TimeSeries struct {
 	Samples []Sample          `json:"samples"`
 }
 
-// PairKey는 상관계수 산출 대상 페어의 정체성을 표현하는 6필드 키다. src와 dst는 비대칭이며 운영자가
-// (X, Y) 결과와 (Y, X) 결과를 별도로 해석 가능하다.
+// PairKey는 상관계수 산출 대상 페어의 정체성을 표현하는 키다. src와 dst는 비대칭이며 운영자가
+// (X, Y) 결과와 (Y, X) 결과를 별도로 해석 가능하다. Pod UID 는 namespace + pod 이름이 재사용되는
+// StatefulSet 환경에서 재생성 전후의 시리즈를 구분하고 downstream consumer (#51 exporter) 가 UID
+// 라벨을 그대로 사용할 수 있게 한다.
 type PairKey struct {
 	SrcNamespace string `json:"src_namespace"`
 	SrcPod       string `json:"src_pod"`
+	SrcPodUID    string `json:"src_pod_uid"`
 	SrcMetric    string `json:"src_metric"`
 	DstNamespace string `json:"dst_namespace"`
 	DstPod       string `json:"dst_pod"`
+	DstPodUID    string `json:"dst_pod_uid"`
 	DstMetric    string `json:"dst_metric"`
 }
 

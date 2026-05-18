@@ -6,7 +6,8 @@ import (
 )
 
 // ls 는 테스트용 LabeledSeries 짧은 생성자다. metric / node / namespace / pod 만 지정하고 시계열
-// 데이터는 의미가 없으니 빈 슬라이스로 둔다.
+// 데이터는 의미가 없으니 빈 슬라이스로 둔다. UID 는 namespace + pod 기준의 deterministic stub 으로
+// PairKey assert 에서도 사용 가능하다.
 func ls(metric, node, ns, pod string) LabeledSeries {
 	return LabeledSeries{
 		Metric: metric,
@@ -15,6 +16,7 @@ func ls(metric, node, ns, pod string) LabeledSeries {
 				"node":          node,
 				"src_namespace": ns,
 				"src_pod":       pod,
+				"src_pod_uid":   "uid-" + ns + "-" + pod,
 			},
 		},
 	}
@@ -110,6 +112,46 @@ func TestEnumeratePairsEmptyNodeLabelExcluded(t *testing.T) {
 	got := EnumeratePairs(items)
 	if len(got) != 0 {
 		t.Errorf("pair count=%d want 0 (entries without node label must be excluded)", len(got))
+	}
+}
+
+// TestEnumeratePairsNodeLevelMetricExcluded 는 node 라벨만 있고 namespace / pod 라벨이 없는
+// node-level 메트릭 (예: node:gpu_idle:5m) 이 Pod 페어 후보에서 제외되는지 검증한다. PairKey 의
+// schema 가 Pod 페어 기반이라 namespace / pod 가 빈 series 와의 페어는 schema 거짓말이 되어 제외
+// 가 필요하다.
+func TestEnumeratePairsNodeLevelMetricExcluded(t *testing.T) {
+	items := []LabeledSeries{
+		// node-level series: node 만 있고 namespace / pod 라벨 없음
+		{Metric: "node:gpu_idle:5m", Series: TimeSeries{Labels: map[string]string{"node": "node-a"}}},
+		ls("pod:cpu:5m", "node-a", "ns", "pod-1"),
+	}
+	got := EnumeratePairs(items)
+	if len(got) != 0 {
+		t.Errorf("pair count=%d want 0 (node-level series must not pair with pod series)", len(got))
+	}
+}
+
+// TestEnumeratePairsPreservesPodUID 는 src_pod_uid 라벨이 PairKey 의 SrcPodUID / DstPodUID 로
+// 정확히 전달되는지 검증한다. #51 exporter 가 UID 라벨로 시계열을 식별해야 하므로 결과 schema 에
+// UID 가 누락되면 안 된다.
+func TestEnumeratePairsPreservesPodUID(t *testing.T) {
+	items := []LabeledSeries{
+		ls("m1", "node-a", "ns", "pod-1"), // uid-ns-pod-1
+		ls("m2", "node-a", "ns", "pod-2"), // uid-ns-pod-2
+	}
+	pairs := EnumeratePairs(items)
+	if len(pairs) != 2 {
+		t.Fatalf("pair count=%d want 2", len(pairs))
+	}
+	for _, p := range pairs {
+		if p.Key.SrcPodUID == "" || p.Key.DstPodUID == "" {
+			t.Errorf("pair %+v missing UID", p.Key)
+		}
+		wantSrc := "uid-ns-" + p.Key.SrcPod
+		wantDst := "uid-ns-" + p.Key.DstPod
+		if p.Key.SrcPodUID != wantSrc || p.Key.DstPodUID != wantDst {
+			t.Errorf("UIDs=%q/%q want %q/%q", p.Key.SrcPodUID, p.Key.DstPodUID, wantSrc, wantDst)
+		}
 	}
 }
 

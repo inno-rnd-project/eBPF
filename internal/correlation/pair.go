@@ -19,37 +19,46 @@ type Pair struct {
 	Dst TimeSeries
 }
 
-// EnumeratePairs 는 입력 LabeledSeries 슬라이스에서 노드 한정 페어를 생성한다. 정책은 다음과 같다.
+// EnumeratePairs 는 입력 LabeledSeries 슬라이스에서 노드 한정 Pod 페어를 생성한다. 정책은 다음과
+// 같다.
 //
-//   - 양쪽 모두 동일 node 라벨을 가진 시계열만 페어로 묶는다 (cross-node 제외). node 라벨이 비어
-//     있는 entry 는 pair 후보에서 제외된다
-//   - 양쪽 모두 동일 (src_namespace, src_pod) 인 경우 self-pair 라 제외한다. 같은 Pod 의 두 다른
-//     metric 끼리는 self 가 아니라 metric pair 라 포함된다
+//   - 양쪽 모두 동일 node 라벨을 가진 시계열만 페어로 묶는다 (cross-node 제외)
+//   - node / src_namespace / src_pod 세 라벨이 모두 채워진 시계열만 Pod 페어 후보로 인정한다.
+//     node-level 메트릭 (예: node:gpu_idle:5m 처럼 namespace / pod 라벨이 없는 series) 은 본 패키지의
+//     Pod-pair 산출 schema 와 불일치라 자동 제외되어 빈 Pod 라벨로 emit 되는 false-positive 결과를
+//     차단한다
+//   - 양쪽 모두 동일 (src_namespace, src_pod, metric) 인 경우 self-pair 라 제외한다. 같은 Pod 의
+//     두 다른 metric 끼리는 self 가 아니라 metric pair 라 포함된다
 //   - (X, Y) 와 (Y, X) 를 별도 페어로 둘 다 생성한다. 비대칭 분석 (X 자원이 Y latency 를 예측 vs
 //     Y 자원이 X latency 를 예측) 을 위해서다
 //
-// 결과는 결정적 순서 (입력 순서 기반) 로 반환되어 테스트가 안정적으로 비교 가능하다.
+// 결과는 결정적 순서 (입력 순서 기반) 로 반환되어 테스트가 안정적으로 비교 가능하다. 사전 할당
+// 슬라이스 cap 은 두지 않는다 (입력 시계열 수의 제곱에 해당하는 cap 은 대형 cluster 에서 OOM 위험).
 func EnumeratePairs(items []LabeledSeries) []Pair {
-	out := make([]Pair, 0, len(items)*len(items))
+	out := make([]Pair, 0)
 	for i, src := range items {
 		srcNode := src.Series.Labels["node"]
-		if srcNode == "" {
-			continue
-		}
 		srcNS := src.Series.Labels["src_namespace"]
 		srcPod := src.Series.Labels["src_pod"]
+		if srcNode == "" || srcNS == "" || srcPod == "" {
+			continue
+		}
+		srcUID := src.Series.Labels["src_pod_uid"]
 		for j, dst := range items {
 			if i == j {
 				// 같은 (metric, series) 자기 자신과는 비교하지 않는다.
 				continue
 			}
 			dstNode := dst.Series.Labels["node"]
+			dstNS := dst.Series.Labels["src_namespace"]
+			dstPod := dst.Series.Labels["src_pod"]
+			if dstNode == "" || dstNS == "" || dstPod == "" {
+				continue
+			}
 			if dstNode != srcNode {
 				// cross-node 제외.
 				continue
 			}
-			dstNS := dst.Series.Labels["src_namespace"]
-			dstPod := dst.Series.Labels["src_pod"]
 			if srcNS == dstNS && srcPod == dstPod && src.Metric == dst.Metric {
 				// 같은 Pod 의 동일 metric (즉 동일 시계열의 중복) 만 self 로 본다. 동일 Pod 의 다른
 				// metric 페어는 cause score 와 latency 의 self-correlation 처럼 운영 가치가 있어 유지.
@@ -59,9 +68,11 @@ func EnumeratePairs(items []LabeledSeries) []Pair {
 				Key: PairKey{
 					SrcNamespace: srcNS,
 					SrcPod:       srcPod,
+					SrcPodUID:    srcUID,
 					SrcMetric:    src.Metric,
 					DstNamespace: dstNS,
 					DstPod:       dstPod,
+					DstPodUID:    dst.Series.Labels["src_pod_uid"],
 					DstMetric:    dst.Metric,
 				},
 				Src: src.Series,
