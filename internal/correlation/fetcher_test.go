@@ -58,7 +58,10 @@ func TestPrometheusFetcher_ParsesMatrixResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := NewPrometheusFetcher(srv.URL, 2*time.Second)
+	f, err := NewPrometheusFetcher(srv.URL, 2*time.Second)
+	if err != nil {
+		t.Fatalf("NewPrometheusFetcher: %v", err)
+	}
 	got, err := f.Fetch(context.Background(), "up",
 		time.Unix(1700000000, 0), time.Unix(1700000030, 0), 30*time.Second)
 	if err != nil {
@@ -89,7 +92,10 @@ func TestPrometheusFetcher_EmptyResult(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := NewPrometheusFetcher(srv.URL, 2*time.Second)
+	f, err := NewPrometheusFetcher(srv.URL, 2*time.Second)
+	if err != nil {
+		t.Fatalf("NewPrometheusFetcher: %v", err)
+	}
 	got, err := f.Fetch(context.Background(), "up",
 		time.Unix(0, 0), time.Unix(60, 0), 30*time.Second)
 	if err != nil {
@@ -107,8 +113,11 @@ func TestPrometheusFetcher_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := NewPrometheusFetcher(srv.URL, 2*time.Second)
-	_, err := f.Fetch(context.Background(), "up",
+	f, err := NewPrometheusFetcher(srv.URL, 2*time.Second)
+	if err != nil {
+		t.Fatalf("NewPrometheusFetcher: %v", err)
+	}
+	_, err = f.Fetch(context.Background(), "up",
 		time.Unix(0, 0), time.Unix(60, 0), 30*time.Second)
 	if err == nil {
 		t.Errorf("err=nil want non-nil for 500 response")
@@ -122,8 +131,11 @@ func TestPrometheusFetcher_BadJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := NewPrometheusFetcher(srv.URL, 2*time.Second)
-	_, err := f.Fetch(context.Background(), "up",
+	f, err := NewPrometheusFetcher(srv.URL, 2*time.Second)
+	if err != nil {
+		t.Fatalf("NewPrometheusFetcher: %v", err)
+	}
+	_, err = f.Fetch(context.Background(), "up",
 		time.Unix(0, 0), time.Unix(60, 0), 30*time.Second)
 	if err == nil {
 		t.Errorf("err=nil want non-nil for malformed JSON")
@@ -142,8 +154,11 @@ func TestPrometheusFetcher_ResponseSizeLimit(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := NewPrometheusFetcher(srv.URL, 5*time.Second)
-	_, err := f.Fetch(context.Background(), "up",
+	f, err := NewPrometheusFetcher(srv.URL, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewPrometheusFetcher: %v", err)
+	}
+	_, err = f.Fetch(context.Background(), "up",
 		time.Unix(0, 0), time.Unix(60, 0), 30*time.Second)
 	if err == nil {
 		t.Errorf("err=nil want non-nil for oversized response (>maxFetchResponseBytes)")
@@ -160,8 +175,11 @@ func TestPrometheusFetcher_PrometheusError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := NewPrometheusFetcher(srv.URL, 2*time.Second)
-	_, err := f.Fetch(context.Background(), "syntax !! error",
+	f, err := NewPrometheusFetcher(srv.URL, 2*time.Second)
+	if err != nil {
+		t.Fatalf("NewPrometheusFetcher: %v", err)
+	}
+	_, err = f.Fetch(context.Background(), "syntax !! error",
 		time.Unix(0, 0), time.Unix(60, 0), 30*time.Second)
 	if err == nil {
 		t.Errorf("err=nil want non-nil for prometheus status=error")

@@ -110,7 +110,11 @@ func main() {
 		os.Exit(exitFlagError)
 	}
 
-	fetcher := correlation.NewPrometheusFetcher(cfg.PrometheusURL, cfg.FetchTimeout)
+	fetcher, err := correlation.NewPrometheusFetcher(cfg.PrometheusURL, cfg.FetchTimeout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize fetcher: %v\n", err)
+		os.Exit(exitFlagError)
+	}
 	corr := correlation.New(fetcher, cfg)
 
 	log.Printf("correlating: prometheus=%s window=%s step=%s lag_steps=%v min_samples=%d",

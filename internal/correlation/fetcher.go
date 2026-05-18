@@ -33,16 +33,17 @@ type PrometheusFetcher struct {
 
 // NewPrometheusFetcher 는 base URL (예: http://localhost:9090) 과 timeout 으로 fetcher 를 만든다.
 // baseURL + /api/v1/query_range 를 startup 시점에 1회 파싱해 Fetch 마다 url.Parse 를 반복하지 않게
-// 한다. 잘못된 URL 이면 panic 으로 즉시 알린다 (생성자 시점이라 호출자가 알아채기 쉬움).
-func NewPrometheusFetcher(baseURL string, timeout time.Duration) *PrometheusFetcher {
+// 한다. 잘못된 URL 이면 wrapped error 를 반환하므로 (panic 이 아님) #51 exporter 같은 장기 실행
+// 프로세스에서 호출자가 graceful 하게 실패 처리 가능하다.
+func NewPrometheusFetcher(baseURL string, timeout time.Duration) (*PrometheusFetcher, error) {
 	u, err := url.Parse(strings.TrimRight(baseURL, "/") + "/api/v1/query_range")
 	if err != nil {
-		panic(fmt.Sprintf("invalid prometheus base URL %q: %v", baseURL, err))
+		return nil, fmt.Errorf("invalid prometheus base URL %q: %w", baseURL, err)
 	}
 	return &PrometheusFetcher{
 		queryURL: u,
 		client:   &http.Client{Timeout: timeout},
-	}
+	}, nil
 }
 
 // queryRangeResponse 는 Prometheus query_range API 의 matrix 응답 schema 다.
