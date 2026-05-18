@@ -101,16 +101,61 @@ CLI는 `[]CorrelationResult`를 indented JSON으로 stdout에 emit한다. 각 el
 
 `status`별 의미는 `types.go`의 const 주석을 참고한다.
 
-## 정책
+## 산출 알고리즘
 
-본 라이브러리가 고정한 정책은 다음과 같다.
+본 라이브러리의 상관계수 산출은 다음 6 단계로 구성된다. 1-4 단계가 라이브러리 본체 (`CorrelationResult` slice 반환) 이고 5-6 단계는 exporter 가 추가로 수행한다.
 
-- **lag 의미**: cross-correlation 관례를 따라 lag k가 양수면 `corr(a[t], b[t+k])`를 계산 (a가 b를 k step 앞서는 propagation)
-- **pair enumeration**: 동일 node 라벨 + self 제외 + (X,Y) (Y,X) 양방향. cross-node pair는 본 패키지 범위 밖
-- **NaN/Inf 처리**: pairwise 제거 후 산출. NaN이 결과로 새 나가지 않게 가드
-- **length mismatch**: 짧은 쪽 기준 truncate
-- **분산 0 (상수 시계열)**: `0.0`과 `StatusSkippedConstant` 반환. Pearson 정의상 분모 0이 되는 NaN을 명시적 fallback
-- **표본 부족**: `MinSamples` 미만이면 `StatusSkippedLowSamples`. default 60 (1h / 30s 윈도우의 절반 이상)
+### 1단계 시계열 수집 (`fetcher.go`)
+
+`DefaultMetrics`와 `ExtraMetrics`의 모든 query를 동일한 `[endTime - Window, endTime]` 범위에 대해 `Step` 간격으로 `/api/v1/query_range` 호출로 fetch한다. query마다 goroutine으로 병렬 fetch하며 query 순서는 결과 순서로 보존된다. 응답 body는 `maxFetchResponseBytes` (100 MiB) 상한으로 가드되어 한 query의 거대한 응답이 메모리를 폭주시키는 상황을 차단한다.
+
+### 2단계 Pod 페어 enumeration (`pair.go`)
+
+fetch된 모든 `LabeledSeries`를 `node` 라벨로 그룹화한 뒤 같은 노드 내의 서로 다른 두 Pod에 대해 모든 `(X, Y)`와 `(Y, X)` 양방향 페어를 생성한다. self-pair와 cross-node pair는 본 단계에서 제외된다. Pod 정체성은 `(node, src_namespace, src_pod, src_pod_uid)` 4 키로 결정되어 namespace나 pod 이름이 재사용되는 StatefulSet 환경에서도 재생성 전후의 시리즈를 정확히 구분한다.
+
+### 3단계 lag별 Pearson 산출 (`pearson.go`)
+
+각 페어에 대해 `LagSteps` (기본 `[-1, 0, 1]`) 의 각 lag k마다 cross-correlation 관례에 따라 `corr(a[t], b[t+k])`를 산출한다. lag k가 양수면 a가 b를 k step 앞서는 propagation 관계 (예: CPU 부하 발생 후 GPU latency가 30s 뒤 올라가면 lag=+1에서 최대 상관) 다. 산출 수식은 Pearson 정의를 그대로 사용한다.
+
+```
+              Σ (xi - mean(x)) · (yi - mean(y))
+corr(x, y) = ───────────────────────────────────────────
+              √ ( Σ (xi - mean(x))² · Σ (yi - mean(y))² )
+```
+
+분자는 두 시계열의 공분산에 표본 수 N을 곱한 값이고 분모는 두 표본 표준편차의 곱에 N을 곱한 값이다. 두 N이 약분되어 corr는 표본 수 N과 무관한 정규화된 값 (`-1 ≤ corr ≤ 1`) 이 된다.
+
+### 4단계 최대 절대값 채택
+
+세 lag 결과 중 `|corr|`가 최대인 값을 `max_abs_value`로, 그 lag을 `max_abs_lag`으로, 그 lag의 유효 표본 수를 `sample_count`로 채택한다. 절대값 채택이라 양의 상관과 음의 상관 (anti-correlation) 을 동등하게 강한 신호로 본다. 모든 lag의 corr이 정확히 0이어도 첫 OK lag의 정보가 기록되어 `sample_count=0` / `max_abs_lag=0` 같은 schema 거짓말을 차단한다.
+
+### 5단계 victim/suspect 정규화와 dimension 분류 (`topn.go`, exporter)
+
+페어 정확히 한쪽이 latency 메트릭인 경우만 noisy neighbor 모델 (suspect 자원 압박이 victim latency 손해를 일으킴) 에 부합한다고 보고 채택한다. `Src=non-latency suspect, Dst=latency victim` 방향만 사용해 EnumeratePairs가 만드는 양방향 페어를 자동 dedup한다. lag 부호도 자연스럽게 "suspect → victim" 인과 방향으로 정렬된다.
+
+dimension 분류는 suspect metric query 문자열의 substring 매칭으로 결정한다. 더 구체적인 키워드가 먼저 매칭되도록 다음 순서로 평가한다.
+
+1. `gpu` 가 포함되면 `gpu` (예: `pod:gpu_memory_utilization_ratio:5m`)
+2. `network` 가 포함되면 `network` (예: `pod:network_throughput_score:5m`)
+3. `memory` 가 포함되면 `memory` (예: `pod:memory_pressure_score:5m`)
+4. `cpu` 또는 `compute` 가 포함되면 `cpu` (예: `pod:cpu_throttle_score:5m`, `pod:host_compute_stall_score:5m`)
+5. 그 외는 `unknown` 으로 분류되어 결과에서 제외
+
+이 우선순위 덕에 `gpu_memory_utilization_ratio` 같은 합성 키워드가 `memory` 가 아닌 `gpu` 로 정확히 분류된다.
+
+### 6단계 Top-N 선택 (`topn.go`, exporter)
+
+`(victim_namespace, victim_pod, victim_pod_uid, dimension)` 그룹별 `max_abs_value` 내림차순으로 정렬해 상위 `TOP_N` 개에 rank 1..N을 부여한다. 동률은 `(suspect_namespace, suspect_pod, suspect_pod_uid)` lexicographic 순서로 결정성을 보장하며 동일 입력에 대해 결과 순서가 항상 같다.
+
+### 가드와 fallback
+
+각 단계는 다음 규칙으로 비정상 입력을 처리해 NaN이나 1 초과 값이 결과로 새어 나가지 않도록 한다.
+
+- **NaN / Inf pairwise 제거**: timestamp i의 두 시계열 값 중 하나라도 NaN 또는 Inf 면 두 값 모두 산출에서 제외. Prometheus가 일부 timestamp에서 NaN을 emit하는 경우 대응.
+- **length mismatch truncate**: 두 시계열 길이가 다르면 짧은 쪽 기준으로 자른다. `query_range`가 start / end 정렬되어도 응답이 부분적으로 비는 경우 대응.
+- **표본 부족**: NaN / Inf 제거 후 유효 표본 수가 `MinSamples` (기본 60) 미만이면 산출을 skip하고 `status="skipped_low_samples"`, value=0으로 반환.
+- **분산 0 (상수 시계열)**: 두 시계열 중 하나라도 모든 샘플 값이 동일하면 Pearson 분모가 0이 되어 NaN. 본 패키지는 NaN 대신 0과 `status="skipped_constant"`로 명시적 fallback.
+- **partial 산출**: lag 일부에서만 산출 가능하면 (예: window 끝에 가까운 lag에서 표본 부족) `status="partial"`로 분류. exporter의 `SelectTopN`은 `ok`와 `partial` 두 status만 채택한다.
 
 ## 실 클러스터 24h 검증 결과
 
@@ -186,6 +231,136 @@ make deploy-correlation-prod
 ### 카디널리티 분석
 
 victim 1000 pod × dimension 4 × rank 10 = 40,000 series 가 noisy_neighbor 메트릭의 상한이다. self-health 메트릭 7 종을 더해도 40,007 series 로 단일 Prometheus 인스턴스가 처리하기에 안전한 규모다. `TOP_N` 의 binary-side 상한은 100 으로 가드되어 운영자가 의도치 않게 series 폭주를 일으킬 수 없다.
+
+### 메트릭 확인 명령
+
+배포 후 메트릭이 정상 emit 되는지를 세 위치에서 확인 가능하다. cluster 외부 접근에 port-forward 가 막힌 환경 (예: socat 미설치) 에서는 cluster 내부 Pod 의 `kubectl exec` 로 우회한다.
+
+#### 1. Prometheus 쿼리 (cluster 내)
+
+가장 정확한 방법이다. dev cluster 의 Prometheus Pod 에서 직접 쿼리한다.
+
+```sh
+PROM_POD=$(kubectl get pod -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
+
+# 특정 victim 의 dimension 별 Top-N
+kubectl exec -n monitoring $PROM_POD -c prometheus -- \
+  wget -qO- 'http://localhost:9090/api/v1/query?query=topk(10,correlation_noisy_neighbor_score{victim_pod="victim"})' | jq
+
+# 특정 (victim, suspect, dimension) 페어의 score
+kubectl exec -n monitoring $PROM_POD -c prometheus -- \
+  wget -qO- 'http://localhost:9090/api/v1/query?query=correlation_noisy_neighbor_score{victim_pod="victim",suspect_pod="suspect-sync",resource_dimension="cpu"}' | jq
+
+# victim namespace 별 series 분포
+kubectl exec -n monitoring $PROM_POD -c prometheus -- \
+  wget -qO- 'http://localhost:9090/api/v1/query?query=count(correlation_noisy_neighbor_score)by(victim_namespace,resource_dimension)' | jq
+
+# self-health 누적 카운터
+kubectl exec -n monitoring $PROM_POD -c prometheus -- \
+  wget -qO- 'http://localhost:9090/api/v1/query?query=correlation_reconcile_pairs_total' | jq
+```
+
+#### 2. Grafana 대시보드
+
+본 시리즈에 추가된 `correlation noisy neighbor` (uid `correlation-overview`) 대시보드를 사용한다.
+
+- `kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80` 후 브라우저에서 `localhost:3000` 접속
+- `correlation noisy neighbor` 대시보드 열기
+- variable `Victim namespace`, `Victim pod`, `Dimension` 으로 drill down
+- 테이블의 `score` 컬럼이 0.85 이상 빨강, 0.7 이상 주황, 0.5 이상 노랑 임계로 표시되어 강한 페어를 한 눈에 식별 가능
+
+#### 3. exporter `/metrics` 직접 호출
+
+가장 raw 한 출력으로 라벨 셋 전체와 정확한 값을 확인한다. cluster 내 임의 Pod 에서 wget 으로 호출한다.
+
+```sh
+PROM_POD=$(kubectl get pod -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
+
+# noisy neighbor 전체
+kubectl exec -n monitoring $PROM_POD -c prometheus -- \
+  wget -qO- http://correlation-exporter.ebpf-project.svc.cluster.local:9830/metrics | \
+  grep '^correlation_noisy_neighbor_score'
+
+# self-health 메트릭
+kubectl exec -n monitoring $PROM_POD -c prometheus -- \
+  wget -qO- http://correlation-exporter.ebpf-project.svc.cluster.local:9830/metrics | \
+  grep '^correlation_reconcile'
+```
+
+#### 결과가 비어 있을 때
+
+`MIN_SAMPLES=60` 과 `WINDOW=30m` (step 30s) 가드로 페어가 30 분 미만 운영되면 `correlation_reconcile_skipped_total{reason="low_samples"}` 로 분류되어 score 메트릭이 emit 되지 않는다. dev 검증에서 빠른 결과 확인이 필요하면 다음과 같이 임시로 `MIN_SAMPLES` 를 낮춘다 (검증 후 원복).
+
+```sh
+kubectl patch configmap -n ebpf-project correlation-exporter \
+  --patch '{"data":{"MIN_SAMPLES":"10"}}'
+kubectl rollout restart deployment -n ebpf-project correlation-exporter
+```
+
+### 메트릭 확인 명령
+
+배포 후 메트릭이 정상 emit 되는지를 세 위치에서 확인 가능하다. cluster 외부 접근에 port-forward 가 막힌 환경 (예: socat 미설치) 에서는 cluster 내부 Pod 의 `kubectl exec` 로 우회한다.
+
+#### 1. Prometheus 쿼리 (cluster 내)
+
+가장 정확한 방법이다. dev cluster 의 Prometheus Pod 에서 직접 쿼리한다.
+
+```sh
+PROM_POD=$(kubectl get pod -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
+
+# 특정 victim 의 dimension 별 Top-N
+kubectl exec -n monitoring $PROM_POD -c prometheus -- \
+  wget -qO- 'http://localhost:9090/api/v1/query?query=topk(10,correlation_noisy_neighbor_score{victim_pod="victim"})' | jq
+
+# suspect-sync 의 cpu rank 만 조회
+kubectl exec -n monitoring $PROM_POD -c prometheus -- \
+  wget -qO- 'http://localhost:9090/api/v1/query?query=correlation_noisy_neighbor_score{victim_pod="victim",suspect_pod="suspect-sync",resource_dimension="cpu"}' | jq
+
+# victim namespace 별 series 분포
+kubectl exec -n monitoring $PROM_POD -c prometheus -- \
+  wget -qO- 'http://localhost:9090/api/v1/query?query=count(correlation_noisy_neighbor_score)by(victim_namespace,resource_dimension)' | jq
+
+# self-health 누적 카운터
+kubectl exec -n monitoring $PROM_POD -c prometheus -- \
+  wget -qO- 'http://localhost:9090/api/v1/query?query=correlation_reconcile_pairs_total' | jq
+```
+
+#### 2. Grafana 대시보드
+
+본 PR 에 추가된 `correlation noisy neighbor` (uid `correlation-overview`) 대시보드를 사용한다.
+
+- `kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80`
+- Grafana 의 `correlation noisy neighbor` 대시보드 열기
+- variable `Victim namespace`, `Victim pod`, `Dimension` 으로 drill down
+- 테이블의 `score` 컬럼이 0.85 이상 빨강, 0.7 이상 주황, 0.5 이상 노랑 임계로 표시되어 강한 페어를 한 눈에 식별 가능
+
+#### 3. exporter `/metrics` 직접 호출
+
+가장 raw 한 출력으로 라벨 셋 전체와 정확한 값을 확인한다. cluster 내 임의 Pod 에서 wget 으로 호출한다.
+
+```sh
+PROM_POD=$(kubectl get pod -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
+
+# noisy neighbor 전체
+kubectl exec -n monitoring $PROM_POD -c prometheus -- \
+  wget -qO- http://correlation-exporter.ebpf-project.svc.cluster.local:9830/metrics | \
+  grep '^correlation_noisy_neighbor_score'
+
+# self-health 메트릭
+kubectl exec -n monitoring $PROM_POD -c prometheus -- \
+  wget -qO- http://correlation-exporter.ebpf-project.svc.cluster.local:9830/metrics | \
+  grep '^correlation_reconcile'
+```
+
+#### 결과가 비어 있을 때
+
+`MIN_SAMPLES=60` 과 `WINDOW=30m` (step 30s) 가드로 페어가 30 분 미만 운영되면 `correlation_reconcile_skipped_total{reason="low_samples"}` 로 분류되어 score 메트릭이 emit 되지 않는다. dev 검증에서 빠른 결과 확인이 필요하면 다음과 같이 임시로 `MIN_SAMPLES` 를 낮춘다 (검증 후 원복).
+
+```sh
+kubectl patch configmap -n ebpf-project correlation-exporter \
+  --patch '{"data":{"MIN_SAMPLES":"10"}}'
+kubectl rollout restart deployment -n ebpf-project correlation-exporter
+```
 
 ### alert runbook
 
