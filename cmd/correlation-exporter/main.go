@@ -1,0 +1,261 @@
+// correlation-exporter 는 internal/correlation 라이브러리의 산출물을 주기적으로 갱신해 Prometheus
+// 메트릭으로 노출하는 long-running 프로세스다. cluster 에 Deployment 단일 replica 로 배치되며
+// kube-prometheus-stack 의 ServiceMonitor 가 /metrics 를 scrape 한다.
+//
+// 본 binary 는 cluster API 권한이 필요 없으며 Prometheus HTTP API 만 호출한다. correlation-debug
+// CLI 와 동일 라이브러리를 reuse 하므로 동일 endTime 기준의 산출 결과는 두 도구에서 일치한다.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"netobs/internal/correlation"
+	"netobs/internal/correlation/exporter"
+)
+
+// maxTopN 은 -top-n flag 의 상한이다. victim 1k * dimension 4 * rank 100 = 400k series 가 절대 상한
+// 이며 운영자가 의도치 않게 series 폭주를 일으키지 않도록 binary 단에서 가드한다. 본 한도가 부족
+// 하다면 cluster 규모와 카디널리티 분석을 동반해 본 값을 올린다.
+const maxTopN = 100
+
+// stringSlice 는 -extra-metric 처럼 반복 가능한 flag 를 위한 flag.Value 구현이다.
+type stringSlice []string
+
+func (s *stringSlice) String() string     { return strings.Join(*s, ",") }
+func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
+
+// intSlice 는 -lag-steps 처럼 콤마 구분 int 슬라이스를 받는 flag.Value 구현이다.
+type intSlice []int
+
+func (s *intSlice) String() string {
+	parts := make([]string, len(*s))
+	for i, v := range *s {
+		parts[i] = strconv.Itoa(v)
+	}
+	return strings.Join(parts, ",")
+}
+
+func (s *intSlice) Set(v string) error {
+	*s = (*s)[:0]
+	for _, tok := range strings.Split(v, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		n, err := strconv.Atoi(tok)
+		if err != nil {
+			return fmt.Errorf("invalid int in lag-steps %q: %w", tok, err)
+		}
+		*s = append(*s, n)
+	}
+	return nil
+}
+
+func main() {
+	cfg := correlation.DefaultConfig()
+	reconcileInterval := 5 * time.Minute
+	listenAddr := ":9830"
+	topN := 10
+
+	// env fallback. flag 가 우선이라 후순위로 적용.
+	if v := strings.TrimSpace(os.Getenv("PROMETHEUS_URL")); v != "" {
+		cfg.PrometheusURL = v
+	}
+	applyEnvDuration("WINDOW", &cfg.Window)
+	applyEnvDuration("STEP", &cfg.Step)
+	applyEnvDuration("FETCH_TIMEOUT", &cfg.FetchTimeout)
+	applyEnvDuration("RECONCILE_INTERVAL", &reconcileInterval)
+	applyEnvInt("MIN_SAMPLES", &cfg.MinSamples)
+	applyEnvInt("TOP_N", &topN)
+	if v := strings.TrimSpace(os.Getenv("LISTEN_ADDR")); v != "" {
+		listenAddr = v
+	}
+
+	fs := flag.NewFlagSet("correlation-exporter", flag.ContinueOnError)
+	fs.StringVar(&cfg.PrometheusURL, "prometheus-url", cfg.PrometheusURL, "Prometheus base URL (env PROMETHEUS_URL fallback)")
+	fs.DurationVar(&cfg.Window, "window", cfg.Window, "query_range window")
+	fs.DurationVar(&cfg.Step, "step", cfg.Step, "query_range step")
+	fs.IntVar(&cfg.MinSamples, "min-samples", cfg.MinSamples, "minimum valid samples per pair after NaN/Inf removal")
+	fs.DurationVar(&cfg.FetchTimeout, "fetch-timeout", cfg.FetchTimeout, "HTTP timeout for each query_range call")
+	fs.DurationVar(&reconcileInterval, "reconcile-interval", reconcileInterval, "interval between reconcile cycles")
+	fs.StringVar(&listenAddr, "listen", listenAddr, "metrics server listen address")
+	fs.IntVar(&topN, "top-n", topN, fmt.Sprintf("Top-N noisy neighbors per (victim, dimension), max %d", maxTopN))
+
+	var extra stringSlice
+	fs.Var(&extra, "extra-metric", "additional Prometheus query (repeat for multiple)")
+
+	var lagSteps intSlice
+	for _, l := range cfg.LagSteps {
+		lagSteps = append(lagSteps, l)
+	}
+	fs.Var(&lagSteps, "lag-steps", "comma-separated lag steps (e.g., -1,0,1)")
+
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		log.Fatalf("flag error: %v", err)
+	}
+	cfg.ExtraMetrics = []string(extra)
+	cfg.LagSteps = []int(lagSteps)
+
+	if cfg.Window <= 0 || cfg.Step <= 0 {
+		log.Fatalf("window and step must be positive")
+	}
+	if cfg.FetchTimeout <= 0 {
+		log.Fatalf("fetch-timeout must be positive")
+	}
+	if cfg.MinSamples <= 0 {
+		log.Fatalf("min-samples must be positive")
+	}
+	if reconcileInterval <= 0 {
+		log.Fatalf("reconcile-interval must be positive")
+	}
+	if topN <= 0 || topN > maxTopN {
+		log.Fatalf("top-n must be in [1, %d]", maxTopN)
+	}
+	if len(cfg.LagSteps) == 0 {
+		log.Fatalf("lag-steps must not be empty")
+	}
+
+	fetcher, err := correlation.NewPrometheusFetcher(cfg.PrometheusURL, cfg.FetchTimeout)
+	if err != nil {
+		log.Fatalf("fetcher init: %v", err)
+	}
+	corr := correlation.New(fetcher, cfg)
+
+	reg := prometheus.NewRegistry()
+	collector := exporter.NewCollector(cfg.Step)
+	reg.MustRegister(collector)
+	health := exporter.NewHealth(reg)
+
+	var ready atomic.Bool
+
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if !ready.Load() {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	srv := &http.Server{
+		Addr:              listenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		log.Printf("metrics listening on %s", listenAddr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("http server: %v", err)
+		}
+	}()
+
+	log.Printf("config: prometheus=%s window=%s step=%s reconcile_interval=%s top_n=%d min_samples=%d lag_steps=%v",
+		cfg.PrometheusURL, cfg.Window, cfg.Step, reconcileInterval, topN, cfg.MinSamples, cfg.LagSteps)
+	log.Printf("metrics: default=%d extra=%d", len(cfg.DefaultMetrics), len(cfg.ExtraMetrics))
+
+	cycleTimeout := cfg.FetchTimeout * time.Duration(len(cfg.DefaultMetrics)+len(cfg.ExtraMetrics)+1)
+	runReconcile := func() {
+		reconcileOnce(ctx, corr, collector, health, &ready, topN, cycleTimeout)
+	}
+
+	// 첫 reconcile 을 ticker 시작 전 즉시 실행해 첫 reconcile latency 를 reconcileInterval 만큼
+	// 지연시키지 않는다.
+	runReconcile()
+
+	ticker := time.NewTicker(reconcileInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("shutdown: %v", ctx.Err())
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = srv.Shutdown(shutdownCtx)
+			cancel()
+			return
+		case <-ticker.C:
+			runReconcile()
+		}
+	}
+}
+
+// reconcileOnce 는 reconcile 1 cycle 을 수행하고 결과를 collector / health 에 반영한다. main 의
+// 클로저 대신 별도 함수로 분리해 단위 테스트가 mock fetcher 로 본 함수를 직접 호출 가능하게 한다.
+func reconcileOnce(
+	ctx context.Context,
+	corr *correlation.Correlator,
+	collector *exporter.Collector,
+	health *exporter.Health,
+	ready *atomic.Bool,
+	topN int,
+	cycleTimeout time.Duration,
+) {
+	cycleStart := time.Now()
+	cycleCtx, cancel := context.WithTimeout(ctx, cycleTimeout)
+	defer cancel()
+
+	results, err := corr.Correlate(cycleCtx, time.Now())
+	if err != nil {
+		log.Printf("reconcile error: %v", err)
+		health.RecordError()
+		return
+	}
+	neighbors := correlation.SelectTopN(results, topN)
+	collector.Replace(neighbors)
+	duration := time.Since(cycleStart)
+	health.RecordCycle(duration, results, neighbors)
+	ready.Store(true)
+	log.Printf("reconcile ok: pairs=%d neighbors=%d duration=%s", len(results), len(neighbors), duration)
+}
+
+// applyEnvDuration 은 env 값이 있을 때 dst 를 갱신한다. 빈 값이면 dst 유지. 파싱 실패는 fatal 로
+// 격상해 misconfiguration 이 silent 하게 잘못된 default 로 운영되는 것을 차단한다.
+func applyEnvDuration(key string, dst *time.Duration) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		log.Fatalf("env %s parse: %v", key, err)
+	}
+	*dst = d
+}
+
+func applyEnvInt(key string, dst *int) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		log.Fatalf("env %s parse: %v", key, err)
+	}
+	*dst = n
+}
