@@ -123,14 +123,18 @@ setup-envtest:
 #                          호스트 설치를 요구하지 않으며 PROMTOOL_IMAGE 변수로 버전을 pin 한다.
 # ============================================================================
 PROMTOOL_IMAGE ?= prom/prometheus:v2.55.0
-PROMETHEUS_RULE_FILE ?= deploy/gpuobs/base/prometheus-rule.yaml
-PROMTOOL_RULES_TMP ?= bin/promtool-rules.yaml
+PROMETHEUS_RULE_FILES ?= deploy/gpuobs/base/prometheus-rule.yaml deploy/correlation/base/prometheus-rule.yaml
+PROMTOOL_RULES_TMP_DIR ?= bin/promtool-rules
 
 check-prometheus-rules:
-	@mkdir -p $(dir $(PROMTOOL_RULES_TMP))
-	@echo "extracting spec.groups from $(PROMETHEUS_RULE_FILE) → $(PROMTOOL_RULES_TMP)"
-	@awk '/^spec:/{f=1;next} f' $(PROMETHEUS_RULE_FILE) | sed 's/^  //' > $(PROMTOOL_RULES_TMP)
-	@docker run --rm --entrypoint promtool -v $(CURDIR)/$(PROMTOOL_RULES_TMP):/tmp/rules.yaml $(PROMTOOL_IMAGE) check rules /tmp/rules.yaml
+	@mkdir -p $(PROMTOOL_RULES_TMP_DIR)
+	@for f in $(PROMETHEUS_RULE_FILES); do \
+		base=$$(basename $$(dirname $$(dirname $$f))); \
+		out=$(PROMTOOL_RULES_TMP_DIR)/$$base.yaml; \
+		echo "extracting spec.groups from $$f → $$out"; \
+		awk '/^spec:/{f=1;next} f' $$f | sed 's/^  //' > $$out; \
+		docker run --rm --entrypoint promtool -v $(CURDIR)/$$out:/tmp/rules.yaml $(PROMTOOL_IMAGE) check rules /tmp/rules.yaml; \
+	done
 	@echo "promtool check rules: OK"
 
 # ============================================================================
