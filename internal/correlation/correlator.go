@@ -3,6 +3,7 @@ package correlation
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -36,15 +37,33 @@ func (c *Correlator) Correlate(ctx context.Context) ([]CorrelationResult, error)
 	queries := append([]string{}, c.config.DefaultMetrics...)
 	queries = append(queries, c.config.ExtraMetrics...)
 
+	// 각 query 를 goroutine 으로 병렬 fetch 한다. 표준 라이브러리 sync.WaitGroup + 인덱스 기반
+	// 사전 할당 슬라이스로 query 순서를 보존하고 비결정성을 차단한다. 모든 query 가 독립적이고
+	// fetcher 의 http.Client 가 concurrent 안전하므로 추가 동기화는 불필요하다.
+	type fetchResult struct {
+		series []LabeledSeries
+		err    error
+	}
+	fetched := make([]fetchResult, len(queries))
+	var wg sync.WaitGroup
+	for i, q := range queries {
+		wg.Add(1)
+		go func(i int, q string) {
+			defer wg.Done()
+			series, err := c.fetcher.Fetch(ctx, q, start, end, c.config.Step)
+			fetched[i] = fetchResult{series: series, err: err}
+		}(i, q)
+	}
+	wg.Wait()
+
 	all := make([]LabeledSeries, 0)
 	var fetchErrors []string
-	for _, q := range queries {
-		series, err := c.fetcher.Fetch(ctx, q, start, end, c.config.Step)
-		if err != nil {
-			fetchErrors = append(fetchErrors, fmt.Sprintf("query %q: %v", q, err))
+	for i, r := range fetched {
+		if r.err != nil {
+			fetchErrors = append(fetchErrors, fmt.Sprintf("query %q: %v", queries[i], r.err))
 			continue
 		}
-		all = append(all, series...)
+		all = append(all, r.series...)
 	}
 	// 모든 query 가 실패했을 때만 error 로 격상한다. 일부 성공 + 일부 실패 (예: 한 query 가 syntax
 	// 오류 인데 다른 query 들이 정상) 는 부분 결과로 산출을 계속한다.
