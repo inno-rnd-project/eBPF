@@ -92,7 +92,7 @@ CLI는 `[]CorrelationResult`를 indented JSON으로 stdout에 emit한다. 각 el
 
 필드 의미는 다음과 같다.
 
-- `pair`: 페어 정체성 6필드 (`src_namespace`, `src_pod`, `src_metric`, `dst_namespace`, `dst_pod`, `dst_metric`)
+- `pair`: 페어 정체성 8필드 (`src_namespace`, `src_pod`, `src_pod_uid`, `src_metric`, `dst_namespace`, `dst_pod`, `dst_pod_uid`, `dst_metric`). `src_pod_uid` / `dst_pod_uid` 는 입력 recording rule 이 본 라벨을 보존할 때만 채워진다. 본 시리즈 #49 의 cause score 는 cAdvisor `pod` / `namespace` 라벨에서 alias 만 만들어 UID 가 없으니 빈 문자열로 emit 된다. UID 보강은 별도 PrometheusRule 작업으로 분리
 - `correlation_by_lag`: lag step별 Pearson 산출값 (-1 에서 1 사이)
 - `max_abs_lag`: 최대 절대값을 보인 lag step
 - `max_abs_value`: 최대 절대값 그 자체 (운영자가 "강한 상관"으로 거를 때 쓰는 일차 지표)
