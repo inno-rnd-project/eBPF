@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ebpf-project 네임스페이스는 netobs base 가 이미 생성하므로 본 base 는 namespace 리소스를 별도로
+# 두지 않는다. 운영자가 correlation 만 단독 deploy 하는 경우는 없으며 netobs / gpuobs deploy 가
+# 선행됨을 전제한다. 단독 검증이 필요하면 운영자가 ebpf-project namespace 를 미리 생성한다.
+namespace: ebpf-project
+
+resources:
+  - serviceaccount.yaml
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - servicemonitor.yaml

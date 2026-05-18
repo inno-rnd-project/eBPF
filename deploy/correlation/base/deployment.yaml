@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: correlation-exporter
+  namespace: ebpf-project
+  labels:
+    app.kubernetes.io/name: correlation-exporter
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: correlation-exporter
+spec:
+  # cluster 단위 단일 산출이라 노드 분산이 불필요해 replica 1 로 고정한다. HA / leader election 은
+  # follow-up 이슈로 분리한다.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: correlation-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: correlation-exporter
+        app.kubernetes.io/part-of: ebpf-project
+        app.kubernetes.io/component: correlation-exporter
+    spec:
+      serviceAccountName: correlation-exporter
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: correlation-exporter
+          image: correlation-exporter
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: correlation-exporter
+          ports:
+            - name: metrics
+              containerPort: 9830
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi

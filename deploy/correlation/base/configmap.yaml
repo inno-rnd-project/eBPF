@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: correlation-exporter
+  namespace: ebpf-project
+  labels:
+    app.kubernetes.io/name: correlation-exporter
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: correlation-exporter
+# correlation-exporter 가 envFrom 으로 본 ConfigMap 의 모든 키를 환경 변수로 주입한다. cmd/correlation-exporter
+# 가 env 보다 flag 가 우선하는 fallback 정책으로 파싱하므로 overlay 가 args 로 덮어쓸 수 있다.
+# PROMETHEUS_URL 의 기본값은 kube-prometheus-stack 의 in-cluster service 명을 가리킨다. helm release
+# 이름이 다른 환경에서는 overlay 의 ConfigMap patch 또는 별도 env 로 override 한다.
+data:
+  PROMETHEUS_URL: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
+  RECONCILE_INTERVAL: "5m"
+  WINDOW: "1h"
+  STEP: "30s"
+  MIN_SAMPLES: "60"
+  TOP_N: "10"
+  FETCH_TIMEOUT: "30s"
+  LISTEN_ADDR: ":9830"
