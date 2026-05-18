@@ -1,5 +1,7 @@
 package correlation
 
+import "sort"
+
 // LabeledSeries 는 fetcher 가 반환하는 단위로 (metric 이름, 라벨, 시계열) 트리플이다. pair
 // enumeration 이 metric 별 시계열을 노드와 Pod 기준으로 묶어 페어를 만들 때 본 자료를 입력으로
 // 받는다.
@@ -32,52 +34,64 @@ type Pair struct {
 //   - (X, Y) 와 (Y, X) 를 별도 페어로 둘 다 생성한다. 비대칭 분석 (X 자원이 Y latency 를 예측 vs
 //     Y 자원이 X latency 를 예측) 을 위해서다
 //
-// 결과는 결정적 순서 (입력 순서 기반) 로 반환되어 테스트가 안정적으로 비교 가능하다. 사전 할당
-// 슬라이스 cap 은 두지 않는다 (입력 시계열 수의 제곱에 해당하는 cap 은 대형 cluster 에서 OOM 위험).
+// 구현은 노드별 그룹화 후 각 그룹 내에서만 중첩 루프를 돌려 cross-product 비용을 O(N^2) 에서
+// Σ O(N_node^2) 로 감축한다. 노드 키는 정렬 순회해 출력 순서가 결정적이며 단위 테스트가 안정적
+// 으로 비교 가능하다.
+//
+// 사전 할당 슬라이스 cap 은 두지 않는다 (입력 시계열 수의 제곱에 해당하는 cap 은 대형 cluster 에서
+// OOM 위험).
 func EnumeratePairs(items []LabeledSeries) []Pair {
-	out := make([]Pair, 0)
-	for i, src := range items {
-		srcNode := src.Series.Labels["node"]
-		srcNS := src.Series.Labels["src_namespace"]
-		srcPod := src.Series.Labels["src_pod"]
-		if srcNode == "" || srcNS == "" || srcPod == "" {
+	// 1단계: node 키 기준으로 그룹화. 라벨 완비 가드도 같이 적용해 후보 시계열만 그룹에 모은다.
+	byNode := make(map[string][]LabeledSeries)
+	for _, item := range items {
+		node := item.Series.Labels["node"]
+		ns := item.Series.Labels["src_namespace"]
+		pod := item.Series.Labels["src_pod"]
+		if node == "" || ns == "" || pod == "" {
 			continue
 		}
-		srcUID := src.Series.Labels["src_pod_uid"]
-		for j, dst := range items {
-			if i == j {
-				// 같은 (metric, series) 자기 자신과는 비교하지 않는다.
-				continue
+		byNode[node] = append(byNode[node], item)
+	}
+
+	// 노드 키 정렬 (Go map 순회는 비결정적이라 출력 순서 안정성 확보).
+	nodeKeys := make([]string, 0, len(byNode))
+	for k := range byNode {
+		nodeKeys = append(nodeKeys, k)
+	}
+	sort.Strings(nodeKeys)
+
+	// 2단계: 노드별 N_node^2 페어 enumerate.
+	out := make([]Pair, 0)
+	for _, node := range nodeKeys {
+		group := byNode[node]
+		for i, src := range group {
+			srcNS := src.Series.Labels["src_namespace"]
+			srcPod := src.Series.Labels["src_pod"]
+			srcUID := src.Series.Labels["src_pod_uid"]
+			for j, dst := range group {
+				if i == j {
+					continue
+				}
+				dstNS := dst.Series.Labels["src_namespace"]
+				dstPod := dst.Series.Labels["src_pod"]
+				if srcNS == dstNS && srcPod == dstPod && src.Metric == dst.Metric {
+					continue
+				}
+				out = append(out, Pair{
+					Key: PairKey{
+						SrcNamespace: srcNS,
+						SrcPod:       srcPod,
+						SrcPodUID:    srcUID,
+						SrcMetric:    src.Metric,
+						DstNamespace: dstNS,
+						DstPod:       dstPod,
+						DstPodUID:    dst.Series.Labels["src_pod_uid"],
+						DstMetric:    dst.Metric,
+					},
+					Src: src.Series,
+					Dst: dst.Series,
+				})
 			}
-			dstNode := dst.Series.Labels["node"]
-			dstNS := dst.Series.Labels["src_namespace"]
-			dstPod := dst.Series.Labels["src_pod"]
-			if dstNode == "" || dstNS == "" || dstPod == "" {
-				continue
-			}
-			if dstNode != srcNode {
-				// cross-node 제외.
-				continue
-			}
-			if srcNS == dstNS && srcPod == dstPod && src.Metric == dst.Metric {
-				// 같은 Pod 의 동일 metric (즉 동일 시계열의 중복) 만 self 로 본다. 동일 Pod 의 다른
-				// metric 페어는 cause score 와 latency 의 self-correlation 처럼 운영 가치가 있어 유지.
-				continue
-			}
-			out = append(out, Pair{
-				Key: PairKey{
-					SrcNamespace: srcNS,
-					SrcPod:       srcPod,
-					SrcPodUID:    srcUID,
-					SrcMetric:    src.Metric,
-					DstNamespace: dstNS,
-					DstPod:       dstPod,
-					DstPodUID:    dst.Series.Labels["src_pod_uid"],
-					DstMetric:    dst.Metric,
-				},
-				Src: src.Series,
-				Dst: dst.Series,
-			})
 		}
 	}
 	return out
