@@ -115,7 +115,7 @@ func TestPrometheusFetcher_HTTPError(t *testing.T) {
 	}
 }
 
-// TestPrometheusFetcher_BadJSON 은 응답이 jSON 디코딩 실패할 때 에러를 반환하는지 검증한다.
+// TestPrometheusFetcher_BadJSON 은 응답이 JSON 디코딩 실패할 때 에러를 반환하는지 검증한다.
 func TestPrometheusFetcher_BadJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`not json at all`))
@@ -127,6 +127,29 @@ func TestPrometheusFetcher_BadJSON(t *testing.T) {
 		time.Unix(0, 0), time.Unix(60, 0), 30*time.Second)
 	if err == nil {
 		t.Errorf("err=nil want non-nil for malformed JSON")
+	}
+}
+
+// TestPrometheusFetcher_ResponseSizeLimit 는 응답 body 가 maxFetchResponseBytes 를 초과할 때
+// 명시적 에러로 격상되는지 검증한다. 한도 가드가 silently 회귀되지 않도록 guard.
+func TestPrometheusFetcher_ResponseSizeLimit(t *testing.T) {
+	// 한도보다 1바이트 큰 응답을 의도적으로 emit.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// JSON envelope start + 한도 + 1 만큼 padding + 닫는 } 까지 만들어 의도된 크기로 전송.
+		padding := strings.Repeat("a", maxFetchResponseBytes+1)
+		_, _ = w.Write([]byte(`{"padding":"` + padding + `"}`))
+	}))
+	defer srv.Close()
+
+	f := NewPrometheusFetcher(srv.URL, 5*time.Second)
+	_, err := f.Fetch(context.Background(), "up",
+		time.Unix(0, 0), time.Unix(60, 0), 30*time.Second)
+	if err == nil {
+		t.Errorf("err=nil want non-nil for oversized response (>maxFetchResponseBytes)")
+	}
+	if err != nil && !strings.Contains(err.Error(), "exceeded") {
+		t.Errorf("err=%v want to contain 'exceeded'", err)
 	}
 }
 

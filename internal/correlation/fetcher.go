@@ -27,16 +27,21 @@ const maxFetchResponseBytes = 100 << 20
 // /prometheus/client_golang/api 의존성을 도입하지 않아 본 패키지의 외부 의존성을 표준 라이브러리로
 // 한정한다.
 type PrometheusFetcher struct {
-	baseURL string
-	client  *http.Client
+	queryURL *url.URL
+	client   *http.Client
 }
 
 // NewPrometheusFetcher 는 base URL (예: http://localhost:9090) 과 timeout 으로 fetcher 를 만든다.
-// baseURL 의 trailing slash 는 정규화한다.
+// baseURL + /api/v1/query_range 를 startup 시점에 1회 파싱해 Fetch 마다 url.Parse 를 반복하지 않게
+// 한다. 잘못된 URL 이면 panic 으로 즉시 알린다 (생성자 시점이라 호출자가 알아채기 쉬움).
 func NewPrometheusFetcher(baseURL string, timeout time.Duration) *PrometheusFetcher {
+	u, err := url.Parse(strings.TrimRight(baseURL, "/") + "/api/v1/query_range")
+	if err != nil {
+		panic(fmt.Sprintf("invalid prometheus base URL %q: %v", baseURL, err))
+	}
 	return &PrometheusFetcher{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		client:  &http.Client{Timeout: timeout},
+		queryURL: u,
+		client:   &http.Client{Timeout: timeout},
 	}
 }
 
@@ -60,13 +65,14 @@ type matrixResultItem struct {
 }
 
 // Fetch 는 query_range API 를 호출해 결과를 []LabeledSeries 로 파싱한다. start / end / step 은
-// 호출자가 결정해 모든 fetch 호출이 동일 값을 받으면 timestamp 정렬이 자동 보장된다.
+// 호출자가 결정해 모든 fetch 호출이 동일 값을 받으면 Prometheus query_range 의 step-aligned
+// timestamp 보장에 따라 응답 시계열들이 자동 정렬된다. 데이터 부재 시 NaN 으로 fill 되어 같은
+// timestamp set 을 유지한다.
 func (f *PrometheusFetcher) Fetch(ctx context.Context, query string, start, end time.Time, step time.Duration) ([]LabeledSeries, error) {
-	u, err := url.Parse(f.baseURL + "/api/v1/query_range")
-	if err != nil {
-		return nil, fmt.Errorf("invalid base URL %q: %w", f.baseURL, err)
-	}
-	q := u.Query()
+	// queryURL 은 startup 시점에 1회 파싱되어 보관됨. URL 재사용을 위해 deep-copy 후 query string
+	// 만 갈아끼운다.
+	u := *f.queryURL
+	q := url.Values{}
 	q.Set("query", query)
 	q.Set("start", strconv.FormatFloat(float64(start.UnixNano())/1e9, 'f', 3, 64))
 	q.Set("end", strconv.FormatFloat(float64(end.UnixNano())/1e9, 'f', 3, 64))
@@ -83,12 +89,14 @@ func (f *PrometheusFetcher) Fetch(ctx context.Context, query string, start, end 
 	}
 	defer resp.Body.Close()
 
-	// io.LimitReader 로 응답 body 크기를 maxFetchResponseBytes 로 캡. 정상 응답은 수 MB 라 영향 없음.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchResponseBytes))
+	// io.LimitReader 로 응답 body 크기를 maxFetchResponseBytes+1 까지 읽어 정확히 "한도 초과" 여부를
+	// 판별. 정확히 maxFetchResponseBytes 인 응답은 허용하고 그보다 큰 경우에만 에러로 격상한다.
+	// 정상 응답은 수 MB 라 영향 없는 안전 마진.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
-	if int64(len(body)) >= maxFetchResponseBytes {
+	if int64(len(body)) > maxFetchResponseBytes {
 		return nil, fmt.Errorf("response body exceeded %d bytes (limit reached)", maxFetchResponseBytes)
 	}
 	if resp.StatusCode != http.StatusOK {
