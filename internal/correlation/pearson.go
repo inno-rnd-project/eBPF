@@ -4,22 +4,24 @@ import (
 	"math"
 )
 
-// Pearson은 두 시계열의 lag 0 피어슨 상관계수를 산출한다. 산출 결과는 -1 에서 1 사이의 값이며 양
-// 끝에서 강한 양 / 음 상관, 0 부근에서 무상관을 의미한다.
+// Pearson은 두 시계열의 lag 0 피어슨 상관계수를 산출한다. 결과는 (corr, effectiveSamples, status)
+// 트리플이며 corr 은 -1 ~ 1 사이 값, effectiveSamples 는 NaN / Inf pairwise 제거 후 실제 산출에
+// 사용된 유효 표본 수다. CorrelationResult.SampleCount 가 본 값을 그대로 보고하므로 해당 schema
+// 의미와 정합된다.
 //
 // 본 함수의 가드 규칙은 다음과 같다.
 //   - NaN / Inf 가 한쪽이라도 있는 timestamp 는 pairwise 로 제거한다 (Prometheus 가 가끔 NaN 을
 //     emit 하는 케이스 대응)
 //   - length mismatch 가 있으면 짧은 쪽 기준으로 truncate 해 동일 길이로 맞춘다 (Prometheus 가
 //     start/end 정렬돼도 query 응답이 부분적으로 비는 케이스 대응)
-//   - 유효 표본 수가 minSamples 미만이면 (0, StatusSkippedLowSamples) 반환
+//   - 유효 표본 수가 minSamples 미만이면 (0, effectiveSamples, StatusSkippedLowSamples) 반환
 //   - 두 시계열 중 하나라도 분산이 0 (모든 샘플이 같은 값) 이면 Pearson 정의상 분모가 0이라 NaN 이
-//     되는데 본 함수는 (0, StatusSkippedConstant) 로 명시적 fallback 한다
-//   - 정상 산출 시 (value, StatusOK) 반환
+//     되는데 본 함수는 (0, effectiveSamples, StatusSkippedConstant) 로 명시적 fallback 한다
+//   - 정상 산출 시 (value, effectiveSamples, StatusOK) 반환
 //
 // 입력은 sample 의 Value 만 사용한다 (timestamp 정렬은 호출자가 보장). nil / empty 입력은 length
 // 0 으로 취급되어 minSamples 가드에 걸린다.
-func Pearson(a, b TimeSeries, minSamples int) (float64, Status) {
+func Pearson(a, b TimeSeries, minSamples int) (float64, int, Status) {
 	// 짧은 쪽 길이를 기준으로 잡아 length mismatch 가 있어도 같은 길이로 맞춘다.
 	n := len(a.Samples)
 	if len(b.Samples) < n {
@@ -39,8 +41,9 @@ func Pearson(a, b TimeSeries, minSamples int) (float64, Status) {
 		ys = append(ys, y)
 	}
 
-	if len(xs) < minSamples {
-		return 0, StatusSkippedLowSamples
+	effective := len(xs)
+	if effective < minSamples {
+		return 0, effective, StatusSkippedLowSamples
 	}
 
 	// 평균.
@@ -49,7 +52,7 @@ func Pearson(a, b TimeSeries, minSamples int) (float64, Status) {
 		sumX += xs[i]
 		sumY += ys[i]
 	}
-	count := float64(len(xs))
+	count := float64(effective)
 	meanX := sumX / count
 	meanY := sumY / count
 
@@ -65,11 +68,11 @@ func Pearson(a, b TimeSeries, minSamples int) (float64, Status) {
 
 	// 분산 0 가드. 두 시계열 중 하나라도 상수면 Pearson 분모 = 0 이라 NaN. 명시적 0 fallback.
 	if denomX == 0 || denomY == 0 {
-		return 0, StatusSkippedConstant
+		return 0, effective, StatusSkippedConstant
 	}
 
 	corr := num / math.Sqrt(denomX*denomY)
-	return corr, StatusOK
+	return corr, effective, StatusOK
 }
 
 // PearsonWithLag 는 lag 시점 여러 개에 대해 Pearson 을 동시 산출하고 최대 절대값을 채택한다.
@@ -80,6 +83,9 @@ func Pearson(a, b TimeSeries, minSamples int) (float64, Status) {
 // shift 결과 길이가 minSamples 미만이 되는 lag 는 산출에서 제외한다. 일부 lag 만 산출 가능한 경우
 // status 는 StatusPartial 이며 산출 가능한 lag 중에서만 최대 절대값을 채택한다.
 //
+// 반환되는 SampleCount 는 MaxAbsLag 가 가리키는 lag 의 유효 표본 수 (NaN / Inf pairwise 제거 후)
+// 다. lag 별 표본 수가 다를 수 있어 운영자가 채택된 lag 의 신뢰도를 직접 판단 가능하게 한다.
+//
 // 모든 lag 가 산출 불가면 SampleCount=0, MaxAbsValue=0, status=StatusSkippedLowSamples 를 반환한다.
 // 모든 lag 가 분산 0 으로 막히면 status=StatusSkippedConstant 다.
 func PearsonWithLag(a, b TimeSeries, lagSteps []int, minSamples int) CorrelationResult {
@@ -89,12 +95,12 @@ func PearsonWithLag(a, b TimeSeries, lagSteps []int, minSamples int) Correlation
 
 	var maxAbs float64
 	var maxAbsLag int
+	var maxAbsSampleCount int
 	var anyOK, anyConstant, anyLowSamples bool
-	var sampleCount int
 
 	for _, lag := range lagSteps {
 		shiftedA, shiftedB := applyLag(a, b, lag)
-		corr, status := Pearson(shiftedA, shiftedB, minSamples)
+		corr, effective, status := Pearson(shiftedA, shiftedB, minSamples)
 
 		switch status {
 		case StatusOK:
@@ -103,13 +109,7 @@ func PearsonWithLag(a, b TimeSeries, lagSteps []int, minSamples int) Correlation
 			if absVal := math.Abs(corr); absVal > maxAbs {
 				maxAbs = absVal
 				maxAbsLag = lag
-			}
-			if cur := len(shiftedA.Samples); cur < len(shiftedB.Samples) {
-				if cur > sampleCount {
-					sampleCount = cur
-				}
-			} else if len(shiftedB.Samples) > sampleCount {
-				sampleCount = len(shiftedB.Samples)
+				maxAbsSampleCount = effective
 			}
 		case StatusSkippedConstant:
 			anyConstant = true
@@ -120,7 +120,7 @@ func PearsonWithLag(a, b TimeSeries, lagSteps []int, minSamples int) Correlation
 
 	result.MaxAbsLag = maxAbsLag
 	result.MaxAbsValue = maxAbs
-	result.SampleCount = sampleCount
+	result.SampleCount = maxAbsSampleCount
 
 	switch {
 	case anyOK && (anyConstant || anyLowSamples):
