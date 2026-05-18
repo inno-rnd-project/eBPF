@@ -1,6 +1,17 @@
 # observability-agent
 
-Kubernetes observability agent suite combining eBPF-based network latency tracing (`netobs`) and NVML-based GPU state collection (`gpuobs`). Both agents are built and deployed from a single repository with symmetric structure and each runs as an independent DaemonSet.
+Kubernetes observability agent suite combining eBPF-based network latency tracing (`netobs`), NVML-based GPU state collection (`gpuobs`), and a Pearson correlation Top-N noisy neighbor exporter (`correlation-exporter`). The two agents are deployed as DaemonSets on observed nodes; correlation-exporter is a cluster-wide singleton Deployment that consumes the agents' Prometheus metrics and emits Top-N noisy neighbor series.
+
+## Components
+
+| Component | Kind | Listen | Source | Role |
+|---|---|---|---|---|
+| `netobs-agent` | DaemonSet | `:9810` | [`cmd/netobs-agent`](cmd/netobs-agent) | eBPF kprobe로 TCP 송신 stage latency, drop reason, retransmission을 측정해 `netobs_*` 메트릭 emit |
+| `gpuobs-agent` | DaemonSet | `:9820` | [`cmd/gpuobs-agent`](cmd/gpuobs-agent) | NVML / CUDA uprobe로 GPU 디바이스 상태, GPU별 메모리 점유, CUDA kernel launch / memcpy를 측정해 `gpuobs_*` 메트릭 emit |
+| `correlation-exporter` | Deployment | `:9830` | [`cmd/correlation-exporter`](cmd/correlation-exporter), [`internal/correlation`](internal/correlation) | 주기적으로 `netobs_*` / `gpuobs_*` 시계열을 fetch해 Pearson 상관계수 산출 후 Top-N noisy neighbor를 `correlation_noisy_neighbor_*` 메트릭으로 emit |
+| `correlation-debug` | CLI (one-shot) | n/a | [`cmd/correlation-debug`](cmd/correlation-debug) | exporter와 동일 라이브러리를 reuse하는 운영자용 1회성 진단 CLI. alert label로 받은 페어를 같은 시점에 재현 |
+
+각 컴포넌트의 상세 동작과 추가 환경변수는 본 문서의 해당 절과 [`internal/correlation/README.md`](internal/correlation/README.md) 를 참고한다.
 
 ## Prerequisites
 
@@ -20,9 +31,11 @@ For gpuobs (GPU observer):
 
 ```bash
 make deps
-make build-netobs-agent     # netobs-agent binary (runs BPF regeneration first)
-make build-gpuobs-agent     # gpuobs-agent binary
-make build-all              # both agents
+make build-netobs-agent          # netobs-agent binary (runs BPF regeneration first)
+make build-gpuobs-agent          # gpuobs-agent binary
+make build-correlation-debug     # one-shot diagnosis CLI (no image)
+make build-correlation-exporter  # cluster Deployment binary
+make build-all                   # every deployable binary (agents + correlation-exporter)
 ```
 
 ## Local run
@@ -33,6 +46,13 @@ sudo ./bin/netobs-agent -listen :9810 -print-events=true
 
 # gpuobs does not need root
 ./bin/gpuobs-agent -listen :9820
+
+# correlation-debug — Prometheus port-forward 후 직전 1시간 윈도우 산출
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090 &
+./bin/correlation-debug -prometheus-url http://localhost:9090 -window 1h
+
+# correlation-exporter — cluster 외부 디버그 실행 (운영 배포는 deploy-correlation-{dev,prod} 사용)
+./bin/correlation-exporter -prometheus-url http://localhost:9090 -listen :9830
 ```
 
 ## Tests
@@ -95,6 +115,23 @@ gpuobs-agent runs unprivileged (`privileged: false`, `allowPrivilegeEscalation: 
 
 Hosts on kernels older than 6.6 cannot run the cuda uprobe module under this capability set. The simplest mitigation is to disable the module via `GPUOBS_CUDA_UPROBE_ENABLED=false`; device-level NVML metrics and PID-to-Pod resolution continue to work.
 
+### correlation-exporter
+
+correlation-exporter는 두 agent의 Prometheus 메트릭을 입력으로 받아 동작한다. cluster API 권한이 필요 없으며 Prometheus HTTP API만 호출한다. 모든 값은 환경 변수와 CLI flag 양쪽으로 설정 가능하며 flag가 환경 변수보다 우선한다. cluster 배포 시에는 `deploy/correlation/base/configmap.yaml`이 환경 변수 값을 주입한다.
+
+| Environment Variable | CLI Flag | Default | Description |
+|---|---|---|---|
+| `PROMETHEUS_URL` | `-prometheus-url` | `http://localhost:9090` | Prometheus base URL. cluster 배포 시 base ConfigMap이 `http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090`으로 override |
+| `LISTEN_ADDR` | `-listen` | `:9830` | `/metrics`, `/healthz`, `/readyz`를 노출하는 HTTP listen address |
+| `RECONCILE_INTERVAL` | `-reconcile-interval` | `5m` | reconcile cycle 간격. dev overlay는 `1m`으로 단축 |
+| `WINDOW` | `-window` | `1h` | query_range 윈도우. dev overlay는 `30m`으로 단축 |
+| `STEP` | `-step` | `30s` | query_range step. Prometheus scrape interval과 일치시킬 것을 권장 |
+| `MIN_SAMPLES` | `-min-samples` | `60` | Pearson 산출 최소 유효 표본 수. NaN / Inf pairwise 제거 후의 개수 |
+| `LAG_STEPS` | `-lag-steps` | `-1,0,1` | 산출할 lag step 콤마 리스트. 양수는 suspect가 victim을 앞서는 방향 |
+| `TOP_N` | `-top-n` | `10` | victim × dimension 그룹당 채택할 noisy neighbor 수. 상한 100 |
+| `FETCH_TIMEOUT` | `-fetch-timeout` | `30s` | 단일 query_range 호출의 HTTP timeout |
+| n/a | `-extra-metric` | *(empty)* | DefaultMetrics 외에 추가 fetch할 query. flag 다중 지정 가능 |
+
 ## Versioning
 
 The `VERSION` file at the repository root is the single source of truth for every agent image tag. `make bump` increments VERSION with **decimal carry** (`0.1.9` → `0.2.0`, `0.9.9` → `1.0.0`) and rewrites every `deploy/*/overlays/*/kustomization.yaml` image tag it discovers via `find`, so newly added agent overlays are picked up automatically without editing the bump rule.
@@ -107,14 +144,16 @@ make bump    # bump VERSION + update every overlay image tag in one step
 
 ### Overlay matrix
 
-Each agent × each rollout stage gives four overlays. Commands follow the `make <action>-<agent>-<stage>` pattern.
+각 컴포넌트 × 각 rollout stage 의 overlay 들이다. 명령은 `make <action>-<overlay>` 패턴을 따른다.
 
-| Overlay | Agent | Stage | Node selector | Image policy |
+| Overlay | Component | Stage | Node selector | Image policy |
 |---|---|---|---|---|
 | `netobs-dev` | netobs | canary | `accelerator=nvidia`, `observability.netobs/canary=true` | `Never` (local image) |
 | `netobs-prod` | netobs | fleet | `observability.netobs/enabled=true` (control-plane excluded) | `IfNotPresent` |
 | `gpuobs-dev` | gpuobs | canary | `accelerator=nvidia`, `observability.netobs/canary=true` | `Never` (local image) |
 | `gpuobs-prod` | gpuobs | fleet | `accelerator=nvidia`, `observability.netobs/enabled=true` | `IfNotPresent` |
+| `correlation-dev` | correlation-exporter | cluster singleton | n/a (Deployment, 임의 노드) | `Never` (local image), `RECONCILE_INTERVAL=1m`, `WINDOW=30m` |
+| `correlation-prod` | correlation-exporter | cluster singleton | n/a (Deployment, 임의 노드) | `IfNotPresent`, 메모리 limit 1Gi 상향 |
 
 ### Node labels
 
@@ -144,6 +183,15 @@ make deploy-<agent>-dev           # apply to canary node
 make delete-<agent>-dev           # teardown
 ```
 
+correlation-exporter는 `-agent` 접미사 컨벤션 밖에 있어 explicit 타깃을 사용한다.
+```bash
+make build-correlation-exporter        # local binary
+make image-build-correlation-exporter  # local image at correlation-exporter:<VERSION>
+make render-correlation-dev            # kustomize dry-run
+make deploy-correlation-dev            # apply Deployment + ServiceMonitor + PrometheusRule + ConfigMap
+make delete-correlation-dev            # teardown
+```
+
 ### Prod fleet workflow
 
 ```bash
@@ -152,6 +200,12 @@ make image-push-<agent>-agent     # push to ghcr.io/inno-rnd-project/<agent>-age
 make render-<agent>-prod          # kustomize dry-run
 make deploy-<agent>-prod          # apply to fleet
 make delete-<agent>-prod          # teardown
+```
+
+correlation-exporter prod:
+```bash
+make image-push-correlation-exporter
+make deploy-correlation-prod
 ```
 
 ### Umbrella targets
@@ -165,14 +219,14 @@ make image-push-all      # push every agent image
 
 ## HTTP Endpoints
 
-Both agents expose the same endpoints (netobs: `:9810`, gpuobs: `:9820`).
+세 컴포넌트가 같은 endpoint 표면을 노출한다 (netobs: `:9810`, gpuobs: `:9820`, correlation-exporter: `:9830`).
 
 | Path | Description |
 |---|---|
 | `/metrics` | Prometheus metrics |
-| `/healthz` | Liveness probe |
-| `/readyz` | Readiness probe |
-| `/` | JSON service info (includes agent name) |
+| `/healthz` | Liveness probe (항상 200) |
+| `/readyz` | Readiness probe. correlation-exporter는 첫 reconcile 성공 전까지 503 |
+| `/` | JSON service info (netobs / gpuobs only) |
 
 ## Prometheus Metrics
 
@@ -276,13 +330,32 @@ On NVML initialization failure (non-GPU node, driver missing) or when `GPU_METRI
 
 > **GPU device hot-plug**: Both the device-level collector and the CUDA uprobe reader rebuild their device handle set every NVML poll via `nvml.DeviceSet.Sync`, which keys on GPU UUID rather than NVML index. Newly added GPUs are picked up on the next sync and removed GPUs have their handles closed automatically; index reordering after a hot-remove is absorbed without re-attaching probes for surviving devices. GPU device reset / driver reload that re-introduces the same UUID is out of scope and is tracked separately.
 
+### correlation-exporter
+
+correlation-exporter는 두 agent의 cause score recording rule과 latency 메트릭을 입력으로 받아 Pearson 상관계수를 산출한 후 Top-N noisy neighbor 페어를 emit한다. 산출 알고리즘 6단계, lag 의미, dimension 분류 우선순위, 가드 / fallback 5종은 [`internal/correlation/README.md`](internal/correlation/README.md) 의 산출 알고리즘 절에 정리되어 있다.
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `correlation_noisy_neighbor_score` | Gauge | `victim_namespace`, `victim_pod`, `victim_pod_uid`, `suspect_namespace`, `suspect_pod`, `suspect_pod_uid`, `resource_dimension`, `rank` | Pearson 상관계수 최대 절대값 (0-1). suspect 자원 압박과 victim latency 동조 강도. `resource_dimension` ∈ {`cpu`, `memory`, `network`, `gpu`}, `rank`는 1부터 `TOP_N` (기본 10) 까지 |
+| `correlation_noisy_neighbor_lag_seconds` | Gauge | (동일) | score가 최대 절대값을 보인 lag의 초 단위 환산. 양수면 suspect 변동이 victim latency를 N초 선행하는 인과 방향 |
+| `correlation_reconcile_duration_seconds` | Gauge | n/a | 마지막 reconcile cycle의 walltime |
+| `correlation_reconcile_pairs_total` | Counter | n/a | `Correlate` 산출 페어의 누적 합계 |
+| `correlation_reconcile_neighbors_total` | Counter | n/a | `SelectTopN` 채택 후 emit된 noisy neighbor 엔트리의 누적 합계 |
+| `correlation_reconcile_skipped_total` | Counter | `reason` | skip된 페어의 누적 합계. `reason` ∈ {`low_samples`, `constant`} |
+| `correlation_reconcile_last_success_timestamp_seconds` | Gauge | n/a | 마지막 성공 reconcile의 epoch 초. `CorrelationExporterStalled` alert의 입력 |
+| `correlation_reconcile_errors_total` | Counter | n/a | reconcile cycle이 wrapped error로 종료된 횟수의 누적 합계 |
+
+> **카디널리티**: victim 1000 pod × dimension 4 × rank 10 = 40,000 series가 noisy_neighbor 메트릭의 상한이다. self-health 7종을 더해도 40,007 series. `TOP_N`의 binary-side 상한 100으로 운영자의 입력 실수에 의한 series 폭주를 차단한다.
+
+> **PrometheusRule alerts**: `deploy/correlation/base/prometheus-rule.yaml`이 세 alert를 정의한다. `CorrelationStrongNoisyNeighbor` (max_abs_value > 0.85가 10분 지속), `CorrelationExporterStalled` (last success가 10분 이상 정체), `CorrelationExporterReconcileErrors` (10분 윈도우 에러 3회 이상). 각 alert의 `runbook_url` annotation이 `internal/correlation/README.md`의 헤딩 anchor와 일치해 운영자가 즉시 대응 절차로 이동 가능하다.
+
 ## Performance & overhead measurement
 
 The CUDA uprobe dispatch hot path includes a PID-to-PodIdentity cache (introduced in v0.3.5) that absorbs the per-event `/proc/<pid>/cgroup` parse cost; without the cache, a single PyTorch ResNet50 inference loop drove the agent container to ~740 mCPU on a 27 K Hz kernel launch rate, which dropped to ~184 mCPU after the cache landed (75% reduction). The measurement methodology, PromQL queries, decision gate, and full results across baseline / uprobe-enabled / cache-enabled snapshots are in [`docs/perf/cuda-uprobe-overhead.md`](docs/perf/cuda-uprobe-overhead.md). Reproducible workload manifests (PyTorch ResNet50, Conv2d-only, cuda-sample vectorAdd) live under [`test/perf/`](test/perf/) for any follow-up overhead measurement on a different cluster or workload mix.
 
 ## Observability — netobs/gpuobs Correlation
 
-netobs와 gpuobs는 동일한 4개 라벨 키 (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) 를 노출해 PromQL `* on(node, src_namespace, src_pod, src_pod_uid) group_left(...)` 패턴으로 join 가능하다. 이 절은 양쪽 메트릭 라벨 일치성 표, recording rule 카탈로그, dashboard 작성 시 즉시 활용 가능한 PromQL 예제 9종을 정의한다.
+netobs와 gpuobs는 동일한 4개 라벨 키 (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) 를 노출해 PromQL `* on(node, src_namespace, src_pod, src_pod_uid) group_left(...)` 패턴으로 join 가능하다. 이 절은 양쪽 메트릭 라벨 일치성 표, recording rule 카탈로그, dashboard 작성 시 즉시 활용 가능한 PromQL 예제 9종을 정의한다. 본 절의 recording rule들은 동시에 correlation-exporter의 `DefaultMetrics` 입력으로 reuse된다.
 
 ### Pod-level 라벨 일치성 (4-key join)
 
