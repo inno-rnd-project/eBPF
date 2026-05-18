@@ -104,13 +104,18 @@ func PearsonWithLag(a, b TimeSeries, lagSteps []int, minSamples int) Correlation
 
 		switch status {
 		case StatusOK:
-			anyOK = true
 			result.CorrelationByLag[lag] = corr
-			if absVal := math.Abs(corr); absVal > maxAbs {
+			absVal := math.Abs(corr)
+			// 첫 OK lag 는 anyOK==false 인 시점이라 무조건 채택한다. 이후 lag 는 절대값이 더 큰 경우
+			// 갱신. 모든 lag 의 corr 이 정확히 0 인 케이스에서도 첫 OK lag 의 sample count 와 lag 가
+			// MaxAbsSampleCount / MaxAbsLag 에 기록되어 SampleCount=0 / MaxAbsLag=0 (lagSteps 에 0 이
+			// 없을 때) 같은 schema 거짓말을 차단한다.
+			if !anyOK || absVal > maxAbs {
 				maxAbs = absVal
 				maxAbsLag = lag
 				maxAbsSampleCount = effective
 			}
+			anyOK = true
 		case StatusSkippedConstant:
 			anyConstant = true
 		case StatusSkippedLowSamples:

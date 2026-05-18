@@ -208,6 +208,27 @@ func TestPearsonWithLagPartialStatus(t *testing.T) {
 	}
 }
 
+// TestPearsonWithLagAllZeroCorrelationStillSelectsFirstOK 는 모든 lag 의 산출 corr 가 정확히 0 인
+// 케이스에서도 첫 OK lag 가 채택되어 SampleCount 가 0 이 아닌 실제 effectiveSamples 로 보고되는지
+// 검증한다. 기존 구현은 absVal > maxAbs (초기값 0) 가 0 > 0 = false 라 모든 lag 가 skip 되어
+// SampleCount=0 / MaxAbsLag=0 schema 거짓말이 발생했다.
+func TestPearsonWithLagAllZeroCorrelationStillSelectsFirstOK(t *testing.T) {
+	// 두 시계열이 모두 완벽 직교 (corr=0) 이도록 조작. 예: a 는 (1,-1,1,-1,...) b 는 (1,1,-1,-1,...)
+	a := TimeSeries{Samples: samples(1, -1, 1, -1, 1, -1, 1, -1)}
+	b := TimeSeries{Samples: samples(1, 1, -1, -1, 1, 1, -1, -1)}
+	got := PearsonWithLag(a, b, []int{-1, 0, 1}, 3)
+	if got.Status != StatusOK {
+		t.Fatalf("status=%q want %q", got.Status, StatusOK)
+	}
+	if got.SampleCount == 0 {
+		t.Errorf("SampleCount=0 want non-zero (first OK lag must be selected even when all corr=0)")
+	}
+	// MaxAbsLag 은 첫 OK lag (=-1, lagSteps 순서) 이어야 한다.
+	if got.MaxAbsLag != -1 {
+		t.Errorf("MaxAbsLag=%d want -1 (first OK lag in iteration order)", got.MaxAbsLag)
+	}
+}
+
 // TestPearsonWithLagSampleCountReflectsChosenLag 는 SampleCount 가 MaxAbsLag 가 가리키는 lag 의
 // 유효 표본 수임을 검증한다. lag 별로 표본 수가 다를 때 (lag = ±1 은 lag=0 보다 1 sample 적음)
 // 채택된 lag 의 sample count 가 reporting 된다.
