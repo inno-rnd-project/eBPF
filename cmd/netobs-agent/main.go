@@ -39,6 +39,9 @@ func main() {
 	// dst_pod_uid 가 빈 문자열로 emit 되어 cardinality 가 도입 전 수준으로 유지된다.
 	metrics.SetDstClassifier(metadata.NewDstLabelClassifier(cfg.PodFlowDstEnabled, cfg.PodFlowDstUIDAllowNamespaces))
 	log.Printf("pod flow dst labels: enabled=%t dst_pod_uid_allow_namespaces=%v", cfg.PodFlowDstEnabled, cfg.PodFlowDstUIDAllowNamespaces)
+	// 노드 NIC capacity tunable을 정적 gauge로 노출해 correlation recording rule이 분모로 사용한다.
+	metrics.SetNICCapacityBytesPerSec(cfg.NodeName, cfg.NICCapacityBytesPerSec)
+	log.Printf("nic capacity: %.0f bytes/sec (node=%s)", cfg.NICCapacityBytesPerSec, cfg.NodeName)
 
 	var ebpfReady atomic.Bool
 	kr := kube.NewResolver(cfg.NodeName, cfg.MetadataRefresh)

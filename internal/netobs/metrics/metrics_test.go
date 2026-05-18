@@ -43,6 +43,7 @@ func resetMetrics() {
 	legacyLatencySeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "netobs_stage_latency_seconds", Buckets: prometheus.ExponentialBuckets(1e-6, 2, 20)}, []string{"stage"})
 	legacyDropTotal = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "netobs_drop_total"}, []string{"reason"})
 	dstClassifierEmits = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "netobs_dst_classifier_emits_total"}, []string{"outcome"})
+	nicCapacityBytesPerSec = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "netobs_node_nic_capacity_bytes_per_sec"}, []string{"node"})
 	dstClassifier.Store(nil)
 	podMetricsEnabled.Store(true)
 }
@@ -177,6 +178,43 @@ func TestRecordPodLevelDstUIDAllowListGate(t *testing.T) {
 			t.Errorf("dst_pod_uid=%q want empty (namespace not in allow-list)", v)
 		}
 	})
+}
+
+// TestSetNICCapacityBytesPerSec는 NIC capacity gauge 가 node 라벨과 함께 1회 Set 된 값을 그대로
+// 노출하는지 검증한다. correlation pod:network_throughput_score:5m recording rule이 본 메트릭을
+// 분모로 사용하므로 정적 값 노출이 핵심 invariant 다.
+func TestSetNICCapacityBytesPerSec(t *testing.T) {
+	resetMetrics()
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(nicCapacityBytesPerSec)
+
+	SetNICCapacityBytesPerSec("node-a", 2.5e9)
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	var got float64
+	var gotNode string
+	for _, mf := range mfs {
+		if mf.GetName() != "netobs_node_nic_capacity_bytes_per_sec" {
+			continue
+		}
+		if len(mf.Metric) != 1 {
+			t.Fatalf("series count=%d want 1", len(mf.Metric))
+		}
+		got = mf.Metric[0].GetGauge().GetValue()
+		for _, lp := range mf.Metric[0].Label {
+			if lp.GetName() == "node" {
+				gotNode = lp.GetValue()
+			}
+		}
+	}
+	if got != 2.5e9 {
+		t.Errorf("nic capacity=%v want 2.5e9", got)
+	}
+	if gotNode != "node-a" {
+		t.Errorf("node label=%q want node-a", gotNode)
+	}
 }
 
 // TestRecordSelfObserveCounter는 Record 가 classifier outcome 을 그대로

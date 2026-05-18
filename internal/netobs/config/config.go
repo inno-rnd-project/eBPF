@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -49,6 +50,12 @@ type Config struct {
 	// 기본이며, 그 경우 모든 시리즈에서 dst_pod_uid가 빈 문자열로 emit된다. 등록된 namespace의 dst Pod
 	// 식별 흐름에 한해 UID가 채워져 카디널리티 폭발을 막는다.
 	PodFlowDstUIDAllowNamespaces []string
+
+	// NICCapacityBytesPerSec는 노드의 NIC 이론 capacity (bytes/sec) 다. correlation 진단의 network
+	// throughput score 정규화 분모로 사용되는 netobs_node_nic_capacity_bytes_per_sec 메트릭의 값을
+	// 결정한다. default 1.25e9 (10 GbE) 가 일반 서버 NIC와 정합하고, 운영자는 노드별 실제 NIC 사양에
+	// 맞춰 env / flag 로 override 한다.
+	NICCapacityBytesPerSec float64
 }
 
 func getenv(key, def string) string {
@@ -78,6 +85,22 @@ func getenvDuration(key string, def time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid duration for %s: %q", key, v)
 	}
 	return d, nil
+}
+
+// getenvFloat는 환경 변수 값을 float64로 파싱한다. 빈 값이면 default를 반환하고 파싱 실패 시 default
+// 와 함께 명시적 에러를 반환한다. caller가 err를 확인하지 않고 첫 반환값만 사용하더라도 의도된 default
+// 로 폴백되어 동작이 망가지지 않으며 gpuobs의 getenvFloat / getenvDuration 패턴과도 일관된다.
+// correlation tunable (NIC capacity 등) 의 env 진입점이다.
+func getenvFloat(key string, def float64) (float64, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def, nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def, fmt.Errorf("invalid float for %s: %q", key, v)
+	}
+	return f, nil
 }
 
 // parseNamespaceList는 콤마 구분 namespace 문자열을 정규화된 슬라이스로 변환한다. 공백 trim과 빈
@@ -123,6 +146,11 @@ func Parse() (Config, error) {
 		return Config{}, err
 	}
 
+	nicCapacity, err := getenvFloat("NIC_CAPACITY_BYTES_PER_SEC", 1.25e9)
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		TargetIP:                     getenv("TARGET_IP", ""),
 		ListenAddr:                   getenv("LISTEN_ADDR", ":9810"),
@@ -133,6 +161,7 @@ func Parse() (Config, error) {
 		DropReasonFormatPath:         getenv("DROP_REASON_FORMAT_PATH", "/sys/kernel/tracing/events/skb/kfree_skb/format"),
 		PodFlowDstEnabled:            getenvBool("POD_FLOW_DST_ENABLED", true),
 		PodFlowDstUIDAllowNamespaces: parseNamespaceList(getenv("POD_FLOW_DST_UID_ALLOW_NAMESPACES", "")),
+		NICCapacityBytesPerSec:       nicCapacity,
 	}
 
 	fs := flag.NewFlagSet("netobs-agent", flag.ContinueOnError)
@@ -149,6 +178,7 @@ func Parse() (Config, error) {
 		dstUIDNs = strings.Join(cfg.PodFlowDstUIDAllowNamespaces, ",")
 	}
 	fs.StringVar(&dstUIDNs, "pod-flow-dst-uid-allow-namespaces", dstUIDNs, "comma-separated namespace allow-list whose Pods receive dst_pod_uid labels; empty disables UID emit cluster-wide")
+	fs.Float64Var(&cfg.NICCapacityBytesPerSec, "nic-capacity-bytes", cfg.NICCapacityBytesPerSec, "node NIC theoretical capacity in bytes/sec; exposed as netobs_node_nic_capacity_bytes_per_sec for correlation network throughput score (default 1.25e9 = 10 GbE)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// -h/-help 요청은 flag 패키지가 usage를 출력한 뒤 ErrHelp를 반환한다.
 		// 사용자 의도된 정상 경로이므로 exit 0으로 종료한다.
@@ -164,6 +194,10 @@ func Parse() (Config, error) {
 
 	if cfg.MetadataRefresh <= 0 {
 		return Config{}, fmt.Errorf("invalid -metadata-refresh: must be > 0")
+	}
+
+	if cfg.NICCapacityBytesPerSec <= 0 {
+		return Config{}, fmt.Errorf("invalid -nic-capacity-bytes: must be > 0")
 	}
 
 	// CLI flag로 들어온 dst UID allow-list 문자열을 env와 동일한 정규화 (trim/dedup/empty-drop) 로

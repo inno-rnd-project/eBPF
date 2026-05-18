@@ -146,6 +146,18 @@ var (
 		},
 		[]string{"outcome"},
 	)
+
+	// nicCapacityBytesPerSec 는 노드 NIC 이론 capacity (bytes/sec) 를 노출하는 static gauge다.
+	// correlation 진단의 pod:network_throughput_score:5m recording rule이 본 메트릭을 분모로 써서
+	// pod 단위 traffic을 0-1 score로 정규화한다. 운영자가 노드별 실제 NIC 사양과 다르면 NIC_CAPACITY_
+	// BYTES_PER_SEC env / -nic-capacity-bytes CLI flag 로 override 한다. startup 1회 Set으로 결정.
+	nicCapacityBytesPerSec = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "netobs_node_nic_capacity_bytes_per_sec",
+			Help: "Node NIC theoretical capacity in bytes/sec, sourced from NIC_CAPACITY_BYTES_PER_SEC env (default 1.25e9 = 10 GbE). Consumed by correlation recording rules (pod:network_throughput_score:5m) as the saturation denominator. Override per node via env to match actual hardware.",
+		},
+		[]string{"node"},
+	)
 )
 
 // outcome 라벨 값. classifier 가 반환하는 7 가지 bucket 을 string constant 로 두어 metrics / metadata
@@ -172,7 +184,14 @@ func Register(reg prometheus.Registerer) {
 		podStageEventsLabeled,
 		podStageLatencyLabeled,
 		dstClassifierEmits,
+		nicCapacityBytesPerSec,
 	)
+}
+
+// SetNICCapacityBytesPerSec는 노드 NIC 이론 capacity gauge를 startup 시점에 1회 설정한다. 본 메트릭은
+// scrape 시점마다 정적 값을 반환하므로 호출 횟수와 무관하게 cardinality 가 node 단위로 통제된다.
+func SetNICCapacityBytesPerSec(node string, capacity float64) {
+	nicCapacityBytesPerSec.WithLabelValues(node).Set(capacity)
 }
 
 func label(v string) string {

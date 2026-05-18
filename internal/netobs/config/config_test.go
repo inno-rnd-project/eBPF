@@ -5,6 +5,36 @@ import (
 	"testing"
 )
 
+// TestGetenvFloat은 env 값의 float 파싱이 빈 값에서 default, 유효 값에서 그 값, 잘못된 입력에서
+// 에러를 반환하는지 검증한다. NIC capacity tunable 의 env 진입점이 startup 시 fail-fast 함을 가드.
+func TestGetenvFloat(t *testing.T) {
+	const key = "TEST_GETENV_FLOAT_KEY"
+	t.Run("empty_returns_default", func(t *testing.T) {
+		t.Setenv(key, "")
+		v, err := getenvFloat(key, 1.25e9)
+		if err != nil || v != 1.25e9 {
+			t.Errorf("empty env: got (%v, %v) want (1.25e9, nil)", v, err)
+		}
+	})
+	t.Run("valid_returns_parsed", func(t *testing.T) {
+		t.Setenv(key, "2.5e9")
+		v, err := getenvFloat(key, 1.25e9)
+		if err != nil || v != 2.5e9 {
+			t.Errorf("valid env: got (%v, %v) want (2.5e9, nil)", v, err)
+		}
+	})
+	t.Run("invalid_returns_default_with_error", func(t *testing.T) {
+		t.Setenv(key, "not-a-number")
+		v, err := getenvFloat(key, 1.25e9)
+		if err == nil {
+			t.Errorf("invalid env: err=nil want non-nil")
+		}
+		if v != 1.25e9 {
+			t.Errorf("invalid env: got value %v want default 1.25e9 (caller must be able to fallback safely without re-reading)", v)
+		}
+	})
+}
+
 // TestValidateNamespaceName은 RFC1123 DNS 라벨 규칙 위반이 명시적 에러로 잡히는지 검증한다.
 // 운영자가 흔히 저지르는 오타 (대문자, 언더스코어, 공백) 와 길이 초과를 startup 시점에 fail-fast
 // 로 차단해 silent miss 디버깅 시간을 줄인다.

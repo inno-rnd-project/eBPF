@@ -1124,3 +1124,24 @@ func TestSetCudaPidMultiGPUCount_OverwritesByNode(t *testing.T) {
 		t.Errorf("series count=%d want 1 (single node)", got)
 	}
 }
+
+// TestSetCudaLaunchBaselinePerSec는 CUDA launch baseline gauge 가 node 라벨과 함께 1회 Set 된 값을
+// 그대로 노출하는지 검증한다. correlation pod:host_compute_stall_score:5m recording rule이 본 메트릭
+// 을 분모로 사용하므로 정적 값 노출이 핵심 invariant 다.
+func TestSetCudaLaunchBaselinePerSec(t *testing.T) {
+	cudaLaunchBaselinePerSec.Reset()
+
+	SetCudaLaunchBaselinePerSec("node-a", 25.0)
+	if got := testutil.ToFloat64(cudaLaunchBaselinePerSec.WithLabelValues("node-a")); got != 25.0 {
+		t.Errorf("node-a baseline=%v want 25.0", got)
+	}
+
+	// 동일 node 재설정은 같은 라벨 시리즈를 덮어쓰며 새 시리즈를 만들지 않는다.
+	SetCudaLaunchBaselinePerSec("node-a", 100.0)
+	if got := testutil.ToFloat64(cudaLaunchBaselinePerSec.WithLabelValues("node-a")); got != 100.0 {
+		t.Errorf("node-a after reset=%v want 100.0", got)
+	}
+	if got := testutil.CollectAndCount(cudaLaunchBaselinePerSec); got != 1 {
+		t.Errorf("series count=%d want 1 (single node)", got)
+	}
+}
