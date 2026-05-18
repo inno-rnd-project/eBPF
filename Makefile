@@ -66,7 +66,8 @@ BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 .PHONY: deps generate generate-gpuobs clean tree bump \
 	build-all image-build-all image-push-all \
 	test test-integration setup-envtest \
-	check-prometheus-rules
+	check-prometheus-rules \
+	build-correlation-debug
 
 # ============================================================================
 # Tests
@@ -179,6 +180,18 @@ image-build-%-agent: $$(PREREQS_$$*-agent)
 image-push-%-agent: image-build-%-agent
 	docker tag $*-agent:$(VERSION) $(REGISTRY_BASE)/$*-agent:$(VERSION)
 	docker push $(REGISTRY_BASE)/$*-agent:$(VERSION)
+
+# ============================================================================
+# correlation-debug CLI
+# ----------------------------------------------------------------------------
+# build-correlation-debug - internal/correlation 라이브러리의 일회성 검증 CLI 를 빌드한다.
+#                           DaemonSet / Deployment 형태로 cluster 에 배포되지 않으며 운영자가 로컬
+#                           에서 build / 실행 (kubectl port-forward 로 Prometheus 접근) 한다.
+#                           주기적 자동화 exporter 는 #51 이 다룬다.
+# ============================================================================
+build-correlation-debug:
+	go fmt ./cmd/correlation-debug ./internal/correlation
+	go build -o ./bin/correlation-debug ./cmd/correlation-debug
 
 # 우산 타깃. AGENTS 리스트를 순회해 모든 에이전트에 동일 작업을 일괄 수행한다.
 build-all:       $(addprefix build-,$(AGENTS))

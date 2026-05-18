@@ -4,10 +4,10 @@
 // 호출하는 형태가 본 이슈 #50의 expose 범위다. 주기적 자동화 (exporter / CronJob) 는 #51에서 다룬다.
 //
 // 본 패키지의 책임은 다음 네 가지다.
-//   1. Prometheus /api/v1/query_range로 다중 메트릭의 시계열을 가져오기 (fetcher)
-//   2. 노드 내 Pod 페어를 enumerate해 cross-product 폭발을 통제 (pair)
-//   3. 각 페어의 Pearson 상관계수를 lag 0 / +1 / -1 세 시점에서 산출 후 최대 절대값 채택 (pearson)
-//   4. 결과를 CorrelationResult slice로 반환 (orchestrator)
+//  1. Prometheus /api/v1/query_range로 다중 메트릭의 시계열을 가져오기 (fetcher)
+//  2. 노드 내 Pod 페어를 enumerate해 cross-product 폭발을 통제 (pair)
+//  3. 각 페어의 Pearson 상관계수를 lag 0 / +1 / -1 세 시점에서 산출 후 최대 절대값 채택 (pearson)
+//  4. 결과를 CorrelationResult slice로 반환 (orchestrator)
 //
 // 모든 산출은 호출 단위 stateless다. 시계열 buffer는 함수 scope 내 임시 자료로만 존재하고 GC된다.
 // 영구 저장소를 두지 않으며 cluster에 새 워크로드를 추가하지 않는다.

@@ -167,7 +167,7 @@ func applyLag(a, b TimeSeries, lag int) (TimeSeries, TimeSeries) {
 	}
 	return TimeSeries{
 			Labels:  a.Labels,
-			Samples: a.Samples[-lag : n],
+			Samples: a.Samples[-lag:n],
 		}, TimeSeries{
 			Labels:  b.Labels,
 			Samples: b.Samples[:n+lag],
