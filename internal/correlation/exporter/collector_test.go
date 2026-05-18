@@ -74,9 +74,8 @@ func TestCollector_ReplaceClearsStale(t *testing.T) {
 		t.Fatalf("after replace count=%d want 1 (stale must be gone)", count)
 	}
 
-	got := testutil.ToFloat64(prometheus.NewCounter(prometheus.CounterOpts{Name: "ignored"}))
-	_ = got
-	// stale suspect 라벨이 사라졌는지 직접 검증: ToFloat64 는 단일 metric 한정이라 gather 로 확인.
+	// stale suspect 라벨이 사라졌는지 직접 검증한다. ToFloat64 는 단일 metric 한정이라 gather 로
+	// 라벨 셋을 직접 확인한다.
 	mfs, err := reg.Gather()
 	if err != nil {
 		t.Fatalf("gather: %v", err)

@@ -7,8 +7,20 @@ metadata:
     app.kubernetes.io/name: correlation-stress
     role: client
 spec:
-  nodeSelector:
-    correlation-stress: victim
+  # client 는 burst 부하 시 CPU 가 높아져 cpu_throttle_score 가 함께 올라간다. 같은 노드에 두면
+  # EnumeratePairs 가 client → victim 페어를 만들어 client 가 suspect rank 1 로 잡힐 위험이
+  # 있으므로 podAntiAffinity 로 victim/suspect 와 다른 노드에 강제 배치한다. multi-node cluster
+  # 가 전제이며 단일 노드 cluster 에서는 본 Pod 가 Pending 으로 남는다.
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - correlation-stress
+          topologyKey: kubernetes.io/hostname
   restartPolicy: Always
   containers:
     - name: client

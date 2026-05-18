@@ -4,10 +4,10 @@ correlation-exporter 가 emit 하는 `correlation_noisy_neighbor_score` 의 Top-
 
 ## 시나리오
 
-같은 노드에 4 개 Pod 을 배치한다.
+같은 노드에 3 개 Pod (`victim`, `suspect-sync`, `suspect-async`) 을 배치하고 `client` 는 podAntiAffinity 로 다른 노드에 배치한다. multi-node cluster 가 전제이며 single-node cluster 에서는 client Pod 가 Pending 으로 남는다.
 
 - `victim`: nginx HTTP 서버. netobs 가 본 Pod 으로 향하는 트래픽의 `netobs_pod_stage_latency` 를 측정한다.
-- `client`: 10 초 burst + 10 초 idle 주기로 victim 에 HTTP GET 을 반복한다. burst 동안 latency 가 자연스럽게 변동한다.
+- `client`: 10 초 burst + 10 초 idle 주기로 victim 에 HTTP GET 을 반복한다. 다른 노드에 배치되므로 EnumeratePairs 의 페어 후보에 포함되지 않으며 단순 부하 발생기 역할만 한다.
 - `suspect-sync`: 10 초 burst + 10 초 idle 주기로 CPU stress 를 발생시킨다. client 와 동기화된 phase 라 victim latency 와 강한 cpu dimension 상관을 보여야 한다.
 - `suspect-async`: 7 초 burst + 13 초 idle 의 다른 주기로 CPU stress 를 발생시킨다. victim latency 와의 상관은 약하게 잡혀야 한다.
 

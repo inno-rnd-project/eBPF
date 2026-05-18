@@ -166,6 +166,8 @@ make image-push-correlation-exporter
 make deploy-correlation-prod
 ```
 
+배포 직후 `/readyz` 는 첫 reconcile 이 성공할 때까지 503 을 반환한다. 그동안 ServiceMonitor 가 endpoint 를 not ready 로 보고 scrape 가 건너뛰어 stale 0 값이 emit 되지 않는다. cluster Prometheus 가 정상이면 첫 reconcile 은 통상 수 초 내 완료되며 그 후 readyz 가 200 으로 전환된다. `kubectl logs` 의 `reconcile ok: ...` 로그로 진행 상태를 확인 가능하다.
+
 ### 노출 메트릭
 
 `correlation-exporter` 가 `/metrics` 에서 emit 하는 series 는 다음과 같다.
