@@ -147,4 +147,3 @@ func TestReconcileOnce_PrometheusErrorDoesNotMarkReady(t *testing.T) {
 		t.Errorf("last_success_timestamp=%v want 0 (error 가 timestamp 를 갱신해서는 안 됨)", v)
 	}
 }
-
