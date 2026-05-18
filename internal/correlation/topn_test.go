@@ -1,0 +1,249 @@
+package correlation
+
+import (
+	"reflect"
+	"testing"
+)
+
+// makeResult 는 테스트용 CorrelationResult 를 한 줄로 만든다. lag 와 sample count 는 본 패키지의
+// 다른 곳에서 검증되므로 SelectTopN 의 책임만 격리해 본다.
+func makeResult(srcNS, srcPod, srcUID, srcMetric, dstNS, dstPod, dstUID, dstMetric string,
+	score float64, lag int, status Status,
+) CorrelationResult {
+	return CorrelationResult{
+		Pair: PairKey{
+			SrcNamespace: srcNS,
+			SrcPod:       srcPod,
+			SrcPodUID:    srcUID,
+			SrcMetric:    srcMetric,
+			DstNamespace: dstNS,
+			DstPod:       dstPod,
+			DstPodUID:    dstUID,
+			DstMetric:    dstMetric,
+		},
+		MaxAbsValue: score,
+		MaxAbsLag:   lag,
+		SampleCount: 120,
+		Status:      status,
+	}
+}
+
+const latencyMetric = `histogram_quantile(0.99, sum by(node, src_namespace, src_pod, src_pod_uid, le) (rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])))`
+
+// TestSelectTopN_FiltersByLatencyVictim 은 noisy neighbor 모델의 페어 조건을 정확히 적용해 latency
+// 메트릭이 페어 한쪽인 경우만 결과로 emit 하는지 검증한다.
+func TestSelectTopN_FiltersByLatencyVictim(t *testing.T) {
+	results := []CorrelationResult{
+		// 양쪽 모두 non-latency: 제외.
+		makeResult("default", "p1", "uid1", "pod:cpu_throttle_score:5m",
+			"default", "p2", "uid2", "pod:memory_pressure_score:5m",
+			0.9, 0, StatusOK),
+		// 양쪽 모두 latency: 제외.
+		makeResult("default", "p1", "uid1", latencyMetric,
+			"default", "p2", "uid2", latencyMetric,
+			0.8, 0, StatusOK),
+		// Src=cpu suspect, Dst=latency victim: 채택.
+		makeResult("default", "noisy", "uidN", "pod:cpu_throttle_score:5m",
+			"default", "victim", "uidV", latencyMetric,
+			0.7, 1, StatusOK),
+		// 반대 방향 (Src=latency, Dst=cpu): dedup 의미로 제외.
+		makeResult("default", "victim", "uidV", latencyMetric,
+			"default", "noisy", "uidN", "pod:cpu_throttle_score:5m",
+			0.7, -1, StatusOK),
+	}
+
+	got := SelectTopN(results, 10)
+	if len(got) != 1 {
+		t.Fatalf("len=%d want 1, got=%+v", len(got), got)
+	}
+	if got[0].Victim.Pod != "victim" || got[0].Suspect.Pod != "noisy" {
+		t.Errorf("victim/suspect=%s/%s want victim/noisy", got[0].Victim.Pod, got[0].Suspect.Pod)
+	}
+	if got[0].Dimension != DimensionCPU {
+		t.Errorf("dimension=%s want cpu", got[0].Dimension)
+	}
+	if got[0].Rank != 1 {
+		t.Errorf("rank=%d want 1", got[0].Rank)
+	}
+}
+
+// TestSelectTopN_StatusFilter 는 OK / Partial 만 채택하고 SkippedConstant / SkippedLowSamples 는
+// 결과에서 제외되는지 검증한다.
+func TestSelectTopN_StatusFilter(t *testing.T) {
+	cases := []struct {
+		status Status
+		want   bool
+	}{
+		{StatusOK, true},
+		{StatusPartial, true},
+		{StatusSkippedConstant, false},
+		{StatusSkippedLowSamples, false},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.status), func(t *testing.T) {
+			results := []CorrelationResult{
+				makeResult("default", "noisy", "uidN", "pod:cpu_throttle_score:5m",
+					"default", "victim", "uidV", latencyMetric,
+					0.5, 0, tc.status),
+			}
+			got := SelectTopN(results, 10)
+			if (len(got) == 1) != tc.want {
+				t.Errorf("len=%d want=%v for status %s", len(got), tc.want, tc.status)
+			}
+		})
+	}
+}
+
+// TestSelectTopN_DimensionClassification 은 query 문자열에서 dimension 이 정확히 분류되고
+// 우선순위 (gpu > memory) 가 지켜지는지 검증한다.
+func TestSelectTopN_DimensionClassification(t *testing.T) {
+	cases := []struct {
+		metric string
+		want   ResourceDimension
+	}{
+		{"pod:cpu_throttle_score:5m", DimensionCPU},
+		{"pod:memory_pressure_score:5m", DimensionMemory},
+		{"pod:network_throughput_score:5m", DimensionNetwork},
+		{"pod:network_retrans_score:5m", DimensionNetwork},
+		{"pod:host_compute_stall_score:5m", DimensionCPU},
+		{`avg by(node, src_namespace, src_pod, src_pod_uid) (pod:gpu_memory_utilization_ratio:5m)`, DimensionGPU},
+		{"some_unknown_score", DimensionUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.metric, func(t *testing.T) {
+			got := classifyDimension(tc.metric)
+			if got != tc.want {
+				t.Errorf("classifyDimension(%q)=%s want %s", tc.metric, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSelectTopN_TopNBoundary 는 그룹당 후보 수가 topN 보다 많을 때 truncate, 적을 때 그대로
+// 반환되는지 검증한다.
+func TestSelectTopN_TopNBoundary(t *testing.T) {
+	results := []CorrelationResult{}
+	for i := 0; i < 5; i++ {
+		results = append(results, makeResult(
+			"default", "suspect-"+string(rune('a'+i)), "uid-"+string(rune('a'+i)), "pod:cpu_throttle_score:5m",
+			"default", "victim", "uidV", latencyMetric,
+			float64(5-i)*0.1, 0, StatusOK,
+		))
+	}
+
+	got := SelectTopN(results, 3)
+	if len(got) != 3 {
+		t.Fatalf("topN=3 len=%d want 3", len(got))
+	}
+	for i, n := range got {
+		if n.Rank != i+1 {
+			t.Errorf("rank[%d]=%d want %d", i, n.Rank, i+1)
+		}
+	}
+	if got[0].Score < got[1].Score || got[1].Score < got[2].Score {
+		t.Errorf("scores not descending: %v %v %v", got[0].Score, got[1].Score, got[2].Score)
+	}
+
+	gotAll := SelectTopN(results, 10)
+	if len(gotAll) != 5 {
+		t.Errorf("topN=10 len=%d want 5 (전체 채택)", len(gotAll))
+	}
+
+	if SelectTopN(results, 0) != nil {
+		t.Errorf("topN=0 want nil result")
+	}
+	if SelectTopN(results, -1) != nil {
+		t.Errorf("topN=-1 want nil result")
+	}
+}
+
+// TestSelectTopN_TieBreaker 는 동일 score 시 suspect 라벨 lexicographic 순서로 rank 가 결정되는지
+// 검증한다.
+func TestSelectTopN_TieBreaker(t *testing.T) {
+	results := []CorrelationResult{
+		makeResult("default", "b-suspect", "uidB", "pod:cpu_throttle_score:5m",
+			"default", "victim", "uidV", latencyMetric,
+			0.5, 0, StatusOK),
+		makeResult("default", "a-suspect", "uidA", "pod:cpu_throttle_score:5m",
+			"default", "victim", "uidV", latencyMetric,
+			0.5, 0, StatusOK),
+	}
+	got := SelectTopN(results, 10)
+	if len(got) != 2 {
+		t.Fatalf("len=%d want 2", len(got))
+	}
+	if got[0].Suspect.Pod != "a-suspect" || got[1].Suspect.Pod != "b-suspect" {
+		t.Errorf("tie breaker order=%s,%s want a-suspect,b-suspect",
+			got[0].Suspect.Pod, got[1].Suspect.Pod)
+	}
+}
+
+// TestSelectTopN_GroupsByVictimAndDimension 은 다른 victim 또는 다른 dimension 이 별도 그룹으로
+// 분리되어 각 그룹마다 rank 1 부터 시작하는지 검증한다.
+func TestSelectTopN_GroupsByVictimAndDimension(t *testing.T) {
+	results := []CorrelationResult{
+		// victim A, cpu dimension.
+		makeResult("default", "s1", "uid1", "pod:cpu_throttle_score:5m",
+			"default", "vA", "uidA", latencyMetric, 0.9, 0, StatusOK),
+		// victim A, memory dimension.
+		makeResult("default", "s2", "uid2", "pod:memory_pressure_score:5m",
+			"default", "vA", "uidA", latencyMetric, 0.8, 0, StatusOK),
+		// victim B, cpu dimension.
+		makeResult("default", "s3", "uid3", "pod:cpu_throttle_score:5m",
+			"default", "vB", "uidB", latencyMetric, 0.7, 0, StatusOK),
+	}
+	got := SelectTopN(results, 10)
+	if len(got) != 3 {
+		t.Fatalf("len=%d want 3", len(got))
+	}
+	for _, n := range got {
+		if n.Rank != 1 {
+			t.Errorf("rank=%d want 1 for victim=%s dim=%s", n.Rank, n.Victim.Pod, n.Dimension)
+		}
+	}
+}
+
+// TestSelectTopN_UnknownDimensionSkipped 는 dimension 분류 실패 시 결과에서 제외되는지 검증한다.
+// 카디널리티 가드의 회귀 방지.
+func TestSelectTopN_UnknownDimensionSkipped(t *testing.T) {
+	results := []CorrelationResult{
+		makeResult("default", "weird", "uidW", "some_unrelated_metric",
+			"default", "victim", "uidV", latencyMetric, 0.9, 0, StatusOK),
+	}
+	got := SelectTopN(results, 10)
+	if len(got) != 0 {
+		t.Errorf("len=%d want 0 (unknown dim must be filtered)", len(got))
+	}
+}
+
+// TestSelectTopN_DeterministicOrder 는 동일 입력에 대해 결과 순서가 결정적인지 (map 순회
+// 비결정성 차단 가드) 검증한다.
+func TestSelectTopN_DeterministicOrder(t *testing.T) {
+	results := []CorrelationResult{
+		makeResult("ns-a", "s1", "u1", "pod:cpu_throttle_score:5m",
+			"ns-a", "v1", "uv1", latencyMetric, 0.5, 0, StatusOK),
+		makeResult("ns-b", "s2", "u2", "pod:memory_pressure_score:5m",
+			"ns-b", "v2", "uv2", latencyMetric, 0.6, 0, StatusOK),
+		makeResult("ns-a", "s3", "u3", "pod:network_throughput_score:5m",
+			"ns-a", "v1", "uv1", latencyMetric, 0.4, 0, StatusOK),
+	}
+	first := SelectTopN(results, 10)
+	for i := 0; i < 20; i++ {
+		next := SelectTopN(results, 10)
+		if !reflect.DeepEqual(first, next) {
+			t.Fatalf("non-deterministic order between runs:\n%+v\n%+v", first, next)
+		}
+	}
+}
+
+// TestSelectTopN_EmptyInput 은 빈 입력에서 panic 없이 빈 결과를 반환하는지 검증한다.
+func TestSelectTopN_EmptyInput(t *testing.T) {
+	got := SelectTopN(nil, 10)
+	if len(got) != 0 {
+		t.Errorf("nil input len=%d want 0", len(got))
+	}
+	got = SelectTopN([]CorrelationResult{}, 10)
+	if len(got) != 0 {
+		t.Errorf("empty input len=%d want 0", len(got))
+	}
+}
