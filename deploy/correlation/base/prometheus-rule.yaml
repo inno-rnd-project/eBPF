@@ -43,7 +43,7 @@ spec:
         - alert: CorrelationExporterStalled
           expr: |
             correlation_reconcile_last_success_timestamp_seconds > 0
-            and on()
+            and
             (time() - correlation_reconcile_last_success_timestamp_seconds) > 600
           for: 5m
           labels:

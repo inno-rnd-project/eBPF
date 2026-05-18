@@ -160,12 +160,17 @@ func (h *Health) RecordCycle(duration time.Duration, results []correlation.Corre
 	h.ReconcileDuration.Set(duration.Seconds())
 	h.ReconcilePairs.Add(float64(len(results)))
 	h.ReconcileNeighbors.Add(float64(len(neighbors)))
+	// WithLabelValues 는 매 호출마다 라벨 해시 lookup 을 수행하므로 페어가 수천 개에 이르는 hot
+	// path 에서 results 루프 안에 두면 비용이 누적된다. low_samples 와 constant 두 reason 은 enum
+	// 으로 고정이라 루프 진입 전에 한 번 lookup 해 캐시한다.
+	lowSamples := h.ReconcileSkipped.WithLabelValues("low_samples")
+	constant := h.ReconcileSkipped.WithLabelValues("constant")
 	for _, r := range results {
 		switch r.Status {
 		case correlation.StatusSkippedLowSamples:
-			h.ReconcileSkipped.WithLabelValues("low_samples").Inc()
+			lowSamples.Inc()
 		case correlation.StatusSkippedConstant:
-			h.ReconcileSkipped.WithLabelValues("constant").Inc()
+			constant.Inc()
 		}
 	}
 	h.LastSuccessTimestamp.SetToCurrentTime()
