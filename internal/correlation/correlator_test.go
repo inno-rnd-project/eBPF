@@ -58,7 +58,7 @@ func TestCorrelator_HappyPath(t *testing.T) {
 		LagSteps:       []int{0},
 		DefaultMetrics: []string{"metric_a", "metric_b"},
 	}
-	results, err := New(fetcher, cfg).Correlate(context.Background())
+	results, err := New(fetcher, cfg).Correlate(context.Background(), time.Now())
 	if err != nil {
 		t.Fatalf("Correlate: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestCorrelator_HappyPath(t *testing.T) {
 func TestCorrelator_EmptyInput(t *testing.T) {
 	fetcher := &mockFetcher{}
 	cfg := Config{DefaultMetrics: []string{"any_metric"}, LagSteps: []int{0}, MinSamples: 5}
-	results, err := New(fetcher, cfg).Correlate(context.Background())
+	results, err := New(fetcher, cfg).Correlate(context.Background(), time.Now())
 	if err != nil {
 		t.Fatalf("Correlate: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestCorrelator_PartialFetchFailure(t *testing.T) {
 		Step: 1 * time.Second, MinSamples: 5, LagSteps: []int{0},
 		DefaultMetrics: []string{"metric_a", "metric_b", "failing_metric"},
 	}
-	results, err := New(fetcher, cfg).Correlate(context.Background())
+	results, err := New(fetcher, cfg).Correlate(context.Background(), time.Now())
 	if err != nil {
 		t.Fatalf("Correlate: %v (one failure should be tolerated)", err)
 	}
@@ -129,7 +129,7 @@ func TestCorrelator_AllFetchFailureReturnsError(t *testing.T) {
 		},
 	}
 	cfg := Config{LagSteps: []int{0}, DefaultMetrics: []string{"metric_a", "metric_b"}, MinSamples: 5}
-	_, err := New(fetcher, cfg).Correlate(context.Background())
+	_, err := New(fetcher, cfg).Correlate(context.Background(), time.Now())
 	if err == nil {
 		t.Errorf("err=nil want non-nil when all queries fail")
 	}
@@ -148,13 +148,52 @@ func TestCorrelator_PartialFailureWithEmptyResults(t *testing.T) {
 		},
 	}
 	cfg := Config{LagSteps: []int{0}, DefaultMetrics: []string{"metric_empty", "metric_failing"}, MinSamples: 5}
-	results, err := New(fetcher, cfg).Correlate(context.Background())
+	results, err := New(fetcher, cfg).Correlate(context.Background(), time.Now())
 	if err != nil {
 		t.Fatalf("err=%v want nil (one success with empty result + one failure must NOT be classified as all-failed)", err)
 	}
 	if len(results) != 0 {
 		t.Errorf("results=%d want 0 (no series → no pairs)", len(results))
 	}
+}
+
+// TestCorrelator_DeterministicEndTime 은 endTime 을 인자로 받아 fetcher 가 정확히 [endTime-Window,
+// endTime] 범위로 query 되는지 검증한다. 함수가 time.Now() 에 의존하지 않아 단위 테스트와 과거
+// 시점 분석이 모두 결정적임을 보장한다.
+func TestCorrelator_DeterministicEndTime(t *testing.T) {
+	fixed := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
+	window := 10 * time.Minute
+	expectStart := fixed.Add(-window)
+
+	var gotStart, gotEnd time.Time
+	fetcher := &mockFetcher{}
+	fetcher.responses = map[string][]LabeledSeries{}
+	// Recording fetcher 로 호출 시점 캡처.
+	recording := &recordingFetcher{
+		inner: fetcher,
+		onCall: func(start, end time.Time) {
+			gotStart, gotEnd = start, end
+		},
+	}
+	cfg := Config{Window: window, Step: 30 * time.Second, MinSamples: 5, LagSteps: []int{0}, DefaultMetrics: []string{"any"}}
+	_, _ = New(recording, cfg).Correlate(context.Background(), fixed)
+
+	if !gotEnd.Equal(fixed) {
+		t.Errorf("end=%v want %v", gotEnd, fixed)
+	}
+	if !gotStart.Equal(expectStart) {
+		t.Errorf("start=%v want %v", gotStart, expectStart)
+	}
+}
+
+type recordingFetcher struct {
+	inner  Fetcher
+	onCall func(start, end time.Time)
+}
+
+func (r *recordingFetcher) Fetch(ctx context.Context, query string, start, end time.Time, step time.Duration) ([]LabeledSeries, error) {
+	r.onCall(start, end)
+	return r.inner.Fetch(ctx, query, start, end, step)
 }
 
 // TestDefaultConfigContainsCorrelationInputs 는 default config 가 본 시리즈의 신규 pod 단위 cause

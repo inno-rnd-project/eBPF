@@ -120,7 +120,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.FetchTimeout*time.Duration(len(cfg.DefaultMetrics)+len(cfg.ExtraMetrics)+1))
 	defer cancel()
 
-	results, err := corr.Correlate(ctx)
+	// CLI 는 \"지금 기준 직전 Window\" 가 자연스러운 의도라 time.Now() 를 명시 인자로 넘긴다. 과거
+// 시점 분석이 필요하면 운영자가 라이브러리를 직접 호출하거나 본 CLI 를 future fork 로 확장한다.
+	results, err := corr.Correlate(ctx, time.Now())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "correlation failed: %v\n", err)
 		os.Exit(exitFetchFailure)

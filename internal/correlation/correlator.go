@@ -20,18 +20,23 @@ func New(fetcher Fetcher, config Config) *Correlator {
 	return &Correlator{fetcher: fetcher, config: config}
 }
 
-// Correlate 는 다음 순서로 산출을 수행한다.
+// Correlate 는 endTime 을 기준으로 [endTime-Window, endTime] 범위의 산출을 수행한다. endTime 을
+// 호출자가 명시하므로 함수 자체는 결정적이며 (time.Now() 의존성 없음) 단위 테스트와 과거 시점
+// 분석 (예: alert 발화 시점 기준 회귀 분석) 모두 가능하다. 운영자가 \"지금 기준\" 을 의도하면
+// time.Now() 를 호출 인자로 명시한다 (CLI 의 기본 동작).
+//
+// 다음 순서로 산출을 수행한다.
 //
 //  1. config 의 DefaultMetrics 와 ExtraMetrics 를 합쳐 모든 query 를 동일 start / end / step 으로
-//     fetch
+//     병렬 fetch
 //  2. 모든 LabeledSeries 를 EnumeratePairs 로 노드 한정 페어로 변환
 //  3. 각 페어를 PearsonWithLag 로 lag 별 산출
 //  4. 산출 결과를 []CorrelationResult 로 반환
 //
 // 일부 query 가 fetch 실패해도 나머지로 산출을 계속한다. 모든 query 가 실패할 때만 wrapped error 를
 // 반환한다. fetch 결과가 비어 있는 (시계열 0개) query 는 정상으로 보고 페어 산출에서 자연 제외된다.
-func (c *Correlator) Correlate(ctx context.Context) ([]CorrelationResult, error) {
-	end := time.Now()
+func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]CorrelationResult, error) {
+	end := endTime
 	start := end.Add(-c.config.Window)
 
 	queries := append([]string{}, c.config.DefaultMetrics...)
