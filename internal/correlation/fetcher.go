@@ -18,6 +18,11 @@ type Fetcher interface {
 	Fetch(ctx context.Context, query string, start, end time.Time, step time.Duration) ([]LabeledSeries, error)
 }
 
+// maxFetchResponseBytes 는 단일 query_range 응답에 허용되는 최대 바이트 수다. 1시간 윈도우 / 30초
+// step / 노드당 ~50 Pod / 11 metric 환경에서 정상 응답은 수 MB 수준이라 100MB 는 충분한 안전 마진
+// 이며 Prometheus 이상 동작 (무한 응답 등) 시 메모리 무제한 할당을 차단한다.
+const maxFetchResponseBytes = 100 << 20
+
 // PrometheusFetcher 는 /api/v1/query_range 를 직접 net/http 로 호출하는 Fetcher 구현이다. github.com
 // /prometheus/client_golang/api 의존성을 도입하지 않아 본 패키지의 외부 의존성을 표준 라이브러리로
 // 한정한다.
@@ -78,9 +83,13 @@ func (f *PrometheusFetcher) Fetch(ctx context.Context, query string, start, end 
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// io.LimitReader 로 응답 body 크기를 maxFetchResponseBytes 로 캡. 정상 응답은 수 MB 라 영향 없음.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchResponseBytes))
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if int64(len(body)) >= maxFetchResponseBytes {
+		return nil, fmt.Errorf("response body exceeded %d bytes (limit reached)", maxFetchResponseBytes)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("prometheus returned status %d: %s", resp.StatusCode, truncate(string(body), 200))
