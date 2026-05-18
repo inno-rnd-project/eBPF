@@ -27,8 +27,8 @@ func New(fetcher Fetcher, config Config) *Correlator {
 //  3. 각 페어를 PearsonWithLag 로 lag 별 산출
 //  4. 산출 결과를 []CorrelationResult 로 반환
 //
-// 일부 query 가 fetch 실패해도 나머지로 산출을 계속한다. 모든 query 가 실패하면 wrapped error 를
-// 반환한다. fetch 결과가 비어 있는 (시계열 0개) query 는 정상으로 본다.
+// 일부 query 가 fetch 실패해도 나머지로 산출을 계속한다. 모든 query 가 실패할 때만 wrapped error 를
+// 반환한다. fetch 결과가 비어 있는 (시계열 0개) query 는 정상으로 보고 페어 산출에서 자연 제외된다.
 func (c *Correlator) Correlate(ctx context.Context) ([]CorrelationResult, error) {
 	end := time.Now()
 	start := end.Add(-c.config.Window)
@@ -46,7 +46,9 @@ func (c *Correlator) Correlate(ctx context.Context) ([]CorrelationResult, error)
 		}
 		all = append(all, series...)
 	}
-	if len(all) == 0 && len(fetchErrors) > 0 {
+	// 모든 query 가 실패했을 때만 error 로 격상한다. 일부 성공 + 일부 실패 (예: 한 query 가 syntax
+	// 오류 인데 다른 query 들이 정상) 는 부분 결과로 산출을 계속한다.
+	if len(queries) > 0 && len(fetchErrors) == len(queries) {
 		return nil, fmt.Errorf("all %d queries failed: %v", len(queries), fetchErrors)
 	}
 

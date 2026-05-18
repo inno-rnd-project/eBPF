@@ -135,6 +135,28 @@ func TestCorrelator_AllFetchFailureReturnsError(t *testing.T) {
 	}
 }
 
+// TestCorrelator_PartialFailureWithEmptyResults 는 일부 query 가 실패하고 나머지가 빈 결과 (0
+// series) 를 반환할 때 에러가 아닌 빈 결과로 처리되는지 검증한다. "all 실패" 조건은 query 수와
+// 실패 수가 정확히 일치할 때만 발화한다.
+func TestCorrelator_PartialFailureWithEmptyResults(t *testing.T) {
+	fetcher := &mockFetcher{
+		responses: map[string][]LabeledSeries{
+			"metric_empty": {}, // empty result, but successful
+		},
+		errors: map[string]error{
+			"metric_failing": errors.New("simulated 500"),
+		},
+	}
+	cfg := Config{LagSteps: []int{0}, DefaultMetrics: []string{"metric_empty", "metric_failing"}, MinSamples: 5}
+	results, err := New(fetcher, cfg).Correlate(context.Background())
+	if err != nil {
+		t.Fatalf("err=%v want nil (one success with empty result + one failure must NOT be classified as all-failed)", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("results=%d want 0 (no series → no pairs)", len(results))
+	}
+}
+
 // TestDefaultConfigContainsCorrelationInputs 는 default config 가 본 시리즈의 신규 cause score 와
 // latency / node 메트릭을 포함하는지 검증한다. zero-config 운영의 기반이다.
 func TestDefaultConfigContainsCorrelationInputs(t *testing.T) {
