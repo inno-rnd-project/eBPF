@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ebpf-project
+
+resources:
+  - ../../base
+
+images:
+  - name: correlation-exporter
+    newName: ghcr.io/inno-rnd-project/correlation-exporter
+    newTag: "0.4.8"
+
+patches:
+  - path: patch-deployment.yaml

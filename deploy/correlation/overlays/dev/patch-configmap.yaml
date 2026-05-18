@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: correlation-exporter
+  namespace: ebpf-project
+data:
+  # dev cluster 는 검증 cadence 가 빨라야 한다. reconcile 1 분 + window 30 분 으로 빠르게 결과를
+  # 관측하며 prod 의 5 분 / 1 시간 default 보다 짧다.
+  RECONCILE_INTERVAL: "1m"
+  WINDOW: "30m"
