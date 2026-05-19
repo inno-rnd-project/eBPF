@@ -12,6 +12,5 @@ resources:
   - clusterrolebinding.yaml
   - configmap.yaml
   - service.yaml
-  - job-template.yaml
   - podmonitor.yaml
   - prometheus-rule.yaml

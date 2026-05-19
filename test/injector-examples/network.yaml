@@ -23,7 +23,7 @@ spec:
       containers:
         - name: workload-injector
           image: workload-injector:0.4.8
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never
           envFrom:
             - configMapRef:
                 name: workload-injector

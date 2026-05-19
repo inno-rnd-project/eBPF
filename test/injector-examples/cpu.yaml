@@ -25,7 +25,7 @@ spec:
           # 운영자가 make image-build-workload-injector 후 dev cluster 노드에 로컬 image 로 두면
           # imagePullPolicy: Never 그대로 Pod 가 실행된다.
           image: workload-injector:0.4.8
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never
           envFrom:
             - configMapRef:
                 name: workload-injector
