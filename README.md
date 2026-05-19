@@ -357,6 +357,20 @@ correlation-exporter는 두 agent의 cause score recording rule과 latency 메�
 
 The CUDA uprobe dispatch hot path includes a PID-to-PodIdentity cache (introduced in v0.3.5) that absorbs the per-event `/proc/<pid>/cgroup` parse cost; without the cache, a single PyTorch ResNet50 inference loop drove the agent container to ~740 mCPU on a 27 K Hz kernel launch rate, which dropped to ~184 mCPU after the cache landed (75% reduction). The measurement methodology, PromQL queries, decision gate, and full results across baseline / uprobe-enabled / cache-enabled snapshots are in [`docs/perf/cuda-uprobe-overhead.md`](docs/perf/cuda-uprobe-overhead.md). Reproducible workload manifests (PyTorch ResNet50, Conv2d-only, cuda-sample vectorAdd) live under [`test/perf/`](test/perf/) for any follow-up overhead measurement on a different cluster or workload mix.
 
+## Dashboards
+
+`deploy/dashboards/` 에 5 개의 Grafana dashboard 가 ConfigMap 으로 배포된다. Grafana sidecar 가 `grafana_dashboard=1` label 로 자동 발견한다. uid 와 역할은 다음과 같다.
+
+| Dashboard | uid | 역할 |
+|---|---|---|
+| observability overview | `observability-overview` | cluster → node → pod drill-down 의 entry point. 4 카테고리 health single-stat, alert annotation, noisy neighbor Top-N 통합 |
+| netobs | `netobs-overview` | 네트워크 상세 (drop reason, retrans, stage latency, dst classifier) |
+| gpuobs | `gpuobs-overview` | GPU 상세 (device utilization, throttle reason, GPM, NVML 메트릭 카탈로그) |
+| correlation noisy neighbor | `correlation-overview` | `correlation-exporter` (#51) 산출의 Top-N noisy neighbor 분석 |
+| workload injector | `workload-injector` | `workload-injector` (#52) 합성 부하 timeline 과 blast radius heatmap |
+
+운영자는 평상시 `observability overview` 에서 cluster 전체 상태를 보다가 이상 신호가 잡히면 노드 / Pod 단계 drill-down 후 필요시 4 개의 detailed view 로 이동한다. 워크플로 상세는 [docs/observability/dashboard-workflow.md](docs/observability/dashboard-workflow.md) 에 정리되어 있다.
+
 ## Observability — netobs/gpuobs Correlation
 
 netobs와 gpuobs는 동일한 4개 라벨 키 (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) 를 노출해 PromQL `* on(node, src_namespace, src_pod, src_pod_uid) group_left(...)` 패턴으로 join 가능하다. 이 절은 양쪽 메트릭 라벨 일치성 표, recording rule 카탈로그, dashboard 작성 시 즉시 활용 가능한 PromQL 예제 9종을 정의한다. 본 절의 recording rule들은 동시에 correlation-exporter의 `DefaultMetrics` 입력으로 reuse된다.
