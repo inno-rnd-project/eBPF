@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: suspect-sync
+  namespace: correlation-stress
+  labels:
+    app.kubernetes.io/name: correlation-stress
+    role: suspect-sync
+spec:
+  nodeSelector:
+    correlation-stress: victim
+  restartPolicy: Always
+  containers:
+    - name: stress
+      image: polinux/stress:1.0.4
+      command:
+        - sh
+        - -c
+        - |
+          # wall-clock 10 분 정각의 0-5 분 구간에 burst, 5-10 분 구간에 idle. client 와 동일 phase 로
+          # 정렬되어 두 시계열이 step 30s aggregation 후에도 phase 동기성을 보존한다. burst 주기 5 분
+          # = step 30s 의 10 배라 step aggregation 으로 burst 가 평균화되어 사라지지 않는다.
+          while true; do
+            now=$(date +%s)
+            phase=$((now % 600))
+            if [ "$phase" -lt 300 ]; then
+              remaining=$((300 - phase))
+              stress --cpu 4 --timeout ${remaining}s
+            else
+              remaining=$((600 - phase))
+              sleep $remaining
+            fi
+          done
+      resources:
+        requests:
+          cpu: 100m
+          memory: 32Mi
+        limits:
+          # stress --cpu 4 가 worker thread 4 개 (~4000m) 를 돌리는데 limit 을 500m 로 낮춰 CFS
+          # throttling 을 강제 발생시킨다. pod:cpu_throttle_score:5m 는 throttled / total periods
+          # 비율이라 limit 부족이 없으면 score 가 sustained 0 으로 잡혀 페어가 constant 로 분류되어
+          # 산출에서 제외된다. 500m 이면 burst phase 마다 score ~1, idle phase 에 0 으로 명확히
+          # 변동해 phase-locked signal 이 victim latency 와 강한 상관을 만든다.
+          cpu: 500m
+          memory: 128Mi

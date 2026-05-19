@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: suspect-async
+  namespace: correlation-stress
+  labels:
+    app.kubernetes.io/name: correlation-stress
+    role: suspect-async
+spec:
+  nodeSelector:
+    correlation-stress: victim
+  restartPolicy: Always
+  containers:
+    - name: stress
+      image: polinux/stress:1.0.4
+      command:
+        - sh
+        - -c
+        - |
+          # 7 분 cycle 의 0-3 분 burst. client 의 10 분 cycle 과 lcm 이 70 분이라 phase drift 가
+          # 영구적으로 발생해 victim latency 와의 상관이 sync 보다 약하게 잡힌다.
+          while true; do
+            now=$(date +%s)
+            phase=$((now % 420))
+            if [ "$phase" -lt 180 ]; then
+              remaining=$((180 - phase))
+              stress --cpu 4 --timeout ${remaining}s
+            else
+              remaining=$((420 - phase))
+              sleep $remaining
+            fi
+          done
+      resources:
+        requests:
+          cpu: 100m
+          memory: 32Mi
+        limits:
+          # suspect-sync 와 동일하게 cpu limit 500m 로 두어 stress 가 throttle 을 강제 발생시킨다.
+          # cycle 길이만 7 분 (sync 의 10 분) 으로 달라 phase drift 가 영구적이고 score 변동 패턴
+          # 자체는 sync 와 동일한 ~1 / 0 binary 신호로 잡힌다.
+          cpu: 500m
+          memory: 128Mi

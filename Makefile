@@ -34,15 +34,17 @@ CGO_gpuobs-agent := 1
 #   2) OVERLAY_PATH_<name>에 kustomize 경로 지정
 # 이후 render-<name>, deploy-<name>, delete-<name>이 자동으로 매치된다.
 # ============================================================================
-OVERLAYS := netobs-dev netobs-prod gpuobs-dev gpuobs-prod dashboards
+OVERLAYS := netobs-dev netobs-prod gpuobs-dev gpuobs-prod correlation-dev correlation-prod dashboards
 
-OVERLAY_PATH_netobs-dev  := deploy/netobs/overlays/dev
-OVERLAY_PATH_netobs-prod := deploy/netobs/overlays/prod
-OVERLAY_PATH_gpuobs-dev  := deploy/gpuobs/overlays/dev
-OVERLAY_PATH_gpuobs-prod := deploy/gpuobs/overlays/prod
+OVERLAY_PATH_netobs-dev       := deploy/netobs/overlays/dev
+OVERLAY_PATH_netobs-prod      := deploy/netobs/overlays/prod
+OVERLAY_PATH_gpuobs-dev       := deploy/gpuobs/overlays/dev
+OVERLAY_PATH_gpuobs-prod      := deploy/gpuobs/overlays/prod
+OVERLAY_PATH_correlation-dev  := deploy/correlation/overlays/dev
+OVERLAY_PATH_correlation-prod := deploy/correlation/overlays/prod
 # dashboards 는 dev/prod 분기가 없는 클러스터 공용 패키지다. Grafana sidecar 가 cluster 전체
 # ConfigMap 을 watch 하므로 단일 배포로 충분하다.
-OVERLAY_PATH_dashboards  := deploy/dashboards
+OVERLAY_PATH_dashboards       := deploy/dashboards
 
 # ============================================================================
 # Architecture detection (BPF 컴파일용)
@@ -67,7 +69,8 @@ BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 	build-all image-build-all image-push-all \
 	test test-integration setup-envtest \
 	check-prometheus-rules \
-	build-correlation-debug
+	build-correlation-debug \
+	build-correlation-exporter image-build-correlation-exporter image-push-correlation-exporter
 
 # ============================================================================
 # Tests
@@ -120,14 +123,18 @@ setup-envtest:
 #                          호스트 설치를 요구하지 않으며 PROMTOOL_IMAGE 변수로 버전을 pin 한다.
 # ============================================================================
 PROMTOOL_IMAGE ?= prom/prometheus:v2.55.0
-PROMETHEUS_RULE_FILE ?= deploy/gpuobs/base/prometheus-rule.yaml
-PROMTOOL_RULES_TMP ?= bin/promtool-rules.yaml
+PROMETHEUS_RULE_FILES ?= deploy/gpuobs/base/prometheus-rule.yaml deploy/correlation/base/prometheus-rule.yaml
+PROMTOOL_RULES_TMP_DIR ?= bin/promtool-rules
 
 check-prometheus-rules:
-	@mkdir -p $(dir $(PROMTOOL_RULES_TMP))
-	@echo "extracting spec.groups from $(PROMETHEUS_RULE_FILE) → $(PROMTOOL_RULES_TMP)"
-	@awk '/^spec:/{f=1;next} f' $(PROMETHEUS_RULE_FILE) | sed 's/^  //' > $(PROMTOOL_RULES_TMP)
-	@docker run --rm --entrypoint promtool -v $(CURDIR)/$(PROMTOOL_RULES_TMP):/tmp/rules.yaml $(PROMTOOL_IMAGE) check rules /tmp/rules.yaml
+	@mkdir -p $(PROMTOOL_RULES_TMP_DIR)
+	@for f in $(PROMETHEUS_RULE_FILES); do \
+		base=$$(basename $$(dirname $$(dirname $$f))); \
+		out=$(PROMTOOL_RULES_TMP_DIR)/$$base.yaml; \
+		echo "extracting spec.groups from $$f → $$out"; \
+		awk '/^spec:/{f=1;next} f' $$f | sed 's/^  //' > $$out; \
+		docker run --rm --entrypoint promtool -v $(CURDIR)/$$out:/tmp/rules.yaml $(PROMTOOL_IMAGE) check rules /tmp/rules.yaml; \
+	done
 	@echo "promtool check rules: OK"
 
 # ============================================================================
@@ -187,16 +194,42 @@ image-push-%-agent: image-build-%-agent
 # build-correlation-debug - internal/correlation 라이브러리의 일회성 검증 CLI 를 빌드한다.
 #                           DaemonSet / Deployment 형태로 cluster 에 배포되지 않으며 운영자가 로컬
 #                           에서 build / 실행 (kubectl port-forward 로 Prometheus 접근) 한다.
-#                           주기적 자동화 exporter 는 #51 이 다룬다.
+#                           주기적 자동화는 correlation-exporter 가 담당한다.
 # ============================================================================
 build-correlation-debug:
 	go fmt ./cmd/correlation-debug ./internal/correlation
 	go build -o ./bin/correlation-debug ./cmd/correlation-debug
 
-# 우산 타깃. AGENTS 리스트를 순회해 모든 에이전트에 동일 작업을 일괄 수행한다.
-build-all:       $(addprefix build-,$(AGENTS))
-image-build-all: $(addprefix image-build-,$(AGENTS))
-image-push-all:  $(addprefix image-push-,$(AGENTS))
+# ============================================================================
+# correlation-exporter (Deployment binary)
+# ----------------------------------------------------------------------------
+# correlation-exporter 는 internal/correlation 라이브러리를 주기적으로 호출해 noisy neighbor 메트릭
+# 을 Prometheus 로 노출한다. DaemonSet 인 agent 와 달리 cluster 단위 단일 Deployment 로 배치되며
+# build-%-agent 패턴 룰의 -agent 접미사 컨벤션 밖에 있어 build-correlation-debug 와 동일하게 explicit
+# 타깃으로 둔다. Dockerfile 은 TARGET_AGENT 빌드 arg 로 ./cmd/<name> 경로를 직접 가리키도록 generic
+# 하게 작성되어 있어 별도 Dockerfile 을 두지 않고 root Dockerfile 을 그대로 reuse 한다.
+# ============================================================================
+CORRELATION_EXPORTER_PORT := 9830
+
+build-correlation-exporter:
+	go fmt ./cmd/correlation-exporter ./internal/correlation/exporter ./internal/correlation
+	CGO_ENABLED=0 go build -o ./bin/correlation-exporter ./cmd/correlation-exporter
+
+image-build-correlation-exporter:
+	docker build \
+		--build-arg TARGET_AGENT=correlation-exporter \
+		--build-arg AGENT_PORT=$(CORRELATION_EXPORTER_PORT) \
+		--build-arg CGO_ENABLED=0 \
+		-t correlation-exporter:$(VERSION) .
+
+image-push-correlation-exporter: image-build-correlation-exporter
+	docker tag correlation-exporter:$(VERSION) $(REGISTRY_BASE)/correlation-exporter:$(VERSION)
+	docker push $(REGISTRY_BASE)/correlation-exporter:$(VERSION)
+
+# 우산 타깃. AGENTS 리스트와 correlation-exporter (비-agent Deployment binary) 를 함께 일괄 처리한다.
+build-all:       $(addprefix build-,$(AGENTS)) build-correlation-exporter
+image-build-all: $(addprefix image-build-,$(AGENTS)) image-build-correlation-exporter
+image-push-all:  $(addprefix image-push-,$(AGENTS)) image-push-correlation-exporter
 
 # ============================================================================
 # Overlay render / deploy / delete

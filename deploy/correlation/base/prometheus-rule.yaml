@@ -1,0 +1,70 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: correlation-exporter
+  namespace: ebpf-project
+  labels:
+    # release 라벨은 servicemonitor.yaml과 동일하게 kube-prometheus-stack Prometheus 인스턴스의
+    # ruleSelector 에 매치되도록 둔다. 운영 클러스터의 helm release 이름이 다른 환경은 overlay 의
+    # PrometheusRule patch 로 본 라벨을 덮는다.
+    release: kube-prometheus-stack
+    app.kubernetes.io/name: correlation-exporter
+    app.kubernetes.io/component: prometheus-rules
+    app.kubernetes.io/part-of: ebpf-project
+spec:
+  groups:
+    # correlation-exporter.alerts 는 noisy neighbor 발견과 exporter 자체의 헬스 두 축으로 alert 를
+    # 묶는다. severity 와 component 라벨은 netobs-gpuobs.alerts 와 동일 컨벤션을 따른다.
+    - name: correlation-exporter.alerts
+      rules:
+        # CorrelationStrongNoisyNeighbor
+        # 한 (victim_namespace, victim_pod, suspect_namespace, suspect_pod, resource_dimension) 페어가
+        # max_abs_value 0.85 를 10분 지속하면 발화한다. rank 와 pod_uid 는 group 키에서 제외해 동일
+        # 페어가 rank 별로 또는 pod 재시작 전후로 중복 발화하지 않게 한다. 0.85 임계는 합성 부하
+        # 시나리오에서 1.0 동기화 페어와 0.5 미만 무관 페어를 명확히 분리하는 값이다.
+        - alert: CorrelationStrongNoisyNeighbor
+          expr: |
+            max by (victim_namespace, victim_pod, suspect_namespace, suspect_pod, resource_dimension) (
+              correlation_noisy_neighbor_score
+            ) > 0.85
+          for: 10m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "noisy neighbor detected (victim={{ $labels.victim_namespace }}/{{ $labels.victim_pod }} suspect={{ $labels.suspect_namespace }}/{{ $labels.suspect_pod }} dimension={{ $labels.resource_dimension }})"
+            description: "victim {{ $labels.victim_namespace }}/{{ $labels.victim_pod }} 의 latency 가 suspect {{ $labels.suspect_namespace }}/{{ $labels.suspect_pod }} 의 {{ $labels.resource_dimension }} 자원 변동과 max |corr| {{ $value }} 로 10분 이상 동조하고 있다. internal/correlation/README.md 의 runbook 절차를 따른다."
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationstrongnoisyneighbor"
+
+        # CorrelationExporterStalled
+        # exporter 가 reconcile 을 10분 이상 성공시키지 못하면 발화한다. last_success_timestamp 가
+        # 0 인 첫 reconcile 전 상태는 NewGauge default 0 으로 emit 되어 time() 과의 차이가 매우 커
+        # 즉시 발화 위험이 있으므로 timestamp > 0 가드를 AND 로 둔다.
+        - alert: CorrelationExporterStalled
+          expr: |
+            correlation_reconcile_last_success_timestamp_seconds > 0
+            and
+            (time() - correlation_reconcile_last_success_timestamp_seconds) > 600
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "correlation-exporter has not reconciled for over 10 minutes"
+            description: "correlation-exporter 의 마지막 reconcile 성공이 10 분 이상 지났다. Prometheus 와의 네트워크 / 권한 문제, query timeout, 또는 exporter Pod 의 정지 가능성을 확인한다."
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationexporterstalled"
+
+        # CorrelationExporterReconcileErrors
+        # 10분 윈도우에서 reconcile error 가 3 회 이상 누적되면 발화한다. increase 가 rate 보다
+        # 의미가 명확해 채택했다. 일시적 단발 에러는 본 임계를 자연스럽게 넘기지 않는다.
+        - alert: CorrelationExporterReconcileErrors
+          expr: |
+            increase(correlation_reconcile_errors_total[10m]) >= 3
+          for: 10m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "correlation-exporter reconcile errors accumulating"
+            description: "correlation-exporter 의 reconcile cycle 이 10 분 윈도우에서 3 회 이상 에러로 종료됐다. Prometheus 응답, query 문법, network 경로를 점검한다."
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationexporterreconcileerrors"

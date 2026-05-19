@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: correlation-exporter
+  namespace: ebpf-project
+spec:
+  template:
+    spec:
+      containers:
+        - name: correlation-exporter
+          # prod 는 더 큰 cluster 의 series 수와 fetch payload 를 처리해야 하므로 base default 보다
+          # 메모리 limit 을 상향한다. cpu request 는 base 와 동일 (reconcile 사이는 idle 이라 burst
+          # 만 보장하면 됨).
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 1Gi

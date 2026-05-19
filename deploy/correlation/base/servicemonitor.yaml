@@ -1,0 +1,26 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: correlation-exporter
+  namespace: ebpf-project
+  labels:
+    # release 라벨은 netobs / gpuobs servicemonitor 와 동일하게 kube-prometheus-stack Prometheus
+    # 인스턴스의 ruleSelector / serviceMonitorSelector 에 매치되도록 둔다. helm release 이름이 다른
+    # 환경은 overlay 의 ServiceMonitor patch 로 본 라벨을 덮는다.
+    release: kube-prometheus-stack
+    app.kubernetes.io/name: correlation-exporter
+    app.kubernetes.io/part-of: ebpf-project
+spec:
+  namespaceSelector:
+    matchNames:
+      - ebpf-project
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: correlation-exporter
+  endpoints:
+    - port: metrics
+      path: /metrics
+      # reconcile cycle 이 5 분 cadence 라 noisy_neighbor_score 는 자주 갱신되지 않지만 self-health
+      # 메트릭 (reconcile_duration, last_success_timestamp) 은 30s scrape 로 충분한 해상도를 얻는다.
+      interval: 30s
+      scrapeTimeout: 10s

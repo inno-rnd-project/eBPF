@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client
+  namespace: correlation-stress
+  labels:
+    app.kubernetes.io/name: correlation-stress
+    role: client
+spec:
+  # client 는 burst 부하 시 CPU 가 높아져 cpu_throttle_score 가 함께 올라간다. 같은 노드에 두면
+  # EnumeratePairs 가 client → victim 페어를 만들어 client 가 suspect rank 1 로 잡힐 위험이
+  # 있으므로 nodeAffinity 의 DoesNotExist 로 correlation-stress 라벨이 없는 노드에 강제 배치한다.
+  # podAntiAffinity 는 양방향 효과 (자기 자신이 먼저 스케줄되면 victim 의 후속 스케줄을 막음) 가
+  # 있어 본 시나리오에는 부적합하다. multi-node cluster 가 전제이며 단일 노드 cluster 에서는 본
+  # Pod 가 Pending 으로 남는다.
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: correlation-stress
+                operator: DoesNotExist
+  restartPolicy: Always
+  containers:
+    - name: client
+      image: curlimages/curl:8.10.1
+      command:
+        - sh
+        - -c
+        - |
+          # wall-clock 10 분 정각의 0-5 분 구간에 HTTP 부하 burst, 5-10 분 구간에 idle. suspect-sync
+          # 와 동일 phase 라 victim latency 가 burst phase 에 변동한다. 매 iteration 0.1 초 sleep 으로
+          # RPS 10 정도 (5 분 burst 에 ~3000 요청) 부하라 worker1 의 다른 Pod 에 영향을 거의 주지
+          # 않는다.
+          # burst phase 는 RPS 10 (sleep 0.1), idle phase 는 RPS 1 (sleep 1) 의 baseline 을 유지한다.
+          # idle 에 트래픽이 완전히 없으면 victim latency histogram 이 비어 histogram_quantile 가
+          # NaN 을 반환하고 NaN pairwise 제거로 sample 부족이 발생해 페어가 산출에서 제외된다.
+          # baseline RPS 1 만 유지해도 1 분 rate window 에 충분한 sample 이 모인다.
+          while true; do
+            now=$(date +%s)
+            phase=$((now % 600))
+            if [ "$phase" -lt 300 ]; then
+              end_at=$((now + 300 - phase))
+              while [ "$(date +%s)" -lt "$end_at" ]; do
+                curl -s -o /dev/null http://victim.correlation-stress.svc.cluster.local/ || true
+                sleep 0.1
+              done
+            else
+              end_at=$((now + 600 - phase))
+              while [ "$(date +%s)" -lt "$end_at" ]; do
+                curl -s -o /dev/null http://victim.correlation-stress.svc.cluster.local/ || true
+                sleep 1
+              done
+            fi
+          done
+      resources:
+        requests:
+          cpu: 100m
+          memory: 32Mi
+        limits:
+          cpu: 500m
+          memory: 64Mi

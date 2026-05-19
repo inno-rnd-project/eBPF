@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: correlation-exporter
+  namespace: ebpf-project
+spec:
+  template:
+    spec:
+      containers:
+        - name: correlation-exporter
+          # dev cluster 는 로컬 빌드 이미지를 그대로 reuse 하므로 registry pull 을 회피한다.
+          imagePullPolicy: Never

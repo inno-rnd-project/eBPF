@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: correlation-stress
+  labels:
+    app.kubernetes.io/name: correlation-stress
+    app.kubernetes.io/part-of: ebpf-project

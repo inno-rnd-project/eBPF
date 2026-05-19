@@ -34,6 +34,15 @@ configMapGenerator:
         app.kubernetes.io/name: gpuobs-agent
         app.kubernetes.io/component: grafana-dashboard
         app.kubernetes.io/part-of: ebpf-project
+  - name: correlation-dashboard
+    files:
+      - correlation.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+        app.kubernetes.io/name: correlation-exporter
+        app.kubernetes.io/component: grafana-dashboard
+        app.kubernetes.io/part-of: ebpf-project
 
 generatorOptions:
   disableNameSuffixHash: true
