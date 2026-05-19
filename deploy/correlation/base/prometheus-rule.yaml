@@ -34,7 +34,7 @@ spec:
           annotations:
             summary: "noisy neighbor detected (victim={{ $labels.victim_namespace }}/{{ $labels.victim_pod }} suspect={{ $labels.suspect_namespace }}/{{ $labels.suspect_pod }} dimension={{ $labels.resource_dimension }})"
             description: "victim {{ $labels.victim_namespace }}/{{ $labels.victim_pod }} 의 latency 가 suspect {{ $labels.suspect_namespace }}/{{ $labels.suspect_pod }} 의 {{ $labels.resource_dimension }} 자원 변동과 max |corr| {{ $value }} 로 10분 이상 동조하고 있다. internal/correlation/README.md 의 runbook 절차를 따른다."
-            runbook_url: "https://github.com/inno-rnd-project/netobs/blob/main/internal/correlation/README.md#correlationstrongnoisyneighbor"
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationstrongnoisyneighbor"
 
         # CorrelationExporterStalled
         # exporter 가 reconcile 을 10분 이상 성공시키지 못하면 발화한다. last_success_timestamp 가
@@ -52,10 +52,10 @@ spec:
           annotations:
             summary: "correlation-exporter has not reconciled for over 10 minutes"
             description: "correlation-exporter 의 마지막 reconcile 성공이 10 분 이상 지났다. Prometheus 와의 네트워크 / 권한 문제, query timeout, 또는 exporter Pod 의 정지 가능성을 확인한다."
-            runbook_url: "https://github.com/inno-rnd-project/netobs/blob/main/internal/correlation/README.md#correlationexporterstalled"
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationexporterstalled"
 
         # CorrelationExporterReconcileErrors
-        # 10분 윈도우에서 reconcile error 가 1 회 이상 누적되면 발화한다. increase 가 rate 보다
+        # 10분 윈도우에서 reconcile error 가 3 회 이상 누적되면 발화한다. increase 가 rate 보다
         # 의미가 명확해 채택했다. 일시적 단발 에러는 본 임계를 자연스럽게 넘기지 않는다.
         - alert: CorrelationExporterReconcileErrors
           expr: |
@@ -67,4 +67,4 @@ spec:
           annotations:
             summary: "correlation-exporter reconcile errors accumulating"
             description: "correlation-exporter 의 reconcile cycle 이 10 분 윈도우에서 3 회 이상 에러로 종료됐다. Prometheus 응답, query 문법, network 경로를 점검한다."
-            runbook_url: "https://github.com/inno-rnd-project/netobs/blob/main/internal/correlation/README.md#correlationexporterreconcileerrors"
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationexporterreconcileerrors"

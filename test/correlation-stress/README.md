@@ -36,7 +36,8 @@ kubectl apply -k test/correlation-stress/
 
 ```sh
 kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090 &
-curl -s 'http://localhost:9090/api/v1/query?query=correlation_noisy_neighbor_score{victim_pod="victim"}' | jq
+curl -sG 'http://localhost:9090/api/v1/query' \
+  --data-urlencode 'query=correlation_noisy_neighbor_score{victim_pod="victim"}' | jq
 ```
 
 correlation-debug CLI 와의 cross-check 는 다음과 같다.

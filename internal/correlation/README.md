@@ -223,6 +223,9 @@ make deploy-correlation-prod
 - `correlation_reconcile_pairs_total`: `Correlate` 산출 페어의 누적 합계.
 - `correlation_reconcile_neighbors_total`: `SelectTopN` 채택 후 emit 된 noisy neighbor 엔트리의 누적 합계.
 - `correlation_reconcile_skipped_total{reason}`: skip 된 페어의 누적 합계. reason 은 `low_samples` 또는 `constant`.
+- `correlation_reconcile_partial_total`: 일부 query 가 데이터를 만들지 못한 cycle 의 누적. `metrics_observed < metrics_expected` 인 cycle 마다 증가.
+- `correlation_reconcile_metrics_expected`: 마지막 cycle 의 DefaultMetrics + ExtraMetrics 총 query 수.
+- `correlation_reconcile_metrics_observed`: 마지막 cycle 의 결과에 등장한 distinct src/dst metric 수. expected 와 같지 않으면 일부 query 가 데이터를 만들지 못한 상태.
 - `correlation_reconcile_last_success_timestamp_seconds`: 마지막 성공 reconcile 의 epoch.
 - `correlation_reconcile_errors_total`: 누적 reconcile 에러 수.
 
@@ -230,7 +233,7 @@ make deploy-correlation-prod
 
 ### 카디널리티 분석
 
-victim 1000 pod × dimension 4 × rank 10 = 40,000 series 가 noisy_neighbor 메트릭의 상한이다. self-health 메트릭 7 종을 더해도 40,007 series 로 단일 Prometheus 인스턴스가 처리하기에 안전한 규모다. `TOP_N` 의 binary-side 상한은 100 으로 가드되어 운영자가 의도치 않게 series 폭주를 일으킬 수 없다.
+noisy_neighbor 계열은 동일한 라벨 셋으로 score gauge 와 lag gauge 두 종이 emit 되므로 victim 1000 pod × dimension 4 × rank 10 × metric 2 = 80,000 series 가 상한이다. self-health 메트릭 9 종을 더해도 80,009 series 로 단일 Prometheus 인스턴스가 처리하기에 안전한 규모다. `TOP_N` 의 binary-side 상한은 100 으로 가드되어 운영자가 의도치 않게 series 폭주를 일으킬 수 없다.
 
 ### 메트릭 확인 명령
 
@@ -297,71 +300,6 @@ kubectl patch configmap -n ebpf-project correlation-exporter \
 kubectl rollout restart deployment -n ebpf-project correlation-exporter
 ```
 
-### 메트릭 확인 명령
-
-배포 후 메트릭이 정상 emit 되는지를 세 위치에서 확인 가능하다. cluster 외부 접근에 port-forward 가 막힌 환경 (예: socat 미설치) 에서는 cluster 내부 Pod 의 `kubectl exec` 로 우회한다.
-
-#### 1. Prometheus 쿼리 (cluster 내)
-
-가장 정확한 방법이다. dev cluster 의 Prometheus Pod 에서 직접 쿼리한다.
-
-```sh
-PROM_POD=$(kubectl get pod -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
-
-# 특정 victim 의 dimension 별 Top-N
-kubectl exec -n monitoring $PROM_POD -c prometheus -- \
-  wget -qO- 'http://localhost:9090/api/v1/query?query=topk(10,correlation_noisy_neighbor_score{victim_pod="victim"})' | jq
-
-# suspect-sync 의 cpu rank 만 조회
-kubectl exec -n monitoring $PROM_POD -c prometheus -- \
-  wget -qO- 'http://localhost:9090/api/v1/query?query=correlation_noisy_neighbor_score{victim_pod="victim",suspect_pod="suspect-sync",resource_dimension="cpu"}' | jq
-
-# victim namespace 별 series 분포
-kubectl exec -n monitoring $PROM_POD -c prometheus -- \
-  wget -qO- 'http://localhost:9090/api/v1/query?query=count(correlation_noisy_neighbor_score)by(victim_namespace,resource_dimension)' | jq
-
-# self-health 누적 카운터
-kubectl exec -n monitoring $PROM_POD -c prometheus -- \
-  wget -qO- 'http://localhost:9090/api/v1/query?query=correlation_reconcile_pairs_total' | jq
-```
-
-#### 2. Grafana 대시보드
-
-본 PR 에 추가된 `correlation noisy neighbor` (uid `correlation-overview`) 대시보드를 사용한다.
-
-- `kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80`
-- Grafana 의 `correlation noisy neighbor` 대시보드 열기
-- variable `Victim namespace`, `Victim pod`, `Dimension` 으로 drill down
-- 테이블의 `score` 컬럼이 0.85 이상 빨강, 0.7 이상 주황, 0.5 이상 노랑 임계로 표시되어 강한 페어를 한 눈에 식별 가능
-
-#### 3. exporter `/metrics` 직접 호출
-
-가장 raw 한 출력으로 라벨 셋 전체와 정확한 값을 확인한다. cluster 내 임의 Pod 에서 wget 으로 호출한다.
-
-```sh
-PROM_POD=$(kubectl get pod -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
-
-# noisy neighbor 전체
-kubectl exec -n monitoring $PROM_POD -c prometheus -- \
-  wget -qO- http://correlation-exporter.ebpf-project.svc.cluster.local:9830/metrics | \
-  grep '^correlation_noisy_neighbor_score'
-
-# self-health 메트릭
-kubectl exec -n monitoring $PROM_POD -c prometheus -- \
-  wget -qO- http://correlation-exporter.ebpf-project.svc.cluster.local:9830/metrics | \
-  grep '^correlation_reconcile'
-```
-
-#### 결과가 비어 있을 때
-
-`MIN_SAMPLES=60` 과 `WINDOW=30m` (step 30s) 가드로 페어가 30 분 미만 운영되면 `correlation_reconcile_skipped_total{reason="low_samples"}` 로 분류되어 score 메트릭이 emit 되지 않는다. dev 검증에서 빠른 결과 확인이 필요하면 다음과 같이 임시로 `MIN_SAMPLES` 를 낮춘다 (검증 후 원복).
-
-```sh
-kubectl patch configmap -n ebpf-project correlation-exporter \
-  --patch '{"data":{"MIN_SAMPLES":"10"}}'
-kubectl rollout restart deployment -n ebpf-project correlation-exporter
-```
-
 ### alert runbook
 
 #### CorrelationStrongNoisyNeighbor
@@ -396,7 +334,7 @@ reconcile cycle 이 10 분 윈도우에서 3 회 이상 에러로 종료됐다.
 ```sh
 kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090 &
 ./bin/correlation-debug -prometheus-url http://localhost:9090 -window 1h | \
-  jq '[.[] | select(.status == "ok" and (.pair.dst_metric | test("latency"))) ] |
+  jq '[.[] | select((.status == "ok" or .status == "partial") and (.pair.dst_metric | test("latency"))) ] |
       sort_by(-.max_abs_value) | .[:10]'
 ```
 

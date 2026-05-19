@@ -12,7 +12,7 @@ spec:
   restartPolicy: Always
   containers:
     - name: stress
-      image: polinux/stress:latest
+      image: polinux/stress:1.0.4
       command:
         - sh
         - -c

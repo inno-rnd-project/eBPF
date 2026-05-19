@@ -342,10 +342,13 @@ correlation-exporter는 두 agent의 cause score recording rule과 latency 메�
 | `correlation_reconcile_pairs_total` | Counter | n/a | `Correlate` 산출 페어의 누적 합계 |
 | `correlation_reconcile_neighbors_total` | Counter | n/a | `SelectTopN` 채택 후 emit된 noisy neighbor 엔트리의 누적 합계 |
 | `correlation_reconcile_skipped_total` | Counter | `reason` | skip된 페어의 누적 합계. `reason` ∈ {`low_samples`, `constant`} |
+| `correlation_reconcile_partial_total` | Counter | n/a | 일부 query가 데이터를 만들지 못한 cycle의 누적. `metrics_observed < metrics_expected` 인 cycle마다 증가 |
+| `correlation_reconcile_metrics_expected` | Gauge | n/a | 마지막 cycle의 DefaultMetrics + ExtraMetrics 총 query 수 |
+| `correlation_reconcile_metrics_observed` | Gauge | n/a | 마지막 cycle의 결과에 등장한 distinct src/dst metric 수 |
 | `correlation_reconcile_last_success_timestamp_seconds` | Gauge | n/a | 마지막 성공 reconcile의 epoch 초. `CorrelationExporterStalled` alert의 입력 |
 | `correlation_reconcile_errors_total` | Counter | n/a | reconcile cycle이 wrapped error로 종료된 횟수의 누적 합계 |
 
-> **카디널리티**: victim 1000 pod × dimension 4 × rank 10 = 40,000 series가 noisy_neighbor 메트릭의 상한이다. self-health 7종을 더해도 40,007 series. `TOP_N`의 binary-side 상한 100으로 운영자의 입력 실수에 의한 series 폭주를 차단한다.
+> **카디널리티**: 각 noisy neighbor 엔트리는 동일 라벨 셋으로 `correlation_noisy_neighbor_score`와 `correlation_noisy_neighbor_lag_seconds` 두 gauge를 함께 emit하므로 victim 1000 pod × dimension 4 × rank 10 × metric 2 = 80,000 series가 상한이다. self-health 9종을 더해도 80,009 series. `TOP_N`의 binary-side 상한 100으로 운영자의 입력 실수에 의한 series 폭주를 차단한다.
 
 > **PrometheusRule alerts**: `deploy/correlation/base/prometheus-rule.yaml`이 세 alert를 정의한다. `CorrelationStrongNoisyNeighbor` (max_abs_value > 0.85가 10분 지속), `CorrelationExporterStalled` (last success가 10분 이상 정체), `CorrelationExporterReconcileErrors` (10분 윈도우 에러 3회 이상). 각 alert의 `runbook_url` annotation이 `internal/correlation/README.md`의 헤딩 anchor와 일치해 운영자가 즉시 대응 절차로 이동 가능하다.
 

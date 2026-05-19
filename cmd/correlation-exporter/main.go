@@ -28,9 +28,10 @@ import (
 	"netobs/internal/correlation/exporter"
 )
 
-// maxTopN 은 -top-n flag 의 상한이다. victim 1k * dimension 4 * rank 100 = 400k series 가 절대 상한
-// 이며 운영자가 의도치 않게 series 폭주를 일으키지 않도록 binary 단에서 가드한다. 본 한도가 부족
-// 하다면 cluster 규모와 카디널리티 분석을 동반해 본 값을 올린다.
+// maxTopN 은 -top-n flag 의 상한이다. victim 1k * dimension 4 * rank 100 = gauge 당 400k series
+// 가 절대 상한이며 noisy-neighbor 결과는 neighbor 마다 score / lag gauge 두 종을 같은 라벨 셋으로
+// 함께 emit 하므로 본 두 메트릭만 합쳐도 약 800k series 까지 갈 수 있다. 운영자가 의도치 않게
+// series 폭주를 일으키지 않도록 binary 단에서 본 상한으로 가드한다.
 const maxTopN = 100
 
 // stringSlice 는 -extra-metric 처럼 반복 가능한 flag 를 위한 flag.Value 구현이다.
@@ -76,18 +77,21 @@ func main() {
 	if v := strings.TrimSpace(os.Getenv("PROMETHEUS_URL")); v != "" {
 		cfg.PrometheusURL = v
 	}
-	applyEnvDuration("WINDOW", &cfg.Window)
-	applyEnvDuration("STEP", &cfg.Step)
-	applyEnvDuration("FETCH_TIMEOUT", &cfg.FetchTimeout)
-	applyEnvDuration("RECONCILE_INTERVAL", &reconcileInterval)
-	applyEnvInt("MIN_SAMPLES", &cfg.MinSamples)
-	applyEnvInt("TOP_N", &topN)
+	applyEnvDuration("WINDOW", "window", &cfg.Window)
+	applyEnvDuration("STEP", "step", &cfg.Step)
+	applyEnvDuration("FETCH_TIMEOUT", "fetch-timeout", &cfg.FetchTimeout)
+	applyEnvDuration("RECONCILE_INTERVAL", "reconcile-interval", &reconcileInterval)
+	applyEnvInt("MIN_SAMPLES", "min-samples", &cfg.MinSamples)
+	applyEnvInt("TOP_N", "top-n", &topN)
 	if v := strings.TrimSpace(os.Getenv("LAG_STEPS")); v != "" {
 		var parsed intSlice
 		if err := parsed.Set(v); err != nil {
-			log.Fatalf("env LAG_STEPS parse: %v", err)
+			if !hasCLIFlag(os.Args[1:], "lag-steps") {
+				log.Fatalf("env LAG_STEPS parse: %v", err)
+			}
+		} else {
+			cfg.LagSteps = []int(parsed)
 		}
-		cfg.LagSteps = []int(parsed)
 	}
 	if v := strings.TrimSpace(os.Getenv("LISTEN_ADDR")); v != "" {
 		listenAddr = v
@@ -242,28 +246,50 @@ func reconcileOnce(
 	log.Printf("reconcile ok: pairs=%d neighbors=%d duration=%s", len(results), len(neighbors), duration)
 }
 
-// applyEnvDuration 은 env 값이 있을 때 dst 를 갱신한다. 빈 값이면 dst 유지. 파싱 실패는 fatal 로
-// 격상해 misconfiguration 이 silent 하게 잘못된 default 로 운영되는 것을 차단한다.
-func applyEnvDuration(key string, dst *time.Duration) {
-	v := strings.TrimSpace(os.Getenv(key))
+// hasCLIFlag 는 args 에 -flag, --flag, -flag=, --flag= 패턴이 있는지 검사한다. flag 우선 정책을
+// 정확히 구현하기 위해 env 파싱 실패 fallback 시 사용한다.
+func hasCLIFlag(args []string, name string) bool {
+	single := "-" + name
+	double := "--" + name
+	for _, arg := range args {
+		if arg == single || arg == double ||
+			strings.HasPrefix(arg, single+"=") ||
+			strings.HasPrefix(arg, double+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+// applyEnvDuration 은 env 값이 있을 때 dst 를 갱신한다. 빈 값이면 dst 유지. env 가 잘못된 형식일
+// 때 동일 의미의 CLI flag 가 제공되어 있으면 env 무시 (flag 가 덮어쓸 예정) 하고 그렇지 않으면
+// misconfiguration 을 silent 하게 통과시키지 않도록 fatal 로 격상한다.
+func applyEnvDuration(envKey, flagName string, dst *time.Duration) {
+	v := strings.TrimSpace(os.Getenv(envKey))
 	if v == "" {
 		return
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		log.Fatalf("env %s parse: %v", key, err)
+		if hasCLIFlag(os.Args[1:], flagName) {
+			return
+		}
+		log.Fatalf("env %s parse: %v", envKey, err)
 	}
 	*dst = d
 }
 
-func applyEnvInt(key string, dst *int) {
-	v := strings.TrimSpace(os.Getenv(key))
+func applyEnvInt(envKey, flagName string, dst *int) {
+	v := strings.TrimSpace(os.Getenv(envKey))
 	if v == "" {
 		return
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		log.Fatalf("env %s parse: %v", key, err)
+		if hasCLIFlag(os.Args[1:], flagName) {
+			return
+		}
+		log.Fatalf("env %s parse: %v", envKey, err)
 	}
 	*dst = n
 }
