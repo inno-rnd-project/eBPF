@@ -126,7 +126,7 @@ setup-envtest:
 #                          호스트 설치를 요구하지 않으며 PROMTOOL_IMAGE 변수로 버전을 pin 한다.
 # ============================================================================
 PROMTOOL_IMAGE ?= prom/prometheus:v2.55.0
-PROMETHEUS_RULE_FILES ?= deploy/gpuobs/base/prometheus-rule.yaml deploy/correlation/base/prometheus-rule.yaml
+PROMETHEUS_RULE_FILES ?= deploy/gpuobs/base/prometheus-rule.yaml deploy/correlation/base/prometheus-rule.yaml deploy/injector/base/prometheus-rule.yaml
 PROMTOOL_RULES_TMP_DIR ?= bin/promtool-rules
 
 check-prometheus-rules:

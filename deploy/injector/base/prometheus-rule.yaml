@@ -1,0 +1,65 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: workload-injector
+  namespace: ebpf-project
+  labels:
+    # release 라벨은 podmonitor.yaml 과 동일하게 kube-prometheus-stack 의 ruleSelector 에 매칭되도록
+    # 둔다. helm release 이름이 다른 환경은 overlay 의 patch 로 본 라벨을 덮는다.
+    release: kube-prometheus-stack
+    app.kubernetes.io/name: workload-injector
+    app.kubernetes.io/component: prometheus-rules
+    app.kubernetes.io/part-of: ebpf-project
+spec:
+  groups:
+    # workload-injector.alerts 는 injection 의 정상 / 비정상 lifecycle 과 blast radius 가시성을 둔다.
+    - name: workload-injector.alerts
+      rules:
+        # InjectorActive
+        # injector_active == 1 가 30 초 지속 시 정보성 알림. 운영자가 injection 실행 사실을 즉시
+        # 감지해 모니터링 / 결과 검증 흐름으로 전환 가능하다. 부하 종료 후 active=0 reset 으로 자동
+        # 해소된다.
+        - alert: InjectorActive
+          expr: |
+            injector_active == 1
+          for: 30s
+          labels:
+            severity: info
+            component: injector
+          annotations:
+            summary: "workload-injector active (target={{ $labels.target_namespace }}/{{ $labels.target_pod }}@{{ $labels.target_node }} kind={{ $labels.kind }})"
+            description: "workload-injector 가 target {{ $labels.target_namespace }}/{{ $labels.target_pod }} 노드 {{ $labels.target_node }} 에 {{ $labels.kind }} 부하를 발사 중이다. internal/injector/README.md 의 runbook 절차를 참고한다."
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/injector/README.md#injectoractive"
+
+        # BlastRadiusHigh
+        # correlation_blast_radius_score 가 0.5 를 5 분 지속 시 발화. group 키에서 target_node 와
+        # victim_pod_uid 를 제외해 동일 페어가 Pod 재시작 전후로 중복 발화하지 않게 한다.
+        - alert: BlastRadiusHigh
+          expr: |
+            max by (target_namespace, target_pod, kind, victim_namespace, victim_pod) (
+              correlation_blast_radius_score
+            ) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            component: injector
+          annotations:
+            summary: "high blast radius (target={{ $labels.target_namespace }}/{{ $labels.target_pod }} victim={{ $labels.victim_namespace }}/{{ $labels.victim_pod }} kind={{ $labels.kind }})"
+            description: "target {{ $labels.target_namespace }}/{{ $labels.target_pod }} 의 {{ $labels.kind }} 부하가 victim {{ $labels.victim_namespace }}/{{ $labels.victim_pod }} 의 latency 를 baseline 대비 {{ $value }} 이상 증가시켰다. 합성 부하의 영향 범위가 예상보다 큰 경우이거나 victim 측 운영 워크로드에 영향을 주는 신호다."
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/injector/README.md#blastradiushigh"
+
+        # InjectorStuck
+        # injector_active == 1 가 35 분 지속 시 발화. binary 의 DurationLimit (30 분) + linger (30 초)
+        # 를 모두 넘어가는 시간이라 정상 lifecycle 에서는 절대 발생하지 않는다. cleanup 실패 또는
+        # binary 가 Stop 호출에 도달하지 못한 상태가 의심된다.
+        - alert: InjectorStuck
+          expr: |
+            injector_active == 1
+          for: 35m
+          labels:
+            severity: critical
+            component: injector
+          annotations:
+            summary: "injector stuck (target={{ $labels.target_namespace }}/{{ $labels.target_pod }} kind={{ $labels.kind }})"
+            description: "workload-injector 의 active=1 시계열이 35 분 이상 지속되었다. binary 의 DurationLimit (30 분) 을 초과한 상태라 정상 lifecycle 이 아니다. Job 의 Pod 상태와 spawn 한 stress Pod 의 잔존 여부를 점검한다."
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/injector/README.md#injectorstuck"

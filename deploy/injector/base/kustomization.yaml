@@ -13,3 +13,4 @@ resources:
   - configmap.yaml
   - job-template.yaml
   - podmonitor.yaml
+  - prometheus-rule.yaml
