@@ -88,6 +88,10 @@ func main() {
 
 	var ready atomic.Bool
 	srv := startHTTPServer(cfg.ListenAddr, reg, &ready)
+	// readyz 를 baseline fetch 전에 200 으로 전환해 PodMonitor 의 첫 scrape 가 endpoint not ready
+	// 로 skip 되지 않도록 한다. baseline fetch 가 fetch_timeout 끝까지 걸리면 그동안 메트릭 endpoint
+	// 가 미준비라 부하 시작 직후 first scrape 가 누락될 수 있다.
+	ready.Store(true)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -302,7 +306,6 @@ func runInjection(
 		return fmt.Errorf("baseline fetch: %w", err)
 	}
 	log.Printf("baseline: %d victim candidates", len(baseline))
-	ready.Store(true)
 
 	// 2. 부하 시작 + active=1.
 	collector.SetActive(cfg.TargetNamespace, cfg.TargetPod, cfg.TargetNode, loadgen.Kind(cfg.Kind), 1)

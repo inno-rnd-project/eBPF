@@ -14,8 +14,12 @@ spec:
     matchNames:
       - ebpf-project
   selector:
+    # injector Pod (component=load-injector) 만 매칭하고 spawn 된 stress Pod (component=stress) 는
+    # 제외한다. stress Pod 는 metrics port 가 없어 scrape 시도가 up=0 시계열을 만들어 cardinality
+    # 오염과 false PrometheusUp alert 위험이 있다.
     matchLabels:
       app.kubernetes.io/name: workload-injector
+      app.kubernetes.io/component: load-injector
   podMetricsEndpoints:
     - port: metrics
       path: /metrics

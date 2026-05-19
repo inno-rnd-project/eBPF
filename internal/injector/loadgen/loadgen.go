@@ -76,7 +76,9 @@ func commonPodMeta(name string, params Params) metav1.ObjectMeta {
 		"app.kubernetes.io/name":      "workload-injector",
 		"app.kubernetes.io/component": "stress",
 		"app.kubernetes.io/part-of":   "ebpf-project",
-		"injector.kind":               string(KindCPU), // 호출자가 덮어쓴다
+		// 호출자가 모듈별 (cpu / network / gpu) 값으로 명시 덮어쓰는 라벨이다. 기본값 unknown 으로
+		// 두어 덮어쓰기 누락 시 silent bug 가 아닌 라벨 값으로 즉시 드러나게 한다.
+		"injector.kind": "unknown",
 	}
 	for k, v := range params.Labels {
 		labels[k] = v
