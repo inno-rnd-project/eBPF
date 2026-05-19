@@ -1,0 +1,216 @@
+{
+  "title": "workload injector",
+  "uid": "workload-injector",
+  "tags": ["injector", "correlation", "ebpf"],
+  "schemaVersion": 38,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 0,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "timezone": "browser",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Datasource",
+        "hide": 0,
+        "current": {},
+        "refresh": 1
+      },
+      {
+        "name": "target_namespace",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(injector_active, target_namespace)",
+        "multi": true,
+        "includeAll": true,
+        "label": "Target namespace",
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "target_pod",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(injector_active{target_namespace=~\"$target_namespace\"}, target_pod)",
+        "multi": true,
+        "includeAll": true,
+        "label": "Target pod",
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "kind",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(injector_active, kind)",
+        "multi": true,
+        "includeAll": true,
+        "label": "Kind",
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "injector_active timeline (1=active, 0=idle)",
+      "description": "kind 별 injector 활성 상태 시계열. 부하 시작 / 종료 시점을 한 눈에 식별.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "injector_active{target_namespace=~\"$target_namespace\",target_pod=~\"$target_pod\",kind=~\"$kind\"}",
+          "legendFormat": "{{target_namespace}}/{{target_pod}} {{kind}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepBefore",
+            "fillOpacity": 30
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Blast radius (current snapshot, target x victim x kind)",
+      "description": "최신 cycle 의 correlation_blast_radius_score. 0.5 이상 노랑, 0.7 이상 주황, 0.85 이상 빨강 임계로 강한 영향을 한 눈에 식별.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "correlation_blast_radius_score{target_namespace=~\"$target_namespace\",target_pod=~\"$target_pod\",kind=~\"$kind\"}",
+          "instant": true,
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "endpoint": true,
+              "container": true,
+              "namespace": true,
+              "pod": true
+            },
+            "renameByName": {
+              "Value": "score"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [{ "field": "score", "desc": true }]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "score" },
+            "properties": [
+              { "id": "unit", "value": "none" },
+              { "id": "decimals", "value": 3 },
+              {
+                "id": "custom.cellOptions",
+                "value": { "type": "color-background", "mode": "gradient" }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "blue", "value": null },
+                    { "color": "yellow", "value": 0.5 },
+                    { "color": "orange", "value": 0.7 },
+                    { "color": "red", "value": 0.85 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "baseline vs impact latency (per victim)",
+      "description": "부하 윈도우 전후의 victim latency 평균 비교. 두 값의 차이가 곧 blast radius 의 raw 입력.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "expr": "injector_baseline_latency_seconds{target_namespace=~\"$target_namespace\",target_pod=~\"$target_pod\",kind=~\"$kind\"}",
+          "legendFormat": "baseline {{victim_pod}}",
+          "refId": "A"
+        },
+        {
+          "expr": "injector_impact_latency_seconds{target_namespace=~\"$target_namespace\",target_pod=~\"$target_pod\",kind=~\"$kind\"}",
+          "legendFormat": "impact {{victim_pod}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "noisy neighbor cross-reference (#51 exporter overlay)",
+      "description": "correlation_noisy_neighbor_score 가 injector_active 윈도우와 시간상 align 되는지 시각화. 합성 부하가 #51 의 자연 분석 layer 에 정확히 반영되는지 cross-validate.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        {
+          "expr": "max(correlation_noisy_neighbor_score) by (resource_dimension)",
+          "legendFormat": "noisy_neighbor {{resource_dimension}}",
+          "refId": "A"
+        },
+        {
+          "expr": "max(injector_active)",
+          "legendFormat": "injector_active",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 5
+          }
+        }
+      }
+    }
+  ]
+}

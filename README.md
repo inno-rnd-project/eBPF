@@ -10,6 +10,7 @@ Kubernetes observability agent suite combining eBPF-based network latency tracin
 | `gpuobs-agent` | DaemonSet | `:9820` | [`cmd/gpuobs-agent`](cmd/gpuobs-agent) | NVML / CUDA uprobe로 GPU 디바이스 상태, GPU별 메모리 점유, CUDA kernel launch / memcpy를 측정해 `gpuobs_*` 메트릭 emit |
 | `correlation-exporter` | Deployment | `:9830` | [`cmd/correlation-exporter`](cmd/correlation-exporter), [`internal/correlation`](internal/correlation) | 주기적으로 `netobs_*` / `gpuobs_*` 시계열을 fetch해 Pearson 상관계수 산출 후 Top-N noisy neighbor를 `correlation_noisy_neighbor_*` 메트릭으로 emit |
 | `correlation-debug` | CLI (one-shot) | n/a | [`cmd/correlation-debug`](cmd/correlation-debug) | exporter와 동일 라이브러리를 reuse하는 운영자용 1회성 진단 CLI. alert label로 받은 페어를 같은 시점에 재현 |
+| `workload-injector` | Job | `:9840` | [`cmd/workload-injector`](cmd/workload-injector), [`internal/injector`](internal/injector) | dev / staging 환경에서 cpu / network / gpu 합성 부하를 트리거해 correlation 분석 layer 의 산출을 검증. `injector_active` 와 `correlation_blast_radius_score` 메트릭 emit. prod 자동 실행 금지 (cluster label gate) |
 
 각 컴포넌트의 상세 동작과 추가 환경변수는 본 문서의 해당 절과 [`internal/correlation/README.md`](internal/correlation/README.md) 를 참고한다.
 
