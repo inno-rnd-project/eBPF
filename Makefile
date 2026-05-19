@@ -34,7 +34,7 @@ CGO_gpuobs-agent := 1
 #   2) OVERLAY_PATH_<name>에 kustomize 경로 지정
 # 이후 render-<name>, deploy-<name>, delete-<name>이 자동으로 매치된다.
 # ============================================================================
-OVERLAYS := netobs-dev netobs-prod gpuobs-dev gpuobs-prod correlation-dev correlation-prod dashboards
+OVERLAYS := netobs-dev netobs-prod gpuobs-dev gpuobs-prod correlation-dev correlation-prod injector-dev dashboards
 
 OVERLAY_PATH_netobs-dev       := deploy/netobs/overlays/dev
 OVERLAY_PATH_netobs-prod      := deploy/netobs/overlays/prod
@@ -42,6 +42,8 @@ OVERLAY_PATH_gpuobs-dev       := deploy/gpuobs/overlays/dev
 OVERLAY_PATH_gpuobs-prod      := deploy/gpuobs/overlays/prod
 OVERLAY_PATH_correlation-dev  := deploy/correlation/overlays/dev
 OVERLAY_PATH_correlation-prod := deploy/correlation/overlays/prod
+# injector 는 본 시리즈 #52 의 비목표로 prod overlay 를 두지 않는다. dev / staging 한정.
+OVERLAY_PATH_injector-dev     := deploy/injector/overlays/dev
 # dashboards 는 dev/prod 분기가 없는 클러스터 공용 패키지다. Grafana sidecar 가 cluster 전체
 # ConfigMap 을 watch 하므로 단일 배포로 충분하다.
 OVERLAY_PATH_dashboards       := deploy/dashboards
