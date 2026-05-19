@@ -1,0 +1,64 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: workload-injector
+  namespace: ebpf-project
+  labels:
+    app.kubernetes.io/name: workload-injector
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: load-injector
+spec:
+  # 실패 시 재시도하지 않는다. injection 은 시간 종속적이라 자동 재시도가 misuse 와 동일 효과.
+  backoffLimit: 0
+  # Job Pod 가 종료된 직후 30 초간 살아 있도록 두어 마지막 PodMonitor scrape 가 injector_active=0
+  # transition 을 잡도록 한다. ttlSecondsAfterFinished 가 Pod 의 garbage collection 을 통제한다.
+  ttlSecondsAfterFinished: 60
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: workload-injector
+        app.kubernetes.io/part-of: ebpf-project
+        app.kubernetes.io/component: load-injector
+    spec:
+      serviceAccountName: workload-injector
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: workload-injector
+          image: workload-injector
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: workload-injector
+          # KIND / TARGET_NAMESPACE / TARGET_POD 는 운영자가 매번 Job 매니페스트에서 직접 지정한다.
+          # 본 base template 은 placeholder 만 두어 strategic merge patch 로 overwrite 가능하게 한다.
+          env:
+            - name: KIND
+              value: "cpu"
+            - name: TARGET_NAMESPACE
+              value: "default"
+            - name: TARGET_POD
+              value: "victim"
+            - name: INTENSITY
+              value: "500m"
+          ports:
+            - name: metrics
+              containerPort: 9840
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi

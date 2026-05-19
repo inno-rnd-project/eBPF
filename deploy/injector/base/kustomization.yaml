@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ebpf-project 네임스페이스는 netobs base 가 이미 생성하므로 본 base 는 namespace 리소스를 별도로
+# 두지 않는다. injector 만 단독 deploy 는 사용 사례가 아니며 운영자는 netobs / gpuobs 가 선행 배포된
+# 상태에서 본 매니페스트를 적용한다.
+namespace: ebpf-project
+
+resources:
+  - serviceaccount.yaml
+  - clusterrole.yaml
+  - clusterrolebinding.yaml
+  - configmap.yaml
+  - job-template.yaml
+  - podmonitor.yaml
