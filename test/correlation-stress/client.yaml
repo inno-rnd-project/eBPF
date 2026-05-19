@@ -32,6 +32,10 @@ spec:
           # 와 동일 phase 라 victim latency 가 burst phase 에 변동한다. 매 iteration 0.1 초 sleep 으로
           # RPS 10 정도 (5 분 burst 에 ~3000 요청) 부하라 worker1 의 다른 Pod 에 영향을 거의 주지
           # 않는다.
+          # burst phase 는 RPS 10 (sleep 0.1), idle phase 는 RPS 1 (sleep 1) 의 baseline 을 유지한다.
+          # idle 에 트래픽이 완전히 없으면 victim latency histogram 이 비어 histogram_quantile 가
+          # NaN 을 반환하고 NaN pairwise 제거로 sample 부족이 발생해 페어가 산출에서 제외된다.
+          # baseline RPS 1 만 유지해도 1 분 rate window 에 충분한 sample 이 모인다.
           while true; do
             now=$(date +%s)
             phase=$((now % 600))
@@ -42,8 +46,11 @@ spec:
                 sleep 0.1
               done
             else
-              remaining=$((600 - phase))
-              sleep $remaining
+              end_at=$((now + 600 - phase))
+              while [ "$(date +%s)" -lt "$end_at" ]; do
+                curl -s -o /dev/null http://victim.correlation-stress.svc.cluster.local/ || true
+                sleep 1
+              done
             fi
           done
       resources:
