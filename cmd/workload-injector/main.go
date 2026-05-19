@@ -39,11 +39,20 @@ import (
 const lingerAfterStop = 30 * time.Second
 
 func main() {
+	// main 본체를 runMain 으로 분리한 뒤 return code 를 os.Exit 하나로만 처리해 lease release 등
+	// deferred cleanup 이 fail-fast path 에서도 항상 호출되도록 한다. 이전 구조 (log.Fatalf /
+	// os.Exit 직접 호출) 는 deferred 실행을 건너뛰어 ConfigMap lease 가 cfg.Duration*2 TTL 만료
+	// 까지 남고 다음 injection 이 lease 충돌로 거부되는 silent regression 을 일으켰다.
+	os.Exit(runMain())
+}
+
+func runMain() int {
 	cfg := loadConfig()
 
 	client, err := newK8sClient(cfg.Kubeconfig)
 	if err != nil {
-		log.Fatalf("k8s client: %v", err)
+		log.Printf("k8s client: %v", err)
+		return 1
 	}
 
 	reg := prometheus.NewRegistry()
@@ -51,24 +60,28 @@ func main() {
 	reg.MustRegister(collector)
 	health := exporter.NewHealth(reg)
 
-	// 안전 가드 3 종을 본격 실행 전에 모두 통과시킨다. silent misuse 를 막기 위해 실패는 fatal 로
-	// 격상하고 skipped_gate status 로 self-health 에 기록.
+	kind := loadgen.Kind(cfg.Kind)
+
+	// 안전 가드 4 종은 lease acquire 전에 통과시킨다. lease 획득 전 실패는 release 가 필요 없다.
 	if err := safety.CheckDuration(cfg.Duration); err != nil {
-		health.RecordRun(loadgen.Kind(cfg.Kind), "skipped_gate")
-		log.Fatalf("safety: %v", err)
+		health.RecordRun(kind, "skipped_gate")
+		log.Printf("safety: %v", err)
+		return 1
 	}
-	if err := safety.CheckIntensity(loadgen.Kind(cfg.Kind), cfg.Intensity); err != nil {
-		health.RecordRun(loadgen.Kind(cfg.Kind), "skipped_gate")
-		log.Fatalf("safety: %v", err)
+	if err := safety.CheckIntensity(kind, cfg.Intensity); err != nil {
+		health.RecordRun(kind, "skipped_gate")
+		log.Printf("safety: %v", err)
+		return 1
 	}
 	if err := safety.CheckClusterLabel(context.Background(), client, cfg.AllowClusterLabel); err != nil {
-		health.RecordRun(loadgen.Kind(cfg.Kind), "skipped_gate")
-		log.Fatalf("safety: %v", err)
+		health.RecordRun(kind, "skipped_gate")
+		log.Printf("safety: %v", err)
+		return 1
 	}
-
 	if err := verifyTargetPod(context.Background(), client, cfg.TargetNamespace, cfg.TargetPod); err != nil {
-		health.RecordRun(loadgen.Kind(cfg.Kind), "skipped_gate")
-		log.Fatalf("target pod: %v", err)
+		health.RecordRun(kind, "skipped_gate")
+		log.Printf("target pod: %v", err)
+		return 1
 	}
 
 	// 동일 target 동시 injection 차단. lease TTL 은 duration 의 2 배로 두어 cleanup 실패 시에도
@@ -76,37 +89,39 @@ func main() {
 	release, err := safety.AcquireLock(context.Background(), client, cfg.LockNamespace,
 		cfg.TargetNamespace, cfg.TargetPod, cfg.LockHolder, cfg.Duration*2)
 	if err != nil {
-		health.RecordRun(loadgen.Kind(cfg.Kind), "skipped_gate")
-		log.Fatalf("acquire lock: %v", err)
+		health.RecordRun(kind, "skipped_gate")
+		log.Printf("acquire lock: %v", err)
+		return 1
 	}
 	defer release()
 
-	gen, err := loadgen.New(loadgen.Kind(cfg.Kind), client)
+	gen, err := loadgen.New(kind, client)
 	if err != nil {
-		log.Fatalf("loadgen: %v", err)
+		log.Printf("loadgen: %v", err)
+		return 1
 	}
 
 	var ready atomic.Bool
 	srv := startHTTPServer(cfg.ListenAddr, reg, &ready)
-	// readyz 를 baseline fetch 전에 200 으로 전환해 PodMonitor 의 첫 scrape 가 endpoint not ready
-	// 로 skip 되지 않도록 한다. baseline fetch 가 fetch_timeout 끝까지 걸리면 그동안 메트릭 endpoint
-	// 가 미준비라 부하 시작 직후 first scrape 가 누락될 수 있다.
-	ready.Store(true)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
+	// readyz 를 baseline fetch 전에 200 으로 전환해 PodMonitor 의 첫 scrape 가 endpoint not ready
+	// 로 skip 되지 않도록 한다.
+	ready.Store(true)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	if err := runInjection(ctx, cfg, client, gen, collector, health, &ready); err != nil {
 		log.Printf("injection failed: %v", err)
-		health.RecordRun(loadgen.Kind(cfg.Kind), "error")
-		os.Exit(1)
+		health.RecordRun(kind, "error")
+		return 1
 	}
-	health.RecordRun(loadgen.Kind(cfg.Kind), "ok")
+	health.RecordRun(kind, "ok")
+	return 0
 }
 
 // config 는 운영자 입력을 모은 구조체다. env 와 flag 둘 다 지원하며 flag 가 우선이다.
@@ -376,7 +391,11 @@ func fetchVictimLatency(
 	cfg *config,
 	start, end time.Time,
 ) (map[blastradius.VictimCandidate][]float64, error) {
-	query := `histogram_quantile(0.99, sum by(node, src_namespace, src_pod, src_pod_uid, le) (rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])))`
+	// rate window 1m 은 step 30s 의 약 2 배로 짧다. window 가 길면 baseline 측 sample 이 impact
+	// 평균에 섞이는 dilution (DURATION 5 분일 때 rate window 5 분이면 impact 평균의 절반이 baseline
+	// 으로 희석) 이 발생해 score 가 부풀려지지 않고 줄어든다. 1m 은 sample variance 가 다소 크지만
+	// 본 도구의 5 ~ 30 분 부하 윈도우에서 baseline 격리 정확도가 더 우선이다.
+	query := `histogram_quantile(0.99, sum by(node, src_namespace, src_pod, src_pod_uid, le) (rate(netobs_pod_stage_latency_labeled_seconds_bucket[1m])))`
 	series, err := fetcher.Fetch(ctx, query, start, end, 30*time.Second)
 	if err != nil {
 		return nil, err

@@ -89,7 +89,7 @@ PROM_POD=$(kubectl get pod -n monitoring -l app.kubernetes.io/name=prometheus -o
 kubectl exec -n monitoring $PROM_POD -c prometheus -- \
   wget -qO- 'http://localhost:9090/api/v1/query?query=injector_active' | jq
 
-# 5) Job 정리 (ttlSecondsAfterFinished 60s 후 자동 삭제되지만 수동 정리 가능)
+# 5) Job 정리 (ttlSecondsAfterFinished 120s 후 자동 삭제되지만 수동 정리 가능)
 kubectl delete -f test/injector-examples/cpu.yaml
 ```
 

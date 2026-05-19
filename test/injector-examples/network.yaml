@@ -10,7 +10,7 @@ metadata:
     injector.kind: network
 spec:
   backoffLimit: 0
-  ttlSecondsAfterFinished: 60
+  ttlSecondsAfterFinished: 120
   template:
     metadata:
       labels:

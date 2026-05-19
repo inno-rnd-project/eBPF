@@ -51,9 +51,13 @@ func (g *networkGen) Start(ctx context.Context, params Params) error {
 			Hostname:      serverName,
 			Containers: []corev1.Container{
 				{
-					Name:    "iperf3",
-					Image:   "networkstatic/iperf3:3.16",
-					Command: []string{"iperf3", "-s", "-1"},
+					Name:  "iperf3",
+					Image: "networkstatic/iperf3:3.16",
+					// -1 (one-off) 옵션은 첫 connection 종료 후 server process 가 즉시 종료된다.
+					// client 의 nc -z probe 가 첫 connection 으로 인식되어 server 가 종료된 뒤
+					// 실제 iperf3 -c 가 실패하므로 제거하고 injector binary 의 Stop 호출이 Pod
+					// delete 로 정상 cleanup 한다.
+					Command: []string{"iperf3", "-s"},
 					Ports: []corev1.ContainerPort{
 						{ContainerPort: 5201, Name: "iperf3", Protocol: corev1.ProtocolTCP},
 					},
@@ -84,7 +88,10 @@ func (g *networkGen) Start(ctx context.Context, params Params) error {
 	// server Pod 의 DNS 이름. Pod 가 spawn 된 후 Endpoints 가 만들어지는 시점은 K8s scheduler 에
 	// 달려 있어 client 의 iperf3 가 즉시 connect 실패할 수 있다. iperf3 client 는 자동 재시도가
 	// 없으므로 sh -c 의 until 루프로 30 초 안에 ready 되는지 polling 후 트래픽 발사한다.
-	serverDNS := fmt.Sprintf("%s.workload-injector.%s.svc.cluster.local", serverName, params.SpawnNamespace)
+	// 상대 DNS 이름 (FQDN 대신) 으로 둬 cluster 의 DNS suffix 가 cluster.local 외의 다른 도메인
+	// 이라도 ndots:5 search 룰로 자동 해석되도록 한다. client 와 server 가 같은 namespace
+	// (params.SpawnNamespace) 라 추가 namespace 한정도 불필요하다.
+	serverDNS := fmt.Sprintf("%s.workload-injector", serverName)
 	client := &corev1.Pod{
 		ObjectMeta: clientMeta,
 		Spec: corev1.PodSpec{

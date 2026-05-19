@@ -31,7 +31,7 @@ kubectl exec -n monitoring $PROM_POD -c prometheus -- \
 kubectl exec -n monitoring $PROM_POD -c prometheus -- \
   wget -qO- 'http://localhost:9090/api/v1/query?query=correlation_blast_radius_score{kind=%22cpu%22}' | jq
 
-# 5) Job 정리 (ttlSecondsAfterFinished 60 으로 자동 삭제되지만 수동 정리 가능)
+# 5) Job 정리 (ttlSecondsAfterFinished 120 으로 자동 삭제되지만 수동 정리 가능)
 kubectl delete -f test/injector-examples/cpu.yaml
 ```
 
