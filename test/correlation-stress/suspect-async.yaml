@@ -35,5 +35,8 @@ spec:
           cpu: 100m
           memory: 32Mi
         limits:
-          cpu: 4000m
+          # suspect-sync 와 동일하게 cpu limit 500m 로 두어 stress 가 throttle 을 강제 발생시킨다.
+          # cycle 길이만 7 분 (sync 의 10 분) 으로 달라 phase drift 가 영구적이고 score 변동 패턴
+          # 자체는 sync 와 동일한 ~1 / 0 binary 신호로 잡힌다.
+          cpu: 500m
           memory: 128Mi
