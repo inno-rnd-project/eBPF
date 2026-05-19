@@ -239,20 +239,21 @@ spec:
     # 산출한다. observability overview dashboard (#53) 의 single-stat 패널이 본 record 4 종을 직접
     # 참조한다. 각 score 는 0 ~ 1 사이로 정규화되며 1 이 healthy, 0 이 worst 다. cluster 의 어느 노드
     # 나 Pod 라도 unhealthy 신호가 있으면 score 가 떨어지도록 max / quantile 기반 cluster aggregation
-    # 을 적용한다. GPU 미설치 cluster 또는 trafficc 없는 dev cluster 에서는 base series 가 비어 score
+    # 을 적용한다. GPU 미설치 cluster 또는 traffic 없는 dev cluster 에서는 base series 가 비어 score
     # 가 산출되지 않을 수 있으며 본 경우 dashboard 에서 N/A 로 표시된다.
     - name: netobs-gpuobs.cluster-health.recording
       interval: 30s
       rules:
         # cluster:gpu_health_score:5m
         # cluster 의 어느 GPU 라도 throttle reason 이 동시에 다수 활성이면 health 가 떨어진다.
-        # gpuobs_device_throttle_active 는 reason 별 0/1 gauge 이며 노드의 모든 GPU 의 모든 reason
-        # 합이 9 (현재 reason 9 종) 가 곧 worst case 다. 노드 최대값을 cluster 최저값으로 반전한다.
+        # gpuobs_device_throttle_active 는 reason 별 0/1 gauge 다. 노드의 GPU 별로 reason 합을 먼저
+        # 산출한 뒤 (sum by(node, gpu_uuid)) cluster 최대값을 reason 9 종으로 normalize 한다. 노드
+        # 단위 sum 만으로 산출하면 multi-GPU 노드에서 GPU 수가 곱해져 worst case 가 부풀려진다.
         - record: cluster:gpu_health_score:5m
           expr: |
             1 - clamp_max(
               max(
-                sum by(node) (gpuobs_device_throttle_active)
+                sum by(node, gpu_uuid) (gpuobs_device_throttle_active)
               ) / 9,
               1
             )
@@ -268,13 +269,13 @@ spec:
             )
 
         # cluster:network_health_score:5m
-        # cluster 전체 drop 이벤트 rate 가 100/s 가 worst case (1.0) 다. 100/s 임계는 본 dev cluster
-        # 의 정상 운영 시 drop rate 0 ~ 5 / s 범위와 강한 부하 시 50 ~ 100 / s 범위를 기준으로 한다.
-        # 운영 환경 cluster 규모에 따라 본 임계는 follow-up 으로 조정 가능하다.
+        # 노드 단위 drop rate 의 cluster 최대값이 100/s 가 worst case 다. cluster 전체 sum 으로
+        # 산출하면 노드 수가 늘수록 자연스럽게 drop 도 늘어 임계가 의미를 잃는다. max by(node) 로
+        # 가장 압박 받는 노드 기준으로 산출해 cluster 규모와 무관한 health 신호를 만든다.
         - record: cluster:network_health_score:5m
           expr: |
             1 - clamp_max(
-              sum(rate(netobs_drop_events_labeled_total[5m])) / 100,
+              max by(node) (sum by(node) (rate(netobs_drop_events_labeled_total[5m]))) / 100,
               1
             )
 

@@ -24,7 +24,7 @@
         "name": "node",
         "type": "query",
         "datasource": "${datasource}",
-        "query": "label_values(node:gpu_util_p95:5m, node)",
+        "query": "label_values(up{job=~\".*agent.*\"}, node)",
         "multi": true,
         "includeAll": true,
         "label": "Node",
@@ -313,7 +313,7 @@
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 31 },
       "targets": [
         {
-          "expr": "ALERTS{alertstate=\"firing\",node=~\"$node\"} or ALERTS{alertstate=\"firing\",src_namespace=~\".+\"}",
+          "expr": "ALERTS{alertstate=\"firing\",node=~\"$node\"}",
           "instant": true,
           "format": "table",
           "refId": "A"
