@@ -39,10 +39,7 @@ func (g *gpuGen) Start(ctx context.Context, params Params) error {
 		return fmt.Errorf("gpu loadgen: parse intensity %q: %w", params.Intensity, err)
 	}
 
-	name := fmt.Sprintf("stress-gpu-%s", params.TargetPod)
-	if len(name) > 63 {
-		name = name[:63]
-	}
+	name := sanitizeName("stress-gpu", params.TargetPod)
 	meta := commonPodMeta(name, params)
 	meta.Labels["injector.kind"] = string(KindGPU)
 	pod := &corev1.Pod{

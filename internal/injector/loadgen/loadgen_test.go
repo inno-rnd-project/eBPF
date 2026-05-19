@@ -205,6 +205,30 @@ func TestNetwork_AlreadyExistsTolerated(t *testing.T) {
 	}
 }
 
+// TestSanitizeName 은 DNS-1123 위반 문자가 정상 정규화되고 63 자 상한이 적용되는지 검증한다.
+func TestSanitizeName(t *testing.T) {
+	cases := []struct {
+		prefix string
+		target string
+		want   string
+	}{
+		{"stress-cpu", "victim", "stress-cpu-victim"},
+		{"stress-cpu", "Victim_Pod", "stress-cpu-victim-pod"},
+		{"stress-cpu", "POD.NAME", "stress-cpu-pod-name"},
+		{"stress-cpu", "", "stress-cpu"},
+		{"stress-cpu", "1234567890123456789012345678901234567890123456789012345678901234", "stress-cpu-1234567890123456789012345678901234567890123456789012"},
+	}
+	for _, tc := range cases {
+		got := sanitizeName(tc.prefix, tc.target)
+		if got != tc.want {
+			t.Errorf("sanitizeName(%q, %q)=%q want %q", tc.prefix, tc.target, got, tc.want)
+		}
+		if len(got) > 63 {
+			t.Errorf("len=%d exceeds 63", len(got))
+		}
+	}
+}
+
 // ensure apierrors / schema imported even if not directly referenced (compile guard for future tests).
 var _ = apierrors.IsNotFound
 var _ schema.GroupVersionResource

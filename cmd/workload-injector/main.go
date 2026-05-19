@@ -342,10 +342,10 @@ func runInjection(
 	loadEnd := time.Now()
 	health.RecordDuration(loadgen.Kind(cfg.Kind), loadEnd.Sub(loadStart))
 
-	// 5. impact fetch.
-	impactEnd := time.Now()
-	impactStart := impactEnd.Add(-cfg.BaselineWindow)
-	impact, err := fetchVictimLatency(ctx, fetcher, cfg, impactStart, impactEnd)
+	// 5. impact fetch. 부하 윈도우 (loadStart ~ loadEnd) 와 정확히 일치하는 구간만 fetch 해
+	// baseline 측 데이터가 impact 평균에 섞이지 않게 한다. step 30s 기준 5 분 부하면 sample 10 개
+	// 이상이라 평균 산출 안정성에 충분하다.
+	impact, err := fetchVictimLatency(ctx, fetcher, cfg, loadStart, loadEnd)
 	if err != nil {
 		health.RecordError(loadgen.Kind(cfg.Kind), "impact_fetch")
 		return fmt.Errorf("impact fetch: %w", err)
@@ -432,6 +432,9 @@ func computeBlastResults(
 	return out
 }
 
+// meanOf 는 NaN / Inf 만 제거하고 0 을 포함한 finite 값의 평균을 산출한다. latency 시계열에서 0 도
+// 의미 있는 값 (트래픽 없음) 일 수 있어 평균 계산에서 0 을 임의로 제외하면 baseline 측 데이터가
+// 정상값으로 오인되어 impact 비교가 왜곡될 수 있다.
 func meanOf(in []float64) float64 {
 	if len(in) == 0 {
 		return 0
@@ -439,7 +442,7 @@ func meanOf(in []float64) float64 {
 	var sum float64
 	var n int
 	for _, v := range in {
-		if v != v || v == 0 {
+		if v != v || v > 1e308 || v < -1e308 {
 			continue
 		}
 		sum += v

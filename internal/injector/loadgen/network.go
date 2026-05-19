@@ -36,13 +36,8 @@ func (g *networkGen) Start(ctx context.Context, params Params) error {
 		bandwidth = "100M"
 	}
 
-	serverName := fmt.Sprintf("stress-net-server-%s", params.TargetPod)
-	clientName := fmt.Sprintf("stress-net-client-%s", params.TargetPod)
-	for _, n := range []string{serverName, clientName} {
-		if len(n) > 63 {
-			return fmt.Errorf("network loadgen: name too long: %s", n)
-		}
-	}
+	serverName := sanitizeName("stress-net-server", params.TargetPod)
+	clientName := sanitizeName("stress-net-client", params.TargetPod)
 
 	serverMeta := commonPodMeta(serverName, params)
 	serverMeta.Labels["injector.kind"] = string(KindNetwork)

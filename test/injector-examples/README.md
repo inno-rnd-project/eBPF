@@ -13,19 +13,25 @@
 
 ### cpu kind (5 분 부하)
 
+각 예제는 독립적인 Job manifest 다. 운영자가 직접 yaml 을 edit (TARGET_POD / INTENSITY / DURATION) 한 후 apply 하는 흐름이 가장 명확하다.
+
 ```sh
+# 1) TARGET_POD 등을 환경에 맞게 직접 edit (vim / sed)
+vim test/injector-examples/cpu.yaml
+
+# 2) Job 적용
 kubectl apply -f test/injector-examples/cpu.yaml
 
-# 메트릭 확인
+# 3) 메트릭 확인 (Job 의 Pod 가 1/1 Running 진입 후 ~30 초)
 PROM_POD=$(kubectl get pod -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
 kubectl exec -n monitoring $PROM_POD -c prometheus -- \
   wget -qO- 'http://localhost:9090/api/v1/query?query=injector_active' | jq
 
-# 5 분 후 결과 확인
+# 4) DURATION (기본 5 분) 종료 후 결과 확인
 kubectl exec -n monitoring $PROM_POD -c prometheus -- \
   wget -qO- 'http://localhost:9090/api/v1/query?query=correlation_blast_radius_score{kind=%22cpu%22}' | jq
 
-# Job 정리 (ttlSecondsAfterFinished 로 자동 삭제되지만 수동 정리 가능)
+# 5) Job 정리 (ttlSecondsAfterFinished 60 으로 자동 삭제되지만 수동 정리 가능)
 kubectl delete -f test/injector-examples/cpu.yaml
 ```
 

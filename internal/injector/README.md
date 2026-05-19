@@ -78,10 +78,11 @@ make image-build-workload-injector
 # 2) base 매니페스트 적용 (1 회)
 make deploy-injector-dev
 
-# 3) 단일 injection 실행 (cpu kind, victim Pod 한 개에 5 분 부하)
-kubectl -n ebpf-project create job --from=job.batch/workload-injector my-cpu-injection
-kubectl -n ebpf-project set env job/my-cpu-injection \
-  KIND=cpu TARGET_NAMESPACE=default TARGET_POD=victim INTENSITY=500m
+# 3) 단일 injection 실행. test/injector-examples/ 의 cpu / network / gpu 3 종 예제 Job manifest 를
+#    직접 edit (TARGET_POD / INTENSITY / DURATION) 후 apply 한다. kubectl create job --from 패턴은
+#    base job 의 env 가 placeholder 라 부적합하다.
+vim test/injector-examples/cpu.yaml
+kubectl apply -f test/injector-examples/cpu.yaml
 
 # 4) 메트릭 관찰
 PROM_POD=$(kubectl get pod -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
@@ -89,10 +90,8 @@ kubectl exec -n monitoring $PROM_POD -c prometheus -- \
   wget -qO- 'http://localhost:9090/api/v1/query?query=injector_active' | jq
 
 # 5) Job 정리 (ttlSecondsAfterFinished 60s 후 자동 삭제되지만 수동 정리 가능)
-kubectl -n ebpf-project delete job my-cpu-injection
+kubectl delete -f test/injector-examples/cpu.yaml
 ```
-
-`test/injector-examples/` 의 cpu / network / gpu 3 종 예제 Job manifest 를 직접 적용해도 된다.
 
 ## 카디널리티 분석
 

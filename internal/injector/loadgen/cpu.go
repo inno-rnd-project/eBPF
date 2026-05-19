@@ -41,10 +41,7 @@ func (g *cpuGen) Start(ctx context.Context, params Params) error {
 		workers = 1
 	}
 
-	name := fmt.Sprintf("stress-cpu-%s", params.TargetPod)
-	if len(name) > 63 {
-		name = name[:63]
-	}
+	name := sanitizeName("stress-cpu", params.TargetPod)
 	meta := commonPodMeta(name, params)
 	meta.Labels["injector.kind"] = string(KindCPU)
 	pod := &corev1.Pod{

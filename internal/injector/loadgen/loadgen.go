@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -106,6 +108,29 @@ func deletePod(ctx context.Context, client kubernetes.Interface, name types.Name
 		return nil
 	}
 	return fmt.Errorf("delete pod %s: %w", name, err)
+}
+
+// dns1123Sanitizer 는 DNS-1123 라벨 규칙 위반 문자를 하이픈으로 치환하기 위한 정규식이다.
+// K8s Pod 이름은 lowercase 영문 / 숫자 / 하이픈만 허용하므로 target Pod 이름에 대문자나 특수문자가
+// 있어도 안전하게 stress Pod 이름을 만들 수 있게 한다.
+var dns1123Sanitizer = regexp.MustCompile(`[^a-z0-9-]+`)
+
+// sanitizeName 은 prefix-target 형태의 Pod 이름을 DNS-1123 규칙에 맞추어 정규화한다. 대문자는
+// 소문자로, 허용되지 않는 문자는 하이픈으로 치환하고 63 자 상한을 적용한다. 본 helper 는 cpu /
+// network / gpu 세 모듈이 spawn 하는 Pod 이름의 일관된 정규화 단일 지점이다.
+func sanitizeName(prefix, target string) string {
+	target = strings.ToLower(target)
+	target = dns1123Sanitizer.ReplaceAllString(target, "-")
+	target = strings.Trim(target, "-")
+	name := fmt.Sprintf("%s-%s", prefix, target)
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	name = strings.Trim(name, "-")
+	if name == "" {
+		name = prefix
+	}
+	return name
 }
 
 // deleteAll 은 다중 spawn 된 Pod 를 한 번에 cleanup 한다. 일부 삭제 실패가 있어도 나머지를 계속
