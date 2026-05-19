@@ -31,6 +31,7 @@ import (
 	"netobs/internal/injector/blastradius"
 	"netobs/internal/injector/exporter"
 	"netobs/internal/injector/loadgen"
+	"netobs/internal/injector/safety"
 )
 
 // lingerAfterStop 은 injector_active=0 으로 reset 한 후 시계열을 유지하는 시간이다. PodMonitor 의
@@ -45,19 +46,45 @@ func main() {
 		log.Fatalf("k8s client: %v", err)
 	}
 
+	reg := prometheus.NewRegistry()
+	collector := exporter.NewCollector()
+	reg.MustRegister(collector)
+	health := exporter.NewHealth(reg)
+
+	// 안전 가드 3 종을 본격 실행 전에 모두 통과시킨다. silent misuse 를 막기 위해 실패는 fatal 로
+	// 격상하고 skipped_gate status 로 self-health 에 기록.
+	if err := safety.CheckDuration(cfg.Duration); err != nil {
+		health.RecordRun(loadgen.Kind(cfg.Kind), "skipped_gate")
+		log.Fatalf("safety: %v", err)
+	}
+	if err := safety.CheckIntensity(loadgen.Kind(cfg.Kind), cfg.Intensity); err != nil {
+		health.RecordRun(loadgen.Kind(cfg.Kind), "skipped_gate")
+		log.Fatalf("safety: %v", err)
+	}
+	if err := safety.CheckClusterLabel(context.Background(), client, cfg.AllowClusterLabel); err != nil {
+		health.RecordRun(loadgen.Kind(cfg.Kind), "skipped_gate")
+		log.Fatalf("safety: %v", err)
+	}
+
 	if err := verifyTargetPod(context.Background(), client, cfg.TargetNamespace, cfg.TargetPod); err != nil {
+		health.RecordRun(loadgen.Kind(cfg.Kind), "skipped_gate")
 		log.Fatalf("target pod: %v", err)
 	}
+
+	// 동일 target 동시 injection 차단. lease TTL 은 duration 의 2 배로 두어 cleanup 실패 시에도
+	// 일정 시간 뒤 자동 해제되도록 한다.
+	release, err := safety.AcquireLock(context.Background(), client, cfg.LockNamespace,
+		cfg.TargetNamespace, cfg.TargetPod, cfg.LockHolder, cfg.Duration*2)
+	if err != nil {
+		health.RecordRun(loadgen.Kind(cfg.Kind), "skipped_gate")
+		log.Fatalf("acquire lock: %v", err)
+	}
+	defer release()
 
 	gen, err := loadgen.New(loadgen.Kind(cfg.Kind), client)
 	if err != nil {
 		log.Fatalf("loadgen: %v", err)
 	}
-
-	reg := prometheus.NewRegistry()
-	collector := exporter.NewCollector()
-	reg.MustRegister(collector)
-	health := exporter.NewHealth(reg)
 
 	var ready atomic.Bool
 	srv := startHTTPServer(cfg.ListenAddr, reg, &ready)
@@ -80,32 +107,38 @@ func main() {
 
 // config 는 운영자 입력을 모은 구조체다. env 와 flag 둘 다 지원하며 flag 가 우선이다.
 type config struct {
-	Kind            string
-	TargetNamespace string
-	TargetPod       string
-	TargetNode      string
-	SpawnNamespace  string
-	Duration        time.Duration
-	BaselineWindow  time.Duration
-	Intensity       string
-	PrometheusURL   string
-	FetchTimeout    time.Duration
-	MaxVictims      int
-	ListenAddr      string
-	Kubeconfig      string
+	Kind                string
+	TargetNamespace     string
+	TargetPod           string
+	TargetNode          string
+	SpawnNamespace      string
+	Duration            time.Duration
+	BaselineWindow      time.Duration
+	Intensity           string
+	PrometheusURL       string
+	FetchTimeout        time.Duration
+	MaxVictims          int
+	ListenAddr          string
+	Kubeconfig          string
+	AllowClusterLabel   string
+	LockNamespace       string
+	LockHolder          string
 }
 
 func loadConfig() *config {
 	c := &config{
-		Kind:            envOr("KIND", "cpu"),
-		TargetNamespace: envOr("TARGET_NAMESPACE", ""),
-		TargetPod:       envOr("TARGET_POD", ""),
-		TargetNode:      envOr("TARGET_NODE", ""),
-		SpawnNamespace:  envOr("SPAWN_NAMESPACE", "ebpf-project"),
-		Intensity:       envOr("INTENSITY", ""),
-		PrometheusURL:   envOr("PROMETHEUS_URL", "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"),
-		ListenAddr:      envOr("LISTEN_ADDR", ":9840"),
-		Kubeconfig:      envOr("KUBECONFIG", ""),
+		Kind:              envOr("KIND", "cpu"),
+		TargetNamespace:   envOr("TARGET_NAMESPACE", ""),
+		TargetPod:         envOr("TARGET_POD", ""),
+		TargetNode:        envOr("TARGET_NODE", ""),
+		SpawnNamespace:    envOr("SPAWN_NAMESPACE", "ebpf-project"),
+		Intensity:         envOr("INTENSITY", ""),
+		PrometheusURL:     envOr("PROMETHEUS_URL", "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"),
+		ListenAddr:        envOr("LISTEN_ADDR", ":9840"),
+		Kubeconfig:        envOr("KUBECONFIG", ""),
+		AllowClusterLabel: envOr("INJECTOR_ALLOW_CLUSTER_LABEL", "environment=dev"),
+		LockNamespace:     envOr("LOCK_NAMESPACE", "ebpf-project"),
+		LockHolder:        envOr("HOSTNAME", "workload-injector"),
 	}
 	c.Duration = envDuration("DURATION", 5*time.Minute)
 	c.BaselineWindow = envDuration("BASELINE_WINDOW", 10*time.Minute)
@@ -126,6 +159,9 @@ func loadConfig() *config {
 	fs.IntVar(&c.MaxVictims, "max-victims", c.MaxVictims, "maximum victim Pods to compute blast radius for")
 	fs.StringVar(&c.ListenAddr, "listen", c.ListenAddr, "metrics server listen address")
 	fs.StringVar(&c.Kubeconfig, "kubeconfig", c.Kubeconfig, "path to kubeconfig (empty uses in-cluster config)")
+	fs.StringVar(&c.AllowClusterLabel, "allow-cluster-label", c.AllowClusterLabel, "required node label (key=value) for cluster safety gate (empty disables)")
+	fs.StringVar(&c.LockNamespace, "lock-namespace", c.LockNamespace, "namespace where ConfigMap lease for concurrent injection gating lives")
+	fs.StringVar(&c.LockHolder, "lock-holder", c.LockHolder, "lease holder identifier (defaults to HOSTNAME)")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
