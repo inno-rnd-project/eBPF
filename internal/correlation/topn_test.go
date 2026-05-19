@@ -157,6 +157,59 @@ func TestSelectTopN_TopNBoundary(t *testing.T) {
 	}
 }
 
+// TestSelectTopN_SamePodSelfPairExcluded 는 victim 의 cross-metric self pair (victim 의 cpu_throttle
+// vs victim 의 latency) 가 suspect 후보에서 제외되는지 검증한다. EnumeratePairs 가 동일 Pod 의 두
+// 다른 metric series 도 페어로 만들어 self-suspect 가 rank 1 을 차지할 위험을 차단하는 가드.
+func TestSelectTopN_SamePodSelfPairExcluded(t *testing.T) {
+	results := []CorrelationResult{
+		// self-pair: victim 의 cpu_throttle 과 victim 의 latency. PodUID 동일.
+		makeResult("default", "victim", "uidV", "pod:cpu_throttle_score:5m",
+			"default", "victim", "uidV", latencyMetric, 0.95, 0, StatusOK),
+		// 정상 페어: 다른 Pod 의 cpu_throttle.
+		makeResult("default", "noisy", "uidN", "pod:cpu_throttle_score:5m",
+			"default", "victim", "uidV", latencyMetric, 0.6, 0, StatusOK),
+	}
+	got := SelectTopN(results, 10)
+	if len(got) != 1 {
+		t.Fatalf("len=%d want 1 (self-pair 가 제외되어야 함)", len(got))
+	}
+	if got[0].Suspect.Pod == "victim" {
+		t.Errorf("suspect=victim 이면 self-pair 가 통과한 것")
+	}
+}
+
+// TestSelectTopN_SamePodSelfPairExcludedByNamespaceFallback 는 PodUID 가 둘 다 빈 문자열일 때
+// namespace + pod 라벨로 same-pod 비교가 동작하는지 검증한다.
+func TestSelectTopN_SamePodSelfPairExcludedByNamespaceFallback(t *testing.T) {
+	results := []CorrelationResult{
+		makeResult("default", "victim", "", "pod:cpu_throttle_score:5m",
+			"default", "victim", "", latencyMetric, 0.95, 0, StatusOK),
+	}
+	got := SelectTopN(results, 10)
+	if len(got) != 0 {
+		t.Errorf("len=%d want 0 (UID 없는 self-pair 가 제외되어야 함)", len(got))
+	}
+}
+
+// TestSelectTopN_DedupSameSuspectSameDimension 은 한 suspect 가 같은 dimension 의 두 다른 metric
+// (cpu_throttle + host_compute_stall 둘 다 cpu) 으로 두 rank 를 차지하지 않고 max score 하나로
+// 합쳐지는지 검증한다.
+func TestSelectTopN_DedupSameSuspectSameDimension(t *testing.T) {
+	results := []CorrelationResult{
+		makeResult("default", "noisy", "uidN", "pod:cpu_throttle_score:5m",
+			"default", "victim", "uidV", latencyMetric, 0.6, 0, StatusOK),
+		makeResult("default", "noisy", "uidN", "pod:host_compute_stall_score:5m",
+			"default", "victim", "uidV", latencyMetric, 0.8, 0, StatusOK),
+	}
+	got := SelectTopN(results, 10)
+	if len(got) != 1 {
+		t.Fatalf("len=%d want 1 (같은 suspect / dimension 은 한 rank 만 차지)", len(got))
+	}
+	if got[0].Score != 0.8 {
+		t.Errorf("score=%v want 0.8 (max 가 채택되어야 함)", got[0].Score)
+	}
+}
+
 // TestSelectTopN_TieBreaker 는 동일 score 시 suspect 라벨 lexicographic 순서로 rank 가 결정되는지
 // 검증한다.
 func TestSelectTopN_TieBreaker(t *testing.T) {

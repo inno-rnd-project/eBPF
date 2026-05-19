@@ -125,6 +125,17 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		if dim == DimensionUnknown {
 			continue
 		}
+		// same-pod cross-metric pair 는 noisy neighbor 모델 (이웃 Pod 의 자원 압박) 에 부합하지
+		// 않는다. EnumeratePairs 가 동일 Pod 의 두 다른 metric series 도 페어로 만들어 victim 의
+		// 자기 자신이 suspect rank 1 을 차지할 수 있어 본 단계에서 명시 제외한다. PodUID 가 있으면
+		// UID 기준이 가장 정확하고 둘 다 비어 있으면 namespace/pod 로 보수적 비교한다.
+		if r.Pair.SrcPodUID != "" && r.Pair.DstPodUID != "" {
+			if r.Pair.SrcPodUID == r.Pair.DstPodUID {
+				continue
+			}
+		} else if r.Pair.SrcNamespace == r.Pair.DstNamespace && r.Pair.SrcPod == r.Pair.DstPod {
+			continue
+		}
 		candidates = append(candidates, candidate{
 			victim: PodIdentity{
 				Namespace: r.Pair.DstNamespace,
@@ -145,6 +156,39 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		})
 	}
 
+	// 한 suspect 가 같은 dimension 에 매핑되는 여러 metric (예: cpu_throttle_score 와
+	// host_compute_stall_score 둘 다 cpu) 로 여러 candidate 를 만드는 경우가 있다. Top-N 이 metric
+	// 수가 아닌 unique noisy-neighbor Pod 수를 세야 하므로 (victim, suspect, dimension) 단위로
+	// max score 를 가진 candidate 하나만 채택해 dedup 한다.
+	type pairKey struct {
+		victimNamespace  string
+		victimPod        string
+		victimPodUID     string
+		suspectNamespace string
+		suspectPod       string
+		suspectPodUID    string
+		dimension        ResourceDimension
+	}
+	byPair := make(map[pairKey]candidate)
+	for _, c := range candidates {
+		k := pairKey{
+			victimNamespace:  c.victim.Namespace,
+			victimPod:        c.victim.Pod,
+			victimPodUID:     c.victim.PodUID,
+			suspectNamespace: c.suspect.Namespace,
+			suspectPod:       c.suspect.Pod,
+			suspectPodUID:    c.suspect.PodUID,
+			dimension:        c.dimension,
+		}
+		if prev, ok := byPair[k]; !ok || c.score > prev.score {
+			byPair[k] = c
+		}
+	}
+	deduped := make([]candidate, 0, len(byPair))
+	for _, c := range byPair {
+		deduped = append(deduped, c)
+	}
+
 	type groupKey struct {
 		namespace string
 		pod       string
@@ -152,7 +196,7 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		dimension ResourceDimension
 	}
 	groups := make(map[groupKey][]candidate)
-	for _, c := range candidates {
+	for _, c := range deduped {
 		k := groupKey{c.victim.Namespace, c.victim.Pod, c.victim.PodUID, c.dimension}
 		groups[k] = append(groups[k], c)
 	}

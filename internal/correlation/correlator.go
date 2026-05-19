@@ -20,6 +20,10 @@ func New(fetcher Fetcher, config Config) *Correlator {
 	return &Correlator{fetcher: fetcher, config: config}
 }
 
+// Config 는 본 Correlator 의 Config 사본을 반환한다. exporter 가 reconcile cycle 결과를 self-health
+// 메트릭에 반영할 때 expected query 수 같은 메타데이터를 라이브러리 외부에서 참조하기 위한 진입점.
+func (c *Correlator) Config() Config { return c.config }
+
 // Correlate 는 endTime 을 기준으로 [endTime-Window, endTime] 범위의 산출을 수행한다. endTime 을
 // 호출자가 명시하므로 함수 자체는 결정적이며 (time.Now() 의존성 없음) 단위 테스트와 과거 시점
 // 분석 (예: alert 발화 시점 기준 회귀 분석) 모두 가능하다. 운영자가 \"지금 기준\" 을 의도하면

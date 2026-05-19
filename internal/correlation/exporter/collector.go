@@ -105,12 +105,15 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 // Health 는 exporter 자체의 동작 가시성을 위한 self-health 메트릭 셋이다. reconcile 루프가 매 cycle
 // 결과에 따라 본 필드들을 갱신한다.
 type Health struct {
-	ReconcileDuration    prometheus.Gauge
-	ReconcilePairs       prometheus.Counter
-	ReconcileNeighbors   prometheus.Counter
-	ReconcileSkipped     *prometheus.CounterVec
-	LastSuccessTimestamp prometheus.Gauge
-	ReconcileErrors      prometheus.Counter
+	ReconcileDuration         prometheus.Gauge
+	ReconcilePairs            prometheus.Counter
+	ReconcileNeighbors        prometheus.Counter
+	ReconcileSkipped          *prometheus.CounterVec
+	ReconcilePartial          prometheus.Counter
+	ReconcileMetricsExpected  prometheus.Gauge
+	ReconcileMetricsObserved  prometheus.Gauge
+	LastSuccessTimestamp      prometheus.Gauge
+	ReconcileErrors           prometheus.Counter
 }
 
 // NewHealth 는 self-health 메트릭들을 생성해 reg 에 등록한 뒤 반환한다.
@@ -132,6 +135,18 @@ func NewHealth(reg prometheus.Registerer) *Health {
 			Name: "correlation_reconcile_skipped_total",
 			Help: "산출에서 skip 된 페어의 누적 합계. reason 라벨은 Pearson status 분류 (low_samples, constant) 다.",
 		}, []string{"reason"}),
+		ReconcilePartial: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "correlation_reconcile_partial_total",
+			Help: "reconcile cycle 의 산출 결과에 등장한 distinct metric 수가 expected query 수보다 작아 일부 query 가 데이터를 만들지 못한 cycle 의 누적. 운영자는 본 카운터가 증가하면 PrometheusURL / query 문법 / 입력 recording rule 가용성을 점검한다.",
+		}),
+		ReconcileMetricsExpected: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "correlation_reconcile_metrics_expected",
+			Help: "마지막 reconcile cycle 의 DefaultMetrics + ExtraMetrics 총 query 수.",
+		}),
+		ReconcileMetricsObserved: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "correlation_reconcile_metrics_observed",
+			Help: "마지막 reconcile cycle 의 결과에 등장한 distinct src/dst metric 수. expected 와 같지 않으면 일부 query 가 데이터를 만들지 못한 상태.",
+		}),
 		LastSuccessTimestamp: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "correlation_reconcile_last_success_timestamp_seconds",
 			Help: "마지막 성공 reconcile 의 Unix epoch 초. CorrelationExporterStalled alert 의 입력.",
@@ -146,6 +161,9 @@ func NewHealth(reg prometheus.Registerer) *Health {
 		h.ReconcilePairs,
 		h.ReconcileNeighbors,
 		h.ReconcileSkipped,
+		h.ReconcilePartial,
+		h.ReconcileMetricsExpected,
+		h.ReconcileMetricsObserved,
 		h.LastSuccessTimestamp,
 		h.ReconcileErrors,
 	)
@@ -155,8 +173,10 @@ func NewHealth(reg prometheus.Registerer) *Health {
 // RecordCycle 은 reconcile cycle 1 회의 결과를 self-health 메트릭에 반영한다. results 와 neighbors
 // 의 길이 차이는 SelectTopN 의 필터링 (latency 페어 외 dedup, dimension 미분류, topN 컷) 으로 발생
 // 하며 RecordCycle 은 결과 길이만 기록하고 필터별 분해는 하지 않는다 (운영자는 pairs_total 과
-// neighbors_total 의 비로 필터링 비율을 관측한다).
-func (h *Health) RecordCycle(duration time.Duration, results []correlation.CorrelationResult, neighbors []correlation.NoisyNeighbor) {
+// neighbors_total 의 비로 필터링 비율을 관측한다). expectedMetrics 는 Correlator 가 fetch 시도한
+// query 총 수 (DefaultMetrics + ExtraMetrics) 다. 본 cycle 의 results 에 등장한 distinct metric
+// 수와 비교해 partial fetch (일부 query 가 데이터를 만들지 못한 cycle) 여부를 판정한다.
+func (h *Health) RecordCycle(duration time.Duration, results []correlation.CorrelationResult, neighbors []correlation.NoisyNeighbor, expectedMetrics int) {
 	h.ReconcileDuration.Set(duration.Seconds())
 	h.ReconcilePairs.Add(float64(len(results)))
 	h.ReconcileNeighbors.Add(float64(len(neighbors)))
@@ -165,6 +185,7 @@ func (h *Health) RecordCycle(duration time.Duration, results []correlation.Corre
 	// 으로 고정이라 루프 진입 전에 한 번 lookup 해 캐시한다.
 	lowSamples := h.ReconcileSkipped.WithLabelValues("low_samples")
 	constant := h.ReconcileSkipped.WithLabelValues("constant")
+	observedMetrics := make(map[string]struct{})
 	for _, r := range results {
 		switch r.Status {
 		case correlation.StatusSkippedLowSamples:
@@ -172,6 +193,16 @@ func (h *Health) RecordCycle(duration time.Duration, results []correlation.Corre
 		case correlation.StatusSkippedConstant:
 			constant.Inc()
 		}
+		// distinct metric 수 산출. EnumeratePairs 가 만든 양방향 페어이므로 Src 와 Dst 양측 모두
+		// 집합에 넣어 dataset 가 emit 한 모든 unique query 를 셋다.
+		observedMetrics[r.Pair.SrcMetric] = struct{}{}
+		observedMetrics[r.Pair.DstMetric] = struct{}{}
+	}
+	observed := len(observedMetrics)
+	h.ReconcileMetricsExpected.Set(float64(expectedMetrics))
+	h.ReconcileMetricsObserved.Set(float64(observed))
+	if expectedMetrics > 0 && observed < expectedMetrics {
+		h.ReconcilePartial.Inc()
 	}
 	h.LastSuccessTimestamp.SetToCurrentTime()
 }

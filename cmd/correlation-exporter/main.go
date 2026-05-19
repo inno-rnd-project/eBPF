@@ -82,6 +82,13 @@ func main() {
 	applyEnvDuration("RECONCILE_INTERVAL", &reconcileInterval)
 	applyEnvInt("MIN_SAMPLES", &cfg.MinSamples)
 	applyEnvInt("TOP_N", &topN)
+	if v := strings.TrimSpace(os.Getenv("LAG_STEPS")); v != "" {
+		var parsed intSlice
+		if err := parsed.Set(v); err != nil {
+			log.Fatalf("env LAG_STEPS parse: %v", err)
+		}
+		cfg.LagSteps = []int(parsed)
+	}
 	if v := strings.TrimSpace(os.Getenv("LISTEN_ADDR")); v != "" {
 		listenAddr = v
 	}
@@ -229,7 +236,8 @@ func reconcileOnce(
 	neighbors := correlation.SelectTopN(results, topN)
 	collector.Replace(neighbors)
 	duration := time.Since(cycleStart)
-	health.RecordCycle(duration, results, neighbors)
+	expectedMetrics := len(corr.Config().DefaultMetrics) + len(corr.Config().ExtraMetrics)
+	health.RecordCycle(duration, results, neighbors, expectedMetrics)
 	ready.Store(true)
 	log.Printf("reconcile ok: pairs=%d neighbors=%d duration=%s", len(results), len(neighbors), duration)
 }

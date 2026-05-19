@@ -172,7 +172,7 @@ func TestHealth_RecordCycleAccumulates(t *testing.T) {
 		neighbor("v1", "s2", correlation.DimensionCPU, 2, 0.6, 0),
 	}
 
-	h.RecordCycle(150*time.Millisecond, results, neighbors)
+	h.RecordCycle(150*time.Millisecond, results, neighbors, 7)
 
 	if v := testutil.ToFloat64(h.ReconcilePairs); v != 5 {
 		t.Errorf("pairs_total=%v want 5", v)
@@ -193,7 +193,7 @@ func TestHealth_RecordCycleAccumulates(t *testing.T) {
 		t.Errorf("last_success_timestamp=0 want >0 after RecordCycle")
 	}
 
-	h.RecordCycle(200*time.Millisecond, results, neighbors)
+	h.RecordCycle(200*time.Millisecond, results, neighbors, 7)
 	if v := testutil.ToFloat64(h.ReconcilePairs); v != 10 {
 		t.Errorf("pairs_total after second cycle=%v want 10 (누적)", v)
 	}
