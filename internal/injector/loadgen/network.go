@@ -52,7 +52,7 @@ func (g *networkGen) Start(ctx context.Context, params Params) error {
 			Containers: []corev1.Container{
 				{
 					Name:  "iperf3",
-					Image: "networkstatic/iperf3:3.16",
+					Image: "mlabbe/iperf3:3.16-r0",
 					// -1 (one-off) 옵션은 첫 connection 종료 후 server process 가 즉시 종료된다.
 					// client 의 nc -z probe 가 첫 connection 으로 인식되어 server 가 종료된 뒤
 					// 실제 iperf3 -c 가 실패하므로 제거하고 injector binary 의 Stop 호출이 Pod
@@ -95,13 +95,32 @@ func (g *networkGen) Start(ctx context.Context, params Params) error {
 	client := &corev1.Pod{
 		ObjectMeta: clientMeta,
 		Spec: corev1.PodSpec{
-			// 자동 cleanup 위해 nodeName 비워두면 임의 노드 스케줄. target node 와 다른 노드에
-			// 배치되도록 nodeAffinity 로 강제하는 패턴은 follow-up 으로 분리. 본 구현은 단순화.
 			RestartPolicy: corev1.RestartPolicyNever,
+			// client 가 우연히 target node 에 스케줄되면 두 Pod 사이 트래픽이 노드 NIC 를 거치지
+			// 않아 network 부하의 의미 (cross-node bandwidth 경쟁) 가 사라진다. nodeAffinity 의
+			// NotIn 으로 target node 를 명시적 회피한다. multi-node cluster 가 전제이며 다른 노드가
+			// 없으면 client Pod 가 Pending 으로 남는다.
+			Affinity: &corev1.Affinity{
+				NodeAffinity: &corev1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{
+							{
+								MatchExpressions: []corev1.NodeSelectorRequirement{
+									{
+										Key:      "kubernetes.io/hostname",
+										Operator: corev1.NodeSelectorOpNotIn,
+										Values:   []string{params.TargetNode},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
 			Containers: []corev1.Container{
 				{
 					Name:  "iperf3",
-					Image: "networkstatic/iperf3:3.16",
+					Image: "mlabbe/iperf3:3.16-r0",
 					Command: []string{"sh", "-c", fmt.Sprintf(
 						"until nc -z %s 5201 2>/dev/null; do sleep 1; done; iperf3 -c %s -t %d -b %s",
 						serverDNS, serverDNS, int(params.Duration.Seconds()), bandwidth,
