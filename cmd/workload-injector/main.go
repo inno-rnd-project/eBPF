@@ -107,22 +107,22 @@ func main() {
 
 // config 는 운영자 입력을 모은 구조체다. env 와 flag 둘 다 지원하며 flag 가 우선이다.
 type config struct {
-	Kind                string
-	TargetNamespace     string
-	TargetPod           string
-	TargetNode          string
-	SpawnNamespace      string
-	Duration            time.Duration
-	BaselineWindow      time.Duration
-	Intensity           string
-	PrometheusURL       string
-	FetchTimeout        time.Duration
-	MaxVictims          int
-	ListenAddr          string
-	Kubeconfig          string
-	AllowClusterLabel   string
-	LockNamespace       string
-	LockHolder          string
+	Kind              string
+	TargetNamespace   string
+	TargetPod         string
+	TargetNode        string
+	SpawnNamespace    string
+	Duration          time.Duration
+	BaselineWindow    time.Duration
+	Intensity         string
+	PrometheusURL     string
+	FetchTimeout      time.Duration
+	MaxVictims        int
+	ListenAddr        string
+	Kubeconfig        string
+	AllowClusterLabel string
+	LockNamespace     string
+	LockHolder        string
 }
 
 func loadConfig() *config {

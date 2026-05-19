@@ -70,7 +70,8 @@ BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 	test test-integration setup-envtest \
 	check-prometheus-rules \
 	build-correlation-debug \
-	build-correlation-exporter image-build-correlation-exporter image-push-correlation-exporter
+	build-correlation-exporter image-build-correlation-exporter image-push-correlation-exporter \
+	build-workload-injector image-build-workload-injector image-push-workload-injector
 
 # ============================================================================
 # Tests
@@ -226,10 +227,35 @@ image-push-correlation-exporter: image-build-correlation-exporter
 	docker tag correlation-exporter:$(VERSION) $(REGISTRY_BASE)/correlation-exporter:$(VERSION)
 	docker push $(REGISTRY_BASE)/correlation-exporter:$(VERSION)
 
-# 우산 타깃. AGENTS 리스트와 correlation-exporter (비-agent Deployment binary) 를 함께 일괄 처리한다.
-build-all:       $(addprefix build-,$(AGENTS)) build-correlation-exporter
-image-build-all: $(addprefix image-build-,$(AGENTS)) image-build-correlation-exporter
-image-push-all:  $(addprefix image-push-,$(AGENTS)) image-push-correlation-exporter
+# ============================================================================
+# workload-injector (Job binary)
+# ----------------------------------------------------------------------------
+# workload-injector 는 dev / staging 환경에서 합성 부하를 트리거해 correlation 분석 layer 의 산출을
+# 검증하는 단기 lifecycle Job 도구다. Deployment 가 아닌 Job 형태로 cluster 에 적용되며 build /
+# image / push 흐름은 correlation-exporter 와 동일한 explicit 패턴을 따른다. PORT 9840 은 netobs
+# 9810 / gpuobs 9820 / correlation-exporter 9830 의 다음 자연스러운 번호다.
+# ============================================================================
+WORKLOAD_INJECTOR_PORT := 9840
+
+build-workload-injector:
+	go fmt ./cmd/workload-injector ./internal/injector/...
+	CGO_ENABLED=0 go build -o ./bin/workload-injector ./cmd/workload-injector
+
+image-build-workload-injector:
+	docker build \
+		--build-arg TARGET_AGENT=workload-injector \
+		--build-arg AGENT_PORT=$(WORKLOAD_INJECTOR_PORT) \
+		--build-arg CGO_ENABLED=0 \
+		-t workload-injector:$(VERSION) .
+
+image-push-workload-injector: image-build-workload-injector
+	docker tag workload-injector:$(VERSION) $(REGISTRY_BASE)/workload-injector:$(VERSION)
+	docker push $(REGISTRY_BASE)/workload-injector:$(VERSION)
+
+# 우산 타깃. AGENTS 리스트와 correlation-exporter, workload-injector 를 함께 일괄 처리한다.
+build-all:       $(addprefix build-,$(AGENTS)) build-correlation-exporter build-workload-injector
+image-build-all: $(addprefix image-build-,$(AGENTS)) image-build-correlation-exporter image-build-workload-injector
+image-push-all:  $(addprefix image-push-,$(AGENTS)) image-push-correlation-exporter image-push-workload-injector
 
 # ============================================================================
 # Overlay render / deploy / delete

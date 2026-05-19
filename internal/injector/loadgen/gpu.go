@@ -62,14 +62,14 @@ func (g *gpuGen) Start(ctx context.Context, params Params) error {
 					Command: []string{"timeout", fmt.Sprintf("%d", int(params.Duration.Seconds())), "nvidia-smi", "-l", "1"},
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:        resource.MustParse("100m"),
-							corev1.ResourceMemory:     resource.MustParse("128Mi"),
-							"nvidia.com/gpu":          gpuQuantity,
+							corev1.ResourceCPU:    resource.MustParse("100m"),
+							corev1.ResourceMemory: resource.MustParse("128Mi"),
+							"nvidia.com/gpu":      gpuQuantity,
 						},
 						Limits: corev1.ResourceList{
-							corev1.ResourceCPU:        resource.MustParse("500m"),
-							corev1.ResourceMemory:     resource.MustParse("512Mi"),
-							"nvidia.com/gpu":          gpuQuantity,
+							corev1.ResourceCPU:    resource.MustParse("500m"),
+							corev1.ResourceMemory: resource.MustParse("512Mi"),
+							"nvidia.com/gpu":      gpuQuantity,
 						},
 					},
 				},
