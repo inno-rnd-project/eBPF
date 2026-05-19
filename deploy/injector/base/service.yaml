@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: workload-injector
+  namespace: ebpf-project
+  labels:
+    app.kubernetes.io/name: workload-injector
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: load-injector
+# headless Service. network kind 의 iperf3 server Pod 가 spec.subdomain=workload-injector 로 spawn
+# 되어 본 Service 의 DNS A 레코드를 통해 client Pod 에서 <pod-hostname>.workload-injector.<ns>.svc
+# 로 접근 가능하다. ClusterIP=None 으로 두어 Pod 가 endpoint 로 등록되며 load balancing 없이 직접
+# 도달한다. selector 의 injector.role=server 가 iperf3 server Pod 만 endpoint 로 노출시키고 client
+# Pod 는 endpoint 에 포함되지 않는다.
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: workload-injector
+    app.kubernetes.io/component: stress
+    injector.role: server
+  ports:
+    - name: iperf3
+      port: 5201
+      targetPort: 5201
+      protocol: TCP
+  publishNotReadyAddresses: true

@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workload-injector
+  namespace: ebpf-project
+  labels:
+    app.kubernetes.io/name: workload-injector
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: load-injector
+# Job 의 container 가 envFrom 으로 본 ConfigMap 의 키를 환경 변수로 주입한다. 운영자가 KIND /
+# TARGET_NAMESPACE / TARGET_POD 등은 Job 매니페스트의 env 로 별도 지정하므로 본 ConfigMap 은
+# cluster 환경 공통 파라미터 (PROMETHEUS_URL, BASELINE_WINDOW 등) 만 보유한다.
+data:
+  PROMETHEUS_URL: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
+  BASELINE_WINDOW: "10m"
+  DURATION: "5m"
+  FETCH_TIMEOUT: "30s"
+  MAX_VICTIMS: "20"
+  LISTEN_ADDR: ":9840"
+  SPAWN_NAMESPACE: "ebpf-project"
+  INJECTOR_ALLOW_CLUSTER_LABEL: "environment=dev"
+  LOCK_NAMESPACE: "ebpf-project"

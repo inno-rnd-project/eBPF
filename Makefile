@@ -34,7 +34,7 @@ CGO_gpuobs-agent := 1
 #   2) OVERLAY_PATH_<name>에 kustomize 경로 지정
 # 이후 render-<name>, deploy-<name>, delete-<name>이 자동으로 매치된다.
 # ============================================================================
-OVERLAYS := netobs-dev netobs-prod gpuobs-dev gpuobs-prod correlation-dev correlation-prod dashboards
+OVERLAYS := netobs-dev netobs-prod gpuobs-dev gpuobs-prod correlation-dev correlation-prod injector-dev dashboards
 
 OVERLAY_PATH_netobs-dev       := deploy/netobs/overlays/dev
 OVERLAY_PATH_netobs-prod      := deploy/netobs/overlays/prod
@@ -42,6 +42,8 @@ OVERLAY_PATH_gpuobs-dev       := deploy/gpuobs/overlays/dev
 OVERLAY_PATH_gpuobs-prod      := deploy/gpuobs/overlays/prod
 OVERLAY_PATH_correlation-dev  := deploy/correlation/overlays/dev
 OVERLAY_PATH_correlation-prod := deploy/correlation/overlays/prod
+# injector 는 본 시리즈 #52 의 비목표로 prod overlay 를 두지 않는다. dev / staging 한정.
+OVERLAY_PATH_injector-dev     := deploy/injector/overlays/dev
 # dashboards 는 dev/prod 분기가 없는 클러스터 공용 패키지다. Grafana sidecar 가 cluster 전체
 # ConfigMap 을 watch 하므로 단일 배포로 충분하다.
 OVERLAY_PATH_dashboards       := deploy/dashboards
@@ -70,7 +72,8 @@ BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 	test test-integration setup-envtest \
 	check-prometheus-rules \
 	build-correlation-debug \
-	build-correlation-exporter image-build-correlation-exporter image-push-correlation-exporter
+	build-correlation-exporter image-build-correlation-exporter image-push-correlation-exporter \
+	build-workload-injector image-build-workload-injector image-push-workload-injector
 
 # ============================================================================
 # Tests
@@ -123,7 +126,7 @@ setup-envtest:
 #                          호스트 설치를 요구하지 않으며 PROMTOOL_IMAGE 변수로 버전을 pin 한다.
 # ============================================================================
 PROMTOOL_IMAGE ?= prom/prometheus:v2.55.0
-PROMETHEUS_RULE_FILES ?= deploy/gpuobs/base/prometheus-rule.yaml deploy/correlation/base/prometheus-rule.yaml
+PROMETHEUS_RULE_FILES ?= deploy/gpuobs/base/prometheus-rule.yaml deploy/correlation/base/prometheus-rule.yaml deploy/injector/base/prometheus-rule.yaml
 PROMTOOL_RULES_TMP_DIR ?= bin/promtool-rules
 
 check-prometheus-rules:
@@ -226,10 +229,35 @@ image-push-correlation-exporter: image-build-correlation-exporter
 	docker tag correlation-exporter:$(VERSION) $(REGISTRY_BASE)/correlation-exporter:$(VERSION)
 	docker push $(REGISTRY_BASE)/correlation-exporter:$(VERSION)
 
-# 우산 타깃. AGENTS 리스트와 correlation-exporter (비-agent Deployment binary) 를 함께 일괄 처리한다.
-build-all:       $(addprefix build-,$(AGENTS)) build-correlation-exporter
-image-build-all: $(addprefix image-build-,$(AGENTS)) image-build-correlation-exporter
-image-push-all:  $(addprefix image-push-,$(AGENTS)) image-push-correlation-exporter
+# ============================================================================
+# workload-injector (Job binary)
+# ----------------------------------------------------------------------------
+# workload-injector 는 dev / staging 환경에서 합성 부하를 트리거해 correlation 분석 layer 의 산출을
+# 검증하는 단기 lifecycle Job 도구다. Deployment 가 아닌 Job 형태로 cluster 에 적용되며 build /
+# image / push 흐름은 correlation-exporter 와 동일한 explicit 패턴을 따른다. PORT 9840 은 netobs
+# 9810 / gpuobs 9820 / correlation-exporter 9830 의 다음 자연스러운 번호다.
+# ============================================================================
+WORKLOAD_INJECTOR_PORT := 9840
+
+build-workload-injector:
+	go fmt ./cmd/workload-injector ./internal/injector/...
+	CGO_ENABLED=0 go build -o ./bin/workload-injector ./cmd/workload-injector
+
+image-build-workload-injector:
+	docker build \
+		--build-arg TARGET_AGENT=workload-injector \
+		--build-arg AGENT_PORT=$(WORKLOAD_INJECTOR_PORT) \
+		--build-arg CGO_ENABLED=0 \
+		-t workload-injector:$(VERSION) .
+
+image-push-workload-injector: image-build-workload-injector
+	docker tag workload-injector:$(VERSION) $(REGISTRY_BASE)/workload-injector:$(VERSION)
+	docker push $(REGISTRY_BASE)/workload-injector:$(VERSION)
+
+# 우산 타깃. AGENTS 리스트와 correlation-exporter, workload-injector 를 함께 일괄 처리한다.
+build-all:       $(addprefix build-,$(AGENTS)) build-correlation-exporter build-workload-injector
+image-build-all: $(addprefix image-build-,$(AGENTS)) image-build-correlation-exporter image-build-workload-injector
+image-push-all:  $(addprefix image-push-,$(AGENTS)) image-push-correlation-exporter image-push-workload-injector
 
 # ============================================================================
 # Overlay render / deploy / delete

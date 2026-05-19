@@ -43,6 +43,15 @@ configMapGenerator:
         app.kubernetes.io/name: correlation-exporter
         app.kubernetes.io/component: grafana-dashboard
         app.kubernetes.io/part-of: ebpf-project
+  - name: injector-dashboard
+    files:
+      - injector.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+        app.kubernetes.io/name: workload-injector
+        app.kubernetes.io/component: grafana-dashboard
+        app.kubernetes.io/part-of: ebpf-project
 
 generatorOptions:
   disableNameSuffixHash: true

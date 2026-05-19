@@ -1,0 +1,28 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: workload-injector
+  namespace: ebpf-project
+  labels:
+    # release 라벨은 kube-prometheus-stack 의 podMonitorSelector 에 매칭되어 본 PodMonitor 가
+    # 자동 픽업된다. helm release 이름이 다른 환경은 overlay 의 patch 로 본 라벨을 덮는다.
+    release: kube-prometheus-stack
+    app.kubernetes.io/name: workload-injector
+    app.kubernetes.io/part-of: ebpf-project
+spec:
+  namespaceSelector:
+    matchNames:
+      - ebpf-project
+  selector:
+    # injector Pod (component=load-injector) 만 매칭하고 spawn 된 stress Pod (component=stress) 는
+    # 제외한다. stress Pod 는 metrics port 가 없어 scrape 시도가 up=0 시계열을 만들어 cardinality
+    # 오염과 false PrometheusUp alert 위험이 있다.
+    matchLabels:
+      app.kubernetes.io/name: workload-injector
+      app.kubernetes.io/component: load-injector
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      # Job lifecycle 이 짧아 (보통 5 분 ~ 30 분) 15s scrape 로 빠르게 시계열을 수집한다.
+      interval: 15s
+      scrapeTimeout: 10s

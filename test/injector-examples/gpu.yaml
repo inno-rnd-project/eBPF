@@ -1,0 +1,52 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: workload-injector-gpu-example
+  namespace: ebpf-project
+  labels:
+    app.kubernetes.io/name: workload-injector
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: load-injector
+    injector.kind: gpu
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 120
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: workload-injector
+        app.kubernetes.io/component: load-injector
+        injector.kind: gpu
+    spec:
+      serviceAccountName: workload-injector
+      restartPolicy: Never
+      containers:
+        - name: workload-injector
+          image: workload-injector:0.4.8
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: workload-injector
+          env:
+            - name: KIND
+              value: "gpu"
+            # 본 예제는 GPU 노드의 victim Pod 가 있다고 가정한다. dev cluster 에서 accelerator=nvidia
+            # 노드의 임의 Pod 를 TARGET_POD 로 지정한다.
+            - name: TARGET_NAMESPACE
+              value: "default"
+            - name: TARGET_POD
+              value: "gpu-victim"
+            - name: INTENSITY
+              value: "1"
+            - name: DURATION
+              value: "5m"
+          ports:
+            - name: metrics
+              containerPort: 9840
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
