@@ -114,6 +114,18 @@ var (
 		[]string{"node", "src_namespace", "src_workload", "traffic_scope", "direction", "dst_namespace", "dst_workload"},
 	)
 
+	// dropEventsFlow 는 #64 의 drop flow 5-tuple context 메트릭이다. 기존 dropEventsLabeled 가
+	// workload 단위로 emit 하는 반면 본 메트릭은 5-tuple (src_ip, src_port, dst_ip, dst_port,
+	// protocol) 라벨로 정확한 connection 식별을 제공한다. high cardinality 메트릭이라 emit 은
+	// namespace allow-list 와 top-N flow sampling 가드를 거친다 (다음 commit 에서 추가).
+	dropEventsFlow = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "netobs_drop_events_flow_total",
+			Help: "Drop events with 5-tuple flow context for #64. Emitted only for namespaces in NETOBS_DROP_FLOW_ALLOW_NAMESPACES and limited to top-N active flows for cardinality control. Use this metric to identify which specific connection's packets were dropped, complementing the workload-level netobs_drop_events_labeled_total.",
+		},
+		[]string{"node", "src_namespace", "src_workload", "traffic_scope", "direction", "drop_reason", "drop_category", "protocol", "src_ip", "src_port", "dst_ip", "dst_port"},
+	)
+
 	// pod-level 메트릭에는 dst_pod_uid 까지 노출된다. POD_FLOW_DST_UID_ALLOW_NAMESPACES 토글에 등록된
 	// namespace 의 dst Pod 흐름에 한해 값이 채워지고 그 외에는 빈 문자열로 emit 되어 cardinality 가
 	// 통제된다.
@@ -180,6 +192,7 @@ func Register(reg prometheus.Registerer) {
 		stageEventsLabeled,
 		stageLatencyLabeled,
 		dropEventsLabeled,
+		dropEventsFlow,
 		retransEventsLabeled,
 		podStageEventsLabeled,
 		podStageLatencyLabeled,
@@ -279,6 +292,22 @@ func Record(ev types.EnrichedEvent) {
 			label(ev.DropCategory),
 			dstNs,
 			dstWl,
+		).Inc()
+		// #64 의 5-tuple drop flow 메트릭은 별도 emit. 다음 commit 의 가드 (allow-list, LRU) 를
+		// 통과한 경우만 호출된다. 본 commit 단계에서는 가드 없이 모든 drop event 에 emit 한다.
+		dropEventsFlow.WithLabelValues(
+			label(ev.ObservedNodeLabel()),
+			label(ev.SourceNamespaceLabel()),
+			label(ev.SourceWorkloadLabel()),
+			label(ev.TrafficScope),
+			label(ev.Direction),
+			label(ev.DropReasonName),
+			label(ev.DropCategory),
+			label(ev.ProtocolText),
+			label(ev.SrcIPText),
+			strconv.FormatUint(uint64(ev.Raw.Sport), 10),
+			label(ev.DstIPText),
+			strconv.FormatUint(uint64(ev.Raw.Dport), 10),
 		).Inc()
 
 	case types.StageRetrans:
