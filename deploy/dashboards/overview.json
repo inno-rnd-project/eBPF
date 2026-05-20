@@ -199,10 +199,40 @@
       }
     },
     {
+      "id": 150,
+      "type": "stat",
+      "title": "GPU idle dominant cause",
+      "description": "cluster:gpu_idle_dominant_cause:5m. 5 cause weight 의 최대 cause 1 종을 노출. GPU idle 게이팅 (>0.5) 이 트리거된 시간대에만 emit 되며 그 외에는 N/A 로 표시된다.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 7 },
+      "targets": [
+        { "expr": "count by(cause) (cluster:gpu_idle_dominant_cause:5m)", "legendFormat": "{{cause}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "N/A (GPU idle 아님)",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": { "1": { "text": " " } } }
+          ]
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "name"
+      }
+    },
+    {
       "id": 200,
       "type": "row",
       "title": "Cluster timeline",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 },
       "collapsed": false
     },
     {
@@ -211,7 +241,7 @@
       "title": "4 카테고리 health score 시계열 (alert annotation 포함)",
       "description": "cluster 단위 health score 의 1 시간 추세. alert firing 시점은 annotation 으로 표시.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
       "targets": [
         { "expr": "cluster:gpu_health_score:5m", "legendFormat": "gpu", "refId": "A" },
         { "expr": "cluster:cpu_health_score:5m", "legendFormat": "cpu", "refId": "B" },
@@ -234,7 +264,7 @@
       "id": 300,
       "type": "row",
       "title": "Node drill-down ($node)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
       "collapsed": false
     },
     {
@@ -242,7 +272,7 @@
       "type": "timeseries",
       "title": "Node cpu_throttle_score (Pod 별)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 17 },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 21 },
       "targets": [
         {
           "expr": "pod:cpu_throttle_score:5m{node=~\"$node\"}",
@@ -257,7 +287,7 @@
       "type": "timeseries",
       "title": "Node memory_pressure_score (Pod 별)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 17 },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 21 },
       "targets": [
         {
           "expr": "pod:memory_pressure_score:5m{node=~\"$node\"}",
@@ -272,7 +302,7 @@
       "type": "timeseries",
       "title": "Node GPU utilization (device 별)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 24 },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 28 },
       "targets": [
         {
           "expr": "gpuobs_device_utilization_percent{node=~\"$node\"}",
@@ -289,7 +319,7 @@
       "type": "timeseries",
       "title": "Node drop / retrans rate (drop_category 별)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 24 },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 28 },
       "targets": [
         {
           "expr": "sum by(node, drop_category) (rate(netobs_drop_events_labeled_total{node=~\"$node\"}[5m]))",
@@ -310,7 +340,7 @@
       "title": "Active alerts on node ($node)",
       "description": "ALERTS{alertstate=\"firing\"} 의 instance / node label 매칭 결과. severity 별 색상.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 31 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 35 },
       "targets": [
         {
           "expr": "ALERTS{alertstate=\"firing\",node=~\"$node\"}",
@@ -338,7 +368,7 @@
       "id": 400,
       "type": "row",
       "title": "Pod drill-down ($pod)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 43 },
       "collapsed": false
     },
     {
@@ -346,7 +376,7 @@
       "type": "timeseries",
       "title": "Stage latency p99",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 40 },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 44 },
       "targets": [
         {
           "expr": "histogram_quantile(0.99, sum by(le, src_pod, stage) (rate(netobs_pod_stage_latency_labeled_seconds_bucket{src_pod=~\"$pod\"}[5m])))",
@@ -362,7 +392,7 @@
       "title": "GPU memory used (Pod)",
       "description": "GPU 미사용 Pod 는 빈 결과 (N/A).",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 40 },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 44 },
       "targets": [
         {
           "expr": "gpuobs_pod_memory_used_bytes{src_pod=~\"$pod\"}",
@@ -378,7 +408,7 @@
       "title": "Noisy neighbor Top-N (victim=$pod)",
       "description": "correlation_noisy_neighbor_score. dimension 별 suspect Pod 순위. (#51 exporter 산출)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 47 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 51 },
       "targets": [
         {
           "expr": "correlation_noisy_neighbor_score{victim_pod=~\"$pod\"}",
@@ -443,7 +473,7 @@
       "id": 500,
       "type": "row",
       "title": "Alert summary",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 55 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 59 },
       "collapsed": false
     },
     {
@@ -451,7 +481,7 @@
       "type": "bargauge",
       "title": "Firing alerts by severity",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 56 },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 60 },
       "targets": [
         {
           "expr": "count by(severity) (ALERTS{alertstate=\"firing\"})",
@@ -480,7 +510,7 @@
       "type": "bargauge",
       "title": "Firing alerts by component",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 56 },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 60 },
       "targets": [
         {
           "expr": "count by(component) (ALERTS{alertstate=\"firing\"})",
