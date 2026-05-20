@@ -38,6 +38,17 @@ func SetDropFlowGuard(g *DropFlowGuard) {
 	dropFlowGuard = g
 }
 
+// tcpStateAggregator 는 #65 의 receive path TCP 상태 sample 을 Pod 단위 gauge 로 집계한다. main
+// agent 가 SetTCPStateAggregator 로 startup 시 주입하며, 미설정 시 nil 로 두어 rcv stage event 가
+// 들어와도 emit 자체가 skip 된다.
+var tcpStateAggregator *TCPStateAggregator
+
+// SetTCPStateAggregator 는 main agent 가 NewTCPStateAggregator 결과를 prometheus.Registerer 에
+// 등록한 뒤 본 함수로 wire-up 해 Record 가 rcv_* stage event 의 TCP 상태를 dispatch 하게 한다.
+func SetTCPStateAggregator(a *TCPStateAggregator) {
+	tcpStateAggregator = a
+}
+
 func SetPodMetricsEnabled(v bool) {
 	podMetricsEnabled.Store(v)
 }
@@ -339,5 +350,17 @@ func Record(ev types.EnrichedEvent) {
 			dstNs,
 			dstWl,
 		).Inc()
+
+	case types.StageRcvDemux, types.StageRcvEstablished, types.StageRcvApp:
+		// #65 receive path 의 TCP 상태 sample 을 수신 Pod (ingress event 의 Dst) 단위로 누적한다.
+		// aggregator 미설정 (nil) 또는 Dst 가 Pod 가 아닌 케이스 (peer 가 외부 / 노드) 는 emit 자체를
+		// skip 해 cardinality 가 클러스터 내 Pod 셋으로만 한정되게 한다.
+		if tcpStateAggregator != nil && ev.Dst.IsPod() {
+			tcpStateAggregator.Observe(TCPStateLabels{
+				Namespace: ev.Dst.NamespaceLabel(),
+				Pod:       ev.Dst.PodName,
+				Node:      ev.ObservedNodeLabel(),
+			}, ev.Raw.SndCwnd, ev.Raw.SrttUs, ev.Raw.SndSsthresh)
+		}
 	}
 }

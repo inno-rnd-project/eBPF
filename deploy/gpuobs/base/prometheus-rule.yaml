@@ -389,6 +389,28 @@ spec:
             summary: "netobs retransmission rate over 5/s (node={{ $labels.node }} workload={{ $labels.src_namespace }}/{{ $labels.src_workload }})"
             description: "TCP retransmission rate for workload {{ $labels.src_namespace }}/{{ $labels.src_workload }} on node {{ $labels.node }} is {{ $value }} events/sec sustained over 2 minutes."
 
+        # NetObsTcpCongestion
+        # 수신 Pod 의 TCP 혼잡 신호 alert (#65). max_srtt 가 200 ms 초과 (RTT degradation) 이고
+        # 동시에 min_cwnd 가 5 분 전 5 분 baseline 의 50 % 미만으로 떨어진 경우 (cwnd backoff) 두
+        # 조건 AND 로 false positive 를 차단한다. raw gauge 는 scrape 마다 reset 되어 window 내
+        # min/max sample 을 의미하며 평소 baseline 과의 비교는 offset 5m 윈도우로 산출한다.
+        # tcp_v4_rcv 는 emit 대상이 아니라 본 alert 는 rcv_demux 이후 stage 의 sample 만 본다.
+        - alert: NetObsTcpCongestion
+          expr: |
+            (netobs_tcp_state_max_srtt_seconds > 0.2)
+            and
+            (
+              netobs_tcp_state_min_cwnd
+              < (avg_over_time(netobs_tcp_state_min_cwnd[5m] offset 5m) * 0.5)
+            )
+          for: 2m
+          labels:
+            severity: warning
+            component: netobs
+          annotations:
+            summary: "netobs tcp congestion on receiving pod {{ $labels.namespace }}/{{ $labels.pod }} (node={{ $labels.node }})"
+            description: "Receiving pod {{ $labels.namespace }}/{{ $labels.pod }} on node {{ $labels.node }} shows max srtt {{ $value | humanizeDuration }} with min_cwnd dropped below 50% of the previous 5-minute baseline, sustained over 2 minutes. Inspect peer congestion or downstream link saturation via netobs_tcp_state_min_cwnd / max_srtt_seconds / min_ssthresh."
+
         # GPUObsThrottleActive
         # hw_* / sw_thermal_slowdown / sw_power_cap reason은 운영상 문제 시그널이라 활성이면 critical.
         # gpu_idle / applications_clocks_setting / display_clock_setting / sync_boost는 정상 동작 신호라

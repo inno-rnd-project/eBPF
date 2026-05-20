@@ -12,11 +12,15 @@ import (
 )
 
 const (
-	StageSendmsgRet = 1
-	StageToVeth     = 2
-	StageToDevQ     = 3
-	StageRetrans    = 4
-	StageDrop       = 5
+	StageSendmsgRet      = 1
+	StageToVeth          = 2
+	StageToDevQ          = 3
+	StageRetrans         = 4
+	StageDrop            = 5
+	StageRcvL3           = 6
+	StageRcvDemux        = 7
+	StageRcvEstablished  = 8
+	StageRcvApp          = 9
 )
 
 type Event struct {
@@ -39,10 +43,18 @@ type Event struct {
 	Dport uint16
 	Comm  [16]byte
 	Stage uint8
-	// Protocol 은 IP protocol number (IPPROTO_TCP=6, IPPROTO_UDP=17) 다. BPF 측 netobs_event 의
-	// pad[0] 자리에 추가되어 struct size 변경 없이 emit 된다.
+	// Protocol 은 IP protocol number (IPPROTO_TCP=6, IPPROTO_UDP=17) 다. #64 에서 BPF 측 netobs_event
+	// 의 기존 pad[0] 슬롯에 들어가 본 필드 추가만으로는 struct size 가 변하지 않았다 (#65 의 TCP 상태
+	// 필드로 struct 전체는 별도로 확장됨).
 	Protocol uint8
 	Pad      [2]byte
+
+	// #65 TCP 상태 메트릭. rcv_* stage 의 emit 에서만 채워지며 그 외 stage 는 0. SrttUs 는 kernel
+	// 의 << 3 scale 을 BPF 단에서 >> 3 한 실제 µs 단위라 추가 변환이 필요 없다. 본 3 필드 추가로
+	// struct size 가 88 → 96 byte 로 확장되며 BPF 측 netobs_event 와 정합한다.
+	SndCwnd     uint32
+	SrttUs      uint32
+	SndSsthresh uint32
 }
 
 type EnrichedEvent struct {
@@ -92,9 +104,30 @@ func StageName(stage uint8) string {
 		return "retrans"
 	case StageDrop:
 		return "drop"
+	case StageRcvL3:
+		return "rcv_l3"
+	case StageRcvDemux:
+		return "rcv_demux"
+	case StageRcvEstablished:
+		return "rcv_established"
+	case StageRcvApp:
+		return "rcv_app"
 	default:
 		return "unknown"
 	}
+}
+
+// StageDirection 은 stage 별 흐름 방향을 반환한다. send path 5 종은 "egress", #65 의 rcv path 4 종은
+// "ingress" 로 분류한다. enricher 가 Direction 라벨 산정에 사용하며, 알 수 없는 stage 는 "unknown"
+// 으로 둬 메트릭 라벨이 빈 문자열로 비지 않게 한다.
+func StageDirection(stage uint8) string {
+	switch stage {
+	case StageSendmsgRet, StageToVeth, StageToDevQ, StageRetrans, StageDrop:
+		return "egress"
+	case StageRcvL3, StageRcvDemux, StageRcvEstablished, StageRcvApp:
+		return "ingress"
+	}
+	return "unknown"
 }
 
 // IPProtocolName 은 IP protocol number 의 사람 읽을 수 있는 라벨을 반환한다. 첫 구현은 본 시리즈가

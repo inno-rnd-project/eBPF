@@ -79,6 +79,24 @@ static __always_inline __u32 get_skb_iif(struct sk_buff *skb)
     return BPF_CORE_READ(skb, skb_iif);
 }
 
+/* sock_cgroup_id 는 sock 에 binding 된 cgroup v2 의 inode id 를 반환한다. receive path 의
+ * tcp_v4_do_rcv / tcp_rcv_established 는 softirq context 에서 호출되므로
+ * bpf_get_current_cgroup_id() 가 인터럽트당한 task (대개 swapper) 의 cgroup 을 가리켜 수신 Pod
+ * 식별이 불가하다. 반면 sock 에는 listen / accept 시점에 binding 된 process 의 cgroup 정보가
+ * sk_cgrp_data 로 stash 되어 있어 본 helper 로 안전하게 수신 Pod 의 cgroup_id 를 복원할 수 있다.
+ * cgroup v1 환경은 본 프로젝트의 cgroup v2 전제와 어긋나므로 별도 fallback 을 두지 않는다. */
+static __always_inline __u64 sock_cgroup_id(struct sock *sk)
+{
+    struct cgroup *cgrp;
+
+    if (!sk)
+        return 0;
+    cgrp = BPF_CORE_READ(sk, sk_cgrp_data.cgroup);
+    if (!cgrp)
+        return 0;
+    return BPF_CORE_READ(cgrp, kn, id);
+}
+
 static __always_inline void fill_conn_from_sock(struct sock *sk, struct netobs_start_info *s)
 {
     s->saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
@@ -94,6 +112,28 @@ static __always_inline void fill_conn_from_sock(struct sock *sk, struct netobs_s
      * BPF_CORE_READ_BITFIELD_PROBED 매크로로 안전하게 읽는다. CO-RE 로 kernel 버전 간 layout
      * 차이를 흡수한다. */
     s->protocol = BPF_CORE_READ_BITFIELD_PROBED(sk, sk_protocol);
+}
+
+/* fill_tcp_state 는 tcp_sock 의 혼잡 제어 상태 3 종을 netobs_start_info 에 채운다. tcp_sock 은
+ * struct sock 을 첫 멤버로 포함하는 derived 타입이라 sock pointer 를 그대로 cast 한다. srtt_us 는
+ * kernel 내부적으로 << 3 scale 의 smoothed RTT 라 emit 단계에서 >> 3 해 실제 µs 단위로 변환한다.
+ * sk 가 null 이거나 protocol 이 TCP 가 아니면 0 으로 두어 호출자가 stage 마다 일관되게 처리할 수
+ * 있게 한다. */
+static __always_inline void fill_tcp_state(struct sock *sk, struct netobs_start_info *s)
+{
+    struct tcp_sock *tp;
+    __u32 srtt_scaled;
+
+    if (!sk)
+        return;
+    if (BPF_CORE_READ_BITFIELD_PROBED(sk, sk_protocol) != IPPROTO_TCP)
+        return;
+
+    tp = (struct tcp_sock *)sk;
+    s->snd_cwnd     = BPF_CORE_READ(tp, snd_cwnd);
+    srtt_scaled     = BPF_CORE_READ(tp, srtt_us);
+    s->srtt_us      = srtt_scaled >> 3;
+    s->snd_ssthresh = BPF_CORE_READ(tp, snd_ssthresh);
 }
 
 static __always_inline void fill_dev_from_skb(struct sk_buff *skb, struct netobs_start_info *s)
@@ -184,6 +224,10 @@ static __always_inline void emit_event(const struct netobs_start_info *s,
     e->protocol      = s->protocol;
     e->pad[0]        = 0;
     e->pad[1]        = 0;
+
+    e->snd_cwnd      = s->snd_cwnd;
+    e->srtt_us       = s->srtt_us;
+    e->snd_ssthresh  = s->snd_ssthresh;
 
     bpf_ringbuf_submit(e, 0);
 }
@@ -352,6 +396,87 @@ int BPF_KPROBE(handle_tcp_cleanup_rbuf, struct sock *sk, int copied)
     /* L4 ingress 바이트만 누적한다. tcp_cleanup_rbuf는 userspace read 1회마다 호출되어 packets
      * 단위와 무관해서 packets_delta=0. inc_pod_bytes 주석 참고. */
     inc_pod_bytes(cgroup_id, NETOBS_DIR_INGRESS, NETOBS_LAYER_L4, (__u64)copied, 0);
+    return 0;
+}
+
+/* emit_rcv_event 는 receive path 의 sock 기반 stage 진입 시점에 호출되어 5-tuple 과 cgroup_id 를
+ * netobs_start_info 로 채워 ringbuf 에 emit 한다. ret / latency_us 는 별도 측정 hook 이 없는 본
+ * 진입형 stage 에서 0 으로 둔다. emit 시점의 ts_ns 는 emit_event 가 bpf_ktime_get_ns 로 매번 갱신
+ * 하므로 본 helper 가 채운 s->ts_ns 는 ringbuf 에 그대로 흘려보내지 않으며 (현재 Go 측에서 stage 별
+ * latency 산정 로직도 두지 않음) emit 시각 자체만 event 라벨로 가공되어 사용된다. sock 에서 family
+ * 가 IPv4 가 아니면 5-tuple 라벨 의미가 없어 emit 자체를 skip 한다. */
+static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb, __u8 stage)
+{
+    struct netobs_start_info s = {};
+    __u64 pid_tgid;
+    __u16 family;
+
+    if (!sk)
+        return;
+
+    family = BPF_CORE_READ(sk, __sk_common.skc_family);
+    if (family != NETOBS_AF_INET)
+        return;
+
+    pid_tgid     = bpf_get_current_pid_tgid();
+    s.ts_ns      = bpf_ktime_get_ns();
+    s.cgroup_id  = sock_cgroup_id(sk);
+    s.pid        = pid_tgid >> 32;
+    s.tid        = (__u32)pid_tgid;
+
+    fill_conn_from_sock(sk, &s);
+    /* fill_conn_from_sock 는 send path 기준으로 saddr=local / daddr=remote 를 채운다. receive
+     * path 의 ingress event 는 흐름의 source 가 remote peer 이고 destination 이 local Pod 이므로
+     * 양쪽을 swap 해 downstream 라벨 (src=*, dst=*) 의 의미가 send path 와 일관되게 한다. */
+    {
+        __u32 tmp_addr = s.saddr;
+        __u16 tmp_port = s.sport;
+        s.saddr = s.daddr;
+        s.daddr = tmp_addr;
+        s.sport = s.dport;
+        s.dport = tmp_port;
+    }
+    fill_tcp_state(sk, &s);
+    if (skb)
+        fill_dev_from_skb(skb, &s);
+
+    bpf_get_current_comm(&s.comm, sizeof(s.comm));
+    emit_event(&s, stage, 0, 0, 0);
+}
+
+/* #65 receive path stage 별 kprobe.
+ *
+ * tcp_v4_rcv 는 L3 entry 로 socket lookup 이전이라 sk 가 null 이며 Pod 귀속이 불가능해 본 커밋에서는
+ * emit 을 보류한 채 attach 만 유지한다. 후속 follow-up 에서 skb 헤더 파싱으로 5-tuple 을 복원해
+ * stage 카운터로 활용할 여지를 남긴다. tcp_v4_do_rcv 부터는 sock 인자가 있어 sk_cgrp_data 기반
+ * cgroup_id 로 수신 Pod 를 정확히 식별한다. tcp_recvmsg 는 process context 라
+ * bpf_get_current_cgroup_id() 도 정답을 주지만 sock 경로로 통일해 다른 stage 와 동일한 키 공간을
+ * 유지한다. netif_receive_skb 와 sk_data_ready 는 본 PR 의 범위 검토에서 제외했다 (cgroup 미식별,
+ * kernel 6.x inline). */
+SEC("kprobe/tcp_v4_rcv")
+int BPF_KPROBE(handle_tcp_v4_rcv)
+{
+    return 0;
+}
+
+SEC("kprobe/tcp_v4_do_rcv")
+int BPF_KPROBE(handle_tcp_v4_do_rcv, struct sock *sk, struct sk_buff *skb)
+{
+    emit_rcv_event(sk, skb, NETOBS_STAGE_RCV_DEMUX);
+    return 0;
+}
+
+SEC("kprobe/tcp_rcv_established")
+int BPF_KPROBE(handle_tcp_rcv_established, struct sock *sk, struct sk_buff *skb)
+{
+    emit_rcv_event(sk, skb, NETOBS_STAGE_RCV_ESTABLISHED);
+    return 0;
+}
+
+SEC("kprobe/tcp_recvmsg")
+int BPF_KPROBE(handle_tcp_recvmsg, struct sock *sk)
+{
+    emit_rcv_event(sk, NULL, NETOBS_STAGE_RCV_APP);
     return 0;
 }
 

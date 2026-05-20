@@ -9,11 +9,18 @@
 #define NETOBS_AF_INET 2
 
 enum netobs_event_stage {
-    NETOBS_STAGE_SENDMSG_RET = 1,
-    NETOBS_STAGE_TO_VETH     = 2,
-    NETOBS_STAGE_TO_DEVQ     = 3,
-    NETOBS_STAGE_RETRANS     = 4,
-    NETOBS_STAGE_DROP        = 5,
+    NETOBS_STAGE_SENDMSG_RET    = 1,
+    NETOBS_STAGE_TO_VETH        = 2,
+    NETOBS_STAGE_TO_DEVQ        = 3,
+    NETOBS_STAGE_RETRANS        = 4,
+    NETOBS_STAGE_DROP           = 5,
+    /* #65 receive path stage 4 종. tcp_v4_rcv 진입 시점은 sk 가 아직 socket lookup 전이라 Pod
+     * 귀속이 불가능해 emit 을 보류한다 (kprobe 만 부착 유지). 나머지 3 단계는 sock 인자가 있어
+     * sk_cgrp_data 기반 cgroup_id 로 Pod 귀속이 가능하다. */
+    NETOBS_STAGE_RCV_L3         = 6,
+    NETOBS_STAGE_RCV_DEMUX      = 7,
+    NETOBS_STAGE_RCV_ESTABLISHED = 8,
+    NETOBS_STAGE_RCV_APP        = 9,
 };
 
 /* pod_bytes 누적 맵의 key/value. key는 (cgroup_id, direction, layer) 삼중 합성이며 동일 Pod의
@@ -66,7 +73,15 @@ struct netobs_start_info {
     __u8  seen_devq;
     __u8  ret_seen;
     __u8  protocol;         /* IP protocol number (IPPROTO_TCP=6, IPPROTO_UDP=17). #64 의 drop flow
-                              5-tuple emit 에 사용. pad0 자리를 reuse 해 struct size 변경 없음. */
+                              5-tuple emit 에 사용. 기존 pad0 슬롯을 reuse 해 본 필드 추가만으로는
+                              struct size 가 변하지 않는다 (#65 의 snd_cwnd / srtt_us / snd_ssthresh
+                              추가로 struct 전체는 별도로 확장됨). */
+
+    /* #65 TCP 상태 메트릭. emit_rcv_event 가 fill_tcp_state 로 채우며 다른 caller 는 0 으로 둔다.
+     * srtt_us 는 kernel 의 << 3 scale 을 BPF 에서 >> 3 처리해 실제 µs 단위로 저장한다. */
+    __u32 snd_cwnd;
+    __u32 srtt_us;
+    __u32 snd_ssthresh;
 };
 
 struct netobs_event {
@@ -92,8 +107,18 @@ struct netobs_event {
 
     __u8  stage;
     __u8  protocol;         /* IP protocol number (IPPROTO_TCP=6, IPPROTO_UDP=17). #64 의 drop flow
-                              5-tuple emit 에 사용. pad[0] 자리를 reuse 해 struct size 변경 없음. */
+                              5-tuple emit 에 사용. 기존 pad[0] 슬롯을 reuse 해 본 필드 추가만으로는
+                              struct size 가 변하지 않는다 (#65 의 TCP 상태 필드로 struct 전체는
+                              별도로 확장됨). */
     __u8  pad[2];
+
+    /* #65 TCP 상태 메트릭. rcv_* stage 의 emit 에서만 채워지며 그 외 stage 는 0. srtt_us 는 kernel
+     * scale 을 BPF 에서 >> 3 한 실제 µs 단위다. 본 3 필드 추가로 struct size 가 88 byte → 96 byte 로
+     * 확장되며 (12 byte 필드 + 8-align trailing 의 정합) Go 측 Event 의 unsafe.Sizeof 회귀 가드도
+     * 96 으로 함께 갱신한다. */
+    __u32 snd_cwnd;
+    __u32 srtt_us;
+    __u32 snd_ssthresh;
 };
 
 #endif
