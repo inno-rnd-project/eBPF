@@ -401,8 +401,10 @@ int BPF_KPROBE(handle_tcp_cleanup_rbuf, struct sock *sk, int copied)
 
 /* emit_rcv_event 는 receive path 의 sock 기반 stage 진입 시점에 호출되어 5-tuple 과 cgroup_id 를
  * netobs_start_info 로 채워 ringbuf 에 emit 한다. ret / latency_us 는 별도 측정 hook 이 없는 본
- * 진입형 stage 에서 0 으로 둔다. Go 측이 stage 별 event 의 ts_ns 차분으로 stage latency 를 산정한다.
- * sock 에서 family 가 IPv4 가 아니면 5-tuple 라벨 의미가 없어 emit 자체를 skip 한다. */
+ * 진입형 stage 에서 0 으로 둔다. emit 시점의 ts_ns 는 emit_event 가 bpf_ktime_get_ns 로 매번 갱신
+ * 하므로 본 helper 가 채운 s->ts_ns 는 ringbuf 에 그대로 흘려보내지 않으며 (현재 Go 측에서 stage 별
+ * latency 산정 로직도 두지 않음) emit 시각 자체만 event 라벨로 가공되어 사용된다. sock 에서 family
+ * 가 IPv4 가 아니면 5-tuple 라벨 의미가 없어 emit 자체를 skip 한다. */
 static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb, __u8 stage)
 {
     struct netobs_start_info s = {};

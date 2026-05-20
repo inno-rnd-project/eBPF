@@ -114,9 +114,11 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 	attachOptionalKprobe("kfree_skb_reason", objs.HandleKfreeSkbReason, &links)
 	attachOptionalKprobe("tcp_cleanup_rbuf", objs.HandleTcpCleanupRbuf, &links)
 
-	// #65 receive path latency 의 BPF stub 4 종. 본 커밋은 kernel 심볼이 dev 클러스터에서 attach
-	// 가능한지 검증만 수행하며 실제 event emit 은 후속 커밋에서 추가한다. attachOptionalKprobe 를
-	// 사용해 kernel 빌드 옵션 또는 버전 변경으로 심볼이 사라져도 agent 가 fail-close 되지 않게 한다.
+	// #65 receive path 의 BPF kprobe 4 종. tcp_v4_do_rcv / tcp_rcv_established / tcp_recvmsg 3 종은
+	// sock 인자가 있어 emit_rcv_event 로 stage 별 진입 시점과 TCP 상태를 ringbuf 에 emit 하고,
+	// tcp_v4_rcv 는 socket lookup 이전이라 sock 이 없어 attach 만 유지하고 event emit 은 보류한다.
+	// attachOptionalKprobe 를 사용해 kernel 빌드 옵션 또는 버전 변경으로 심볼이 사라져도 agent 가
+	// fail-close 되지 않게 한다.
 	attachOptionalKprobe("tcp_v4_rcv", objs.HandleTcpV4Rcv, &links)
 	attachOptionalKprobe("tcp_v4_do_rcv", objs.HandleTcpV4DoRcv, &links)
 	attachOptionalKprobe("tcp_rcv_established", objs.HandleTcpRcvEstablished, &links)
