@@ -42,6 +42,14 @@ func main() {
 	// 노드 NIC capacity tunable을 정적 gauge로 노출해 correlation recording rule이 분모로 사용한다.
 	metrics.SetNICCapacityBytesPerSec(cfg.NodeName, cfg.NICCapacityBytesPerSec)
 	log.Printf("nic capacity: %.0f bytes/sec (node=%s)", cfg.NICCapacityBytesPerSec, cfg.NodeName)
+	// #64 의 drop flow 5-tuple 메트릭 cardinality 가드. allow-list 가 비어 있으면 emit 자체가 skip
+	// 되어 카디널리티 0 series 로 유지된다. 운영자가 진단 대상 namespace 만 명시 등록.
+	if len(cfg.DropFlowAllowNamespaces) > 0 {
+		metrics.SetDropFlowGuard(metrics.NewDropFlowGuard(cfg.DropFlowAllowNamespaces, cfg.DropFlowMaxActive))
+		log.Printf("drop flow guard: allow_namespaces=%v max_active=%d", cfg.DropFlowAllowNamespaces, cfg.DropFlowMaxActive)
+	} else {
+		log.Printf("drop flow guard: disabled (NETOBS_DROP_FLOW_ALLOW_NAMESPACES empty)")
+	}
 
 	var ebpfReady atomic.Bool
 	kr := kube.NewResolver(cfg.NodeName, cfg.MetadataRefresh)

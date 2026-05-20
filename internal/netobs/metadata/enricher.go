@@ -386,6 +386,7 @@ func (e *Enricher) Enrich(ev types.Event, mapper *drop.Mapper) types.EnrichedEve
 		ObservedNode:   e.kr.LocalNode(),
 		SrcIPText:      srcIP,
 		DstIPText:      dstIP,
+		ProtocolText:   types.IPProtocolName(ev.Protocol),
 		Src:            src,
 		Dst:            dst,
 		DropReasonName: reasonName,
