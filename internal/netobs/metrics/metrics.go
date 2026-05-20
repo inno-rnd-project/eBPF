@@ -28,6 +28,16 @@ func init() {
 
 // SetPodMetricsEnabled은 pod-instance 레벨 메트릭 기록 여부를 전환하며, 반드시 Record가 호출되기
 // 전 (main startup 단계) 에 호출되어야 한다.
+// dropFlowGuard 는 netobs_drop_events_flow_total 의 emit cardinality 가드다. SetDropFlowGuard 가
+// startup 시점에 설정하지 않으면 nil 로 두어 emit 자체가 skip 된다 (#64 의 safe default).
+var dropFlowGuard *DropFlowGuard
+
+// SetDropFlowGuard 는 main agent 가 config 의 DropFlowAllowNamespaces 와 DropFlowMaxActive 로 가드를
+// 구성해 본 함수로 wire-up 한다. nil 을 전달하면 metric emit 이 명시적으로 disable 된다.
+func SetDropFlowGuard(g *DropFlowGuard) {
+	dropFlowGuard = g
+}
+
 func SetPodMetricsEnabled(v bool) {
 	podMetricsEnabled.Store(v)
 }
@@ -293,22 +303,30 @@ func Record(ev types.EnrichedEvent) {
 			dstNs,
 			dstWl,
 		).Inc()
-		// #64 의 5-tuple drop flow 메트릭은 별도 emit. 다음 commit 의 가드 (allow-list, LRU) 를
-		// 통과한 경우만 호출된다. 본 commit 단계에서는 가드 없이 모든 drop event 에 emit 한다.
-		dropEventsFlow.WithLabelValues(
-			label(ev.ObservedNodeLabel()),
-			label(ev.SourceNamespaceLabel()),
-			label(ev.SourceWorkloadLabel()),
-			label(ev.TrafficScope),
-			label(ev.Direction),
-			label(ev.DropReasonName),
-			label(ev.DropCategory),
-			label(ev.ProtocolText),
-			label(ev.SrcIPText),
-			strconv.FormatUint(uint64(ev.Raw.Sport), 10),
-			label(ev.DstIPText),
-			strconv.FormatUint(uint64(ev.Raw.Dport), 10),
-		).Inc()
+		// #64 의 5-tuple drop flow 메트릭은 namespace allow-list 와 top-N LRU 가드를 통과한 경우만
+		// emit 한다. guard 가 nil 이면 emit 자체가 skip 되어 cardinality 가 도입 전 수준 (0 series)
+		// 으로 유지된다.
+		if dropFlowGuard != nil && dropFlowGuard.Admit(
+			ev.SourceNamespaceLabel(),
+			ev.SrcIPText, ev.Raw.Sport,
+			ev.DstIPText, ev.Raw.Dport,
+			ev.ProtocolText,
+		) {
+			dropEventsFlow.WithLabelValues(
+				label(ev.ObservedNodeLabel()),
+				label(ev.SourceNamespaceLabel()),
+				label(ev.SourceWorkloadLabel()),
+				label(ev.TrafficScope),
+				label(ev.Direction),
+				label(ev.DropReasonName),
+				label(ev.DropCategory),
+				label(ev.ProtocolText),
+				label(ev.SrcIPText),
+				strconv.FormatUint(uint64(ev.Raw.Sport), 10),
+				label(ev.DstIPText),
+				strconv.FormatUint(uint64(ev.Raw.Dport), 10),
+			).Inc()
+		}
 
 	case types.StageRetrans:
 		retransEventsLabeled.WithLabelValues(
