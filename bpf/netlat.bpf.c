@@ -79,6 +79,24 @@ static __always_inline __u32 get_skb_iif(struct sk_buff *skb)
     return BPF_CORE_READ(skb, skb_iif);
 }
 
+/* sock_cgroup_id 는 sock 에 binding 된 cgroup v2 의 inode id 를 반환한다. receive path 의
+ * tcp_v4_do_rcv / tcp_rcv_established 는 softirq context 에서 호출되므로
+ * bpf_get_current_cgroup_id() 가 인터럽트당한 task (대개 swapper) 의 cgroup 을 가리켜 수신 Pod
+ * 식별이 불가하다. 반면 sock 에는 listen / accept 시점에 binding 된 process 의 cgroup 정보가
+ * sk_cgrp_data 로 stash 되어 있어 본 helper 로 안전하게 수신 Pod 의 cgroup_id 를 복원할 수 있다.
+ * cgroup v1 환경은 본 프로젝트의 cgroup v2 전제와 어긋나므로 별도 fallback 을 두지 않는다. */
+static __always_inline __u64 sock_cgroup_id(struct sock *sk)
+{
+    struct cgroup *cgrp;
+
+    if (!sk)
+        return 0;
+    cgrp = BPF_CORE_READ(sk, sk_cgrp_data.cgroup);
+    if (!cgrp)
+        return 0;
+    return BPF_CORE_READ(cgrp, kn, id);
+}
+
 static __always_inline void fill_conn_from_sock(struct sock *sk, struct netobs_start_info *s)
 {
     s->saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
@@ -355,16 +373,46 @@ int BPF_KPROBE(handle_tcp_cleanup_rbuf, struct sock *sk, int copied)
     return 0;
 }
 
-/* #65 receive path latency 측정을 위한 kprobe 4 종 sample 부착. 본 커밋은 attach 가능성 검증만
- * 수행하므로 program body 는 비어 있다. 다음 커밋에서 stage 별 event emit / TCP 상태 추출 로직을
- * 채워 넣는다. tcp_v4_rcv / tcp_v4_do_rcv / tcp_rcv_established / tcp_recvmsg 4 함수가 dev 클러스터의
- * kernel 6.2 (worker) 와 6.8 (gpu) 양쪽에서 /proc/kallsyms 에 노출됨을 확인했다. BPF_KPROBE 는
- * positional argument 만 캡처하므로 본 stub 에서는 인자를 선언하지 않아도 verifier 가 통과한다.
+/* emit_rcv_event 는 receive path 의 sock 기반 stage 진입 시점에 호출되어 5-tuple 과 cgroup_id 를
+ * netobs_start_info 로 채워 ringbuf 에 emit 한다. ret / latency_us 는 별도 측정 hook 이 없는 본
+ * 진입형 stage 에서 0 으로 둔다. Go 측이 stage 별 event 의 ts_ns 차분으로 stage latency 를 산정한다.
+ * sock 에서 family 가 IPv4 가 아니면 5-tuple 라벨 의미가 없어 emit 자체를 skip 한다. */
+static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb, __u8 stage)
+{
+    struct netobs_start_info s = {};
+    __u64 pid_tgid;
+    __u16 family;
+
+    if (!sk)
+        return;
+
+    family = BPF_CORE_READ(sk, __sk_common.skc_family);
+    if (family != NETOBS_AF_INET)
+        return;
+
+    pid_tgid     = bpf_get_current_pid_tgid();
+    s.ts_ns      = bpf_ktime_get_ns();
+    s.cgroup_id  = sock_cgroup_id(sk);
+    s.pid        = pid_tgid >> 32;
+    s.tid        = (__u32)pid_tgid;
+
+    fill_conn_from_sock(sk, &s);
+    if (skb)
+        fill_dev_from_skb(skb, &s);
+
+    bpf_get_current_comm(&s.comm, sizeof(s.comm));
+    emit_event(&s, stage, 0, 0, 0);
+}
+
+/* #65 receive path stage 별 kprobe.
  *
- * netif_receive_skb 와 sk_data_ready 는 의도적으로 제외했다. netif_receive_skb 는 skb 가 socket 에
- * demux 되기 전 단계라 bpf_get_current_cgroup_id() 가 softirq context 의 swapper task 를 가리켜
- * 수신 Pod 식별이 불가하다. sk_data_ready 는 kernel 6.x 에서 inline 되는 경우가 있어 kprobe 부착이
- * 불안정하다. */
+ * tcp_v4_rcv 는 L3 entry 로 socket lookup 이전이라 sk 가 null 이며 Pod 귀속이 불가능해 본 커밋에서는
+ * emit 을 보류한 채 attach 만 유지한다. 후속 follow-up 에서 skb 헤더 파싱으로 5-tuple 을 복원해
+ * stage 카운터로 활용할 여지를 남긴다. tcp_v4_do_rcv 부터는 sock 인자가 있어 sk_cgrp_data 기반
+ * cgroup_id 로 수신 Pod 를 정확히 식별한다. tcp_recvmsg 는 process context 라
+ * bpf_get_current_cgroup_id() 도 정답을 주지만 sock 경로로 통일해 다른 stage 와 동일한 키 공간을
+ * 유지한다. netif_receive_skb 와 sk_data_ready 는 본 PR 의 범위 검토에서 제외했다 (cgroup 미식별,
+ * kernel 6.x inline). */
 SEC("kprobe/tcp_v4_rcv")
 int BPF_KPROBE(handle_tcp_v4_rcv)
 {
@@ -372,20 +420,23 @@ int BPF_KPROBE(handle_tcp_v4_rcv)
 }
 
 SEC("kprobe/tcp_v4_do_rcv")
-int BPF_KPROBE(handle_tcp_v4_do_rcv)
+int BPF_KPROBE(handle_tcp_v4_do_rcv, struct sock *sk, struct sk_buff *skb)
 {
+    emit_rcv_event(sk, skb, NETOBS_STAGE_RCV_DEMUX);
     return 0;
 }
 
 SEC("kprobe/tcp_rcv_established")
-int BPF_KPROBE(handle_tcp_rcv_established)
+int BPF_KPROBE(handle_tcp_rcv_established, struct sock *sk, struct sk_buff *skb)
 {
+    emit_rcv_event(sk, skb, NETOBS_STAGE_RCV_ESTABLISHED);
     return 0;
 }
 
 SEC("kprobe/tcp_recvmsg")
-int BPF_KPROBE(handle_tcp_recvmsg)
+int BPF_KPROBE(handle_tcp_recvmsg, struct sock *sk)
 {
+    emit_rcv_event(sk, NULL, NETOBS_STAGE_RCV_APP);
     return 0;
 }
 

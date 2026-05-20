@@ -9,11 +9,18 @@
 #define NETOBS_AF_INET 2
 
 enum netobs_event_stage {
-    NETOBS_STAGE_SENDMSG_RET = 1,
-    NETOBS_STAGE_TO_VETH     = 2,
-    NETOBS_STAGE_TO_DEVQ     = 3,
-    NETOBS_STAGE_RETRANS     = 4,
-    NETOBS_STAGE_DROP        = 5,
+    NETOBS_STAGE_SENDMSG_RET    = 1,
+    NETOBS_STAGE_TO_VETH        = 2,
+    NETOBS_STAGE_TO_DEVQ        = 3,
+    NETOBS_STAGE_RETRANS        = 4,
+    NETOBS_STAGE_DROP           = 5,
+    /* #65 receive path stage 4 종. tcp_v4_rcv 진입 시점은 sk 가 아직 socket lookup 전이라 Pod
+     * 귀속이 불가능해 emit 을 보류한다 (kprobe 만 부착 유지). 나머지 3 단계는 sock 인자가 있어
+     * sk_cgrp_data 기반 cgroup_id 로 Pod 귀속이 가능하다. */
+    NETOBS_STAGE_RCV_L3         = 6,
+    NETOBS_STAGE_RCV_DEMUX      = 7,
+    NETOBS_STAGE_RCV_ESTABLISHED = 8,
+    NETOBS_STAGE_RCV_APP        = 9,
 };
 
 /* pod_bytes 누적 맵의 key/value. key는 (cgroup_id, direction, layer) 삼중 합성이며 동일 Pod의
