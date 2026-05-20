@@ -51,6 +51,14 @@ func main() {
 		log.Printf("drop flow guard: disabled (NETOBS_DROP_FLOW_ALLOW_NAMESPACES empty)")
 	}
 
+	// #65 의 receive path TCP 상태 sample 을 수신 Pod 단위 gauge 로 노출하는 aggregator. Collector
+	// 인터페이스를 직접 구현해 prometheus.Registerer 에 등록되며, Record 가 rcv_* stage event 의 TCP
+	// 상태를 dispatch 하도록 setter 로 wire-up 한다.
+	tcpStateAgg := metrics.NewTCPStateAggregator()
+	reg.MustRegister(tcpStateAgg)
+	metrics.SetTCPStateAggregator(tcpStateAgg)
+	log.Printf("tcp state aggregator: registered (rcv_demux/rcv_established/rcv_app)")
+
 	var ebpfReady atomic.Bool
 	kr := kube.NewResolver(cfg.NodeName, cfg.MetadataRefresh)
 	enricher := metadata.NewEnricher(kr)
