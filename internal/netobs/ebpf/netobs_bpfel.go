@@ -85,13 +85,17 @@ type NetObsSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type NetObsProgramSpecs struct {
-	HandleDevQueueXmit     *ebpf.ProgramSpec `ebpf:"handle_dev_queue_xmit"`
-	HandleKfreeSkbReason   *ebpf.ProgramSpec `ebpf:"handle_kfree_skb_reason"`
-	HandleTcpCleanupRbuf   *ebpf.ProgramSpec `ebpf:"handle_tcp_cleanup_rbuf"`
-	HandleTcpRetransmitSkb *ebpf.ProgramSpec `ebpf:"handle_tcp_retransmit_skb"`
-	HandleTcpSendmsg       *ebpf.ProgramSpec `ebpf:"handle_tcp_sendmsg"`
-	HandleTcpSendmsgRet    *ebpf.ProgramSpec `ebpf:"handle_tcp_sendmsg_ret"`
-	HandleVethXmit         *ebpf.ProgramSpec `ebpf:"handle_veth_xmit"`
+	HandleDevQueueXmit      *ebpf.ProgramSpec `ebpf:"handle_dev_queue_xmit"`
+	HandleKfreeSkbReason    *ebpf.ProgramSpec `ebpf:"handle_kfree_skb_reason"`
+	HandleTcpCleanupRbuf    *ebpf.ProgramSpec `ebpf:"handle_tcp_cleanup_rbuf"`
+	HandleTcpRcvEstablished *ebpf.ProgramSpec `ebpf:"handle_tcp_rcv_established"`
+	HandleTcpRecvmsg        *ebpf.ProgramSpec `ebpf:"handle_tcp_recvmsg"`
+	HandleTcpRetransmitSkb  *ebpf.ProgramSpec `ebpf:"handle_tcp_retransmit_skb"`
+	HandleTcpSendmsg        *ebpf.ProgramSpec `ebpf:"handle_tcp_sendmsg"`
+	HandleTcpSendmsgRet     *ebpf.ProgramSpec `ebpf:"handle_tcp_sendmsg_ret"`
+	HandleTcpV4DoRcv        *ebpf.ProgramSpec `ebpf:"handle_tcp_v4_do_rcv"`
+	HandleTcpV4Rcv          *ebpf.ProgramSpec `ebpf:"handle_tcp_v4_rcv"`
+	HandleVethXmit          *ebpf.ProgramSpec `ebpf:"handle_veth_xmit"`
 }
 
 // NetObsMapSpecs contains maps before they are loaded into the kernel.
@@ -155,13 +159,17 @@ type NetObsVariables struct {
 //
 // It can be passed to LoadNetObsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NetObsPrograms struct {
-	HandleDevQueueXmit     *ebpf.Program `ebpf:"handle_dev_queue_xmit"`
-	HandleKfreeSkbReason   *ebpf.Program `ebpf:"handle_kfree_skb_reason"`
-	HandleTcpCleanupRbuf   *ebpf.Program `ebpf:"handle_tcp_cleanup_rbuf"`
-	HandleTcpRetransmitSkb *ebpf.Program `ebpf:"handle_tcp_retransmit_skb"`
-	HandleTcpSendmsg       *ebpf.Program `ebpf:"handle_tcp_sendmsg"`
-	HandleTcpSendmsgRet    *ebpf.Program `ebpf:"handle_tcp_sendmsg_ret"`
-	HandleVethXmit         *ebpf.Program `ebpf:"handle_veth_xmit"`
+	HandleDevQueueXmit      *ebpf.Program `ebpf:"handle_dev_queue_xmit"`
+	HandleKfreeSkbReason    *ebpf.Program `ebpf:"handle_kfree_skb_reason"`
+	HandleTcpCleanupRbuf    *ebpf.Program `ebpf:"handle_tcp_cleanup_rbuf"`
+	HandleTcpRcvEstablished *ebpf.Program `ebpf:"handle_tcp_rcv_established"`
+	HandleTcpRecvmsg        *ebpf.Program `ebpf:"handle_tcp_recvmsg"`
+	HandleTcpRetransmitSkb  *ebpf.Program `ebpf:"handle_tcp_retransmit_skb"`
+	HandleTcpSendmsg        *ebpf.Program `ebpf:"handle_tcp_sendmsg"`
+	HandleTcpSendmsgRet     *ebpf.Program `ebpf:"handle_tcp_sendmsg_ret"`
+	HandleTcpV4DoRcv        *ebpf.Program `ebpf:"handle_tcp_v4_do_rcv"`
+	HandleTcpV4Rcv          *ebpf.Program `ebpf:"handle_tcp_v4_rcv"`
+	HandleVethXmit          *ebpf.Program `ebpf:"handle_veth_xmit"`
 }
 
 func (p *NetObsPrograms) Close() error {
@@ -169,9 +177,13 @@ func (p *NetObsPrograms) Close() error {
 		p.HandleDevQueueXmit,
 		p.HandleKfreeSkbReason,
 		p.HandleTcpCleanupRbuf,
+		p.HandleTcpRcvEstablished,
+		p.HandleTcpRecvmsg,
 		p.HandleTcpRetransmitSkb,
 		p.HandleTcpSendmsg,
 		p.HandleTcpSendmsgRet,
+		p.HandleTcpV4DoRcv,
+		p.HandleTcpV4Rcv,
 		p.HandleVethXmit,
 	)
 }

@@ -355,6 +355,40 @@ int BPF_KPROBE(handle_tcp_cleanup_rbuf, struct sock *sk, int copied)
     return 0;
 }
 
+/* #65 receive path latency 측정을 위한 kprobe 4 종 sample 부착. 본 커밋은 attach 가능성 검증만
+ * 수행하므로 program body 는 비어 있다. 다음 커밋에서 stage 별 event emit / TCP 상태 추출 로직을
+ * 채워 넣는다. tcp_v4_rcv / tcp_v4_do_rcv / tcp_rcv_established / tcp_recvmsg 4 함수가 dev 클러스터의
+ * kernel 6.2 (worker) 와 6.8 (gpu) 양쪽에서 /proc/kallsyms 에 노출됨을 확인했다. BPF_KPROBE 는
+ * positional argument 만 캡처하므로 본 stub 에서는 인자를 선언하지 않아도 verifier 가 통과한다.
+ *
+ * netif_receive_skb 와 sk_data_ready 는 의도적으로 제외했다. netif_receive_skb 는 skb 가 socket 에
+ * demux 되기 전 단계라 bpf_get_current_cgroup_id() 가 softirq context 의 swapper task 를 가리켜
+ * 수신 Pod 식별이 불가하다. sk_data_ready 는 kernel 6.x 에서 inline 되는 경우가 있어 kprobe 부착이
+ * 불안정하다. */
+SEC("kprobe/tcp_v4_rcv")
+int BPF_KPROBE(handle_tcp_v4_rcv)
+{
+    return 0;
+}
+
+SEC("kprobe/tcp_v4_do_rcv")
+int BPF_KPROBE(handle_tcp_v4_do_rcv)
+{
+    return 0;
+}
+
+SEC("kprobe/tcp_rcv_established")
+int BPF_KPROBE(handle_tcp_rcv_established)
+{
+    return 0;
+}
+
+SEC("kprobe/tcp_recvmsg")
+int BPF_KPROBE(handle_tcp_recvmsg)
+{
+    return 0;
+}
+
 SEC("kprobe/kfree_skb_reason")
 int BPF_KPROBE(handle_kfree_skb_reason, struct sk_buff *skb, int reason)
 {
