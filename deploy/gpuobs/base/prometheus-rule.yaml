@@ -235,6 +235,43 @@ spec:
               pod:gpu_memory_utilization_ratio:5m
             )
 
+    # netobs-gpuobs.dominant-cause.recording 그룹은 #66 의 GPU 유휴 dominant cause 가중치 산정에
+    # 사용하는 recording rule 을 모은다. 본 그룹의 첫 5 종은 node 와 Pod 차원으로 흩어진 cause score
+    # 5 종을 cluster 단위 단일 값으로 max rollup 해 dominant cause weight 산정 단계에서 동일한 차원
+    # 으로 비교 가능하게 한다. dominant cause 가 cluster 평균이 아니라 worst-case 신호를 따라가도록
+    # max 를 채택한다. retrans 신호는 본 rollup 에 포함하지 않는다. retrans 는 PromQL 의 OR 패턴으로
+    # alert 에서 사용되는 보조 신호이며 throughput score 와 다른 threshold 스케일을 가져 weighting
+    # 합산에 합치면 cause 간 비교 의미가 흐려진다. NetworkPressure cause 의 base score 는 throughput
+    # saturation score 만 사용한다.
+    - name: netobs-gpuobs.dominant-cause.recording
+      interval: 30s
+      rules:
+        # cluster:gpu_pcie_saturation_score:5m
+        # 노드 단위 PCIe saturation score 의 cluster max. worst-case 노드의 PCIe 압박이 본 시계열 값.
+        - record: cluster:gpu_pcie_saturation_score:5m
+          expr: max(node:gpu_pcie_saturation_score:5m)
+
+        # cluster:pod_cpu_throttle_score:5m
+        # Pod 단위 CPU CFS throttle 비율의 cluster max. worst-case Pod 의 throttle 신호.
+        - record: cluster:pod_cpu_throttle_score:5m
+          expr: max(pod:cpu_throttle_score:5m)
+
+        # cluster:pod_memory_pressure_score:5m
+        # Pod 단위 메모리 working_set / limit 비율의 cluster max. worst-case Pod 의 OOM 임박도.
+        - record: cluster:pod_memory_pressure_score:5m
+          expr: max(pod:memory_pressure_score:5m)
+
+        # cluster:pod_network_pressure_score:5m
+        # Pod 단위 throughput saturation 의 cluster max. retrans 신호는 NetworkPressure alert 의 OR
+        # 보조 신호로 남아 본 rollup 에는 포함되지 않는다.
+        - record: cluster:pod_network_pressure_score:5m
+          expr: max(pod:network_throughput_score:5m)
+
+        # cluster:pod_host_compute_stall_score:5m
+        # Pod 단위 host 측 CUDA launch 부족 또는 GPU memory 포화 score 의 cluster max.
+        - record: cluster:pod_host_compute_stall_score:5m
+          expr: max(pod:host_compute_stall_score:5m)
+
     # netobs-gpuobs.drop-flow.recording 그룹은 #64 의 drop flow 5-tuple burst 검출을 위한 recording
     # rule 을 둔다. evaluation interval 30s, rate window 1m 으로 두어 ServiceMonitor 의 scrape
     # interval (15s) 보다 충분히 길어 sample 부족으로 인한 빈 결과를 회피한다. rate window 가 1m
