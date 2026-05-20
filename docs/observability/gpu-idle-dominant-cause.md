@@ -53,14 +53,17 @@
 
 ## 검증 시나리오
 
-dev cluster 에서 `workload-injector` 의 cpu kind 합성 부하로 dominant cause 가 `cpu_throttle` 로 식별되는지 회귀 가드한다.
+dev cluster 에서 `workload-injector` 의 cpu kind 합성 부하로 dominant cause 가 `cpu_throttle` 로 식별되는지 회귀 가드한다. `workload-injector` 는 Job 매니페스트로 한 번 spawn 되는 binary 이며 `test/injector-examples/cpu.yaml` 의 샘플 Job 을 그대로 사용한다. 샘플의 image 태그는 historical 값으로 박혀 있어 본 검증 전에 현재 cluster 의 build / load 정책에 맞춰 (`workload-injector:$(cat VERSION)` 또는 registry path) 조정해야 한다.
 
 ```sh
-kubectl exec -n correlation-stress workload-injector -- /injector \
-  --kind cpu --duration 600 --intensity 0.9
+sed -i "s|image: workload-injector:.*|image: workload-injector:$(cat VERSION)|" \
+  test/injector-examples/cpu.yaml
+kubectl apply -f test/injector-examples/cpu.yaml
+kubectl wait --for=condition=complete --timeout=10m \
+  -n ebpf-project job/workload-injector-cpu-example
 ```
 
-10 분 후 다음 쿼리가 `cause="cpu_throttle"` 한 줄을 반환하면 회귀 통과로 본다.
+샘플 Job 은 `correlation-stress/victim` Pod 에 `INTENSITY=500m`, `DURATION=5m` 의 CPU 부하를 5 분간 발사한다. 부하 종료 후 다음 쿼리가 `cause="cpu_throttle"` 한 줄을 반환하면 회귀 통과로 본다.
 
 ```sh
 PROM_POD=$(kubectl get pod -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
