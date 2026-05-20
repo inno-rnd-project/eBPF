@@ -237,16 +237,35 @@ func (e *Enricher) rememberIfindexHint(ifindex uint32, id kube.PodIdentity, now 
 }
 
 func (e *Enricher) applyRuntimeHints(ev types.Event, srcIP, dstIP string, src, dst kube.PodIdentity, now time.Time) (kube.PodIdentity, kube.PodIdentity) {
-	if !src.IsPod() {
-		if id, ok := e.lookupCgroupHint(ev.CgroupID, now); ok {
-			src = kube.StrongerIdentity(src, kube.WithObservedIP(id, srcIP))
+	// cgroup_id 와 Ifindex 는 event 가 관측된 Pod 본인의 식별 정보다. send path 에서는 그 Pod 가
+	// 흐름의 src (송신자) 이고, #65 의 receive path 에서는 BPF 측 src/dst swap 으로 dst (수신자) 가
+	// 된다. 따라서 stage direction 으로 분기해 힌트를 올바른 쪽 endpoint 에 적재해야 외부 peer 가
+	// 송신자인 ingress event 에서 src 가 수신 Pod 로 잘못 덮여써지는 회귀를 피할 수 있다.
+	if types.StageDirection(ev.Stage) == "ingress" {
+		if !dst.IsPod() {
+			if id, ok := e.lookupCgroupHint(ev.CgroupID, now); ok {
+				dst = kube.StrongerIdentity(dst, kube.WithObservedIP(id, dstIP))
+			}
+		}
+		if !dst.IsPod() && ev.Ifindex != 0 {
+			if id, ok := e.lookupIfindexHint(ev.Ifindex, now); ok {
+				dst = kube.StrongerIdentity(dst, kube.WithObservedIP(id, dstIP))
+			}
+		}
+	} else {
+		if !src.IsPod() {
+			if id, ok := e.lookupCgroupHint(ev.CgroupID, now); ok {
+				src = kube.StrongerIdentity(src, kube.WithObservedIP(id, srcIP))
+			}
+		}
+		if !src.IsPod() && ev.Ifindex != 0 {
+			if id, ok := e.lookupIfindexHint(ev.Ifindex, now); ok {
+				src = kube.StrongerIdentity(src, kube.WithObservedIP(id, srcIP))
+			}
 		}
 	}
-	if !src.IsPod() && ev.Ifindex != 0 {
-		if id, ok := e.lookupIfindexHint(ev.Ifindex, now); ok {
-			src = kube.StrongerIdentity(src, kube.WithObservedIP(id, srcIP))
-		}
-	}
+	// SkbIif 는 skb 의 inbound device ifindex 라 ingress 에서 의미가 있고 egress 에서는 보통 0 이다.
+	// 두 케이스 모두 dst 측 hint 로만 쓰이며 direction 분기와 무관하게 동작이 일관된다.
 	if !dst.IsPod() && ev.SkbIif != 0 {
 		if id, ok := e.lookupIfindexHint(ev.SkbIif, now); ok {
 			dst = kube.StrongerIdentity(dst, kube.WithObservedIP(id, dstIP))
