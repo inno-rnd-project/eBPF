@@ -60,7 +60,8 @@ struct netobs_start_info {
     __u8  seen_veth;
     __u8  seen_devq;
     __u8  ret_seen;
-    __u8  pad0;
+    __u8  protocol;         /* IP protocol number (IPPROTO_TCP=6, IPPROTO_UDP=17). #64 의 drop flow
+                              5-tuple emit 에 사용. pad0 자리를 reuse 해 struct size 변경 없음. */
 };
 
 struct netobs_event {
@@ -85,7 +86,9 @@ struct netobs_event {
     char  comm[NETOBS_COMM_LEN];
 
     __u8  stage;
-    __u8  pad[3];
+    __u8  protocol;         /* IP protocol number (IPPROTO_TCP=6, IPPROTO_UDP=17). #64 의 drop flow
+                              5-tuple emit 에 사용. pad[0] 자리를 reuse 해 struct size 변경 없음. */
+    __u8  pad[2];
 };
 
 #endif

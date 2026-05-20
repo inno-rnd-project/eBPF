@@ -89,6 +89,11 @@ static __always_inline void fill_conn_from_sock(struct sock *sk, struct netobs_s
 
     s->ifindex = BPF_CORE_READ(sk, __sk_common.skc_bound_dev_if);
     s->skb_iif = 0;
+
+    /* #64 drop flow 5-tuple emit 에 protocol 라벨이 필요하다. sk_protocol 은 kernel 의 bitfield 라
+     * BPF_CORE_READ_BITFIELD_PROBED 매크로로 안전하게 읽는다. CO-RE 로 kernel 버전 간 layout
+     * 차이를 흡수한다. */
+    s->protocol = BPF_CORE_READ_BITFIELD_PROBED(sk, sk_protocol);
 }
 
 static __always_inline void fill_dev_from_skb(struct sk_buff *skb, struct netobs_start_info *s)
@@ -176,9 +181,9 @@ static __always_inline void emit_event(const struct netobs_start_info *s,
     __builtin_memcpy(e->comm, s->comm, sizeof(e->comm));
 
     e->stage         = stage;
+    e->protocol      = s->protocol;
     e->pad[0]        = 0;
     e->pad[1]        = 0;
-    e->pad[2]        = 0;
 
     bpf_ringbuf_submit(e, 0);
 }
@@ -356,9 +361,16 @@ int BPF_KPROBE(handle_kfree_skb_reason, struct sk_buff *skb, int reason)
     struct sock *sk;
     struct netobs_start_info s = {};
     __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u16 family;
 
     sk = BPF_CORE_READ(skb, sk);
     if (!sk)
+        return 0;
+
+    /* #64 의 drop flow 5-tuple 은 IPv4 한정 첫 구현이다. AF_INET (2) 외의 family (AF_INET6 등) 는
+     * 5-tuple 라벨 셋이 의미가 없어 본 drop event 의 emit 자체를 skip 한다. */
+    family = BPF_CORE_READ(sk, __sk_common.skc_family);
+    if (family != 2 /* AF_INET */)
         return 0;
 
     s.ts_ns     = bpf_ktime_get_ns();
