@@ -202,7 +202,7 @@
       "id": 150,
       "type": "stat",
       "title": "GPU idle dominant cause",
-      "description": "cluster:gpu_idle_dominant_cause:5m. 5 cause weight 의 최대 cause 1 종을 노출. GPU idle 게이팅 (>0.5) 이 트리거된 시간대에만 emit 되며 그 외에는 N/A 로 표시된다.",
+      "description": "cluster:gpu_idle_dominant_cause:5m. 5 cause weight 의 최대 cause 1 종을 노출. GPU idle 게이팅 (>0.5) 이 트리거되고 5 cause 합이 양수일 때만 emit 되며, idle 아님 또는 5 cause 모두 0 인 시간대는 N/A 로 표시된다.",
       "datasource": "${datasource}",
       "gridPos": { "h": 4, "w": 24, "x": 0, "y": 7 },
       "targets": [
@@ -210,7 +210,7 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "noValue": "N/A (GPU idle 아님)",
+          "noValue": "N/A (원인 미식별 또는 GPU idle 아님)",
           "thresholds": {
             "mode": "absolute",
             "steps": [

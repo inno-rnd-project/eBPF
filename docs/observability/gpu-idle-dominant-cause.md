@@ -23,7 +23,7 @@
 
 ## 진단 워크플로
 
-1. dashboard `observability overview` 의 cluster overview row 에서 `GPU idle dominant cause` stat 패널 확인. `N/A` 면 GPU 가 유휴 상태가 아니며 cause weight 가 산출되지 않는 시간대다
+1. dashboard `observability overview` 의 cluster overview row 에서 `GPU idle dominant cause` stat 패널 확인. `N/A` 면 GPU 가 유휴 상태가 아니거나 5 cause 모두 0 인 시간대다 (idle 게이팅 실패 또는 cause 미식별 양쪽 모두 동일 메시지로 떨어진다)
 2. dominant cause 라벨이 식별되면 해당 cause 의 base score 와 cluster 단위 rollup 값을 비교해 worst-case 노드 또는 Pod 를 식별
 
    ```sh
