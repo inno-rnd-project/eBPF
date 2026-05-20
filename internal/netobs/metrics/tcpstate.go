@@ -5,16 +5,16 @@
 package metrics
 
 import (
-	"math"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 // tcpInfiniteSsthresh 는 kernel 의 TCP_INFINITE_SSTHRESH 값 (slow start 가 unbounded 인 sentinel) 이다.
-// snd_ssthresh 가 본 값이면 ssthresh 가 의미 있는 임계가 아니라 "limit 없음" 표시라 min 집계에서
-// 제외해 메트릭이 4G 같은 잡음 값으로 오염되지 않게 한다.
-const tcpInfiniteSsthresh uint32 = math.MaxUint32
+// include/net/tcp.h 의 정의는 0x7FFFFFFF = INT_MAX 다 (uint32 max 가 아니다). snd_ssthresh 가 본 값
+// 이면 ssthresh 가 의미 있는 임계가 아니라 "limit 없음" 표시라 min 집계에서 제외해 메트릭이 2G 같은
+// 잡음 값으로 오염되지 않게 한다.
+const tcpInfiniteSsthresh uint32 = 0x7FFFFFFF
 
 // TCPStateLabels 는 TCP 상태 메트릭의 emit 라벨 셋이다. receive path 의 ingress event 는 enricher 가
 // 흐름 dst 측을 수신 Pod 로 식별하므로 호출자는 그 값을 본 라벨에 채워 전달한다. node 는 agent 가

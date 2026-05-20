@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"math"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -77,8 +76,9 @@ func TestTCPStateAggregator_FiltersInvalidAndSentinel(t *testing.T) {
 	agg := NewTCPStateAggregator()
 	l := TCPStateLabels{Namespace: "ns", Pod: "p1", Node: "n1"}
 
-	// cwnd=0 / srtt=0 / ssthresh=infinite 만 들어온 케이스. emit 자체가 없어야 한다.
-	agg.Observe(l, 0, 0, math.MaxUint32)
+	// cwnd=0 / srtt=0 / ssthresh=TCP_INFINITE_SSTHRESH (0x7FFFFFFF) 만 들어온 케이스. emit 자체가
+	// 없어야 한다.
+	agg.Observe(l, 0, 0, 0x7FFFFFFF)
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(agg)
