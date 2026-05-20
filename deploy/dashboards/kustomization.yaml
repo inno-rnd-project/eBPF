@@ -52,6 +52,17 @@ configMapGenerator:
         app.kubernetes.io/name: workload-injector
         app.kubernetes.io/component: grafana-dashboard
         app.kubernetes.io/part-of: ebpf-project
+  - name: overview-dashboard
+    files:
+      - overview.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+        # overview 는 cluster → node → pod drill-down 의 entry point 라 특정 컴포넌트 라벨로
+        # 한정하지 않고 ebpf-project 전체를 가리킨다.
+        app.kubernetes.io/name: ebpf-project
+        app.kubernetes.io/component: grafana-dashboard
+        app.kubernetes.io/part-of: ebpf-project
 
 generatorOptions:
   disableNameSuffixHash: true

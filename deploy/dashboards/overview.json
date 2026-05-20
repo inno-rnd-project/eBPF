@@ -1,0 +1,508 @@
+{
+  "title": "observability overview",
+  "uid": "observability-overview",
+  "tags": ["observability", "overview", "ebpf", "netobs", "gpuobs", "correlation"],
+  "schemaVersion": 38,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 0,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "timezone": "browser",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Datasource",
+        "hide": 0,
+        "current": {},
+        "refresh": 1
+      },
+      {
+        "name": "node",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(up{job=~\".*agent.*\"}, node)",
+        "multi": true,
+        "includeAll": true,
+        "label": "Node",
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "pod",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(netobs_pod_stage_latency_labeled_seconds_count{node=~\"$node\"}, src_pod)",
+        "multi": true,
+        "includeAll": true,
+        "label": "Pod",
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "name": "alerts",
+        "datasource": "${datasource}",
+        "enable": true,
+        "iconColor": "red",
+        "expr": "ALERTS{alertstate=\"firing\"}",
+        "tagKeys": "severity,component,alertname",
+        "titleFormat": "{{alertname}}",
+        "textFormat": "severity={{severity}} component={{component}}"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Cluster overview",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "GPU health",
+      "description": "cluster:gpu_health_score:5m. 1 healthy, 0 worst. throttle reason 합산 기준.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 1 },
+      "targets": [
+        { "expr": "cluster:gpu_health_score:5m", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "decimals": 2,
+          "noValue": "N/A",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.5 },
+              { "color": "yellow", "value": 0.7 },
+              { "color": "green", "value": 0.85 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "CPU health",
+      "description": "cluster:cpu_health_score:5m. Pod 단위 cpu_throttle_score p95 의 inversion.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 1 },
+      "targets": [
+        { "expr": "cluster:cpu_health_score:5m", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "decimals": 2,
+          "noValue": "N/A",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.5 },
+              { "color": "yellow", "value": 0.7 },
+              { "color": "green", "value": 0.85 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Network health",
+      "description": "cluster:network_health_score:5m. drop rate 100/s 가 worst case 임계.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 1 },
+      "targets": [
+        { "expr": "cluster:network_health_score:5m", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "decimals": 2,
+          "noValue": "N/A",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.5 },
+              { "color": "yellow", "value": 0.7 },
+              { "color": "green", "value": 0.85 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Memory health",
+      "description": "cluster:memory_health_score:5m. Pod 단위 memory_pressure_score p95 의 inversion.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 1 },
+      "targets": [
+        { "expr": "cluster:memory_health_score:5m", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "decimals": 2,
+          "noValue": "N/A",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.5 },
+              { "color": "yellow", "value": 0.7 },
+              { "color": "green", "value": 0.85 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "Cluster timeline",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 },
+      "collapsed": false
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "4 카테고리 health score 시계열 (alert annotation 포함)",
+      "description": "cluster 단위 health score 의 1 시간 추세. alert firing 시점은 annotation 으로 표시.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "cluster:gpu_health_score:5m", "legendFormat": "gpu", "refId": "A" },
+        { "expr": "cluster:cpu_health_score:5m", "legendFormat": "cpu", "refId": "B" },
+        { "expr": "cluster:network_health_score:5m", "legendFormat": "network", "refId": "C" },
+        { "expr": "cluster:memory_health_score:5m", "legendFormat": "memory", "refId": "D" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        }
+      }
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "Node drill-down ($node)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
+      "collapsed": false
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Node cpu_throttle_score (Pod 별)",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 17 },
+      "targets": [
+        {
+          "expr": "pod:cpu_throttle_score:5m{node=~\"$node\"}",
+          "legendFormat": "{{src_namespace}}/{{src_pod}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "min": 0, "max": 1 } }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Node memory_pressure_score (Pod 별)",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 17 },
+      "targets": [
+        {
+          "expr": "pod:memory_pressure_score:5m{node=~\"$node\"}",
+          "legendFormat": "{{src_namespace}}/{{src_pod}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "min": 0, "max": 1 } }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Node GPU utilization (device 별)",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "expr": "gpuobs_device_utilization_percent{node=~\"$node\"}",
+          "legendFormat": "{{node}} gpu={{gpu_index}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100, "noValue": "N/A (no GPU)" }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Node drop / retrans rate (drop_category 별)",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 24 },
+      "targets": [
+        {
+          "expr": "sum by(node, drop_category) (rate(netobs_drop_events_labeled_total{node=~\"$node\"}[5m]))",
+          "legendFormat": "drop {{drop_category}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by(node) (rate(netobs_retrans_events_labeled_total{node=~\"$node\"}[5m]))",
+          "legendFormat": "retrans",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Active alerts on node ($node)",
+      "description": "ALERTS{alertstate=\"firing\"} 의 instance / node label 매칭 결과. severity 별 색상.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 31 },
+      "targets": [
+        {
+          "expr": "ALERTS{alertstate=\"firing\",node=~\"$node\"}",
+          "instant": true,
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "alertstate": true,
+              "instance": true,
+              "endpoint": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 400,
+      "type": "row",
+      "title": "Pod drill-down ($pod)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 },
+      "collapsed": false
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Stage latency p99",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 40 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by(le, src_pod, stage) (rate(netobs_pod_stage_latency_labeled_seconds_bucket{src_pod=~\"$pod\"}[5m])))",
+          "legendFormat": "{{src_pod}} {{stage}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "GPU memory used (Pod)",
+      "description": "GPU 미사용 Pod 는 빈 결과 (N/A).",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 40 },
+      "targets": [
+        {
+          "expr": "gpuobs_pod_memory_used_bytes{src_pod=~\"$pod\"}",
+          "legendFormat": "{{src_pod}} gpu={{gpu_index}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes", "noValue": "N/A (no GPU usage)" } }
+    },
+    {
+      "id": 13,
+      "type": "table",
+      "title": "Noisy neighbor Top-N (victim=$pod)",
+      "description": "correlation_noisy_neighbor_score. dimension 별 suspect Pod 순위. (#51 exporter 산출)",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 47 },
+      "targets": [
+        {
+          "expr": "correlation_noisy_neighbor_score{victim_pod=~\"$pod\"}",
+          "instant": true,
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "endpoint": true,
+              "container": true,
+              "namespace": true,
+              "pod": true,
+              "service": true
+            },
+            "renameByName": { "Value": "score" }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [{ "field": "score", "desc": true }]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "score" },
+            "properties": [
+              { "id": "unit", "value": "none" },
+              { "id": "decimals", "value": 3 },
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "blue", "value": null },
+                    { "color": "yellow", "value": 0.5 },
+                    { "color": "orange", "value": 0.7 },
+                    { "color": "red", "value": 0.85 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 500,
+      "type": "row",
+      "title": "Alert summary",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 55 },
+      "collapsed": false
+    },
+    {
+      "id": 14,
+      "type": "bargauge",
+      "title": "Firing alerts by severity",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 56 },
+      "targets": [
+        {
+          "expr": "count by(severity) (ALERTS{alertstate=\"firing\"})",
+          "instant": true,
+          "legendFormat": "{{severity}}",
+          "refId": "A"
+        }
+      ],
+      "options": { "orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "bargauge",
+      "title": "Firing alerts by component",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 56 },
+      "targets": [
+        {
+          "expr": "count by(component) (ALERTS{alertstate=\"firing\"})",
+          "instant": true,
+          "legendFormat": "{{component}}",
+          "refId": "A"
+        }
+      ],
+      "options": { "orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
