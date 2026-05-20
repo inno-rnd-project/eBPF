@@ -423,6 +423,17 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
     s.tid        = (__u32)pid_tgid;
 
     fill_conn_from_sock(sk, &s);
+    /* fill_conn_from_sock 는 send path 기준으로 saddr=local / daddr=remote 를 채운다. receive
+     * path 의 ingress event 는 흐름의 source 가 remote peer 이고 destination 이 local Pod 이므로
+     * 양쪽을 swap 해 downstream 라벨 (src=*, dst=*) 의 의미가 send path 와 일관되게 한다. */
+    {
+        __u32 tmp_addr = s.saddr;
+        __u16 tmp_port = s.sport;
+        s.saddr = s.daddr;
+        s.daddr = tmp_addr;
+        s.sport = s.dport;
+        s.dport = tmp_port;
+    }
     fill_tcp_state(sk, &s);
     if (skb)
         fill_dev_from_skb(skb, &s);

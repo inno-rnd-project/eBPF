@@ -272,6 +272,14 @@ func (e *Enricher) rememberRuntimeHints(ev types.Event, src, dst kube.PodIdentit
 		if src.IsPod() {
 			e.rememberIfindexHint(ev.Ifindex, src, now)
 		}
+
+	case types.StageRcvDemux, types.StageRcvEstablished, types.StageRcvApp:
+		// #65 receive path 의 ingress event 는 흐름 방향이 swap 되어 dst 가 수신 Pod 다. cgroup_id /
+		// skb_iif 는 모두 수신 Pod 의 식별 정보라 dst 측 캐시에 적재한다. tcp_v4_rcv (StageRcvL3) 는
+		// sock 이 없어 emit 자체가 보류된 상태라 본 분기에는 포함하지 않는다.
+		if dst.IsPod() {
+			e.rememberCgroupHint(ev.CgroupID, dst, now)
+		}
 	}
 
 	if dst.IsPod() && ev.SkbIif != 0 {
@@ -364,7 +372,8 @@ func (e *Enricher) Enrich(ev types.Event, mapper *drop.Mapper) types.EnrichedEve
 
 	if src.Known() {
 		switch ev.Stage {
-		case types.StageSendmsgRet, types.StageToVeth, types.StageToDevQ, types.StageRetrans, types.StageDrop:
+		case types.StageSendmsgRet, types.StageToVeth, types.StageToDevQ, types.StageRetrans, types.StageDrop,
+			types.StageRcvDemux, types.StageRcvEstablished, types.StageRcvApp:
 			e.rememberFlow(ev.SocketCookie, src, dst, now)
 		}
 	}
@@ -381,7 +390,7 @@ func (e *Enricher) Enrich(ev types.Event, mapper *drop.Mapper) types.EnrichedEve
 		Raw:            ev,
 		Stage:          types.StageName(ev.Stage),
 		CommText:       types.CommString(ev.Comm),
-		Direction:      "egress",
+		Direction:      types.StageDirection(ev.Stage),
 		TrafficScope:   deriveTrafficScope(src, dst),
 		ObservedNode:   e.kr.LocalNode(),
 		SrcIPText:      srcIP,

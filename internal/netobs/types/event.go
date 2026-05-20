@@ -12,11 +12,15 @@ import (
 )
 
 const (
-	StageSendmsgRet = 1
-	StageToVeth     = 2
-	StageToDevQ     = 3
-	StageRetrans    = 4
-	StageDrop       = 5
+	StageSendmsgRet      = 1
+	StageToVeth          = 2
+	StageToDevQ          = 3
+	StageRetrans         = 4
+	StageDrop            = 5
+	StageRcvL3           = 6
+	StageRcvDemux        = 7
+	StageRcvEstablished  = 8
+	StageRcvApp          = 9
 )
 
 type Event struct {
@@ -98,9 +102,30 @@ func StageName(stage uint8) string {
 		return "retrans"
 	case StageDrop:
 		return "drop"
+	case StageRcvL3:
+		return "rcv_l3"
+	case StageRcvDemux:
+		return "rcv_demux"
+	case StageRcvEstablished:
+		return "rcv_established"
+	case StageRcvApp:
+		return "rcv_app"
 	default:
 		return "unknown"
 	}
+}
+
+// StageDirection 은 stage 별 흐름 방향을 반환한다. send path 5 종은 "egress", #65 의 rcv path 4 종은
+// "ingress" 로 분류한다. enricher 가 Direction 라벨 산정에 사용하며, 알 수 없는 stage 는 "unknown"
+// 으로 둬 메트릭 라벨이 빈 문자열로 비지 않게 한다.
+func StageDirection(stage uint8) string {
+	switch stage {
+	case StageSendmsgRet, StageToVeth, StageToDevQ, StageRetrans, StageDrop:
+		return "egress"
+	case StageRcvL3, StageRcvDemux, StageRcvEstablished, StageRcvApp:
+		return "ingress"
+	}
+	return "unknown"
 }
 
 // IPProtocolName 은 IP protocol number 의 사람 읽을 수 있는 라벨을 반환한다. 첫 구현은 본 시리즈가
