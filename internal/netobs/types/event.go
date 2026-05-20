@@ -39,7 +39,10 @@ type Event struct {
 	Dport uint16
 	Comm  [16]byte
 	Stage uint8
-	Pad   [3]byte
+	// Protocol 은 IP protocol number (IPPROTO_TCP=6, IPPROTO_UDP=17) 다. BPF 측 netobs_event 의
+	// pad[0] 자리에 추가되어 struct size 변경 없이 emit 된다.
+	Protocol uint8
+	Pad      [2]byte
 }
 
 type EnrichedEvent struct {
@@ -51,6 +54,9 @@ type EnrichedEvent struct {
 	ObservedNode   string
 	SrcIPText      string
 	DstIPText      string
+	// ProtocolText 는 IP protocol number 의 사람 읽을 수 있는 라벨이다. drop flow 5-tuple 메트릭의
+	// protocol 라벨로 사용된다. 알려지지 않은 protocol 은 "unknown" 으로 표시한다.
+	ProtocolText   string
 	Src            kube.PodIdentity
 	Dst            kube.PodIdentity
 	DropReasonName string
@@ -89,6 +95,19 @@ func StageName(stage uint8) string {
 	default:
 		return "unknown"
 	}
+}
+
+// IPProtocolName 은 IP protocol number 의 사람 읽을 수 있는 라벨을 반환한다. 첫 구현은 본 시리즈가
+// 다루는 TCP / UDP 두 protocol 만 매핑하고 그 외는 "unknown" 으로 두어 drop flow 메트릭의 카디널
+// 리티가 알려진 protocol 셋 안에서만 늘어나도록 한다.
+func IPProtocolName(p uint8) string {
+	switch p {
+	case 6:
+		return "TCP"
+	case 17:
+		return "UDP"
+	}
+	return "unknown"
 }
 
 func CommString(comm [16]byte) string {
