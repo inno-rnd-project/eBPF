@@ -272,6 +272,74 @@ spec:
         - record: cluster:pod_host_compute_stall_score:5m
           expr: max(pod:host_compute_stall_score:5m)
 
+        # gpu_idle_cause_sum:5m
+        # 5 cause base score 의 합. cause weight 정규화의 분모로 쓰인다. base 시리즈가 비어 있는
+        # cause 는 `or vector(0)` 로 0 으로 대체해 합이 NaN 으로 빠지지 않게 한다. dev cluster 처럼
+        # PCIe / network 트래픽이 거의 없는 환경에서도 합 산출이 가능하게 한다.
+        - record: gpu_idle_cause_sum:5m
+          expr: |
+            (cluster:gpu_pcie_saturation_score:5m or vector(0))
+            + (cluster:pod_cpu_throttle_score:5m or vector(0))
+            + (cluster:pod_memory_pressure_score:5m or vector(0))
+            + (cluster:pod_network_pressure_score:5m or vector(0))
+            + (cluster:pod_host_compute_stall_score:5m or vector(0))
+
+        # gpu_idle_cause_weight:5m{cause}
+        # 5 cause 의 정규화 가중치 (cause 별 score / 5 cause 합). 분모가 0 인 idle window 는
+        # `(gpu_idle_cause_sum:5m > 0)` 필터로 시리즈 자체가 emit 되지 않아 NaN 이 라벨 세트에
+        # 끼지 않는다. cluster 의 어느 노드라도 GPU idle > 0.5 인 상태에서만 emit 되도록 AND 게이팅
+        # 을 두어 idle 이 아닌 시간대의 cause weight 잡음이 dashboard 와 alert 의 신호 대 잡음비를
+        # 떨어뜨리지 않게 한다. cause 라벨 enum 은 GPUIdleWith* 5 종 alert 와 1:1 매핑된다.
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: pcie_saturation
+          expr: |
+            (
+              (cluster:gpu_pcie_saturation_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: cpu_throttle
+          expr: |
+            (
+              (cluster:pod_cpu_throttle_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: memory_pressure
+          expr: |
+            (
+              (cluster:pod_memory_pressure_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: network_pressure
+          expr: |
+            (
+              (cluster:pod_network_pressure_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: host_compute_stall
+          expr: |
+            (
+              (cluster:pod_host_compute_stall_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
     # netobs-gpuobs.drop-flow.recording 그룹은 #64 의 drop flow 5-tuple burst 검출을 위한 recording
     # rule 을 둔다. evaluation interval 30s, rate window 1m 으로 두어 ServiceMonitor 의 scrape
     # interval (15s) 보다 충분히 길어 sample 부족으로 인한 빈 결과를 회피한다. rate window 가 1m
