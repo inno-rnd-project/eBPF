@@ -43,13 +43,15 @@ type Event struct {
 	Dport uint16
 	Comm  [16]byte
 	Stage uint8
-	// Protocol 은 IP protocol number (IPPROTO_TCP=6, IPPROTO_UDP=17) 다. BPF 측 netobs_event 의
-	// pad[0] 자리에 추가되어 struct size 변경 없이 emit 된다.
+	// Protocol 은 IP protocol number (IPPROTO_TCP=6, IPPROTO_UDP=17) 다. #64 에서 BPF 측 netobs_event
+	// 의 기존 pad[0] 슬롯에 들어가 본 필드 추가만으로는 struct size 가 변하지 않았다 (#65 의 TCP 상태
+	// 필드로 struct 전체는 별도로 확장됨).
 	Protocol uint8
 	Pad      [2]byte
 
 	// #65 TCP 상태 메트릭. rcv_* stage 의 emit 에서만 채워지며 그 외 stage 는 0. SrttUs 는 kernel
-	// 의 << 3 scale 을 BPF 단에서 >> 3 한 실제 µs 단위라 추가 변환이 필요 없다.
+	// 의 << 3 scale 을 BPF 단에서 >> 3 한 실제 µs 단위라 추가 변환이 필요 없다. 본 3 필드 추가로
+	// struct size 가 88 → 96 byte 로 확장되며 BPF 측 netobs_event 와 정합한다.
 	SndCwnd     uint32
 	SrttUs      uint32
 	SndSsthresh uint32
