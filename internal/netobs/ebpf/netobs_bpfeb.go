@@ -41,6 +41,10 @@ type NetObsNetobsStartInfo struct {
 	SeenDevq     uint8
 	RetSeen      uint8
 	Protocol     uint8
+	SndCwnd      uint32
+	SrttUs       uint32
+	SndSsthresh  uint32
+	_            [4]byte
 }
 
 // LoadNetObs returns the embedded CollectionSpec for NetObs.

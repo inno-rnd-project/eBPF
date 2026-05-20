@@ -43,6 +43,12 @@ type Event struct {
 	// pad[0] 자리에 추가되어 struct size 변경 없이 emit 된다.
 	Protocol uint8
 	Pad      [2]byte
+
+	// #65 TCP 상태 메트릭. rcv_* stage 의 emit 에서만 채워지며 그 외 stage 는 0. SrttUs 는 kernel
+	// 의 << 3 scale 을 BPF 단에서 >> 3 한 실제 µs 단위라 추가 변환이 필요 없다.
+	SndCwnd     uint32
+	SrttUs      uint32
+	SndSsthresh uint32
 }
 
 type EnrichedEvent struct {

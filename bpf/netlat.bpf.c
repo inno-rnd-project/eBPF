@@ -114,6 +114,28 @@ static __always_inline void fill_conn_from_sock(struct sock *sk, struct netobs_s
     s->protocol = BPF_CORE_READ_BITFIELD_PROBED(sk, sk_protocol);
 }
 
+/* fill_tcp_state 는 tcp_sock 의 혼잡 제어 상태 3 종을 netobs_start_info 에 채운다. tcp_sock 은
+ * struct sock 을 첫 멤버로 포함하는 derived 타입이라 sock pointer 를 그대로 cast 한다. srtt_us 는
+ * kernel 내부적으로 << 3 scale 의 smoothed RTT 라 emit 단계에서 >> 3 해 실제 µs 단위로 변환한다.
+ * sk 가 null 이거나 protocol 이 TCP 가 아니면 0 으로 두어 호출자가 stage 마다 일관되게 처리할 수
+ * 있게 한다. */
+static __always_inline void fill_tcp_state(struct sock *sk, struct netobs_start_info *s)
+{
+    struct tcp_sock *tp;
+    __u32 srtt_scaled;
+
+    if (!sk)
+        return;
+    if (BPF_CORE_READ_BITFIELD_PROBED(sk, sk_protocol) != IPPROTO_TCP)
+        return;
+
+    tp = (struct tcp_sock *)sk;
+    s->snd_cwnd     = BPF_CORE_READ(tp, snd_cwnd);
+    srtt_scaled     = BPF_CORE_READ(tp, srtt_us);
+    s->srtt_us      = srtt_scaled >> 3;
+    s->snd_ssthresh = BPF_CORE_READ(tp, snd_ssthresh);
+}
+
 static __always_inline void fill_dev_from_skb(struct sk_buff *skb, struct netobs_start_info *s)
 {
     __u32 ifindex;
@@ -202,6 +224,10 @@ static __always_inline void emit_event(const struct netobs_start_info *s,
     e->protocol      = s->protocol;
     e->pad[0]        = 0;
     e->pad[1]        = 0;
+
+    e->snd_cwnd      = s->snd_cwnd;
+    e->srtt_us       = s->srtt_us;
+    e->snd_ssthresh  = s->snd_ssthresh;
 
     bpf_ringbuf_submit(e, 0);
 }
@@ -397,6 +423,7 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
     s.tid        = (__u32)pid_tgid;
 
     fill_conn_from_sock(sk, &s);
+    fill_tcp_state(sk, &s);
     if (skb)
         fill_dev_from_skb(skb, &s);
 
