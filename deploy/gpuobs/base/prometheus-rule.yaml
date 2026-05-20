@@ -235,6 +235,24 @@ spec:
               pod:gpu_memory_utilization_ratio:5m
             )
 
+    # netobs-gpuobs.drop-flow.recording 그룹은 #64 의 drop flow 5-tuple burst 검출을 위한 recording
+    # rule 을 둔다. evaluation interval 30s, rate window 1m 으로 두어 ServiceMonitor 의 scrape
+    # interval (15s) 보다 충분히 길어 sample 부족으로 인한 빈 결과를 회피한다. rate window 가 1m
+    # 라 1 분 안의 burst 평균값을 산출하며 short burst (수 초 단위) 는 평균이 희석된다. 본 trade-off
+    # 는 운영 환경의 sustained burst 감지 (alert) 가 우선이라 채택한다.
+    - name: netobs-gpuobs.drop-flow.recording
+      interval: 30s
+      rules:
+        # netobs_drop_burst:rate1m
+        # 동일 5-tuple 의 drop 횟수를 1 분 윈도우에서 초당 평균으로 산출한다. src_namespace /
+        # src_pod / 5-tuple / drop_reason / drop_category 라벨을 보존해 alert 에서 정확한 connection
+        # 단위 식별이 가능하다.
+        - record: netobs_drop_burst:rate1m
+          expr: |
+            sum by(src_namespace, src_pod, src_ip, src_port, dst_ip, dst_port, protocol, drop_reason, drop_category) (
+              rate(netobs_drop_events_flow_total[1m])
+            )
+
     # netobs-gpuobs.cluster-health.recording 그룹은 cluster 전체 단위의 4 카테고리 health score 를
     # 산출한다. observability overview dashboard (#53) 의 single-stat 패널이 본 record 4 종을 직접
     # 참조한다. 각 score 는 0 ~ 1 사이로 정규화되며 1 이 healthy, 0 이 worst 다. cluster 의 어느 노드
@@ -338,6 +356,22 @@ spec:
           annotations:
             summary: "netobs drop rate over 10/s (node={{ $labels.node }} category={{ $labels.drop_category }})"
             description: "drop category {{ $labels.drop_category }} for workload {{ $labels.src_namespace }}/{{ $labels.src_workload }} on node {{ $labels.node }} is {{ $value }} events/sec sustained over 2 minutes. Reference docs/netobs/drop-reason.md for category semantics."
+
+        # NetObsDropBurst
+        # 동일 5-tuple 에서 drop rate 가 10 회/초 이상이고 1 분 지속 시 발화한다 (#64). 본 alert 는
+        # netobs_drop_events_flow_total 메트릭이 emit 되는 namespace 한정으로 동작하며 cardinality
+        # 가드를 통과한 5-tuple 만 검출 대상이다. burst rate 임계 10/s 는 dev cluster 의 합성 drop
+        # 시나리오 (iptables -j DROP) 에서 sustained burst 의 하한값으로 검증되었다.
+        - alert: NetObsDropBurst
+          expr: |
+            netobs_drop_burst:rate1m > 10
+          for: 1m
+          labels:
+            severity: warning
+            component: netobs
+          annotations:
+            summary: "netobs drop burst on 5-tuple (src={{ $labels.src_namespace }}/{{ $labels.src_pod }} dst={{ $labels.dst_ip }}:{{ $labels.dst_port }} proto={{ $labels.protocol }} reason={{ $labels.drop_reason }})"
+            description: "drop burst rate {{ $value }} events/sec sustained over 1 minute for 5-tuple src={{ $labels.src_ip }}:{{ $labels.src_port }} → dst={{ $labels.dst_ip }}:{{ $labels.dst_port }} protocol={{ $labels.protocol }} drop_reason={{ $labels.drop_reason }}. See docs/netobs/drop-flow-analysis.md for triage workflow."
 
         # NetObsHighRetransmissionRate
         # TCP 재전송 rate가 5event/s를 넘으면 발화. 네트워크 혼잡, peer 처리 지연, 경로 패킷

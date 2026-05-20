@@ -28,6 +28,16 @@ func init() {
 
 // SetPodMetricsEnabled은 pod-instance 레벨 메트릭 기록 여부를 전환하며, 반드시 Record가 호출되기
 // 전 (main startup 단계) 에 호출되어야 한다.
+// dropFlowGuard 는 netobs_drop_events_flow_total 의 emit cardinality 가드다. SetDropFlowGuard 가
+// startup 시점에 설정하지 않으면 nil 로 두어 emit 자체가 skip 된다 (#64 의 safe default).
+var dropFlowGuard *DropFlowGuard
+
+// SetDropFlowGuard 는 main agent 가 config 의 DropFlowAllowNamespaces 와 DropFlowMaxActive 로 가드를
+// 구성해 본 함수로 wire-up 한다. nil 을 전달하면 metric emit 이 명시적으로 disable 된다.
+func SetDropFlowGuard(g *DropFlowGuard) {
+	dropFlowGuard = g
+}
+
 func SetPodMetricsEnabled(v bool) {
 	podMetricsEnabled.Store(v)
 }
@@ -114,6 +124,18 @@ var (
 		[]string{"node", "src_namespace", "src_workload", "traffic_scope", "direction", "dst_namespace", "dst_workload"},
 	)
 
+	// dropEventsFlow 는 #64 의 drop flow 5-tuple context 메트릭이다. 기존 dropEventsLabeled 가
+	// workload 단위로 emit 하는 반면 본 메트릭은 5-tuple (src_ip, src_port, dst_ip, dst_port,
+	// protocol) 라벨로 정확한 connection 식별을 제공한다. high cardinality 메트릭이라 emit 은
+	// namespace allow-list 와 top-N flow sampling 가드를 거친다 (다음 commit 에서 추가).
+	dropEventsFlow = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "netobs_drop_events_flow_total",
+			Help: "Drop events with 5-tuple flow context for #64. Emitted only for namespaces in NETOBS_DROP_FLOW_ALLOW_NAMESPACES and limited to top-N active flows for cardinality control. Use this metric to identify which specific connection's packets were dropped, complementing the workload-level netobs_drop_events_labeled_total.",
+		},
+		[]string{"node", "src_namespace", "src_workload", "src_pod", "traffic_scope", "direction", "drop_reason", "drop_category", "protocol", "src_ip", "src_port", "dst_ip", "dst_port"},
+	)
+
 	// pod-level 메트릭에는 dst_pod_uid 까지 노출된다. POD_FLOW_DST_UID_ALLOW_NAMESPACES 토글에 등록된
 	// namespace 의 dst Pod 흐름에 한해 값이 채워지고 그 외에는 빈 문자열로 emit 되어 cardinality 가
 	// 통제된다.
@@ -180,6 +202,7 @@ func Register(reg prometheus.Registerer) {
 		stageEventsLabeled,
 		stageLatencyLabeled,
 		dropEventsLabeled,
+		dropEventsFlow,
 		retransEventsLabeled,
 		podStageEventsLabeled,
 		podStageLatencyLabeled,
@@ -280,6 +303,31 @@ func Record(ev types.EnrichedEvent) {
 			dstNs,
 			dstWl,
 		).Inc()
+		// #64 의 5-tuple drop flow 메트릭은 namespace allow-list 와 top-N LRU 가드를 통과한 경우만
+		// emit 한다. guard 가 nil 이면 emit 자체가 skip 되어 cardinality 가 도입 전 수준 (0 series)
+		// 으로 유지된다.
+		if dropFlowGuard != nil && dropFlowGuard.Admit(
+			ev.SourceNamespaceLabel(),
+			ev.SrcIPText, ev.Raw.Sport,
+			ev.DstIPText, ev.Raw.Dport,
+			ev.ProtocolText,
+		) {
+			dropEventsFlow.WithLabelValues(
+				label(ev.ObservedNodeLabel()),
+				label(ev.SourceNamespaceLabel()),
+				label(ev.SourceWorkloadLabel()),
+				label(ev.Src.PodName),
+				label(ev.TrafficScope),
+				label(ev.Direction),
+				label(ev.DropReasonName),
+				label(ev.DropCategory),
+				label(ev.ProtocolText),
+				label(ev.SrcIPText),
+				strconv.FormatUint(uint64(ev.Raw.Sport), 10),
+				label(ev.DstIPText),
+				strconv.FormatUint(uint64(ev.Raw.Dport), 10),
+			).Inc()
+		}
 
 	case types.StageRetrans:
 		retransEventsLabeled.WithLabelValues(

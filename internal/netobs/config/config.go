@@ -51,6 +51,17 @@ type Config struct {
 	// 식별 흐름에 한해 UID가 채워져 카디널리티 폭발을 막는다.
 	PodFlowDstUIDAllowNamespaces []string
 
+	// DropFlowAllowNamespaces 는 netobs_drop_events_flow_total 의 5-tuple 메트릭이 emit 되는 src
+	// namespace 화이트리스트다 (#64). 본 메트릭은 src_ip / src_port / dst_ip / dst_port / protocol 5
+	// 라벨로 카디널리티 위험이 크다. 빈 슬라이스가 기본이며 그 경우 emit 자체가 일어나지 않는다.
+	// 운영자가 진단 대상 namespace 만 명시 등록해 series 폭주를 차단한다.
+	DropFlowAllowNamespaces []string
+
+	// DropFlowMaxActive 는 활성 5-tuple flow 의 동시 emit 상한이다. LRU sampling 으로 본 한도를 초과
+	// 하는 신규 flow 는 가장 오래된 flow 가 evict 된 후 등록된다. emit 되는 series 의 절대 상한은
+	// DropFlowMaxActive * (drop_reason 수 8 종) 으로 추정된다. 기본 1024.
+	DropFlowMaxActive int
+
 	// NICCapacityBytesPerSec는 노드의 NIC 이론 capacity (bytes/sec) 다. correlation 진단의 network
 	// throughput score 정규화 분모로 사용되는 netobs_node_nic_capacity_bytes_per_sec 메트릭의 값을
 	// 결정한다. default 1.25e9 (10 GbE) 가 일반 서버 NIC와 정합하고, 운영자는 노드별 실제 NIC 사양에
@@ -151,6 +162,11 @@ func Parse() (Config, error) {
 		return Config{}, err
 	}
 
+	dropFlowMaxActive, err := strconv.Atoi(getenv("NETOBS_DROP_FLOW_MAX_ACTIVE", "1024"))
+	if err != nil || dropFlowMaxActive <= 0 {
+		dropFlowMaxActive = 1024
+	}
+
 	cfg := Config{
 		TargetIP:                     getenv("TARGET_IP", ""),
 		ListenAddr:                   getenv("LISTEN_ADDR", ":9810"),
@@ -161,6 +177,8 @@ func Parse() (Config, error) {
 		DropReasonFormatPath:         getenv("DROP_REASON_FORMAT_PATH", "/sys/kernel/tracing/events/skb/kfree_skb/format"),
 		PodFlowDstEnabled:            getenvBool("POD_FLOW_DST_ENABLED", true),
 		PodFlowDstUIDAllowNamespaces: parseNamespaceList(getenv("POD_FLOW_DST_UID_ALLOW_NAMESPACES", "")),
+		DropFlowAllowNamespaces:      parseNamespaceList(getenv("NETOBS_DROP_FLOW_ALLOW_NAMESPACES", "")),
+		DropFlowMaxActive:            dropFlowMaxActive,
 		NICCapacityBytesPerSec:       nicCapacity,
 	}
 
@@ -178,6 +196,12 @@ func Parse() (Config, error) {
 		dstUIDNs = strings.Join(cfg.PodFlowDstUIDAllowNamespaces, ",")
 	}
 	fs.StringVar(&dstUIDNs, "pod-flow-dst-uid-allow-namespaces", dstUIDNs, "comma-separated namespace allow-list whose Pods receive dst_pod_uid labels; empty disables UID emit cluster-wide")
+	var dropFlowNs string
+	if len(cfg.DropFlowAllowNamespaces) > 0 {
+		dropFlowNs = strings.Join(cfg.DropFlowAllowNamespaces, ",")
+	}
+	fs.StringVar(&dropFlowNs, "drop-flow-allow-namespaces", dropFlowNs, "comma-separated namespace allow-list for netobs_drop_events_flow_total 5-tuple emit (#64); empty disables emit cluster-wide")
+	fs.IntVar(&cfg.DropFlowMaxActive, "drop-flow-max-active", cfg.DropFlowMaxActive, "LRU sampling cap for concurrent active 5-tuple flows in drop flow metric (#64). Older flows are evicted when limit exceeded")
 	fs.Float64Var(&cfg.NICCapacityBytesPerSec, "nic-capacity-bytes", cfg.NICCapacityBytesPerSec, "node NIC theoretical capacity in bytes/sec; exposed as netobs_node_nic_capacity_bytes_per_sec for correlation network throughput score (default 1.25e9 = 10 GbE)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// -h/-help 요청은 flag 패키지가 usage를 출력한 뒤 ErrHelp를 반환한다.
@@ -204,6 +228,7 @@ func Parse() (Config, error) {
 	// 통과시킨다. env-only 경로와 flag-override 경로가 같은 정상화 규칙을 공유해 운영 surface가
 	// 일관되게 동작한다.
 	cfg.PodFlowDstUIDAllowNamespaces = parseNamespaceList(dstUIDNs)
+	cfg.DropFlowAllowNamespaces = parseNamespaceList(dropFlowNs)
 
 	// allow-list 각 entry 가 RFC1123 DNS 라벨 규칙에 맞는지 startup 시점에 fail-fast 로 검증한다.
 	// 잘못된 이름 (예: 대문자, 언더스코어 오타) 은 lookup 단계에서 silent miss 가 되어 dst_pod_uid
@@ -212,6 +237,14 @@ func Parse() (Config, error) {
 		if err := validateNamespaceName(ns); err != nil {
 			return Config{}, fmt.Errorf("invalid -pod-flow-dst-uid-allow-namespaces entry: %w", err)
 		}
+	}
+	for _, ns := range cfg.DropFlowAllowNamespaces {
+		if err := validateNamespaceName(ns); err != nil {
+			return Config{}, fmt.Errorf("invalid -drop-flow-allow-namespaces entry: %w", err)
+		}
+	}
+	if cfg.DropFlowMaxActive <= 0 {
+		return Config{}, fmt.Errorf("drop-flow-max-active must be positive, got %d", cfg.DropFlowMaxActive)
 	}
 
 	return cfg, nil
