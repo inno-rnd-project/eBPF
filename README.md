@@ -82,6 +82,8 @@ The CI workflow [`integration.yml`](.github/workflows/integration.yml) runs the 
 | `POD_METRICS_ENABLED` | `-pod-metrics` | `true` | Emit per-pod-instance metrics (`netobs_pod_stage_*`); disable on large clusters to cap Prometheus cardinality |
 | `POD_FLOW_DST_ENABLED` | `-pod-flow-dst` | `true` | Emit `dst_namespace`/`dst_workload` labels on stage/drop/retrans metrics; disable to keep pre-flow-dst cardinality |
 | `POD_FLOW_DST_UID_ALLOW_NAMESPACES` | `-pod-flow-dst-uid-allow-namespaces` | *(empty)* | Comma-separated namespace allow-list whose Pods receive `dst_pod_uid` labels; empty disables UID emit cluster-wide. Each entry must match RFC1123 DNS label (lowercase alphanumeric + hyphen, 1-63 chars) and is fail-fast validated at startup |
+| `NETOBS_DROP_FLOW_ALLOW_NAMESPACES` | `-drop-flow-allow-namespaces` | *(empty)* | Comma-separated namespace allow-list for `netobs_drop_events_flow_total` 5-tuple emit (#64). Empty disables emit cluster-wide. RFC1123 validated. See [docs/netobs/drop-flow-analysis.md](docs/netobs/drop-flow-analysis.md) |
+| `NETOBS_DROP_FLOW_MAX_ACTIVE` | `-drop-flow-max-active` | `1024` | LRU sampling cap for concurrent active 5-tuple flows in drop flow metric. Older flows are evicted when limit exceeded |
 | `NODE_NAME` | `-node-name` | *(hostname)* | Observed Kubernetes node name |
 | `KUBE_METADATA_REFRESH` | `-metadata-refresh` | `30s` | Kubernetes informer resync interval |
 | `DROP_REASON_FORMAT_PATH` | `-drop-reason-format` | `/sys/kernel/tracing/events/skb/kfree_skb/format` | skb:kfree_skb tracepoint format path. See [docs/netobs/drop-reason.md](docs/netobs/drop-reason.md) for the kernel 6.8 reason code table, the runtime mapping mechanism, the `drop_category` taxonomy, and PromQL examples |
