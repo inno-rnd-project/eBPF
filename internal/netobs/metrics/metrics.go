@@ -133,7 +133,7 @@ var (
 			Name: "netobs_drop_events_flow_total",
 			Help: "Drop events with 5-tuple flow context for #64. Emitted only for namespaces in NETOBS_DROP_FLOW_ALLOW_NAMESPACES and limited to top-N active flows for cardinality control. Use this metric to identify which specific connection's packets were dropped, complementing the workload-level netobs_drop_events_labeled_total.",
 		},
-		[]string{"node", "src_namespace", "src_workload", "traffic_scope", "direction", "drop_reason", "drop_category", "protocol", "src_ip", "src_port", "dst_ip", "dst_port"},
+		[]string{"node", "src_namespace", "src_workload", "src_pod", "traffic_scope", "direction", "drop_reason", "drop_category", "protocol", "src_ip", "src_port", "dst_ip", "dst_port"},
 	)
 
 	// pod-level 메트릭에는 dst_pod_uid 까지 노출된다. POD_FLOW_DST_UID_ALLOW_NAMESPACES 토글에 등록된
@@ -316,6 +316,7 @@ func Record(ev types.EnrichedEvent) {
 				label(ev.ObservedNodeLabel()),
 				label(ev.SourceNamespaceLabel()),
 				label(ev.SourceWorkloadLabel()),
+				label(ev.Src.PodName),
 				label(ev.TrafficScope),
 				label(ev.Direction),
 				label(ev.DropReasonName),

@@ -367,10 +367,10 @@ int BPF_KPROBE(handle_kfree_skb_reason, struct sk_buff *skb, int reason)
     if (!sk)
         return 0;
 
-    /* #64 의 drop flow 5-tuple 은 IPv4 한정 첫 구현이다. AF_INET (2) 외의 family (AF_INET6 등) 는
-     * 5-tuple 라벨 셋이 의미가 없어 본 drop event 의 emit 자체를 skip 한다. */
+    /* #64 의 drop flow 5-tuple 은 IPv4 한정 첫 구현이다. NETOBS_AF_INET 외의 family (AF_INET6 등)
+     * 는 5-tuple 라벨 셋이 의미가 없어 본 drop event 의 emit 자체를 skip 한다. */
     family = BPF_CORE_READ(sk, __sk_common.skc_family);
-    if (family != 2 /* AF_INET */)
+    if (family != NETOBS_AF_INET)
         return 0;
 
     s.ts_ns     = bpf_ktime_get_ns();

@@ -47,9 +47,13 @@ func NewDropFlowGuard(allowList []string, maxActive int) *DropFlowGuard {
 
 // Admit 은 (src_namespace, 5-tuple) 페어가 emit 자격이 있는지 판정하고 LRU 에 등록한다.
 // namespace 가 allow-list 에 없으면 false 반환. LRU 상한 초과 시 가장 오래된 entry 가 evict 된 후
-// 신규 entry 가 등록되며 신규는 admit 된다.
+// 신규 entry 가 등록되며 신규는 admit 된다. 빈 IP 또는 0.0.0.0 의 5-tuple 은 socket bind 전 drop
+// 으로 정확한 connection 식별이 불가하므로 LRU 등록 자체를 거부해 cache 공간이 낭비되지 않게 한다.
 func (g *DropFlowGuard) Admit(srcNamespace, srcIP string, srcPort uint16, dstIP string, dstPort uint16, protocol string) bool {
 	if _, ok := g.allowSet[srcNamespace]; !ok {
+		return false
+	}
+	if srcIP == "" || srcIP == "0.0.0.0" || dstIP == "" || dstIP == "0.0.0.0" {
 		return false
 	}
 	k := flowKey{srcNamespace, srcIP, srcPort, dstIP, dstPort, protocol}

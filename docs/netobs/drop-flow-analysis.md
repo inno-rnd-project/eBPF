@@ -5,7 +5,7 @@
 ## 메트릭 카탈로그
 
 - `netobs_drop_events_flow_total{node, src_namespace, src_workload, traffic_scope, direction, drop_reason, drop_category, protocol, src_ip, src_port, dst_ip, dst_port}` counter. drop event의 5-tuple flow context emit
-- `netobs_drop_burst:rate10s{src_namespace, src_pod, src_ip, src_port, dst_ip, dst_port, protocol, drop_reason, drop_category}` recording rule. 10초 윈도우 rate 산출
+- `netobs_drop_burst:rate1m{src_namespace, src_pod, src_ip, src_port, dst_ip, dst_port, protocol, drop_reason, drop_category}` recording rule. 1분 윈도우 rate 산출. evaluation interval 30s, ServiceMonitor scrape interval (15s) 보다 충분히 긴 rate window로 sample 부족을 회피
 
 ## 활성화 절차
 

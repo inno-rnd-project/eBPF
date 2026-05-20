@@ -13,6 +13,21 @@ func TestDropFlowGuard_AllowList(t *testing.T) {
 	}
 }
 
+// TestDropFlowGuard_RejectsZeroIP 는 socket bind 전 drop (saddr/daddr=0) 의 5-tuple 이 LRU 등록
+// 거부되는지 검증한다. cache 공간 낭비 방지 가드의 회귀 가드.
+func TestDropFlowGuard_RejectsZeroIP(t *testing.T) {
+	g := NewDropFlowGuard([]string{"ns"}, 100)
+	if g.Admit("ns", "0.0.0.0", 80, "10.0.0.2", 81, "TCP") {
+		t.Errorf("0.0.0.0 srcIP 가 admit 됨")
+	}
+	if g.Admit("ns", "10.0.0.1", 80, "", 81, "TCP") {
+		t.Errorf("empty dstIP 가 admit 됨")
+	}
+	if g.Size() != 0 {
+		t.Errorf("size=%d want 0 (reject 후 LRU 비어 있어야 함)", g.Size())
+	}
+}
+
 // TestDropFlowGuard_EmptyAllowListRejects 는 빈 allow-list 가 모든 emit 을 차단하는지 검증.
 // cardinality 안전 default 의 회귀 가드.
 func TestDropFlowGuard_EmptyAllowListRejects(t *testing.T) {

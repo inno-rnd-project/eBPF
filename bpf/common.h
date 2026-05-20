@@ -3,6 +3,11 @@
 
 #define NETOBS_COMM_LEN 16
 
+/* AF_INET 은 linux/socket.h 의 socket family 상수다. BPF 환경에서 vmlinux.h 는 enum 만 dump 하므로
+ * 본 매크로를 명시 정의해 #64 의 drop flow IPv4 가드 (sk_family == AF_INET) 에서 hardcoded 2 보다
+ * 가독성을 확보한다. */
+#define NETOBS_AF_INET 2
+
 enum netobs_event_stage {
     NETOBS_STAGE_SENDMSG_RET = 1,
     NETOBS_STAGE_TO_VETH     = 2,
