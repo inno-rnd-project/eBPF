@@ -7,7 +7,7 @@ import (
 
 // TestEventSize 는 BPF 측 netobs_event 와 Go 측 Event 구조체의 size 가 일치하는지 검증한다. BPF
 // ringbuf 가 raw byte 로 전송하므로 두 size 가 다르면 corrupted parsing 위험이 있다. BPF struct
-// 는 common.h 에서 8 byte 정렬 기준 96 byte 로 fixed 다.
+// 는 common.h 에서 정의되며 Go struct 와 size 가 88 byte 로 일치해야 한다.
 func TestEventSize(t *testing.T) {
 	const expected = 88
 	got := int(unsafe.Sizeof(Event{}))

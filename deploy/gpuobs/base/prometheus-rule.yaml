@@ -358,10 +358,10 @@ spec:
             description: "drop category {{ $labels.drop_category }} for workload {{ $labels.src_namespace }}/{{ $labels.src_workload }} on node {{ $labels.node }} is {{ $value }} events/sec sustained over 2 minutes. Reference docs/netobs/drop-reason.md for category semantics."
 
         # NetObsDropBurst
-        # 동일 5-tuple 에서 10 회 이상 drop 이 burst 로 발생하고 30 초 지속 시 발화한다 (#64). 본
-        # alert 는 netobs_drop_events_flow_total 메트릭이 emit 되는 namespace 한정으로 동작하며
-        # cardinality 가드를 통과한 5-tuple 만 검출 대상이다. burst rate 임계 10/s 는 dev cluster 의
-        # 합성 drop 시나리오 (iptables -j DROP) 에서 sustained burst 의 하한값으로 검증되었다.
+        # 동일 5-tuple 에서 drop rate 가 10 회/초 이상이고 1 분 지속 시 발화한다 (#64). 본 alert 는
+        # netobs_drop_events_flow_total 메트릭이 emit 되는 namespace 한정으로 동작하며 cardinality
+        # 가드를 통과한 5-tuple 만 검출 대상이다. burst rate 임계 10/s 는 dev cluster 의 합성 drop
+        # 시나리오 (iptables -j DROP) 에서 sustained burst 의 하한값으로 검증되었다.
         - alert: NetObsDropBurst
           expr: |
             netobs_drop_burst:rate1m > 10
@@ -371,7 +371,7 @@ spec:
             component: netobs
           annotations:
             summary: "netobs drop burst on 5-tuple (src={{ $labels.src_namespace }}/{{ $labels.src_pod }} dst={{ $labels.dst_ip }}:{{ $labels.dst_port }} proto={{ $labels.protocol }} reason={{ $labels.drop_reason }})"
-            description: "drop burst rate {{ $value }} events/sec sustained over 30 seconds for 5-tuple src={{ $labels.src_ip }}:{{ $labels.src_port }} → dst={{ $labels.dst_ip }}:{{ $labels.dst_port }} protocol={{ $labels.protocol }} drop_reason={{ $labels.drop_reason }}. See docs/netobs/drop-flow-analysis.md for triage workflow."
+            description: "drop burst rate {{ $value }} events/sec sustained over 1 minute for 5-tuple src={{ $labels.src_ip }}:{{ $labels.src_port }} → dst={{ $labels.dst_ip }}:{{ $labels.dst_port }} protocol={{ $labels.protocol }} drop_reason={{ $labels.drop_reason }}. See docs/netobs/drop-flow-analysis.md for triage workflow."
 
         # NetObsHighRetransmissionRate
         # TCP 재전송 rate가 5event/s를 넘으면 발화. 네트워크 혼잡, peer 처리 지연, 경로 패킷

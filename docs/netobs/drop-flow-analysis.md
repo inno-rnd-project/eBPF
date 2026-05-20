@@ -4,7 +4,7 @@
 
 ## 메트릭 카탈로그
 
-- `netobs_drop_events_flow_total{node, src_namespace, src_workload, traffic_scope, direction, drop_reason, drop_category, protocol, src_ip, src_port, dst_ip, dst_port}` counter. drop event의 5-tuple flow context emit
+- `netobs_drop_events_flow_total{node, src_namespace, src_workload, src_pod, traffic_scope, direction, drop_reason, drop_category, protocol, src_ip, src_port, dst_ip, dst_port}` counter. drop event의 5-tuple flow context emit
 - `netobs_drop_burst:rate1m{src_namespace, src_pod, src_ip, src_port, dst_ip, dst_port, protocol, drop_reason, drop_category}` recording rule. 1분 윈도우 rate 산출. evaluation interval 30s, ServiceMonitor scrape interval (15s) 보다 충분히 긴 rate window로 sample 부족을 회피
 
 ## 활성화 절차
@@ -44,7 +44,7 @@ alert가 발화하면 다음 4 단계로 root cause를 좁힌다.
 
 ### 1단계 — alert label에서 5-tuple 추출
 
-alert label의 `src_namespace`, `src_pod`, `src_ip`, `src_port`, `dst_ip`, `dst_port`, `protocol`, `drop_reason` 8 필드가 burst의 정체성을 정의한다. 본 라벨 조합이 정확한 connection을 가리킨다.
+alert label의 `src_namespace`, `src_pod`, `src_ip`, `src_port`, `dst_ip`, `dst_port`, `protocol`, `drop_reason`, `drop_category` 9 필드가 burst의 정체성을 정의한다. 본 라벨 조합이 정확한 connection과 해당 drop 분류를 함께 가리킨다.
 
 ### 2단계 — drop_reason 분류 확인
 
@@ -77,8 +77,8 @@ kubectl apply -f test/injector-examples/network.yaml  # network 부하 inject �
 ## 트러블슈팅
 
 - **`netobs_drop_events_flow_total` 가 비어 있음**: `NETOBS_DROP_FLOW_ALLOW_NAMESPACES` 가 비어 있음. allow-list 등록 후 DaemonSet rollout 필요
-- **burst alert가 5분 지나도 발화 안 함**: drop rate 가 10/s 임계 미만. 합성 시나리오로 검증하려면 iptables `-A FORWARD -d <pod_ip> -j DROP` 으로 sustained drop 발생
-- **5-tuple 의 src_ip가 0.0.0.0 또는 dst_ip가 0.0.0.0**: socket이 bind 되기 전 drop. sk_protocol bitfield가 0 으로 emit되는 edge case로 본 series는 무시 가능
+- **burst alert가 1분 이상 지속돼도 발화 안 함**: drop rate가 10/s 임계 미만이거나 sustain 시간이 alert rule의 `for: 1m` 조건을 만족하지 않음. 합성 시나리오로 검증하려면 iptables `-A FORWARD -d <pod_ip> -j DROP`으로 1분 이상 sustained drop 발생
+- **`0.0.0.0` 또는 빈 IP를 기대한 5-tuple series가 보이지 않음**: 정상 동작. `DropFlowGuard`가 socket bind 전 drop의 5-tuple을 LRU 등록 단계에서 거부하므로 해당 series는 `netobs_drop_events_flow_total`에 나타나지 않음
 - **protocol 라벨이 "unknown"**: TCP / UDP 외 protocol (ICMP, GRE 등). 본 첫 구현은 TCP / UDP 한정이며 추후 확장 예정
 
 ## 비목표 (#64 의 follow-up)

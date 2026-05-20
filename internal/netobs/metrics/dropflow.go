@@ -31,8 +31,12 @@ type flowKey struct {
 }
 
 // NewDropFlowGuard 는 namespace allow-list 와 LRU 상한으로 가드를 구성한다. allowList 가 빈 슬라이스
-// 면 모든 src_namespace 가 거부된다 (cardinality 안전 default). maxActive 가 양수여야 한다.
+// 면 모든 src_namespace 가 거부된다 (cardinality 안전 default). maxActive 가 0 이하면 1024 로
+// fallback 해 LRU eviction 이 비활성화된 무제한 entry 증가 상태를 library 단에서 차단한다.
 func NewDropFlowGuard(allowList []string, maxActive int) *DropFlowGuard {
+	if maxActive <= 0 {
+		maxActive = 1024
+	}
 	allowSet := make(map[string]struct{}, len(allowList))
 	for _, ns := range allowList {
 		allowSet[ns] = struct{}{}
