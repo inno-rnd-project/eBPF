@@ -83,6 +83,24 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 	}
 
 	pairs := EnumeratePairs(all)
+	// 동일 시계열이 여러 페어에 반복 등장하므로 samplesToValues 변환 결과를 cache 한다. 키는 시리즈
+	// 의 Samples slice 의 첫 element pointer 로 둬 같은 underlying array 면 1회만 변환된다. 페어
+	// 수가 N 이면 변환은 unique 시리즈 수에 선형이라 매번 변환할 때의 O(N) 슬라이스 할당과 복사를
+	// 줄인다.
+	valuesCache := make(map[*Sample][]float64, len(pairs)*2)
+	getValues := func(s TimeSeries) []float64 {
+		if len(s.Samples) == 0 {
+			return nil
+		}
+		key := &s.Samples[0]
+		if v, ok := valuesCache[key]; ok {
+			return v
+		}
+		v := samplesToValues(s.Samples)
+		valuesCache[key] = v
+		return v
+	}
+
 	results := make([]CorrelationResult, 0, len(pairs))
 	for _, p := range pairs {
 		r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
@@ -90,8 +108,8 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 		// #69 Granger causality 산정. src 의 과거 값이 dst 의 현재 값을 예측하는 데 통계적으로 유의한
 		// 추가 정보를 제공하는지의 F-statistic 과 p-value 를 추가 첨부한다. 표본 부족 또는 행렬
 		// singular 케이스는 GrangerOK=false 로 자연 skip 된다.
-		srcVals := samplesToValues(p.Src.Samples)
-		dstVals := samplesToValues(p.Dst.Samples)
+		srcVals := getValues(p.Src)
+		dstVals := getValues(p.Dst)
 		g := granger.Test(srcVals, dstVals, c.config.GrangerLag, c.config.GrangerMinSamples)
 		r.FStatistic = g.F
 		r.PValue = g.PValue

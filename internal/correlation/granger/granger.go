@@ -96,29 +96,24 @@ func buildLagged(n, lag int, histories [][]float64) *mat.Dense {
 	return mat.NewDense(n, cols, data)
 }
 
-// ols 는 정규 방정식 (X^T X)^-1 X^T y 로 OLS 계수를 구하고 RSS = sum((y - X*beta)^2) 반환한다.
-// X^T X 가 singular 면 (특이행렬) ok=false 반환.
+// ols 는 정규 방정식 (X^T X) beta = X^T y 를 SolveVec 으로 풀어 OLS 계수를 구하고 RSS =
+// sum((y - X*beta)^2) 반환한다. Inverse 직접 호출 대신 SolveVec 을 써 수치 안정성과 효율성을 함께
+// 확보하고 특이행렬은 SolveVec 의 error 로 잡아 ok=false 반환한다.
 func ols(X *mat.Dense, y *mat.VecDense) (float64, bool) {
 	var xtx mat.Dense
 	xtx.Mul(X.T(), X)
-	var xtxInv mat.Dense
-	if err := xtxInv.Inverse(&xtx); err != nil {
-		return 0, false
-	}
 	var xty mat.VecDense
 	xty.MulVec(X.T(), y)
 	var beta mat.VecDense
-	beta.MulVec(&xtxInv, &xty)
+	if err := beta.SolveVec(&xtx, &xty); err != nil {
+		return 0, false
+	}
 	var fitted mat.VecDense
 	fitted.MulVec(X, &beta)
 	var resid mat.VecDense
 	resid.SubVec(y, &fitted)
-	rss := 0.0
-	n, _ := resid.Dims()
-	for i := 0; i < n; i++ {
-		v := resid.AtVec(i)
-		rss += v * v
-	}
+	// 잔차 self-dot 이 곧 sum(resid_i^2) = RSS 다. mat.Dot 으로 한 번에 산정한다.
+	rss := mat.Dot(&resid, &resid)
 	if math.IsNaN(rss) || math.IsInf(rss, 0) {
 		return 0, false
 	}
