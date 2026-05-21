@@ -87,5 +87,5 @@ scrape 시점 시리즈 수 상한.
 
 - single GPU cluster 전제. multi-GPU 노드의 GPU 별 cause 분리는 본 PR 범위 밖이며 `node:gpu_idle:5m` 의 노드 단위 평균에 흡수된다
 - `cluster:pod_network_pressure_score:5m` 는 throughput saturation score 만 사용한다. retrans 신호는 `GPUIdleWithNetworkPressure` alert 의 OR 보조 신호로 남고 cause weighting 합산에 합치면 threshold 스케일 차이로 cause 간 비교 의미가 흐려진다
-- RTX 3090 Ti 같은 consumer GPU 는 ECC 미지원, throttle reason 일부 미발생 등으로 일부 cause 의 base score 가 항상 0 인 경우가 많다. 본 환경에서는 0 cause 가 weighting 에서 자연 제외된다
+- RTX 3090 같은 consumer GPU 는 ECC 미지원, throttle reason 일부 미발생 등으로 일부 cause 의 base score 가 항상 0 인 경우가 많다. 본 환경에서는 0 cause 가 weighting 에서 자연 제외된다
 - LLM 기반 자연어 cause 설명은 본 PR 범위 밖이다. rule-based weighting 까지가 책임이다
