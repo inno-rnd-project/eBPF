@@ -165,14 +165,14 @@ func loadConfig() *config {
 	c.MaxVictims = envInt("MAX_VICTIMS", 20)
 
 	fs := flag.NewFlagSet("workload-injector", flag.ContinueOnError)
-	fs.StringVar(&c.Kind, "kind", c.Kind, "load kind: cpu | network | gpu")
+	fs.StringVar(&c.Kind, "kind", c.Kind, "load kind: cpu | memory | network | gpu")
 	fs.StringVar(&c.TargetNamespace, "target-namespace", c.TargetNamespace, "target Pod namespace (env TARGET_NAMESPACE)")
 	fs.StringVar(&c.TargetPod, "target-pod", c.TargetPod, "target Pod name")
 	fs.StringVar(&c.TargetNode, "target-node", c.TargetNode, "target node name (defaults to target Pod's node)")
 	fs.StringVar(&c.SpawnNamespace, "spawn-namespace", c.SpawnNamespace, "namespace where stress Pods are created")
 	fs.DurationVar(&c.Duration, "duration", c.Duration, "load duration (max 30m)")
 	fs.DurationVar(&c.BaselineWindow, "baseline-window", c.BaselineWindow, "baseline / impact measurement window")
-	fs.StringVar(&c.Intensity, "intensity", c.Intensity, "load intensity (cpu millis e.g. 500m, network bandwidth e.g. 100M, gpu count e.g. 1)")
+	fs.StringVar(&c.Intensity, "intensity", c.Intensity, "load intensity (cpu millis e.g. 500m, memory bytes e.g. 512M, network bandwidth e.g. 100M, gpu count e.g. 1)")
 	fs.StringVar(&c.PrometheusURL, "prometheus-url", c.PrometheusURL, "Prometheus base URL")
 	fs.DurationVar(&c.FetchTimeout, "fetch-timeout", c.FetchTimeout, "HTTP timeout for Prometheus query_range")
 	fs.IntVar(&c.MaxVictims, "max-victims", c.MaxVictims, "maximum victim Pods to compute blast radius for")
@@ -205,9 +205,9 @@ func loadConfig() *config {
 		log.Fatalf("max-victims must be positive")
 	}
 	switch loadgen.Kind(c.Kind) {
-	case loadgen.KindCPU, loadgen.KindNetwork, loadgen.KindGPU:
+	case loadgen.KindCPU, loadgen.KindMemory, loadgen.KindNetwork, loadgen.KindGPU:
 	default:
-		log.Fatalf("unknown kind %q (expected cpu | network | gpu)", c.Kind)
+		log.Fatalf("unknown kind %q (expected cpu | memory | network | gpu)", c.Kind)
 	}
 	if c.Intensity == "" {
 		c.Intensity = defaultIntensity(loadgen.Kind(c.Kind))
@@ -219,6 +219,8 @@ func defaultIntensity(kind loadgen.Kind) string {
 	switch kind {
 	case loadgen.KindCPU:
 		return "500m"
+	case loadgen.KindMemory:
+		return "512M"
 	case loadgen.KindNetwork:
 		return "100M"
 	case loadgen.KindGPU:

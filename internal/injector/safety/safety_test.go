@@ -56,6 +56,13 @@ func TestCheckIntensity(t *testing.T) {
 		{loadgen.KindGPU, "1", false},
 		{loadgen.KindGPU, "2", true},
 		{loadgen.KindGPU, "", true},
+		// memory. 2G binary == 2 << 30 bytes 가 상한.
+		{loadgen.KindMemory, "512M", false},
+		{loadgen.KindMemory, "1G", false},
+		{loadgen.KindMemory, "2G", false},
+		{loadgen.KindMemory, "3G", true},
+		{loadgen.KindMemory, "abc", true},
+		{loadgen.KindMemory, "", true},
 	}
 	for _, tc := range cases {
 		err := CheckIntensity(tc.kind, tc.input)
