@@ -434,6 +434,25 @@ spec:
               stddev_over_time(gpuobs_device_throttle_active{reason="hw_thermal_slowdown"}[5m])
             )
 
+        # gpuobs_thermal_correlation_score:5m
+        # temperature 와 hw_thermal_slowdown throttle 의 5 분 윈도우 lag 0 Pearson 상관계수의 절댓값
+        # 이다. throttle 이 0/1 binary 라 엄밀히는 point-biserial correlation 이며, abs() 로 [0, 1]
+        # 단조 score 로 노출해 dashboard 와 alert 는 양상관 강도만 본다. 분모 (stddev_temp x
+        # stddev_throttle) 가 0 인 평탄 시간대는 (denom > 0) 필터로 시리즈 자체가 emit 되지 않아 NaN
+        # 이 라벨 세트에 끼지 않는다.
+        - record: gpuobs_thermal_correlation_score:5m
+          expr: |
+            abs(
+              (
+                gpuobs_thermal_x_throttle_avg:5m
+                - (gpuobs_thermal_temp_avg:5m * gpuobs_thermal_throttle_avg:5m)
+              )
+              /
+              (
+                (gpuobs_thermal_temp_stddev:5m * gpuobs_thermal_throttle_stddev:5m) > 0
+              )
+            )
+
     # netobs-gpuobs.drop-flow.recording 그룹은 #64 의 drop flow 5-tuple burst 검출을 위한 recording
     # rule 을 둔다. evaluation interval 30s, rate window 1m 으로 두어 ServiceMonitor 의 scrape
     # interval (15s) 보다 충분히 길어 sample 부족으로 인한 빈 결과를 회피한다. rate window 가 1m
