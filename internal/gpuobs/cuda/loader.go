@@ -36,6 +36,11 @@ type PodResolver interface {
 // uprobe / uretprobe 가 함께 attach 되어야 한다.
 var trackedUretprobes = []string{
 	"cuCtxCreate_v2",
+	// #67 의 동기화 latency 측정용. entry uprobe 가 ts_ns 를 stash 하고 본 uretprobe 가 차분해
+	// ringbuf 로 emit 한다. entry / exit 어느 한쪽이라도 attach 실패 시 latency 측정이 깨지므로
+	// SetCudaSymbolAvailability 가 0 으로 override 된다.
+	"cuStreamSynchronize",
+	"cuEventSynchronize",
 }
 
 var trackedSymbols = []string{
@@ -57,6 +62,12 @@ var trackedSymbols = []string{
 	// BPF map 만 갱신해 dispatch 시점의 GPU ordinal 분리 정확도를 높인다.
 	"cuCtxCreate_v2",
 	"cuCtxSetCurrent",
+	// #67 의 동기화 latency / counter 용 entry uprobe 3 종. cuStreamSynchronize 와 cuEventSynchronize
+	// 는 uretprobe 와 함께 entry-exit 페어로 latency 산정, cuStreamWaitEvent 는 host blocking 없는
+	// non-blocking call 이라 호출 빈도 counter 로만 노출한다.
+	"cuStreamSynchronize",
+	"cuEventSynchronize",
+	"cuStreamWaitEvent",
 }
 
 // cudartTrackedSymbols 는 libcudart.so 에 attach 시도할 CUDA Runtime API 심볼이다.
@@ -158,12 +169,18 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 		"cuMemcpy":                  objs.HandleCuMemcpy,
 		"cuCtxCreate_v2":            objs.HandleCuCtxCreateV2Entry,
 		"cuCtxSetCurrent":           objs.HandleCuCtxSetCurrent,
+		"cuStreamSynchronize":       objs.HandleCuStreamSynchronizeEntry,
+		"cuEventSynchronize":        objs.HandleCuEventSynchronizeEntry,
+		"cuStreamWaitEvent":         objs.HandleCuStreamWaitEventEntry,
 	}
 
-	// progByUretprobeSymbol 은 uretprobe 로 attach 할 program 을 묶는다. 현재는 cuCtxCreate_v2 의 exit
-	// 한 가지 용도로만 사용된다.
+	// progByUretprobeSymbol 은 uretprobe 로 attach 할 program 을 묶는다. cuCtxCreate_v2 의 ctx-to-device
+	// 매핑 + #67 의 동기화 latency 측정 (cuStreamSynchronize, cuEventSynchronize) 의 exit 페어가 본
+	// map 에 등록된다.
 	progByUretprobeSymbol := map[string]*cebpf.Program{
-		"cuCtxCreate_v2": objs.HandleCuCtxCreateV2Exit,
+		"cuCtxCreate_v2":      objs.HandleCuCtxCreateV2Exit,
+		"cuStreamSynchronize": objs.HandleCuStreamSynchronizeExit,
+		"cuEventSynchronize":  objs.HandleCuEventSynchronizeExit,
 	}
 
 	// libcudart 의 program 매핑은 libcudart 경로가 비어 있어도 항상 노출되며, 실제 attach 는 libcudartPath
@@ -344,6 +361,7 @@ func decodeRawEvent(b []byte) (rawEvent, bool) {
 		TID:       binary.NativeEndian.Uint32(b[20:24]),
 		Kind:      b[24],
 		DeviceOrd: binary.NativeEndian.Uint32(b[28:32]),
+		LatencyNs: binary.NativeEndian.Uint64(b[32:40]),
 	}, true
 }
 
@@ -364,10 +382,11 @@ func (r *Reader) dispatch(raw rawEvent, devmap *deviceMap) {
 		}
 	}
 	r.recordEvent(r.nodeName, metrics.CudaEventSample{
-		ID:      id,
-		GPUUUID: r.resolveGPUUUID(raw, devmap),
-		Kind:    types.CudaEventKind(raw.Kind),
-		Bytes:   raw.Bytes,
+		ID:        id,
+		GPUUUID:   r.resolveGPUUUID(raw, devmap),
+		Kind:      types.CudaEventKind(raw.Kind),
+		Bytes:     raw.Bytes,
+		LatencyNs: raw.LatencyNs,
 	})
 }
 

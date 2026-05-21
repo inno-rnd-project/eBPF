@@ -39,6 +39,12 @@ enum cuda_event_kind {
     /* UNKNOWN_DIR 은 BPF 단에서 방향 판정이 불가능한 케이스 — UVA cuMemcpy 와 cuMemcpy2D/3D 의
      * ARRAY / UNIFIED / HOST→HOST 분기에서 사용된다. */
     CUDA_EVENT_UNKNOWN_DIR   = 5,
+    /* #67 동기화 wait 시간 측정. STREAM_SYNC 는 cuStreamSynchronize 의 entry-exit 페어 latency,
+     * EVENT_SYNC 는 cuEventSynchronize 의 entry-exit 페어 latency. STREAM_WAIT_EVENT 는 host
+     * blocking 없는 non-blocking call 이라 호출 빈도 counter 용 latency 0 event 만 emit. */
+    CUDA_EVENT_STREAM_SYNC       = 6,
+    CUDA_EVENT_EVENT_SYNC        = 7,
+    CUDA_EVENT_STREAM_WAIT_EVENT = 8,
 };
 
 /* CUDA_MEMCPY2D / CUDA_MEMCPY3D 구조체의 byte offset (x86_64 linux ABI).
@@ -63,11 +69,14 @@ enum cuda_event_kind {
 #define CU_MEMORYTYPE_UNIFIED 4
 
 // userspace 의 Go 측 구조체와 layout 이 정확히 일치해야 한다 (binary.NativeEndian Read).
-// 32 bytes 고정 — 8(ts) + 8(bytes) + 4(pid) + 4(tid) + 1(kind) + 3(pad) + 4(device_ord).
+// 40 bytes 고정 — 8(ts) + 8(bytes) + 4(pid) + 4(tid) + 1(kind) + 3(pad) + 4(device_ord) + 8(latency_ns).
 //
 // device_ord 는 emit 시점에 cuda_tid_device map 에서 lookup 한 컨테이너 CUDA driver 의 ordinal
 // 이며, 매핑이 없으면 CUDA_DEVICE_ORD_UNKNOWN (= 0xFFFFFFFF) 로 발행되어 userspace 가 기존
 // PID-level devmap.lookup 폴백을 적용한다 (#33).
+//
+// latency_ns 는 #67 의 동기화 wait 시간 측정용이다. STREAM_SYNC / EVENT_SYNC kind 에서만 entry-exit
+// 페어가 산정한 ns 값을 채우고 나머지 kind 는 0 으로 둔다.
 struct cuda_event {
     __u64 ts_ns;
     __u64 bytes;     /* memcpy 시 ByteCount; kernel launch 시 0 */
@@ -76,6 +85,7 @@ struct cuda_event {
     __u8  kind;
     __u8  pad[3];
     __u32 device_ord;
+    __u64 latency_ns;
 };
 
 #define CUDA_DEVICE_ORD_UNKNOWN 0xFFFFFFFFU
@@ -148,6 +158,23 @@ struct {
     __type(value, struct ctx_create_args);
 } cuctx_create_args SEC(".maps");
 
+/* sync_starts 는 #67 의 동기화 entry-exit 페어 측정용으로 entry 시점의 ts_ns 를 (tid, kind) 합성 키로
+ * stash 한다. 한 thread 가 cuStreamSynchronize 와 cuEventSynchronize 를 nested 로 호출하는 케이스를
+ * 위해 kind 도 키에 포함해 두 entry 의 timestamp 가 서로 덮어쓰지 않게 한다. LRU_HASH 라 exit 가
+ * fire 되지 않은 stale entry 가 자동 evict 된다.
+ */
+struct sync_start_key {
+    __u32 tid;
+    __u32 kind;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 16384);
+    __type(key, struct sync_start_key);
+    __type(value, __u64);
+} sync_starts SEC(".maps");
+
 static __always_inline void inc_dropped(void)
 {
     __u32 key = 0;
@@ -156,7 +183,7 @@ static __always_inline void inc_dropped(void)
         (*v)++;        /* percpu 슬롯이라 비-원자 증가로 충분하다 */
 }
 
-static __always_inline void emit_event(__u8 kind, __u64 bytes)
+static __always_inline void emit_event_full(__u8 kind, __u64 bytes, __u64 latency_ns)
 {
     struct cuda_event *e;
     __u64 pid_tgid;
@@ -185,8 +212,44 @@ static __always_inline void emit_event(__u8 kind, __u64 bytes)
      */
     __u32 *dev = bpf_map_lookup_elem(&cuda_tid_device, &tid);
     e->device_ord = dev ? *dev : CUDA_DEVICE_ORD_UNKNOWN;
+    e->latency_ns = latency_ns;
 
     bpf_ringbuf_submit(e, 0);
+}
+
+/* 기존 caller 호환 wrapper. memcpy / kernel launch 처럼 latency 측정이 없는 kind 는 0 으로 emit. */
+static __always_inline void emit_event(__u8 kind, __u64 bytes)
+{
+    emit_event_full(kind, bytes, 0);
+}
+
+/* sync_entry 는 동기화 entry uprobe 가 ts_ns 를 sync_starts 에 stash 한다. kind 별 키 분리로
+ * 한 thread 의 nested sync 호출이 서로 덮어쓰지 않게 한다. */
+static __always_inline void sync_entry(__u8 kind)
+{
+    struct sync_start_key key = {
+        .tid  = (__u32)bpf_get_current_pid_tgid(),
+        .kind = kind,
+    };
+    __u64 now = bpf_ktime_get_ns();
+    bpf_map_update_elem(&sync_starts, &key, &now, BPF_ANY);
+}
+
+/* sync_exit 는 동기화 uretprobe 가 entry ts_ns 를 lookup 해 latency 를 산정하고 ringbuf event 를
+ * emit 한다. entry stash 가 없으면 (uretprobe 가 stale entry 또는 attach 이전 호출) emit 을 skip 해
+ * 0 sample 잡음이 histogram 에 끼지 않게 한다. */
+static __always_inline void sync_exit(__u8 kind)
+{
+    struct sync_start_key key = {
+        .tid  = (__u32)bpf_get_current_pid_tgid(),
+        .kind = kind,
+    };
+    __u64 *start = bpf_map_lookup_elem(&sync_starts, &key);
+    if (!start)
+        return;
+    __u64 latency = bpf_ktime_get_ns() - *start;
+    bpf_map_delete_elem(&sync_starts, &key);
+    emit_event_full(kind, 0, latency);
 }
 
 /* kernel launch 3종은 인자에서 추출할 정보가 없어 단순 카운트 이벤트만 발행한다. */
@@ -531,5 +594,49 @@ int BPF_UPROBE(handle_cu_ctx_set_current)
     if (!dev)
         return 0;
     bpf_map_update_elem(&cuda_tid_device, &tid, dev, BPF_ANY);
+    return 0;
+}
+
+/* #67 CUDA stream 동기화 latency 측정용 uprobe 와 uretprobe 5 종. dev cluster 의 RTX 3090 환경에서
+ * libcuda.so 의 3 종 동기화 심볼 (cuStreamSynchronize, cuEventSynchronize, cuStreamWaitEvent) 에
+ * attach 한다. cuStreamSynchronize 와 cuEventSynchronize 는 entry 가 sync_starts 에 ts_ns 를 stash
+ * 하고 uretprobe 가 차분해 latency_ns 를 채운 ringbuf event 를 emit 한다. cuStreamWaitEvent 는 host
+ * blocking 없는 non-blocking call 이라 호출 빈도 counter 용으로 entry 에서 latency 0 event 만 emit
+ * 한다. */
+SEC("uprobe.multi/cuStreamSynchronize")
+int BPF_UPROBE(handle_cu_stream_synchronize_entry)
+{
+    sync_entry(CUDA_EVENT_STREAM_SYNC);
+    return 0;
+}
+
+SEC("uretprobe.multi/cuStreamSynchronize")
+int BPF_URETPROBE(handle_cu_stream_synchronize_exit)
+{
+    sync_exit(CUDA_EVENT_STREAM_SYNC);
+    return 0;
+}
+
+SEC("uprobe.multi/cuEventSynchronize")
+int BPF_UPROBE(handle_cu_event_synchronize_entry)
+{
+    sync_entry(CUDA_EVENT_EVENT_SYNC);
+    return 0;
+}
+
+SEC("uretprobe.multi/cuEventSynchronize")
+int BPF_URETPROBE(handle_cu_event_synchronize_exit)
+{
+    sync_exit(CUDA_EVENT_EVENT_SYNC);
+    return 0;
+}
+
+/* cuStreamWaitEvent 는 stream 에 wait 명령을 enqueue 만 하고 즉시 반환하는 non-blocking call 이라
+ * host wall time latency 가 0 에 수렴해 histogram 진단 가치가 없다. entry uprobe 만 두고 latency 0
+ * event 를 emit 해 counter 용도로만 사용한다 (#67 의 작업 범위 명세). */
+SEC("uprobe.multi/cuStreamWaitEvent")
+int BPF_UPROBE(handle_cu_stream_wait_event_entry)
+{
+    emit_event_full(CUDA_EVENT_STREAM_WAIT_EVENT, 0, 0);
     return 0;
 }

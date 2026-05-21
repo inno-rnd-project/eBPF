@@ -18,6 +18,11 @@ type CudaUprobeCtxCreateArgs struct {
 	_        [4]byte
 }
 
+type CudaUprobeSyncStartKey struct {
+	Tid  uint32
+	Kind uint32
+}
+
 // LoadCudaUprobe returns the embedded CollectionSpec for CudaUprobe.
 func LoadCudaUprobe() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_CudaUprobeBytes)
@@ -63,6 +68,8 @@ type CudaUprobeProgramSpecs struct {
 	HandleCuCtxCreateV2Entry        *ebpf.ProgramSpec `ebpf:"handle_cu_ctx_create_v2_entry"`
 	HandleCuCtxCreateV2Exit         *ebpf.ProgramSpec `ebpf:"handle_cu_ctx_create_v2_exit"`
 	HandleCuCtxSetCurrent           *ebpf.ProgramSpec `ebpf:"handle_cu_ctx_set_current"`
+	HandleCuEventSynchronizeEntry   *ebpf.ProgramSpec `ebpf:"handle_cu_event_synchronize_entry"`
+	HandleCuEventSynchronizeExit    *ebpf.ProgramSpec `ebpf:"handle_cu_event_synchronize_exit"`
 	HandleCuLaunchCooperativeKernel *ebpf.ProgramSpec `ebpf:"handle_cu_launch_cooperative_kernel"`
 	HandleCuLaunchKernel            *ebpf.ProgramSpec `ebpf:"handle_cu_launch_kernel"`
 	HandleCuLaunchKernelEx          *ebpf.ProgramSpec `ebpf:"handle_cu_launch_kernel_ex"`
@@ -77,6 +84,9 @@ type CudaUprobeProgramSpecs struct {
 	HandleCuMemcpyDtohAsync         *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_dtoh_async"`
 	HandleCuMemcpyHtod              *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_htod"`
 	HandleCuMemcpyHtodAsync         *ebpf.ProgramSpec `ebpf:"handle_cu_memcpy_htod_async"`
+	HandleCuStreamSynchronizeEntry  *ebpf.ProgramSpec `ebpf:"handle_cu_stream_synchronize_entry"`
+	HandleCuStreamSynchronizeExit   *ebpf.ProgramSpec `ebpf:"handle_cu_stream_synchronize_exit"`
+	HandleCuStreamWaitEventEntry    *ebpf.ProgramSpec `ebpf:"handle_cu_stream_wait_event_entry"`
 	HandleCudaLaunchKernel          *ebpf.ProgramSpec `ebpf:"handle_cuda_launch_kernel"`
 	HandleCudaMemcpy                *ebpf.ProgramSpec `ebpf:"handle_cuda_memcpy"`
 	HandleCudaMemcpyAsync           *ebpf.ProgramSpec `ebpf:"handle_cuda_memcpy_async"`
@@ -92,6 +102,7 @@ type CudaUprobeMapSpecs struct {
 	CudaDropped     *ebpf.MapSpec `ebpf:"cuda_dropped"`
 	CudaEvents      *ebpf.MapSpec `ebpf:"cuda_events"`
 	CudaTidDevice   *ebpf.MapSpec `ebpf:"cuda_tid_device"`
+	SyncStarts      *ebpf.MapSpec `ebpf:"sync_starts"`
 }
 
 // CudaUprobeVariableSpecs contains global variables before they are loaded into the kernel.
@@ -125,6 +136,7 @@ type CudaUprobeMaps struct {
 	CudaDropped     *ebpf.Map `ebpf:"cuda_dropped"`
 	CudaEvents      *ebpf.Map `ebpf:"cuda_events"`
 	CudaTidDevice   *ebpf.Map `ebpf:"cuda_tid_device"`
+	SyncStarts      *ebpf.Map `ebpf:"sync_starts"`
 }
 
 func (m *CudaUprobeMaps) Close() error {
@@ -134,6 +146,7 @@ func (m *CudaUprobeMaps) Close() error {
 		m.CudaDropped,
 		m.CudaEvents,
 		m.CudaTidDevice,
+		m.SyncStarts,
 	)
 }
 
@@ -150,6 +163,8 @@ type CudaUprobePrograms struct {
 	HandleCuCtxCreateV2Entry        *ebpf.Program `ebpf:"handle_cu_ctx_create_v2_entry"`
 	HandleCuCtxCreateV2Exit         *ebpf.Program `ebpf:"handle_cu_ctx_create_v2_exit"`
 	HandleCuCtxSetCurrent           *ebpf.Program `ebpf:"handle_cu_ctx_set_current"`
+	HandleCuEventSynchronizeEntry   *ebpf.Program `ebpf:"handle_cu_event_synchronize_entry"`
+	HandleCuEventSynchronizeExit    *ebpf.Program `ebpf:"handle_cu_event_synchronize_exit"`
 	HandleCuLaunchCooperativeKernel *ebpf.Program `ebpf:"handle_cu_launch_cooperative_kernel"`
 	HandleCuLaunchKernel            *ebpf.Program `ebpf:"handle_cu_launch_kernel"`
 	HandleCuLaunchKernelEx          *ebpf.Program `ebpf:"handle_cu_launch_kernel_ex"`
@@ -164,6 +179,9 @@ type CudaUprobePrograms struct {
 	HandleCuMemcpyDtohAsync         *ebpf.Program `ebpf:"handle_cu_memcpy_dtoh_async"`
 	HandleCuMemcpyHtod              *ebpf.Program `ebpf:"handle_cu_memcpy_htod"`
 	HandleCuMemcpyHtodAsync         *ebpf.Program `ebpf:"handle_cu_memcpy_htod_async"`
+	HandleCuStreamSynchronizeEntry  *ebpf.Program `ebpf:"handle_cu_stream_synchronize_entry"`
+	HandleCuStreamSynchronizeExit   *ebpf.Program `ebpf:"handle_cu_stream_synchronize_exit"`
+	HandleCuStreamWaitEventEntry    *ebpf.Program `ebpf:"handle_cu_stream_wait_event_entry"`
 	HandleCudaLaunchKernel          *ebpf.Program `ebpf:"handle_cuda_launch_kernel"`
 	HandleCudaMemcpy                *ebpf.Program `ebpf:"handle_cuda_memcpy"`
 	HandleCudaMemcpyAsync           *ebpf.Program `ebpf:"handle_cuda_memcpy_async"`
@@ -175,6 +193,8 @@ func (p *CudaUprobePrograms) Close() error {
 		p.HandleCuCtxCreateV2Entry,
 		p.HandleCuCtxCreateV2Exit,
 		p.HandleCuCtxSetCurrent,
+		p.HandleCuEventSynchronizeEntry,
+		p.HandleCuEventSynchronizeExit,
 		p.HandleCuLaunchCooperativeKernel,
 		p.HandleCuLaunchKernel,
 		p.HandleCuLaunchKernelEx,
@@ -189,6 +209,9 @@ func (p *CudaUprobePrograms) Close() error {
 		p.HandleCuMemcpyDtohAsync,
 		p.HandleCuMemcpyHtod,
 		p.HandleCuMemcpyHtodAsync,
+		p.HandleCuStreamSynchronizeEntry,
+		p.HandleCuStreamSynchronizeExit,
+		p.HandleCuStreamWaitEventEntry,
 		p.HandleCudaLaunchKernel,
 		p.HandleCudaMemcpy,
 		p.HandleCudaMemcpyAsync,
