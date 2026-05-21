@@ -83,3 +83,4 @@ multi-GPU 노드에서도 GPU 수에 선형 증가하며 cluster 단위 cap 에 
 - multi-GPU 노드의 GPU 간 thermal 영향 (인접 GPU 의 가열) 은 본 PR 범위 밖이다. dev cluster 의 single GPU 전제로 시작한다
 - throttle 이 0/1 binary 라 Pearson 이 엄밀히는 point-biserial correlation 이다. abs() 절댓값과 game-only 패턴 (양상관 강도) 으로 의미를 좁혔다
 - `gpuobs_clock_drop_score:5m` 의 도메인은 graphics 한 가지로 고정. sm / mem / video 의 thermal 영향 추적은 follow-up 으로 분리
+- RTX 3090 의 hw_thermal_slowdown threshold 는 95°C 이고 정상 냉각 환경에서 ResNet50 inference 부하만으로는 도달이 어렵다. 검증 시점에 throttle 이 변동하지 않으면 stddev=0 으로 `thermal_correlation_score:5m` 의 분모 가드가 시리즈를 자연 skip 한다. 본 상태는 의도된 동작이며 실제 throttle 이 한 번이라도 발생한 시간대만 score 가 emit 된다
