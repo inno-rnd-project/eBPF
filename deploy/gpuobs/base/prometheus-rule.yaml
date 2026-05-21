@@ -712,6 +712,27 @@ spec:
             summary: "cuStreamSynchronize p99 over 100ms on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }})"
             description: "cuStreamSynchronize p99 host wait time for pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} (uid {{ $labels.src_pod_uid }}) on node {{ $labels.node }} is {{ $value | humanizeDuration }} sustained over 5 minutes. Inspect the workload's CUDA stream usage and the receiving GPU's kernel queue. See docs/gpuobs/cuda-sync-latency.md for triage workflow."
 
+        # GPUObsThermalThrottleSustained
+        # #68 의 RTX consumer GPU thermal correlation alert. thermal_correlation_score 가 0.8 초과로
+        # 10 분 지속이고 같은 10 분 윈도우 안에 hw_thermal_slowdown throttle 이 실제로 발생한 적 있는
+        # 케이스에만 발화한다. throttle 게이팅 없이 score 단독으로 발화하면 throttle 미발생 시간대의
+        # 잡음 (분모가 매우 작은 평탄 시간대의 우연 상관) 이 누적되므로 max_over_time(throttle[10m]) == 1
+        # AND 조건을 둔다. 일회성 thermal spike 가 아닌 sustained 패턴 감지가 본 alert 의 의도다.
+        - alert: GPUObsThermalThrottleSustained
+          expr: |
+            gpuobs_thermal_correlation_score:5m > 0.8
+            and
+            max_over_time(
+              (max by(node, gpu_uuid) (gpuobs_device_throttle_active{reason="hw_thermal_slowdown"}))[10m:30s]
+            ) == 1
+          for: 10m
+          labels:
+            severity: warning
+            component: gpuobs
+          annotations:
+            summary: "GPU thermal throttle sustained on {{ $labels.node }} gpu_uuid={{ $labels.gpu_uuid }} (score={{ $value }})"
+            description: "GPU {{ $labels.gpu_uuid }} on node {{ $labels.node }} shows sustained thermal throttle correlation with temperature for 10 minutes (score={{ $value }}, threshold 0.8). Check cooling, fan curve, ambient temperature, and reduce concurrent CUDA workloads. See docs/gpuobs/rtx-thermal-correlation.md for triage workflow."
+
     # netobs-gpuobs.gpu-idle.alerts 그룹은 GPU 유휴 상태와 5종 cause score 조합 alert을 모은다.
     # 단일 cause는 warning, host_compute_stall 은 host와 device 양쪽 자원 한계가 동시에 의심되므로
     # critical로 둔다. cutoff는 docs/correlation/diagnosis-gpu-idle.md 의 기본값 (warning 0.5, critical
