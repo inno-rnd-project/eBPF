@@ -457,13 +457,15 @@ spec:
         # graphics clock 의 현재 값 / 5 분 max 비율. 1.0 에 가까우면 정상 boost clock, 임계 미만이면
         # thermal 또는 power throttle 영향으로 clock 이 하향 조정된 상태다. graphics 도메인 한 가지만
         # 사용해 sm / mem / video 의 동시 노출이 만드는 score 의 라벨 폭증과 단일 시리즈 의도 어긋남을
-        # 차단한다. 라벨 셋은 (node, gpu_uuid) 로 축약한다.
+        # 차단한다. 라벨 셋은 (node, gpu_uuid) 로 축약한다. idle GPU 에서 graphics clock 이 0 으로
+        # 떨어지면 5 분 max 도 0 이라 0/0 NaN 잡음이 발생하므로 (max_over_time > 0) 분모 가드를 둬
+        # 시리즈를 자연 skip 한다.
         - record: gpuobs_clock_drop_score:5m
           expr: |
             avg by(node, gpu_uuid) (
               gpuobs_device_clock_mhz{clock="graphics"}
               /
-              max_over_time(gpuobs_device_clock_mhz{clock="graphics"}[5m])
+              (max_over_time(gpuobs_device_clock_mhz{clock="graphics"}[5m]) > 0)
             )
 
     # netobs-gpuobs.drop-flow.recording 그룹은 #64 의 drop flow 5-tuple burst 검출을 위한 recording
