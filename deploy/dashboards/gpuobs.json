@@ -230,14 +230,14 @@
       "id": 10,
       "type": "timeseries",
       "title": "Clock and thermal throttle cross-reference (#68)",
-      "description": "graphics clock 의 boost / drop 추세와 hw_thermal_slowdown throttle 의 활성 시점을 같은 timeline 에 표시한다. clock 이 하향 조정되는 구간에서 throttle 이 1 로 올라오면 thermal 영향이 강한 신호다.",
+      "description": "graphics clock 의 boost / drop 추세 (좌측 축 MHz) 와 hw_thermal_slowdown throttle 의 활성 시점 (우측 축 0-1) 을 같은 timeline 에 표시한다. clock 이 하향 조정되는 구간에서 throttle 이 1 로 올라오면 thermal 영향이 강한 신호다.",
       "datasource": "${datasource}",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 40 },
       "fieldConfig": {
         "defaults": { "custom": { "axisPlacement": "auto" } },
         "overrides": [
-          { "matcher": { "id": "byRegexp", "options": ".*clock.*" }, "properties": [ { "id": "unit", "value": "rotmhz" }, { "id": "custom.axisPlacement", "value": "left" } ] },
-          { "matcher": { "id": "byRegexp", "options": ".*throttle.*" }, "properties": [ { "id": "unit", "value": "short" }, { "id": "max", "value": 1 }, { "id": "min", "value": 0 }, { "id": "custom.axisPlacement", "value": "right" } ] }
+          { "matcher": { "id": "byRegexp", "options": ".*clock.*" }, "properties": [ { "id": "unit", "value": "short" }, { "id": "custom.axisLabel", "value": "MHz" }, { "id": "custom.axisPlacement", "value": "left" } ] },
+          { "matcher": { "id": "byRegexp", "options": ".*throttle.*|.*hw_thermal.*|.*slowdown.*" }, "properties": [ { "id": "unit", "value": "short" }, { "id": "custom.axisLabel", "value": "throttle 0/1" }, { "id": "max", "value": 1 }, { "id": "min", "value": 0 }, { "id": "custom.axisPlacement", "value": "right" } ] }
         ]
       },
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
