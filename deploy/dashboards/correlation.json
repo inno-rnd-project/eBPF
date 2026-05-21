@@ -272,6 +272,67 @@
           }
         }
       }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Active dominant dimension (#69)",
+      "description": "correlation_dominant_dimension_active:5m. victim 의 latency p99 가 0.1s 임계를 초과한 시간대에 한해 dominant dimension 1 종 (cpu / gpu / memory / network) 을 라벨로 노출한다. latency 압박이 없는 시간대는 시리즈 미존재로 N/A 가 표시된다.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 28 },
+      "targets": [
+        {
+          "expr": "group by(victim_namespace, victim_pod, dimension) (correlation_dominant_dimension_active:5m)",
+          "legendFormat": "{{victim_namespace}}/{{victim_pod}} {{dimension}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "N/A (victim latency 압박 없음)",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": { "1": { "text": " " } } }
+          ]
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "name"
+      }
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "High-confidence noisy neighbors (p < 0.05) (#69)",
+      "description": "correlation_noisy_neighbor_score 와 correlation_noisy_neighbor_pvalue 를 join 해 Granger p-value 가 0.05 미만인 high-confidence 페어만 노출한다. p-value 가 낮을수록 src (suspect) 가 dst (victim latency) 를 Granger-cause 한다는 통계적 유의성이 높다.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 34 },
+      "targets": [
+        {
+          "expr": "correlation_noisy_neighbor_score and on(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_pvalue < 0.05)",
+          "legendFormat": "score",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "correlation_noisy_neighbor_pvalue < 0.05",
+          "legendFormat": "pvalue",
+          "refId": "B",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        { "id": "organize", "options": { "indexByName": { "victim_namespace": 0, "victim_pod": 1, "suspect_namespace": 2, "suspect_pod": 3, "resource_dimension": 4, "rank": 5, "Value #A": 6, "Value #B": 7 } } }
+      ]
     }
   ]
 }
