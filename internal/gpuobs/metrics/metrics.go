@@ -477,7 +477,7 @@ var (
 	cudaStreamSynchronizeSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "gpuobs_cuda_stream_synchronize_seconds",
-			Help:    "Distribution of cuStreamSynchronize host wait time captured by libcuda.so uprobe / uretprobe pair. Indicates how long the calling host thread blocked waiting for all preceding work in a CUDA stream to complete. Attributed per Pod via cgroup-based PID resolution and per GPU via cuda_tid_device map (unknown GPU UUID falls back to PID-level devmap)",
+			Help:    "Distribution of cuStreamSynchronize host wait time captured by libcuda.so uprobe / uretprobe pair. Indicates how long the calling host thread blocked waiting for all preceding work in a CUDA stream to complete. Attributed per Pod via cgroup-based PID resolution; the gpu_uuid label is resolved first from the BPF device_ord and visible-devices cache, then falls back to a PID-level devmap lookup, and finally to the literal 'unknown' if both fail",
 			Buckets: prometheus.ExponentialBuckets(1e-6, 2, 20),
 		},
 		cudaPodLabels,
@@ -486,7 +486,7 @@ var (
 	cudaEventSynchronizeSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "gpuobs_cuda_event_synchronize_seconds",
-			Help:    "Distribution of cuEventSynchronize host wait time captured by libcuda.so uprobe / uretprobe pair. Indicates how long the calling host thread blocked waiting for a CUDA event to be recorded. Attributed per Pod via cgroup-based PID resolution and per GPU via cuda_tid_device map",
+			Help:    "Distribution of cuEventSynchronize host wait time captured by libcuda.so uprobe / uretprobe pair. Indicates how long the calling host thread blocked waiting for a CUDA event to be recorded. Attributed per Pod via cgroup-based PID resolution; the gpu_uuid label follows the same resolve chain as gpuobs_cuda_stream_synchronize_seconds (device_ord then PID-level devmap then 'unknown')",
 			Buckets: prometheus.ExponentialBuckets(1e-6, 2, 20),
 		},
 		cudaPodLabels,
@@ -495,7 +495,7 @@ var (
 	cudaStreamWaitEventTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gpuobs_cuda_stream_wait_event_total",
-			Help: "Cumulative count of cuStreamWaitEvent calls captured by libcuda.so uprobe. cuStreamWaitEvent is a non-blocking call that only enqueues a wait on the given stream, so it is exposed as a counter rather than a latency histogram. Use rate() to track inter-stream dependency frequency",
+			Help: "Cumulative count of cuStreamWaitEvent calls captured by libcuda.so uprobe. cuStreamWaitEvent is a non-blocking call that only enqueues a wait on the given stream, so it is exposed as a counter rather than a latency histogram. Use rate() to track inter-stream dependency frequency. gpu_uuid label follows the same resolve chain as gpuobs_cuda_stream_synchronize_seconds (device_ord then PID-level devmap then 'unknown')",
 		},
 		cudaPodLabels,
 	)

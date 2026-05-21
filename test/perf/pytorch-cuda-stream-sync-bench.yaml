@@ -1,8 +1,9 @@
-# pytorch-cuda-stream-sync-bench 는 #67 의 cuStreamSynchronize / cuEventSynchronize / cuStreamWait
-# Event 3 종 hook 이 실제로 sample 을 수집하는지 회귀 검증하는 워크로드다. ResNet50 bench 는 launch
-# rate 최대화를 위해 의도적으로 synchronize 호출을 회피해 본 검증에 부적합하므로 별도 워크로드로
-# 분리한다. 명시적 stream 과 event 를 만든 뒤 매 iteration 마다 cuStreamSynchronize, cuEventSynchronize,
-# cuStreamWaitEvent 가 각 1 회씩 호출되도록 구성한다.
+# pytorch-cuda-stream-sync-bench 는 #67 의 동기화 hook 3 종 (cuStreamSynchronize, cuEventSynchronize,
+# cuStreamWaitEvent) 이 실제로 sample 을 수집하는지 회귀 검증하는 워크로드다. ResNet50 bench 는
+# launch rate 최대화를 위해 의도적으로 synchronize 호출을 회피해 본 검증에 부적합하므로 별도 워크
+# 로드로 분리한다. 명시적 stream 2 개와 event 1 개를 만든 뒤 매 iteration 마다 cuStreamSynchronize
+# 2 회 (s1, s2), cuEventSynchronize 1 회 (ev), cuStreamWaitEvent 1 회 (s2.wait_event) 가 호출되도록
+# 구성한다.
 #
 # 이미지는 ResNet50 bench 와 동일하게 pytorch:2.1.0-cuda11.8-cudnn8-runtime 을 재사용한다.
 #
