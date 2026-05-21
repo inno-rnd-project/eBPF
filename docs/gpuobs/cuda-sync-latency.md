@@ -37,19 +37,24 @@ receive path 의 4 stage 분류와 동일하게 동기화 3 종도 호출 의미
 
 ## 검증 시나리오
 
-dev cluster 에서 PyTorch ResNet50 워크로드로 stream synchronize histogram sample 이 수집되는지 회귀 가드한다.
+dev cluster 에서 cuStreamSynchronize, cuEventSynchronize, cuStreamWaitEvent 3 종 hook 이 sample 을 수집하는지 회귀 가드한다. ResNet50 bench 는 launch rate 최대화를 위해 의도적으로 synchronize 호출을 회피해 본 검증에 부적합하므로 명시적 stream / event 를 사용하는 별도 워크로드 `test/perf/pytorch-cuda-stream-sync-bench.yaml` 을 적용한다.
 
 ```sh
-kubectl apply -f test/perf/pytorch-resnet50-bench.yaml
-kubectl wait --for=condition=ready --timeout=10m -n correlation-stress pod/pytorch-resnet50-bench
+kubectl apply -f test/perf/pytorch-cuda-stream-sync-bench.yaml
+kubectl wait --for=condition=ready --timeout=10m -n ebpf-project pod/pytorch-cuda-stream-sync-bench
 ```
 
-5 분 후 다음 쿼리가 sample count 가 1 이상으로 양수를 반환하면 회귀 통과로 본다.
+2 분 후 다음 쿼리들이 모두 양수를 반환하면 회귀 통과로 본다.
 
 ```sh
 PROM_POD=$(kubectl get pod -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
-kubectl exec -n monitoring $PROM_POD -c prometheus -- \
-  wget -qO- 'http://localhost:9090/api/v1/query?query=sum(rate(gpuobs_cuda_stream_synchronize_seconds_count[5m]))' | jq
+for q in \
+  'sum(rate(gpuobs_cuda_stream_synchronize_seconds_count[2m]))' \
+  'sum(rate(gpuobs_cuda_event_synchronize_seconds_count[2m]))' \
+  'sum(rate(gpuobs_cuda_stream_wait_event_total[2m]))'; do
+  kubectl exec -n monitoring $PROM_POD -c prometheus -- \
+    wget -qO- "http://localhost:9090/api/v1/query?query=${q}" | jq
+done
 ```
 
 `gpuobs_cuda_symbol_available{symbol="cuStreamSynchronize"} == 1` 도 함께 확인해 attach 성공 여부를 가드한다.

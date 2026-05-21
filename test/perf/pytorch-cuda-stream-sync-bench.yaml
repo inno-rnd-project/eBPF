@@ -1,0 +1,63 @@
+# pytorch-cuda-stream-sync-bench 는 #67 의 cuStreamSynchronize / cuEventSynchronize / cuStreamWait
+# Event 3 종 hook 이 실제로 sample 을 수집하는지 회귀 검증하는 워크로드다. ResNet50 bench 는 launch
+# rate 최대화를 위해 의도적으로 synchronize 호출을 회피해 본 검증에 부적합하므로 별도 워크로드로
+# 분리한다. 명시적 stream 과 event 를 만든 뒤 매 iteration 마다 cuStreamSynchronize, cuEventSynchronize,
+# cuStreamWaitEvent 가 각 1 회씩 호출되도록 구성한다.
+#
+# 이미지는 ResNet50 bench 와 동일하게 pytorch:2.1.0-cuda11.8-cudnn8-runtime 을 재사용한다.
+#
+# 검증 절차는 docs/gpuobs/cuda-sync-latency.md 의 "검증 시나리오" 절을 따른다.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pytorch-cuda-stream-sync-bench
+  namespace: ebpf-project
+  labels:
+    app: pytorch-cuda-stream-sync-bench
+    perf-workload: cuda-uprobe
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    accelerator: nvidia
+  containers:
+  - name: bench
+    image: pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
+    imagePullPolicy: IfNotPresent
+    command: ["python", "-c"]
+    args:
+    - |
+      import torch
+      import time
+
+      device = torch.device("cuda")
+      print(f"device: {torch.cuda.get_device_name(0)}", flush=True)
+
+      # 명시적 stream / event 2 개를 만들어 cuStreamSynchronize, cuEventSynchronize,
+      # cuStreamWaitEvent 가 매 iteration 마다 호출되도록 구성한다.
+      s1 = torch.cuda.Stream()
+      s2 = torch.cuda.Stream()
+      ev = torch.cuda.Event()
+      x = torch.randn(1024, 1024, device=device)
+
+      print("entering stream sync loop", flush=True)
+      while True:
+          with torch.cuda.stream(s1):
+              y = x @ x
+              ev.record(s1)
+          # cuStreamWaitEvent: s2 가 ev 완료를 기다리도록 enqueue (non-blocking)
+          s2.wait_event(ev)
+          with torch.cuda.stream(s2):
+              z = y @ y
+          # cuStreamSynchronize: s1 / s2 의 host wait 트리거
+          s1.synchronize()
+          s2.synchronize()
+          # cuEventSynchronize: event 완료까지 host wait
+          ev.synchronize()
+          time.sleep(0.01)
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+        memory: 4Gi
+      requests:
+        cpu: 100m
+        memory: 512Mi
