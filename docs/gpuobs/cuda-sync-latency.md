@@ -59,6 +59,12 @@ done
 
 `gpuobs_cuda_symbol_available{symbol="cuStreamSynchronize"} == 1` 도 함께 확인해 attach 성공 여부를 가드한다.
 
+회귀 가드 통과 직후 다음 명령으로 bench Pod 를 정리한다. GPU 부하 워크로드를 dev 클러스터에 상주시키면 GPU idle dominant cause 검증 같은 다른 회귀에 영향을 주고 전력 / 열 부담도 누적된다.
+
+```sh
+kubectl delete -f test/perf/pytorch-cuda-stream-sync-bench.yaml
+```
+
 ## 카디널리티 분석
 
 scrape 시점 시리즈 수 상한.
