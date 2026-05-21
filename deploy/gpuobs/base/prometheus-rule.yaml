@@ -235,6 +235,144 @@ spec:
               pod:gpu_memory_utilization_ratio:5m
             )
 
+    # netobs-gpuobs.dominant-cause.recording 그룹은 #66 의 GPU 유휴 dominant cause 가중치 산정에
+    # 사용하는 recording rule 을 모은다. 본 그룹의 첫 5 종은 node 와 Pod 차원으로 흩어진 cause score
+    # 5 종을 cluster 단위 단일 값으로 max rollup 해 dominant cause weight 산정 단계에서 동일한 차원
+    # 으로 비교 가능하게 한다. dominant cause 가 cluster 평균이 아니라 worst-case 신호를 따라가도록
+    # max 를 채택한다. retrans 신호는 본 rollup 에 포함하지 않는다. retrans 는 PromQL 의 OR 패턴으로
+    # alert 에서 사용되는 보조 신호이며 throughput score 와 다른 threshold 스케일을 가져 weighting
+    # 합산에 합치면 cause 간 비교 의미가 흐려진다. NetworkPressure cause 의 base score 는 throughput
+    # saturation score 만 사용한다.
+    - name: netobs-gpuobs.dominant-cause.recording
+      interval: 30s
+      rules:
+        # cluster:gpu_pcie_saturation_score:5m
+        # 노드 단위 PCIe saturation score 의 cluster max. worst-case 노드의 PCIe 압박이 본 시계열 값.
+        - record: cluster:gpu_pcie_saturation_score:5m
+          expr: max(node:gpu_pcie_saturation_score:5m)
+
+        # cluster:pod_cpu_throttle_score:5m
+        # Pod 단위 CPU CFS throttle 비율의 cluster max. worst-case Pod 의 throttle 신호.
+        - record: cluster:pod_cpu_throttle_score:5m
+          expr: max(pod:cpu_throttle_score:5m)
+
+        # cluster:pod_memory_pressure_score:5m
+        # Pod 단위 메모리 working_set / limit 비율의 cluster max. worst-case Pod 의 OOM 임박도.
+        - record: cluster:pod_memory_pressure_score:5m
+          expr: max(pod:memory_pressure_score:5m)
+
+        # cluster:pod_network_pressure_score:5m
+        # Pod 단위 throughput saturation 의 cluster max. retrans 신호는 NetworkPressure alert 의 OR
+        # 보조 신호로 남아 본 rollup 에는 포함되지 않는다.
+        - record: cluster:pod_network_pressure_score:5m
+          expr: max(pod:network_throughput_score:5m)
+
+        # cluster:pod_host_compute_stall_score:5m
+        # Pod 단위 host 측 CUDA launch 부족 또는 GPU memory 포화 score 의 cluster max.
+        - record: cluster:pod_host_compute_stall_score:5m
+          expr: max(pod:host_compute_stall_score:5m)
+
+        # gpu_idle_cause_sum:5m
+        # 5 cause base score 의 합. cause weight 정규화의 분모로 쓰인다. base 시리즈가 비어 있는
+        # cause 는 `or vector(0)` 로 0 으로 대체해 합이 NaN 으로 빠지지 않게 한다. dev cluster 처럼
+        # PCIe / network 트래픽이 거의 없는 환경에서도 합 산출이 가능하게 한다.
+        - record: gpu_idle_cause_sum:5m
+          expr: |
+            (cluster:gpu_pcie_saturation_score:5m or vector(0))
+            + (cluster:pod_cpu_throttle_score:5m or vector(0))
+            + (cluster:pod_memory_pressure_score:5m or vector(0))
+            + (cluster:pod_network_pressure_score:5m or vector(0))
+            + (cluster:pod_host_compute_stall_score:5m or vector(0))
+
+        # gpu_idle_cause_weight:5m{cause}
+        # 5 cause 의 정규화 가중치 (cause 별 score / 5 cause 합). 분모가 0 인 idle window 는
+        # `(gpu_idle_cause_sum:5m > 0)` 필터로 시리즈 자체가 emit 되지 않아 NaN 이 라벨 세트에
+        # 끼지 않는다. cluster 의 어느 노드라도 GPU idle > 0.5 인 상태에서만 emit 되도록 AND 게이팅
+        # 을 두어 idle 이 아닌 시간대의 cause weight 잡음이 dashboard 와 alert 의 신호 대 잡음비를
+        # 떨어뜨리지 않게 한다. cause 라벨 enum 은 GPUIdleWith* 5 종 alert 와 1:1 매핑된다.
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: pcie_saturation
+          expr: |
+            (
+              (cluster:gpu_pcie_saturation_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: cpu_throttle
+          expr: |
+            (
+              (cluster:pod_cpu_throttle_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: memory_pressure
+          expr: |
+            (
+              (cluster:pod_memory_pressure_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: network_pressure
+          expr: |
+            (
+              (cluster:pod_network_pressure_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: host_compute_stall
+          expr: |
+            (
+              (cluster:pod_host_compute_stall_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        # cluster:gpu_idle_dominant_cause:5m
+        # 5 cause weight 중 최대값을 가진 cause 1 종만 단일 시리즈로 노출한다. 정확한 동률 케이스에
+        # 서 cause enum 사전순 가장 앞 라벨이 채택되도록 1e-6 단위의 deterministic offset 을
+        # cause 별로 가산해 tie-breaker 로 둔다. offset 단위는 어떤 실 weight 값에도 미치지 못해
+        # 일반 케이스의 정렬을 바꾸지 않는다. weight 시리즈 자체가 idle 게이팅으로 emit 되지 않는
+        # 시간대는 본 record 도 자연 emit 되지 않는다.
+        - record: cluster:gpu_idle_dominant_cause:5m
+          expr: |
+            topk(1,
+              gpu_idle_cause_weight:5m
+              + on(cause) (
+                label_replace(vector(5e-6), "cause", "cpu_throttle", "", "")
+                or label_replace(vector(4e-6), "cause", "host_compute_stall", "", "")
+                or label_replace(vector(3e-6), "cause", "memory_pressure", "", "")
+                or label_replace(vector(2e-6), "cause", "network_pressure", "", "")
+                or label_replace(vector(1e-6), "cause", "pcie_saturation", "", "")
+              )
+            )
+
+        # gpu_idle_dominant_cause_indicator:5m{cause}
+        # GPUIdleDominantCauseSwitch alert 가 사용하는 cause 별 0/1 indicator 다. dominant cause 인
+        # cause 는 1, idle 게이팅이 트리거된 상태에서 dominant 가 아닌 cause 는 0 으로 emit 되어
+        # changes() 가 1 과 0 사이 전이를 안정적으로 카운트할 수 있다. label change 자체를 추적하는
+        # Prometheus 표현식이 직접 지원되지 않아 본 indirect indicator 로 대체한다. dominant cause
+        # 1 종 시리즈에 * 0 + 1 로 라벨 보존한 1 을 만들고 or 로 나머지 cause weight 5 종에 0 을 fill
+        # 한다 (or 는 LHS 라벨 셋에 없는 RHS series 만 채우므로 dominant cause 는 1, 나머지 4 cause
+        # 는 0 으로 emit). idle 게이팅이 꺼진 시간대는 양쪽 시리즈 모두 없어 본 indicator 도 자연
+        # emit 되지 않는다.
+        - record: gpu_idle_dominant_cause_indicator:5m
+          expr: |
+            (cluster:gpu_idle_dominant_cause:5m * 0 + 1)
+            or (gpu_idle_cause_weight:5m * 0)
+
     # netobs-gpuobs.drop-flow.recording 그룹은 #64 의 drop flow 5-tuple burst 검출을 위한 recording
     # rule 을 둔다. evaluation interval 30s, rate window 1m 으로 두어 ServiceMonitor 의 scrape
     # interval (15s) 보다 충분히 길어 sample 부족으로 인한 빈 결과를 회피한다. rate window 가 1m
@@ -545,3 +683,20 @@ spec:
           annotations:
             summary: "GPU idle with host compute stall on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} score={{ $value }})"
             description: "Pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} on node {{ $labels.node }} shows host compute stall (low CUDA launch rate or GPU memory saturation, score={{ $value }}) while GPU is idle. Inspect kernel launches via gpuobs_cuda_kernel_launches_total and GPU memory via pod:gpu_memory_utilization_ratio:5m."
+
+        # GPUIdleDominantCauseSwitch
+        # GPU 유휴 dominant cause 가 10 분 안에 두 번 이상 swap 시 발화 (#66). cause 식별이 불안정한
+        # 워크로드 (cause 간 신호가 cycling 하거나 동률에 근접) 를 검출한다. cause 별 0/1 indicator 의
+        # 1 ↔ 0 전이를 합산해 임계를 잡는다. 1 회 swap 은 두 cause indicator 가 동시에 전이해 합 2 가
+        # 발생하므로 2 회 swap 의 임계는 합 4 이상이다. for: 1m 으로 changes() 윈도우 내부의 단일
+        # spike 가 firing 으로 즉시 이어지지 않게 한다.
+        - alert: GPUIdleDominantCauseSwitch
+          expr: |
+            sum(changes(gpu_idle_dominant_cause_indicator:5m[10m])) >= 4
+          for: 1m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle dominant cause unstable (>= 2 swaps in 10m)"
+            description: "GPU idle dominant cause has swapped {{ $value | humanize }} indicator transitions across 5 causes in the last 10 minutes. Inspect gpu_idle_cause_weight:5m and cluster:gpu_idle_dominant_cause:5m to identify the alternating causes. See docs/observability/gpu-idle-dominant-cause.md for triage workflow."
