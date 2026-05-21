@@ -199,6 +199,82 @@ func TestHealth_RecordCycleAccumulates(t *testing.T) {
 	}
 }
 
+// TestCollector_PValueEmittedOnlyWhenGrangerOK 는 NoisyNeighbor.GrangerOK 가 true 인 페어만
+// correlation_noisy_neighbor_pvalue 시리즈로 emit 되고 false 인 페어는 emit 자체가 skip 되는지
+// 검증한다. continuous p-value 의 cardinality 가드 의도가 회귀에 영향받지 않게 한다.
+func TestCollector_PValueEmittedOnlyWhenGrangerOK(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	ok := neighbor("v-ok", "s1", correlation.DimensionCPU, 1, 0.9, 0)
+	ok.GrangerOK = true
+	ok.PValue = 0.01
+	notOK := neighbor("v-skip", "s2", correlation.DimensionMemory, 1, 0.7, 0)
+	notOK.GrangerOK = false
+	notOK.PValue = 0
+	c.Replace([]correlation.NoisyNeighbor{ok, notOK})
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	var pvalueCount int
+	for _, mf := range mfs {
+		if mf.GetName() == "correlation_noisy_neighbor_pvalue" {
+			pvalueCount = len(mf.Metric)
+		}
+	}
+	if pvalueCount != 1 {
+		t.Errorf("pvalue series count=%d want 1 (GrangerOK=true 한 페어만 emit)", pvalueCount)
+	}
+}
+
+// TestCollector_DominantDimensionEmitted 는 victim 단위 dominant dimension 산정 결과가
+// correlation_dominant_dimension 시리즈로 emit 되며 4 dimension 합이 0 인 victim 은 자연 제외되는지
+// 검증한다.
+func TestCollector_DominantDimensionEmitted(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	// v1 은 cpu 0.9, memory 0.1 → dominant cpu.
+	v1Cpu := neighbor("v1", "s1", correlation.DimensionCPU, 1, 0.9, 0)
+	v1Mem := neighbor("v1", "s2", correlation.DimensionMemory, 1, 0.1, 0)
+	// v-zero 는 모든 score 0 → 시리즈 미존재 기대.
+	vZero := neighbor("v-zero", "s3", correlation.DimensionGPU, 1, 0, 0)
+	c.Replace([]correlation.NoisyNeighbor{v1Cpu, v1Mem, vZero})
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	var emitted []string
+	for _, mf := range mfs {
+		if mf.GetName() != "correlation_dominant_dimension" {
+			continue
+		}
+		for _, m := range mf.Metric {
+			var victim, dim string
+			for _, lp := range m.Label {
+				switch lp.GetName() {
+				case "victim_pod":
+					victim = lp.GetValue()
+				case "dimension":
+					dim = lp.GetValue()
+				}
+			}
+			emitted = append(emitted, victim+"/"+dim)
+		}
+	}
+	if len(emitted) != 1 {
+		t.Fatalf("dominant_dimension series count=%d want 1 (v1 한정, v-zero 는 제외) got=%v", len(emitted), emitted)
+	}
+	if emitted[0] != "v1/cpu" {
+		t.Errorf("got=%q want v1/cpu", emitted[0])
+	}
+}
+
 // TestHealth_RecordErrorDoesNotTouchSuccessTimestamp 는 RecordError 가 LastSuccessTimestamp 를
 // 갱신하지 않아 CorrelationExporterStalled alert 가 발화 가능한지 검증한다.
 func TestHealth_RecordErrorDoesNotTouchSuccessTimestamp(t *testing.T) {

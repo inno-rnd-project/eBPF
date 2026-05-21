@@ -1,6 +1,6 @@
-// Package loadgen 은 workload-injector 가 cpu / network / gpu 세 종류의 부하를 발생시키는 모듈들의
-// 공통 인터페이스다. 각 모듈은 K8s API 로 target node 에 stress Pod 를 spawn 해 cgroup 격리 안에서
-// 부하를 발생시키고 종료 시 spawn 한 Pod 를 idempotent 하게 삭제한다.
+// Package loadgen 은 workload-injector 가 cpu / memory / network / gpu 4 종류의 부하를 발생시키는
+// 모듈들의 공통 인터페이스다. 각 모듈은 K8s API 로 target node 에 stress Pod 를 spawn 해 cgroup
+// 격리 안에서 부하를 발생시키고 종료 시 spawn 한 Pod 를 idempotent 하게 삭제한다.
 package loadgen
 
 import (
@@ -23,6 +23,7 @@ type Kind string
 
 const (
 	KindCPU     Kind = "cpu"
+	KindMemory  Kind = "memory"
 	KindNetwork Kind = "network"
 	KindGPU     Kind = "gpu"
 )
@@ -61,6 +62,8 @@ func New(kind Kind, client kubernetes.Interface) (LoadGenerator, error) {
 	switch kind {
 	case KindCPU:
 		return &cpuGen{client: client}, nil
+	case KindMemory:
+		return &memoryGen{client: client}, nil
 	case KindNetwork:
 		return &networkGen{client: client}, nil
 	case KindGPU:

@@ -90,7 +90,7 @@ ENVTEST_K8S_VERSION ?= 1.31.0
 # 본체 (v0.19.4) 와 태그 체계가 다르며 본체 태그로는 모듈 해상이 안 된다. 현재 발행된 단일 안정
 # 태그인 v0.24.0 으로 고정해 시간 경과에 따른 재현성 흔들림 (자산 해석 동작 변경 / 업스트림 회귀)
 # 을 차단한다. v0.24.0 의 go.mod 가 Go 1.26 을 요구하지만 modern `go run` 의 toolchain 자동 다운로드
-# 로 1.22 host 에서도 정상 실행된다.
+# 로 1.24 host 에서도 정상 실행된다.
 SETUP_ENVTEST_VERSION ?= v0.24.0
 
 # test 는 단위 테스트 스위트. cuda / netobs ebpf 패키지가 //go:embed 로 bpf2go 산출물 (.o) 을 참조

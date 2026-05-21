@@ -186,6 +186,54 @@ func TestCPU_StartParseError(t *testing.T) {
 	}
 }
 
+// TestMemory_StartSpawnsPodWithExpectedSpec 는 memory 모듈이 target node 강제 배치와 stress --vm
+// --vm-bytes 명령, memory limit 설정을 정확히 만드는지 검증한다.
+func TestMemory_StartSpawnsPodWithExpectedSpec(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	g, err := New(KindMemory, client)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	params := defaultParams()
+	params.Intensity = "512Mi"
+	if err := g.Start(context.Background(), params); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	pods, err := client.CoreV1().Pods("ebpf-project").List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(pods.Items) != 1 {
+		t.Fatalf("pod count=%d want 1", len(pods.Items))
+	}
+	p := pods.Items[0]
+	if p.Spec.NodeName != "ebpf-worker1" {
+		t.Errorf("nodeName=%q want ebpf-worker1", p.Spec.NodeName)
+	}
+	if got := p.Labels["injector.kind"]; got != "memory" {
+		t.Errorf("injector.kind=%q want memory", got)
+	}
+	// 512Mi == 536870912 bytes 가 K8s Quantity 규약. stress 와 cgroup limit 양쪽에 동일 bytes 정수.
+	const expected512MiBytes = "536870912"
+	if got := p.Spec.Containers[0].Command; len(got) < 6 || got[1] != "--vm" || got[3] != "--vm-bytes" || got[4] != expected512MiBytes {
+		t.Errorf("command=%v want stress --vm 1 --vm-bytes %s ...", got, expected512MiBytes)
+	}
+	if got := p.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory]; got.String() != "512Mi" {
+		t.Errorf("memory limit=%s want 512Mi", got.String())
+	}
+}
+
+// TestMemory_StartParseError 는 잘못된 intensity 가 parse error 로 fail-fast 되는지 검증한다.
+func TestMemory_StartParseError(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	g, _ := New(KindMemory, client)
+	params := defaultParams()
+	params.Intensity = "not-a-quantity"
+	if err := g.Start(context.Background(), params); err == nil {
+		t.Errorf("err=nil want parse error")
+	}
+}
+
 // TestNetwork_PartialSpawnCleanup 는 server 만 spawn 되고 client 가 실패할 때 server 도 cleanup
 // 되는지 검증한다 (현재 fake clientset 에서는 client create 도 성공해서 이 시나리오 재현이 어려워
 // AlreadyExists 시뮬레이션으로 대체).

@@ -34,12 +34,18 @@ var neighborLabels = []string{
 type Collector struct {
 	mu       sync.RWMutex
 	snapshot []correlation.NoisyNeighbor
+	// dominant 는 Replace 시점에 ComputeDominantDimension 결과를 미리 산정해 둔 캐시다. Prometheus
+	// scrape 가 호출되는 Collect hot path 에서 매번 victim 단위 dimension max 집계와 sum 정규화를
+	// 재실행하지 않게 한다. snapshot 이 바뀔 때만 갱신된다.
+	dominant []correlation.DominantDimension
 	// step 은 LagSteps 를 초 단위로 변환할 때 곱해진다. exporter 가 Correlator 의 Config.Step 과
 	// 동일 값을 받아 lag step 의 시간 의미를 보존한다.
 	step time.Duration
 
-	scoreDesc *prometheus.Desc
-	lagDesc   *prometheus.Desc
+	scoreDesc    *prometheus.Desc
+	lagDesc      *prometheus.Desc
+	pvalueDesc   *prometheus.Desc
+	dominantDesc *prometheus.Desc
 }
 
 // NewCollector 는 Prometheus scrape 시 emit 할 metric desc 두 개를 미리 만들어 두는 Collector 를
@@ -58,15 +64,28 @@ func NewCollector(step time.Duration) *Collector {
 			"score 가 최대 절대값을 보인 lag 의 초 단위 환산. 양수면 suspect 변동이 victim latency 를 N 초 선행하는 인과 방향이다.",
 			neighborLabels, nil,
 		),
+		pvalueDesc: prometheus.NewDesc(
+			"correlation_noisy_neighbor_pvalue",
+			"#69 의 Granger causality p-value. src (suspect) 가 dst (victim latency) 를 Granger-cause 하는지의 통계적 유의성. 0.05 미만이면 high-confidence 인과 신호로 본다. continuous 값이라 라벨이 아닌 별개 메트릭으로 분리해 cardinality 폭증을 차단한다.",
+			neighborLabels, nil,
+		),
+		dominantDesc: prometheus.NewDesc(
+			"correlation_dominant_dimension",
+			"#69 의 victim 단위 dominant dimension. 4 dimension (cpu / gpu / memory / network) 별 max score 를 sum 정규화한 weight 중 가장 큰 dimension 1 종만 emit 된다. 정확 동률 시 dimension enum 사전순 가장 앞 라벨이 채택된다. raw 메트릭이라 latency pressure 와 무관하게 항상 emit 되며 active 시간대 한정 view 는 correlation_dominant_dimension_active:5m recording rule 을 본다.",
+			[]string{"victim_namespace", "victim_pod", "victim_pod_uid", "dimension"}, nil,
+		),
 	}
 }
 
 // Replace 는 reconcile cycle 산출물로 snapshot 을 교체한다. 입력 슬라이스는 호출 후에도 호출자
-// 측에서 수정 가능하도록 내부적으로 복사본을 보관한다.
+// 측에서 수정 가능하도록 내부적으로 복사본을 보관한다. dominant dimension 도 본 시점에 1 회
+// 산정해 캐시에 둬 scrape 마다 Collect 가 재계산하지 않게 한다.
 func (c *Collector) Replace(neighbors []correlation.NoisyNeighbor) {
 	copied := append([]correlation.NoisyNeighbor(nil), neighbors...)
+	dominant := correlation.ComputeDominantDimension(copied)
 	c.mu.Lock()
 	c.snapshot = copied
+	c.dominant = dominant
 	c.mu.Unlock()
 }
 
@@ -74,6 +93,8 @@ func (c *Collector) Replace(neighbors []correlation.NoisyNeighbor) {
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.scoreDesc
 	ch <- c.lagDesc
+	ch <- c.pvalueDesc
+	ch <- c.dominantDesc
 }
 
 // Collect 는 현재 snapshot 의 모든 NoisyNeighbor 를 score / lag 두 메트릭으로 emit 한다. snapshot
@@ -81,6 +102,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.mu.RLock()
 	snapshot := c.snapshot
+	dominant := c.dominant
 	step := c.step
 	c.mu.RUnlock()
 
@@ -99,6 +121,23 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		}
 		ch <- prometheus.MustNewConstMetric(c.scoreDesc, prometheus.GaugeValue, n.Score, labels...)
 		ch <- prometheus.MustNewConstMetric(c.lagDesc, prometheus.GaugeValue, float64(n.LagSteps)*stepSeconds, labels...)
+		if n.GrangerOK {
+			ch <- prometheus.MustNewConstMetric(c.pvalueDesc, prometheus.GaugeValue, n.PValue, labels...)
+		}
+	}
+	// dominant dimension 은 Replace 시점에 1 회 산정되어 c.dominant 에 캐시된 결과를 그대로 emit
+	// 한다. scrape 마다 victim 단위 dimension max 집계 + sum 정규화 비용을 피해 Collect hot path 가
+	// O(neighbors + dominant) 에 머문다.
+	for _, d := range dominant {
+		ch <- prometheus.MustNewConstMetric(
+			c.dominantDesc,
+			prometheus.GaugeValue,
+			d.Weight,
+			d.Victim.Namespace,
+			d.Victim.Pod,
+			d.Victim.PodUID,
+			string(d.Dimension),
+		)
 	}
 }
 
