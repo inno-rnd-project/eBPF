@@ -470,6 +470,36 @@ var (
 		cudaPodLabels,
 	)
 
+	// #67 의 동기화 wait 시간 측정 메트릭 3종. histogram bucket 은 netobs stage latency 와 동일하게
+	// 1us 부터 2배 곱 20 bucket 이며 alert 임계 100ms 가 17번째 경계 약 131ms 인근에서 정확한 p99
+	// 산정이 가능하다. stream / event handle 은 cardinality 폭발 방지로 라벨에 포함되지 않으며 Pod
+	// 단위 라벨 셋은 다른 cuda 메트릭과 동일하게 cudaPodLabels 를 그대로 쓴다.
+	cudaStreamSynchronizeSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "gpuobs_cuda_stream_synchronize_seconds",
+			Help:    "Distribution of cuStreamSynchronize host wait time captured by libcuda.so uprobe / uretprobe pair. Indicates how long the calling host thread blocked waiting for all preceding work in a CUDA stream to complete. Attributed per Pod via cgroup-based PID resolution and per GPU via cuda_tid_device map (unknown GPU UUID falls back to PID-level devmap)",
+			Buckets: prometheus.ExponentialBuckets(1e-6, 2, 20),
+		},
+		cudaPodLabels,
+	)
+
+	cudaEventSynchronizeSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "gpuobs_cuda_event_synchronize_seconds",
+			Help:    "Distribution of cuEventSynchronize host wait time captured by libcuda.so uprobe / uretprobe pair. Indicates how long the calling host thread blocked waiting for a CUDA event to be recorded. Attributed per Pod via cgroup-based PID resolution and per GPU via cuda_tid_device map",
+			Buckets: prometheus.ExponentialBuckets(1e-6, 2, 20),
+		},
+		cudaPodLabels,
+	)
+
+	cudaStreamWaitEventTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gpuobs_cuda_stream_wait_event_total",
+			Help: "Cumulative count of cuStreamWaitEvent calls captured by libcuda.so uprobe. cuStreamWaitEvent is a non-blocking call that only enqueues a wait on the given stream, so it is exposed as a counter rather than a latency histogram. Use rate() to track inter-stream dependency frequency",
+		},
+		cudaPodLabels,
+	)
+
 	cudaSymbolAvailable = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "gpuobs_cuda_symbol_available",
@@ -548,6 +578,9 @@ func Register(reg prometheus.Registerer) {
 		cudaD2HBytesTotal,
 		cudaDtoDBytesTotal,
 		cudaUnknownDirBytesTotal,
+		cudaStreamSynchronizeSeconds,
+		cudaEventSynchronizeSeconds,
+		cudaStreamWaitEventTotal,
 		cudaSymbolAvailable,
 		cudaEventsLostTotal,
 		cudaPidMultiGPUCount,
@@ -941,6 +974,12 @@ func RecordCudaEvent(node string, s CudaEventSample) {
 		cudaDtoDBytesTotal.WithLabelValues(labels[:]...).Add(float64(s.Bytes))
 	case types.CudaEventUnknownDir:
 		cudaUnknownDirBytesTotal.WithLabelValues(labels[:]...).Add(float64(s.Bytes))
+	case types.CudaEventStreamSync:
+		cudaStreamSynchronizeSeconds.WithLabelValues(labels[:]...).Observe(float64(s.LatencyNs) / 1e9)
+	case types.CudaEventEventSync:
+		cudaEventSynchronizeSeconds.WithLabelValues(labels[:]...).Observe(float64(s.LatencyNs) / 1e9)
+	case types.CudaEventStreamWaitEvent:
+		cudaStreamWaitEventTotal.WithLabelValues(labels[:]...).Inc()
 	default:
 		// 정의되지 않은 kind 는 BPF / userspace enum 이 어긋난 신호라 발행을 건너뛴다.
 		return
@@ -997,6 +1036,9 @@ func RetainCudaSeries(activeKeys map[CudaLabelKey]struct{}) {
 		cudaD2HBytesTotal.DeleteLabelValues(labels...)
 		cudaDtoDBytesTotal.DeleteLabelValues(labels...)
 		cudaUnknownDirBytesTotal.DeleteLabelValues(labels...)
+		cudaStreamSynchronizeSeconds.DeleteLabelValues(labels...)
+		cudaEventSynchronizeSeconds.DeleteLabelValues(labels...)
+		cudaStreamWaitEventTotal.DeleteLabelValues(labels...)
 		delete(seenCudaKeys, key)
 	}
 }
