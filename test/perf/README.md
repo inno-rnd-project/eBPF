@@ -14,6 +14,7 @@ overhead 를 정량 측정하기 위한 표준 워크로드 매니페스트를 �
 | `vectoradd-loop.yaml` | cuda-sample vectorAdd 무한 반복 | cuLaunchKernel + cuMemcpyHtoD_v2 + cuMemcpyDtoH_v2 |
 | `pytorch-resnet50-bench.yaml` | PyTorch ResNet50 inference 무한 루프 | 전 심볼군 (kernel launch 수천 Hz, h2d / d2h 다수) |
 | `pytorch-conv2d-bench.yaml` | Conv2d 만 반복 호출 (cuDNN benchmark on) | cuMemcpy2D 경로의 BPF 4-6회 bpf_probe_read_user 자극 |
+| `pytorch-cuda-stream-sync-bench.yaml` | 명시적 stream / event 로 매 iteration 마다 동기화 3종 호출 | cuStreamSynchronize 2회 + cuEventSynchronize 1회 + cuStreamWaitEvent 1회 (#67 검증용) |
 
 ## 실행 절차
 
