@@ -62,6 +62,7 @@ const (
 
 // CorrelationResult는 단일 페어의 lag별 상관계수와 최대 절대값 채택 결과를 담는다. #51 exporter가
 // 본 struct를 그대로 입력으로 받아 Prometheus 메트릭으로 변환 가능하도록 JSON tag 셋을 동결한다.
+// #69 의 Granger causality 산정 결과 (FStatistic, PValue, GrangerOK) 도 본 구조체로 함께 전달된다.
 type CorrelationResult struct {
 	Pair             PairKey         `json:"pair"`
 	CorrelationByLag map[int]float64 `json:"correlation_by_lag"`
@@ -69,4 +70,10 @@ type CorrelationResult struct {
 	MaxAbsValue      float64         `json:"max_abs_value"`
 	SampleCount      int             `json:"sample_count"`
 	Status           Status          `json:"status"`
+	// FStatistic 과 PValue 는 #69 의 Granger causality 산정 결과다. src 가 dst 를 Granger-cause 하는지
+	// 의 통계적 유의성을 노출한다. GrangerOK 가 false 면 표본 부족 또는 행렬 singular 로 산정이 자연
+	// skip 된 상태이며 FStatistic 과 PValue 모두 0 으로 둔다.
+	FStatistic float64 `json:"f_statistic"`
+	PValue     float64 `json:"p_value"`
+	GrangerOK  bool    `json:"granger_ok"`
 }

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"netobs/internal/correlation/granger"
 )
 
 // Correlator 는 fetcher 로 시계열을 가져와 pair enumerate 후 Pearson 으로 상관계수를 산출하는
@@ -85,7 +87,27 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 	for _, p := range pairs {
 		r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
 		r.Pair = p.Key
+		// #69 Granger causality 산정. src 의 과거 값이 dst 의 현재 값을 예측하는 데 통계적으로 유의한
+		// 추가 정보를 제공하는지의 F-statistic 과 p-value 를 추가 첨부한다. 표본 부족 또는 행렬
+		// singular 케이스는 GrangerOK=false 로 자연 skip 된다.
+		srcVals := samplesToValues(p.Src.Samples)
+		dstVals := samplesToValues(p.Dst.Samples)
+		g := granger.Test(srcVals, dstVals, c.config.GrangerLag, c.config.MinSamples)
+		r.FStatistic = g.F
+		r.PValue = g.PValue
+		r.GrangerOK = g.OK
 		results = append(results, r)
 	}
 	return results, nil
+}
+
+// samplesToValues 는 Sample slice 의 Value 만 추출해 Granger 입력 형태로 변환한다. Granger 산정은
+// timestamp 자체를 직접 사용하지 않으며 두 시계열의 step 이 동일하게 정렬되어 있다는 fetcher 의
+// 전제를 그대로 따른다.
+func samplesToValues(samples []Sample) []float64 {
+	out := make([]float64, 0, len(samples))
+	for _, s := range samples {
+		out = append(out, s.Value)
+	}
+	return out
 }
