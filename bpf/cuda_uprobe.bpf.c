@@ -533,3 +533,39 @@ int BPF_UPROBE(handle_cu_ctx_set_current)
     bpf_map_update_elem(&cuda_tid_device, &tid, dev, BPF_ANY);
     return 0;
 }
+
+/* #67 CUDA stream 동기화 latency 측정을 위한 uprobe / uretprobe stub 5 종. 본 커밋은 dev cluster 의
+ * RTX 3090 환경에서 libcuda.so 의 3 종 동기화 심볼 (cuStreamSynchronize, cuEventSynchronize,
+ * cuStreamWaitEvent) 이 attach 가능한지 검증만 수행한다. cuStreamSynchronize 와 cuEventSynchronize
+ * 는 entry-exit 페어 측정용으로 uretprobe 도 함께 부착하고, cuStreamWaitEvent 는 non-blocking call
+ * 이라 호출 빈도 counter 로만 사용해 entry uprobe 만 둔다. 실제 timestamp stash, ringbuf event
+ * emit 로직은 후속 커밋에서 채운다. */
+SEC("uprobe.multi/cuStreamSynchronize")
+int BPF_UPROBE(handle_cu_stream_synchronize_entry)
+{
+    return 0;
+}
+
+SEC("uretprobe.multi/cuStreamSynchronize")
+int BPF_URETPROBE(handle_cu_stream_synchronize_exit)
+{
+    return 0;
+}
+
+SEC("uprobe.multi/cuEventSynchronize")
+int BPF_UPROBE(handle_cu_event_synchronize_entry)
+{
+    return 0;
+}
+
+SEC("uretprobe.multi/cuEventSynchronize")
+int BPF_URETPROBE(handle_cu_event_synchronize_exit)
+{
+    return 0;
+}
+
+SEC("uprobe.multi/cuStreamWaitEvent")
+int BPF_UPROBE(handle_cu_stream_wait_event_entry)
+{
+    return 0;
+}
