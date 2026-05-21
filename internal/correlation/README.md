@@ -339,3 +339,9 @@ kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:909
 ```
 
 본 결과의 상위 페어가 alert label 의 (victim, suspect) 와 일치해야 한다. 일치하지 않으면 exporter 의 `RECONCILE_INTERVAL` 보다 짧은 시간에 상관 관계가 사라졌거나 (Pod 재시작 등) `WINDOW` 차이로 인한 noise 가 의심된다.
+
+## 외부 의존
+
+### gonum (mat / stat/distuv)
+
+#69 의 Granger causality 산정에 OLS 회귀와 F-distribution 의 p-value 계산이 필요하다. Go 표준 라이브러리에 두 기능이 없어 `gonum.org/v1/gonum/mat` (행렬 연산) 와 `gonum.org/v1/gonum/stat/distuv` (F 분포) 를 `internal/correlation/granger/` 패키지의 의존으로 신규 추가했다. correlation-exporter binary 크기가 약 1 MB 증가하며 build time 영향은 미미하다.
