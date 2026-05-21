@@ -596,15 +596,19 @@ spec:
         # 할 수 있게 한다. cuEventSynchronize 는 event recording 의존 시점이 워크로드별로 너무 다양해
         # 동일 임계 적용이 부적절하므로 본 alert 의 expr 대상에서 제외한다. 임계 100ms 는 histogram
         # bucket 의 17 번째 경계 약 131ms 인근에서 정확한 p99 산정이 가능해 false positive 가 적다.
+        # 그룹화 라벨에 src_pod_uid 를 포함해 롤링 업데이트 중 old/new Pod 이 같은 이름으로 공존할
+        # 때 두 instance 의 sample 이 섞여 p99 가 잘못 산정되는 케이스를 차단한다. gpu_uuid 는 dev
+        # 클러스터의 single GPU 전제로 의도적으로 드롭해 multi-GPU 워크로드 follow-up 까지 알람 단위
+        # 를 Pod 로 유지한다.
         - alert: GPUObsCudaStreamWaitHigh
           expr: |
             histogram_quantile(0.99,
-              sum by (le, node, src_namespace, src_pod) (
+              sum by (le, node, src_namespace, src_pod, src_pod_uid) (
                 rate(gpuobs_cuda_stream_synchronize_seconds_bucket[5m])
               )
             ) > 0.1
             and
-            sum by (node, src_namespace, src_pod) (
+            sum by (node, src_namespace, src_pod, src_pod_uid) (
               rate(gpuobs_cuda_stream_synchronize_seconds_count[5m])
             ) > 0
           for: 5m
@@ -613,7 +617,7 @@ spec:
             component: gpuobs
           annotations:
             summary: "cuStreamSynchronize p99 over 100ms on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }})"
-            description: "cuStreamSynchronize p99 host wait time for pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} on node {{ $labels.node }} is {{ $value | humanizeDuration }} sustained over 5 minutes. Inspect the workload's CUDA stream usage and the receiving GPU's kernel queue. See docs/gpuobs/cuda-sync-latency.md for triage workflow."
+            description: "cuStreamSynchronize p99 host wait time for pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} (uid {{ $labels.src_pod_uid }}) on node {{ $labels.node }} is {{ $value | humanizeDuration }} sustained over 5 minutes. Inspect the workload's CUDA stream usage and the receiving GPU's kernel queue. See docs/gpuobs/cuda-sync-latency.md for triage workflow."
 
     # netobs-gpuobs.gpu-idle.alerts 그룹은 GPU 유휴 상태와 5종 cause score 조합 alert을 모은다.
     # 단일 cause는 warning, host_compute_stall 은 host와 device 양쪽 자원 한계가 동시에 의심되므로
