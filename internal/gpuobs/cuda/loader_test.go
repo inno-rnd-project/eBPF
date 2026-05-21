@@ -462,3 +462,39 @@ func TestReaderDispatch_KindPassThrough(t *testing.T) {
 		}
 	}
 }
+
+// TestReaderDispatch_SyncKindsCarryLatency 는 #67 의 동기화 3종 kind 가 LatencyNs 를 그대로 sample
+// 로 전달하는지 회귀 가드한다. cuStreamWaitEvent 는 counter 용이라 LatencyNs=0 이 그대로 전달되는
+// 것도 함께 확인한다.
+func TestReaderDispatch_SyncKindsCarryLatency(t *testing.T) {
+	rec := &captureRecorder{}
+	resolver := fakeResolver{table: map[uint32]kube.PodIdentity{1: samplePod("ml", "p", "u")}}
+	r := newReaderForDispatch(resolver, rec)
+	devmap := newDeviceMap()
+	devmap.replace(map[uint32]string{1: "G"})
+
+	cases := []struct {
+		kind      types.CudaEventKind
+		latencyNs uint64
+	}{
+		{types.CudaEventStreamSync, 12_345_000},
+		{types.CudaEventEventSync, 9_876_543},
+		{types.CudaEventStreamWaitEvent, 0},
+	}
+	for _, tc := range cases {
+		r.dispatch(rawEvent{PID: 1, Kind: uint8(tc.kind), LatencyNs: tc.latencyNs}, devmap)
+	}
+
+	if len(rec.calls) != len(cases) {
+		t.Fatalf("calls=%d want %d", len(rec.calls), len(cases))
+	}
+	for i, tc := range cases {
+		got := rec.calls[i].sample
+		if got.Kind != tc.kind {
+			t.Errorf("kind[%d]=%v want %v", i, got.Kind, tc.kind)
+		}
+		if got.LatencyNs != tc.latencyNs {
+			t.Errorf("latency[%d]=%d want %d", i, got.LatencyNs, tc.latencyNs)
+		}
+	}
+}
