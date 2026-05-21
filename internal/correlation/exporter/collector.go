@@ -34,6 +34,10 @@ var neighborLabels = []string{
 type Collector struct {
 	mu       sync.RWMutex
 	snapshot []correlation.NoisyNeighbor
+	// dominant 는 Replace 시점에 ComputeDominantDimension 결과를 미리 산정해 둔 캐시다. Prometheus
+	// scrape 가 호출되는 Collect hot path 에서 매번 victim 단위 dimension max 집계와 sum 정규화를
+	// 재실행하지 않게 한다. snapshot 이 바뀔 때만 갱신된다.
+	dominant []correlation.DominantDimension
 	// step 은 LagSteps 를 초 단위로 변환할 때 곱해진다. exporter 가 Correlator 의 Config.Step 과
 	// 동일 값을 받아 lag step 의 시간 의미를 보존한다.
 	step time.Duration
@@ -74,11 +78,14 @@ func NewCollector(step time.Duration) *Collector {
 }
 
 // Replace 는 reconcile cycle 산출물로 snapshot 을 교체한다. 입력 슬라이스는 호출 후에도 호출자
-// 측에서 수정 가능하도록 내부적으로 복사본을 보관한다.
+// 측에서 수정 가능하도록 내부적으로 복사본을 보관한다. dominant dimension 도 본 시점에 1 회
+// 산정해 캐시에 둬 scrape 마다 Collect 가 재계산하지 않게 한다.
 func (c *Collector) Replace(neighbors []correlation.NoisyNeighbor) {
 	copied := append([]correlation.NoisyNeighbor(nil), neighbors...)
+	dominant := correlation.ComputeDominantDimension(copied)
 	c.mu.Lock()
 	c.snapshot = copied
+	c.dominant = dominant
 	c.mu.Unlock()
 }
 
@@ -95,6 +102,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.mu.RLock()
 	snapshot := c.snapshot
+	dominant := c.dominant
 	step := c.step
 	c.mu.RUnlock()
 
@@ -117,9 +125,10 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			ch <- prometheus.MustNewConstMetric(c.pvalueDesc, prometheus.GaugeValue, n.PValue, labels...)
 		}
 	}
-	// dominant dimension 산정은 snapshot 전체를 한 번에 보고 victim 단위로 산출한다. 4 dimension 합이
-	// 0 인 victim 은 ComputeDominantDimension 단계에서 자연 제외되어 빈 시리즈가 emit 되지 않는다.
-	for _, d := range correlation.ComputeDominantDimension(snapshot) {
+	// dominant dimension 은 Replace 시점에 1 회 산정되어 c.dominant 에 캐시된 결과를 그대로 emit
+	// 한다. scrape 마다 victim 단위 dimension max 집계 + sum 정규화 비용을 피해 Collect hot path 가
+	// O(neighbors + dominant) 에 머문다.
+	for _, d := range dominant {
 		ch <- prometheus.MustNewConstMetric(
 			c.dominantDesc,
 			prometheus.GaugeValue,
