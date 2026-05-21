@@ -92,7 +92,7 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 		// singular 케이스는 GrangerOK=false 로 자연 skip 된다.
 		srcVals := samplesToValues(p.Src.Samples)
 		dstVals := samplesToValues(p.Dst.Samples)
-		g := granger.Test(srcVals, dstVals, c.config.GrangerLag, c.config.MinSamples)
+		g := granger.Test(srcVals, dstVals, c.config.GrangerLag, c.config.GrangerMinSamples)
 		r.FStatistic = g.F
 		r.PValue = g.PValue
 		r.GrangerOK = g.OK

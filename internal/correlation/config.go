@@ -41,6 +41,11 @@ type Config struct {
 	// 본 시리즈 scope 외이며 호출자가 고정 lag 로 운영한다. 본 시리즈의 기본값은 2 이며 한 단계 lag
 	// 의 직접 영향과 두 단계 lag 의 누적 영향까지 잡는다.
 	GrangerLag int
+
+	// GrangerMinSamples 는 Granger 산정에서 lag 적용 후 유효 표본 수의 하한이다. 운영 환경의 짧은
+	// window (30m / 30s step = 60 samples) 에서도 OK 결과가 나오도록 Pearson 의 MinSamples 와 분리해
+	// 더 낮게 둔다. lag p 적용 후 표본 수 n - p 가 본 값 미만이면 GrangerOK=false 로 자연 skip 된다.
+	GrangerMinSamples int
 }
 
 // DefaultConfig 는 운영자가 zero-config 로 본 라이브러리를 호출할 때 쓰이는 default Config 다.
@@ -67,7 +72,8 @@ func DefaultConfig() Config {
 			// netobs 의 pod-level latency p99.
 			`histogram_quantile(0.99, sum by(node, src_namespace, src_pod, src_pod_uid, le) (rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])))`,
 		},
-		FetchTimeout: 30 * time.Second,
-		GrangerLag:   2,
+		FetchTimeout:      30 * time.Second,
+		GrangerLag:        2,
+		GrangerMinSamples: 30,
 	}
 }
