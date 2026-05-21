@@ -27,7 +27,7 @@ func TestComputeDominantDimension_SingleDominant(t *testing.T) {
 }
 
 // TestComputeDominantDimension_TieBreakerEnumOrder 는 정확 동률 시 enum 사전순 가장 앞 (cpu) 이
-// 채택되는지 검증한다.
+// 채택되는지 검증한다. 노출되는 Weight 는 offset 가산 없는 raw 정규화 값 (0.25) 이어야 한다.
 func TestComputeDominantDimension_TieBreakerEnumOrder(t *testing.T) {
 	neighbors := []NoisyNeighbor{
 		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Dimension: DimensionCPU, Score: 0.5},
@@ -41,6 +41,30 @@ func TestComputeDominantDimension_TieBreakerEnumOrder(t *testing.T) {
 	}
 	if got[0].Dimension != DimensionCPU {
 		t.Errorf("dimension=%s want cpu (사전순 가장 앞)", got[0].Dimension)
+	}
+	if got[0].Weight != 0.25 {
+		t.Errorf("weight=%g want 0.25 (offset 가산 없는 raw 정규화 값)", got[0].Weight)
+	}
+}
+
+// TestComputeDominantDimension_WeightIsRawNormalized 는 dominant Weight 에 offset 이 가산되지
+// 않아 [0, 1] 범위 raw 정규화 값으로 노출되는지 검증한다. dashboard 와 alert 가 본 raw 값을 그대로
+// 사용한다.
+func TestComputeDominantDimension_WeightIsRawNormalized(t *testing.T) {
+	neighbors := []NoisyNeighbor{
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Dimension: DimensionCPU, Score: 0.8},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Dimension: DimensionMemory, Score: 0.2},
+	}
+	got := ComputeDominantDimension(neighbors)
+	if len(got) != 1 {
+		t.Fatalf("len=%d want 1", len(got))
+	}
+	// CPU score 0.8 + memory score 0.2 = sum 1.0. cpu weight = 0.8.
+	if got[0].Weight != 0.8 {
+		t.Errorf("weight=%g want 0.8 (offset 제외)", got[0].Weight)
+	}
+	if got[0].Weight > 1.0 {
+		t.Errorf("weight=%g exceeds 1.0", got[0].Weight)
 	}
 }
 

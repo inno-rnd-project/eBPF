@@ -8,8 +8,9 @@ import "sort"
 type DominantDimension struct {
 	Victim    PodIdentity
 	Dimension ResourceDimension
-	// Weight 는 dominant dimension 의 정규화 weight 다. tie-breaker offset 이 더해진 값이라 1.0 을
-	// 미세하게 초과할 수 있으나 의미는 [0, 1] 단조 score 의 dominant cause 강도다.
+	// Weight 는 dominant dimension 의 순수 정규화 weight (score / sum) 이다. tie-breaker offset 은
+	// 본 필드에 가산되지 않아 항상 [0, 1] 범위에 머무르며 dashboard 와 alert 가 raw 정규화 값을
+	// 그대로 본다.
 	Weight float64
 }
 
@@ -89,12 +90,17 @@ func ComputeDominantDimension(neighbors []NoisyNeighbor) []DominantDimension {
 			continue
 		}
 		var dominant ResourceDimension
-		var maxWeight float64
+		var dominantWeight float64
+		var bestCompare float64
 		first := true
 		for _, dim := range dominantDimensionEnum {
-			w := a.scores[dim]/sum + dimensionOffset[dim]
-			if first || w > maxWeight {
-				maxWeight = w
+			weight := a.scores[dim] / sum
+			// 비교용 점수는 offset 을 가산해 정확 동률 시 enum 사전순 가장 앞이 채택되도록 한다.
+			// 노출되는 Weight 자체는 offset 없는 raw 정규화 값을 그대로 둔다.
+			compare := weight + dimensionOffset[dim]
+			if first || compare > bestCompare {
+				bestCompare = compare
+				dominantWeight = weight
 				dominant = dim
 				first = false
 			}
@@ -102,7 +108,7 @@ func ComputeDominantDimension(neighbors []NoisyNeighbor) []DominantDimension {
 		out = append(out, DominantDimension{
 			Victim:    a.victim,
 			Dimension: dominant,
-			Weight:    maxWeight,
+			Weight:    dominantWeight,
 		})
 	}
 	return out
