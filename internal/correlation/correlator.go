@@ -84,15 +84,19 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 
 	pairs := EnumeratePairs(all)
 	// 동일 시계열이 여러 페어에 반복 등장하므로 samplesToValues 변환 결과를 cache 한다. 키는 시리즈
-	// 의 Samples slice 의 첫 element pointer 로 둬 같은 underlying array 면 1회만 변환된다. 페어
-	// 수가 N 이면 변환은 unique 시리즈 수에 선형이라 매번 변환할 때의 O(N) 슬라이스 할당과 복사를
-	// 줄인다.
-	valuesCache := make(map[*Sample][]float64, len(pairs)*2)
+	// Samples slice 의 첫 element pointer 와 length 의 합성이라 같은 underlying array 를 다른 길이
+	// 의 슬라이스가 공유하는 (prefix / 부분 슬라이스) 케이스에서 충돌이 일어나지 않는다. 페어 수가
+	// N 이면 변환은 unique 시리즈 수에 선형이라 매번 변환할 때의 O(N) 슬라이스 할당과 복사를 줄인다.
+	type cacheKey struct {
+		ptr *Sample
+		len int
+	}
+	valuesCache := make(map[cacheKey][]float64, len(pairs)*2)
 	getValues := func(s TimeSeries) []float64 {
 		if len(s.Samples) == 0 {
 			return nil
 		}
-		key := &s.Samples[0]
+		key := cacheKey{ptr: &s.Samples[0], len: len(s.Samples)}
 		if v, ok := valuesCache[key]; ok {
 			return v
 		}
@@ -123,9 +127,9 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 // timestamp 자체를 직접 사용하지 않으며 두 시계열의 step 이 동일하게 정렬되어 있다는 fetcher 의
 // 전제를 그대로 따른다.
 func samplesToValues(samples []Sample) []float64 {
-	out := make([]float64, 0, len(samples))
-	for _, s := range samples {
-		out = append(out, s.Value)
+	out := make([]float64, len(samples))
+	for i, s := range samples {
+		out[i] = s.Value
 	}
 	return out
 }
