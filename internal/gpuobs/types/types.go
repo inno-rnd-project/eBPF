@@ -191,4 +191,10 @@ const (
 	//   - libcudart cudaMemcpy / cudaMemcpyAsync 의 cudaMemcpyKind=HostToHost 또는 cudaMemcpyDefault (driver 가 결정)
 	// 운영자는 metric 으로 이 시리즈의 비중을 보고 추가 분석 (cuPointerGetAttribute 등) 을 결정할 수 있다.
 	CudaEventUnknownDir CudaEventKind = 5
+	// #67 의 동기화 latency 측정. CudaEventStreamSync 는 cuStreamSynchronize, CudaEventEventSync 는
+	// cuEventSynchronize 의 entry-exit 페어 latency 를 LatencyNs 로 운반한다.
+	// CudaEventStreamWaitEvent 는 cuStreamWaitEvent 호출 빈도 counter 용 (LatencyNs=0).
+	CudaEventStreamSync      CudaEventKind = 6
+	CudaEventEventSync       CudaEventKind = 7
+	CudaEventStreamWaitEvent CudaEventKind = 8
 )

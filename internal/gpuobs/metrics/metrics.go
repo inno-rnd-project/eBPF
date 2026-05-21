@@ -903,6 +903,9 @@ type CudaEventSample struct {
 	GPUUUID string
 	Kind    types.CudaEventKind
 	Bytes   uint64
+	// LatencyNs 는 #67 의 동기화 wait 시간이다. StreamSync / EventSync kind 만 entry-exit 페어가
+	// 산정한 ns 값을 담고 그 외 kind 는 0 으로 둔다.
+	LatencyNs uint64
 }
 
 // RecordCudaEvent 는 단일 cuda 이벤트를 적절한 카운터에 누적한다.

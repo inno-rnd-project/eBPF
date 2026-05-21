@@ -382,10 +382,11 @@ func (r *Reader) dispatch(raw rawEvent, devmap *deviceMap) {
 		}
 	}
 	r.recordEvent(r.nodeName, metrics.CudaEventSample{
-		ID:      id,
-		GPUUUID: r.resolveGPUUUID(raw, devmap),
-		Kind:    types.CudaEventKind(raw.Kind),
-		Bytes:   raw.Bytes,
+		ID:        id,
+		GPUUUID:   r.resolveGPUUUID(raw, devmap),
+		Kind:      types.CudaEventKind(raw.Kind),
+		Bytes:     raw.Bytes,
+		LatencyNs: raw.LatencyNs,
 	})
 }
 
