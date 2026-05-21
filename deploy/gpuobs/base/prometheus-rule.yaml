@@ -442,15 +442,18 @@ spec:
         # 이 라벨 세트에 끼지 않는다.
         - record: gpuobs_thermal_correlation_score:5m
           expr: |
-            abs(
-              (
-                gpuobs_thermal_x_throttle_avg:5m
-                - (gpuobs_thermal_temp_avg:5m * gpuobs_thermal_throttle_avg:5m)
-              )
-              /
-              (
-                (gpuobs_thermal_temp_stddev:5m * gpuobs_thermal_throttle_stddev:5m) > 0
-              )
+            clamp_max(
+              abs(
+                (
+                  gpuobs_thermal_x_throttle_avg:5m
+                  - (gpuobs_thermal_temp_avg:5m * gpuobs_thermal_throttle_avg:5m)
+                )
+                /
+                (
+                  (gpuobs_thermal_temp_stddev:5m * gpuobs_thermal_throttle_stddev:5m) > 0
+                )
+              ),
+              1
             )
 
         # gpuobs_clock_drop_score:5m
@@ -462,10 +465,13 @@ spec:
         # 시리즈를 자연 skip 한다.
         - record: gpuobs_clock_drop_score:5m
           expr: |
-            avg by(node, gpu_uuid) (
-              gpuobs_device_clock_mhz{clock="graphics"}
-              /
-              (max_over_time(gpuobs_device_clock_mhz{clock="graphics"}[5m]) > 0)
+            clamp_max(
+              avg by(node, gpu_uuid) (
+                gpuobs_device_clock_mhz{clock="graphics"}
+                /
+                (max_over_time(gpuobs_device_clock_mhz{clock="graphics"}[5m]) > 0)
+              ),
+              1
             )
 
     # netobs-gpuobs.drop-flow.recording 그룹은 #64 의 drop flow 5-tuple burst 검출을 위한 recording
