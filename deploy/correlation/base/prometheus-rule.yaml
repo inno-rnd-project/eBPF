@@ -48,6 +48,17 @@ spec:
               )
             )
 
+        # correlation_dominant_dimension_active:5m
+        # raw correlation_dominant_dimension 을 correlation_victim_latency_pressure:5m AND 게이팅으로
+        # 거른 active view 다. latency 압박이 실측되는 victim 한정으로 dominant dimension 이 의미가
+        # 있고 그 외 시간대는 dashboard / alert 의 false positive 잡음이 누적된다. raw 메트릭은
+        # 디버깅용으로 항상 emit 되며 운영자가 본 active 메트릭으로 진단을 시작한다.
+        - record: correlation_dominant_dimension_active:5m
+          expr: |
+            correlation_dominant_dimension
+            and on(victim_namespace, victim_pod, victim_pod_uid)
+            correlation_victim_latency_pressure:5m
+
     # correlation-exporter.alerts 는 noisy neighbor 발견과 exporter 자체의 헬스 두 축으로 alert 를
     # 묶는다. severity 와 component 라벨은 netobs-gpuobs.alerts 와 동일 컨벤션을 따른다.
     - name: correlation-exporter.alerts

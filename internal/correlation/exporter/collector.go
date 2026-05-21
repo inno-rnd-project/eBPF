@@ -38,9 +38,10 @@ type Collector struct {
 	// 동일 값을 받아 lag step 의 시간 의미를 보존한다.
 	step time.Duration
 
-	scoreDesc  *prometheus.Desc
-	lagDesc    *prometheus.Desc
-	pvalueDesc *prometheus.Desc
+	scoreDesc    *prometheus.Desc
+	lagDesc      *prometheus.Desc
+	pvalueDesc   *prometheus.Desc
+	dominantDesc *prometheus.Desc
 }
 
 // NewCollector 는 Prometheus scrape 시 emit 할 metric desc 두 개를 미리 만들어 두는 Collector 를
@@ -64,6 +65,11 @@ func NewCollector(step time.Duration) *Collector {
 			"#69 의 Granger causality p-value. src (suspect) 가 dst (victim latency) 를 Granger-cause 하는지의 통계적 유의성. 0.05 미만이면 high-confidence 인과 신호로 본다. continuous 값이라 라벨이 아닌 별개 메트릭으로 분리해 cardinality 폭증을 차단한다.",
 			neighborLabels, nil,
 		),
+		dominantDesc: prometheus.NewDesc(
+			"correlation_dominant_dimension",
+			"#69 의 victim 단위 dominant dimension. 4 dimension (cpu / gpu / memory / network) 별 max score 를 sum 정규화한 weight 중 가장 큰 dimension 1 종만 emit 된다. 정확 동률 시 dimension enum 사전순 가장 앞 라벨이 채택된다. raw 메트릭이라 latency pressure 와 무관하게 항상 emit 되며 active 시간대 한정 view 는 correlation_dominant_dimension_active:5m recording rule 을 본다.",
+			[]string{"victim_namespace", "victim_pod", "victim_pod_uid", "dimension"}, nil,
+		),
 	}
 }
 
@@ -81,6 +87,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.scoreDesc
 	ch <- c.lagDesc
 	ch <- c.pvalueDesc
+	ch <- c.dominantDesc
 }
 
 // Collect 는 현재 snapshot 의 모든 NoisyNeighbor 를 score / lag 두 메트릭으로 emit 한다. snapshot
@@ -109,6 +116,19 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		if n.GrangerOK {
 			ch <- prometheus.MustNewConstMetric(c.pvalueDesc, prometheus.GaugeValue, n.PValue, labels...)
 		}
+	}
+	// dominant dimension 산정은 snapshot 전체를 한 번에 보고 victim 단위로 산출한다. 4 dimension 합이
+	// 0 인 victim 은 ComputeDominantDimension 단계에서 자연 제외되어 빈 시리즈가 emit 되지 않는다.
+	for _, d := range correlation.ComputeDominantDimension(snapshot) {
+		ch <- prometheus.MustNewConstMetric(
+			c.dominantDesc,
+			prometheus.GaugeValue,
+			d.Weight,
+			d.Victim.Namespace,
+			d.Victim.Pod,
+			d.Victim.PodUID,
+			string(d.Dimension),
+		)
 	}
 }
 
