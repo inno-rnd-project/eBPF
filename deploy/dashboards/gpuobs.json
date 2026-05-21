@@ -205,6 +205,46 @@
           "refId": "B"
         }
       ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Thermal x power cross-reference (#68)",
+      "description": "RTX consumer GPU 의 thermal 과 power 시계열을 dual axis 로 동일 timeline 에 표시한다. 좌측 축은 temperature (℃) 로 hw_thermal_slowdown threshold 와 비교, 우측 축은 power usage (W) 로 power limit 과 비교한다.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
+      "fieldConfig": {
+        "defaults": { "custom": { "axisPlacement": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": ".*temperature.*|.*temp.*" }, "properties": [ { "id": "unit", "value": "celsius" }, { "id": "custom.axisPlacement", "value": "left" } ] },
+          { "matcher": { "id": "byRegexp", "options": ".*power.*|.*watts.*" }, "properties": [ { "id": "unit", "value": "watt" }, { "id": "custom.axisPlacement", "value": "right" } ] }
+        ]
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [
+        { "expr": "gpuobs_device_temperature_celsius{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}", "legendFormat": "temperature {{node}} gpu{{gpu_index}}", "refId": "A" },
+        { "expr": "gpuobs_device_power_usage_watts{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}", "legendFormat": "power {{node}} gpu{{gpu_index}}", "refId": "B" }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Clock and thermal throttle cross-reference (#68)",
+      "description": "graphics clock 의 boost / drop 추세 (좌측 축 MHz) 와 hw_thermal_slowdown throttle 의 활성 시점 (우측 축 0-1) 을 같은 timeline 에 표시한다. clock 이 하향 조정되는 구간에서 throttle 이 1 로 올라오면 thermal 영향이 강한 신호다.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 40 },
+      "fieldConfig": {
+        "defaults": { "custom": { "axisPlacement": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": ".*clock.*" }, "properties": [ { "id": "unit", "value": "short" }, { "id": "custom.axisLabel", "value": "MHz" }, { "id": "custom.axisPlacement", "value": "left" } ] },
+          { "matcher": { "id": "byRegexp", "options": ".*throttle.*|.*hw_thermal.*|.*slowdown.*" }, "properties": [ { "id": "unit", "value": "short" }, { "id": "custom.axisLabel", "value": "throttle 0/1" }, { "id": "max", "value": 1 }, { "id": "min", "value": 0 }, { "id": "custom.axisPlacement", "value": "right" } ] }
+        ]
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [
+        { "expr": "gpuobs_device_clock_mhz{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",clock=\"graphics\"}", "legendFormat": "graphics clock {{node}} gpu{{gpu_index}}", "refId": "A" },
+        { "expr": "gpuobs_device_throttle_active{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",reason=\"hw_thermal_slowdown\"}", "legendFormat": "hw_thermal_slowdown {{node}} gpu{{gpu_index}}", "refId": "B" }
+      ]
     }
   ]
 }
