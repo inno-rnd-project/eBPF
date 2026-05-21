@@ -110,8 +110,10 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		score         float64
 		lag           int
 		samples       int
-		// #69 Granger causality 결과. GrangerOK=false 면 pvalue=0 으로 자연 skip 되며 dedup 의 max
-		// score 비교에서 동률일 경우 GrangerOK=true 한쪽이 우선 채택된다.
+		// #69 Granger causality 결과. GrangerOK=false 면 pvalue=0 으로 노출되고 Collector emit 단계
+		// 에서 pvalue 시리즈 자체가 skip 된다. dedup 의 max score 비교는 score 만 본다 (정확 동률 시
+		// GrangerOK 우선 채택은 본 시리즈 scope 외이며 map iteration 순서에 의존하므로 결정적이지
+		// 않다).
 		pvalue    float64
 		grangerOK bool
 	}
