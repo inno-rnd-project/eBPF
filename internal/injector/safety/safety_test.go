@@ -56,11 +56,14 @@ func TestCheckIntensity(t *testing.T) {
 		{loadgen.KindGPU, "1", false},
 		{loadgen.KindGPU, "2", true},
 		{loadgen.KindGPU, "", true},
-		// memory. 2G binary == 2 << 30 bytes 가 상한.
-		{loadgen.KindMemory, "512M", false},
+		// memory. K8s Quantity 규약. 2Gi (2 * 2^30 bytes) 가 상한이고 K / M / G 는 decimal,
+		// Ki / Mi / Gi 는 binary 로 해석된다. 1G (10^9) 는 2Gi 미만이라 통과, 2Gi 정확히 boundary,
+		// 3Gi 부터 거부.
+		{loadgen.KindMemory, "512Mi", false},
+		{loadgen.KindMemory, "1Gi", false},
 		{loadgen.KindMemory, "1G", false},
-		{loadgen.KindMemory, "2G", false},
-		{loadgen.KindMemory, "3G", true},
+		{loadgen.KindMemory, "2Gi", false},
+		{loadgen.KindMemory, "3Gi", true},
 		{loadgen.KindMemory, "abc", true},
 		{loadgen.KindMemory, "", true},
 	}

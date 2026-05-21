@@ -24,7 +24,7 @@ spec:
         - name: workload-injector
           # 운영자가 make image-build-workload-injector 후 dev cluster 노드에 로컬 image 로 두면
           # imagePullPolicy: Never 그대로 Pod 가 실행된다.
-          image: workload-injector:0.5.9
+          image: workload-injector:0.6.1
           imagePullPolicy: Never
           envFrom:
             - configMapRef:
@@ -37,7 +37,7 @@ spec:
             - name: TARGET_POD
               value: "victim"
             - name: INTENSITY
-              value: "512M"
+              value: "512Mi"
             - name: DURATION
               value: "5m"
           ports:

@@ -195,7 +195,7 @@ func TestMemory_StartSpawnsPodWithExpectedSpec(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	params := defaultParams()
-	params.Intensity = "512M"
+	params.Intensity = "512Mi"
 	if err := g.Start(context.Background(), params); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -213,11 +213,13 @@ func TestMemory_StartSpawnsPodWithExpectedSpec(t *testing.T) {
 	if got := p.Labels["injector.kind"]; got != "memory" {
 		t.Errorf("injector.kind=%q want memory", got)
 	}
-	if got := p.Spec.Containers[0].Command; len(got) < 6 || got[1] != "--vm" || got[3] != "--vm-bytes" || got[4] != "512M" {
-		t.Errorf("command=%v want stress --vm 1 --vm-bytes 512M ...", got)
+	// 512Mi == 536870912 bytes 가 K8s Quantity 규약. stress 와 cgroup limit 양쪽에 동일 bytes 정수.
+	const expected512MiBytes = "536870912"
+	if got := p.Spec.Containers[0].Command; len(got) < 6 || got[1] != "--vm" || got[3] != "--vm-bytes" || got[4] != expected512MiBytes {
+		t.Errorf("command=%v want stress --vm 1 --vm-bytes %s ...", got, expected512MiBytes)
 	}
-	if got := p.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory]; got.String() != "512M" {
-		t.Errorf("memory limit=%s want 512M", got.String())
+	if got := p.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory]; got.String() != "512Mi" {
+		t.Errorf("memory limit=%s want 512Mi", got.String())
 	}
 }
 

@@ -172,7 +172,7 @@ func loadConfig() *config {
 	fs.StringVar(&c.SpawnNamespace, "spawn-namespace", c.SpawnNamespace, "namespace where stress Pods are created")
 	fs.DurationVar(&c.Duration, "duration", c.Duration, "load duration (max 30m)")
 	fs.DurationVar(&c.BaselineWindow, "baseline-window", c.BaselineWindow, "baseline / impact measurement window")
-	fs.StringVar(&c.Intensity, "intensity", c.Intensity, "load intensity (cpu millis e.g. 500m, memory bytes e.g. 512M, network bandwidth e.g. 100M, gpu count e.g. 1)")
+	fs.StringVar(&c.Intensity, "intensity", c.Intensity, "load intensity (cpu millis e.g. 500m, memory K8s Quantity e.g. 512Mi or 1Gi, network bandwidth e.g. 100M, gpu count e.g. 1)")
 	fs.StringVar(&c.PrometheusURL, "prometheus-url", c.PrometheusURL, "Prometheus base URL")
 	fs.DurationVar(&c.FetchTimeout, "fetch-timeout", c.FetchTimeout, "HTTP timeout for Prometheus query_range")
 	fs.IntVar(&c.MaxVictims, "max-victims", c.MaxVictims, "maximum victim Pods to compute blast radius for")
@@ -220,7 +220,7 @@ func defaultIntensity(kind loadgen.Kind) string {
 	case loadgen.KindCPU:
 		return "500m"
 	case loadgen.KindMemory:
-		return "512M"
+		return "512Mi"
 	case loadgen.KindNetwork:
 		return "100M"
 	case loadgen.KindGPU:

@@ -12,6 +12,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -37,13 +38,15 @@ func CheckDuration(d time.Duration) error {
 // 발생하지 않도록 cgroup limit 차원에서 가드한다.
 //
 //   - cpu: cpu millis (`4000m`) 이하. stress --cpu N 의 worker thread 가 4 core 이하로 제한.
-//   - memory: bytes (`2G`) 이하. stress --vm-bytes 의 heavy alloc 상한으로 노드 가용 메모리의 일부
-//     수준으로 제한해 OOM 충격이 다른 워크로드에 전이되지 않게 한다.
+//   - memory: bytes (`2Gi`) 이하. K8s resource.Quantity 규약 (binary prefix Ki/Mi/Gi, decimal K/M/G)
+//     을 그대로 따라 loadgen/memory.go 의 cgroup limit 와 stress --vm-bytes 와 본 가드의 의미를
+//     단일 진실원으로 일치시킨다. 노드 가용 메모리의 일부 수준으로 제한해 OOM 충격이 다른 워크로드
+//     에 전이되지 않게 한다.
 //   - network: bandwidth (`1000M`) 이하. iperf3 -b 의 상한.
 //   - gpu: device 수 (`1`) 이하. multi-GPU 점유는 follow-up.
 var IntensityLimits = map[loadgen.Kind]string{
 	loadgen.KindCPU:     "4000m",
-	loadgen.KindMemory:  "2G",
+	loadgen.KindMemory:  "2Gi",
 	loadgen.KindNetwork: "1000M",
 	loadgen.KindGPU:     "1",
 }
@@ -211,9 +214,9 @@ func parseQuantity(s string) (quantity, error) {
 	return quantity{millis: v * 1000}, nil
 }
 
-// checkMemoryBytes 는 stress --vm-bytes 입력 (예: "512M", "1G", "2048K") 을 bytes 정수로 파싱해
-// limit 와 비교한다. 단위는 K=1024, M=1024^2, G=1024^3 의 binary prefix 다 (Kubernetes 의
-// resource.Quantity 와 의미 일치).
+// checkMemoryBytes 는 stress --vm-bytes 입력을 K8s resource.Quantity 규약 (K/M/G decimal,
+// Ki/Mi/Gi binary) 으로 파싱해 limit 와 비교한다. loadgen/memory.go 가 동일 규약으로 cgroup limit
+// 와 stress 인자를 만들어 단위 해석 단일 진실원이 유지된다.
 func checkMemoryBytes(input, limit string) error {
 	in, err := parseMemoryBytes(input)
 	if err != nil {
@@ -229,30 +232,20 @@ func checkMemoryBytes(input, limit string) error {
 	return nil
 }
 
-// parseMemoryBytes 는 K / M / G binary prefix 입력을 bytes 로 변환한다. suffix 가 없으면 정수
-// bytes 로 해석한다.
+// parseMemoryBytes 는 K8s resource.Quantity 로 입력을 파싱해 bytes 정수로 변환한다. 단위 규약은
+// Kubernetes 표준을 그대로 따라 K=10^3 / M=10^6 / G=10^9 (decimal) 와 Ki=2^10 / Mi=2^20 / Gi=2^30
+// (binary) 가 의미가 다르게 해석된다. 운영자가 표준 규약에 맞춰 입력하면 cgroup limit 와 stress
+// 가드가 동일 의미를 갖는다.
 func parseMemoryBytes(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, errors.New("empty memory")
 	}
-	mult := int64(1)
-	switch last := s[len(s)-1]; last {
-	case 'K', 'k':
-		mult = 1 << 10
-		s = s[:len(s)-1]
-	case 'M', 'm':
-		mult = 1 << 20
-		s = s[:len(s)-1]
-	case 'G', 'g':
-		mult = 1 << 30
-		s = s[:len(s)-1]
-	}
-	v, err := atoi64(s)
+	q, err := resource.ParseQuantity(s)
 	if err != nil {
 		return 0, err
 	}
-	return v * mult, nil
+	return q.Value(), nil
 }
 
 func checkBandwidth(input, limit string) error {
