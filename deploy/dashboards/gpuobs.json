@@ -222,8 +222,8 @@
       },
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
       "targets": [
-        { "expr": "gpuobs_device_temperature_celsius{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}", "legendFormat": "temperature {{gpu_uuid}}", "refId": "A" },
-        { "expr": "gpuobs_device_power_usage_watts{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}", "legendFormat": "power {{gpu_uuid}}", "refId": "B" }
+        { "expr": "gpuobs_device_temperature_celsius{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}", "legendFormat": "temperature {{node}} gpu{{gpu_index}}", "refId": "A" },
+        { "expr": "gpuobs_device_power_usage_watts{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}", "legendFormat": "power {{node}} gpu{{gpu_index}}", "refId": "B" }
       ]
     },
     {
@@ -242,8 +242,8 @@
       },
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
       "targets": [
-        { "expr": "gpuobs_device_clock_mhz{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",clock=\"graphics\"}", "legendFormat": "graphics clock {{gpu_uuid}}", "refId": "A" },
-        { "expr": "gpuobs_device_throttle_active{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",reason=\"hw_thermal_slowdown\"}", "legendFormat": "hw_thermal_slowdown {{gpu_uuid}}", "refId": "B" }
+        { "expr": "gpuobs_device_clock_mhz{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",clock=\"graphics\"}", "legendFormat": "graphics clock {{node}} gpu{{gpu_index}}", "refId": "A" },
+        { "expr": "gpuobs_device_throttle_active{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",reason=\"hw_thermal_slowdown\"}", "legendFormat": "hw_thermal_slowdown {{node}} gpu{{gpu_index}}", "refId": "B" }
       ]
     }
   ]
