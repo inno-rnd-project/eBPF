@@ -18,6 +18,11 @@ type CudaUprobeCtxCreateArgs struct {
 	_        [4]byte
 }
 
+type CudaUprobeSyncStartKey struct {
+	Tid  uint32
+	Kind uint32
+}
+
 // LoadCudaUprobe returns the embedded CollectionSpec for CudaUprobe.
 func LoadCudaUprobe() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_CudaUprobeBytes)
@@ -97,6 +102,7 @@ type CudaUprobeMapSpecs struct {
 	CudaDropped     *ebpf.MapSpec `ebpf:"cuda_dropped"`
 	CudaEvents      *ebpf.MapSpec `ebpf:"cuda_events"`
 	CudaTidDevice   *ebpf.MapSpec `ebpf:"cuda_tid_device"`
+	SyncStarts      *ebpf.MapSpec `ebpf:"sync_starts"`
 }
 
 // CudaUprobeVariableSpecs contains global variables before they are loaded into the kernel.
@@ -130,6 +136,7 @@ type CudaUprobeMaps struct {
 	CudaDropped     *ebpf.Map `ebpf:"cuda_dropped"`
 	CudaEvents      *ebpf.Map `ebpf:"cuda_events"`
 	CudaTidDevice   *ebpf.Map `ebpf:"cuda_tid_device"`
+	SyncStarts      *ebpf.Map `ebpf:"sync_starts"`
 }
 
 func (m *CudaUprobeMaps) Close() error {
@@ -139,6 +146,7 @@ func (m *CudaUprobeMaps) Close() error {
 		m.CudaDropped,
 		m.CudaEvents,
 		m.CudaTidDevice,
+		m.SyncStarts,
 	)
 }
 

@@ -361,6 +361,7 @@ func decodeRawEvent(b []byte) (rawEvent, bool) {
 		TID:       binary.NativeEndian.Uint32(b[20:24]),
 		Kind:      b[24],
 		DeviceOrd: binary.NativeEndian.Uint32(b[28:32]),
+		LatencyNs: binary.NativeEndian.Uint64(b[32:40]),
 	}, true
 }
 
