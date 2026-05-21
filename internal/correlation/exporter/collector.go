@@ -38,8 +38,9 @@ type Collector struct {
 	// 동일 값을 받아 lag step 의 시간 의미를 보존한다.
 	step time.Duration
 
-	scoreDesc *prometheus.Desc
-	lagDesc   *prometheus.Desc
+	scoreDesc  *prometheus.Desc
+	lagDesc    *prometheus.Desc
+	pvalueDesc *prometheus.Desc
 }
 
 // NewCollector 는 Prometheus scrape 시 emit 할 metric desc 두 개를 미리 만들어 두는 Collector 를
@@ -58,6 +59,11 @@ func NewCollector(step time.Duration) *Collector {
 			"score 가 최대 절대값을 보인 lag 의 초 단위 환산. 양수면 suspect 변동이 victim latency 를 N 초 선행하는 인과 방향이다.",
 			neighborLabels, nil,
 		),
+		pvalueDesc: prometheus.NewDesc(
+			"correlation_noisy_neighbor_pvalue",
+			"#69 의 Granger causality p-value. src (suspect) 가 dst (victim latency) 를 Granger-cause 하는지의 통계적 유의성. 0.05 미만이면 high-confidence 인과 신호로 본다. continuous 값이라 라벨이 아닌 별개 메트릭으로 분리해 cardinality 폭증을 차단한다.",
+			neighborLabels, nil,
+		),
 	}
 }
 
@@ -74,6 +80,7 @@ func (c *Collector) Replace(neighbors []correlation.NoisyNeighbor) {
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.scoreDesc
 	ch <- c.lagDesc
+	ch <- c.pvalueDesc
 }
 
 // Collect 는 현재 snapshot 의 모든 NoisyNeighbor 를 score / lag 두 메트릭으로 emit 한다. snapshot
@@ -99,6 +106,9 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		}
 		ch <- prometheus.MustNewConstMetric(c.scoreDesc, prometheus.GaugeValue, n.Score, labels...)
 		ch <- prometheus.MustNewConstMetric(c.lagDesc, prometheus.GaugeValue, float64(n.LagSteps)*stepSeconds, labels...)
+		if n.GrangerOK {
+			ch <- prometheus.MustNewConstMetric(c.pvalueDesc, prometheus.GaugeValue, n.PValue, labels...)
+		}
 	}
 }
 

@@ -45,6 +45,10 @@ type NoisyNeighbor struct {
 	Score       float64 `json:"score"`
 	LagSteps    int     `json:"lag_steps"`
 	SampleCount int     `json:"sample_count"`
+	// #69 Granger causality 결과. PValue 는 src 가 dst 를 Granger-cause 하는지의 통계적 유의성.
+	// GrangerOK=false 면 표본 부족 또는 행렬 singular 로 산정이 자연 skip 되었다.
+	PValue    float64 `json:"p_value"`
+	GrangerOK bool    `json:"granger_ok"`
 }
 
 // classifyDimension 은 query 문자열에서 ResourceDimension 을 결정한다. 매칭 우선순위는 더 구체적인
@@ -106,6 +110,10 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		score         float64
 		lag           int
 		samples       int
+		// #69 Granger causality 결과. GrangerOK=false 면 pvalue=0 으로 자연 skip 되며 dedup 의 max
+		// score 비교에서 동률일 경우 GrangerOK=true 한쪽이 우선 채택된다.
+		pvalue    float64
+		grangerOK bool
 	}
 
 	candidates := make([]candidate, 0, len(results))
@@ -153,6 +161,8 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 			score:         r.MaxAbsValue,
 			lag:           r.MaxAbsLag,
 			samples:       r.SampleCount,
+			pvalue:        r.PValue,
+			grangerOK:     r.GrangerOK,
 		})
 	}
 
@@ -250,6 +260,8 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 				Score:         c.score,
 				LagSteps:      c.lag,
 				SampleCount:   c.samples,
+				PValue:        c.pvalue,
+				GrangerOK:     c.grangerOK,
 			})
 		}
 	}
