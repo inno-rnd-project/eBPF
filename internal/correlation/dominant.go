@@ -1,6 +1,9 @@
 package correlation
 
-import "sort"
+import (
+	"cmp"
+	"slices"
+)
 
 // DominantDimension 은 한 victim Pod 의 4 dimension 중 sum 정규화 weight 가 가장 큰 dimension 1 종
 // 이다. correlation-exporter 의 Collector 가 본 슬라이스를 그대로 받아 단일 라벨 series 로 emit
@@ -68,15 +71,14 @@ func ComputeDominantDimension(neighbors []NoisyNeighbor) []DominantDimension {
 	for k := range aggregated {
 		keys = append(keys, k)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, b := keys[i], keys[j]
-		if a.namespace != b.namespace {
-			return a.namespace < b.namespace
+	slices.SortFunc(keys, func(a, b victimKey) int {
+		if c := cmp.Compare(a.namespace, b.namespace); c != 0 {
+			return c
 		}
-		if a.pod != b.pod {
-			return a.pod < b.pod
+		if c := cmp.Compare(a.pod, b.pod); c != 0 {
+			return c
 		}
-		return a.podUID < b.podUID
+		return cmp.Compare(a.podUID, b.podUID)
 	})
 
 	out := make([]DominantDimension, 0, len(keys))
