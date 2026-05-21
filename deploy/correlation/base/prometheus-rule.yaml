@@ -13,6 +13,41 @@ metadata:
     app.kubernetes.io/part-of: ebpf-project
 spec:
   groups:
+    # correlation-exporter.recording 은 #69 의 dominant dimension 게이팅과 active 메트릭 산정을 위한
+    # PromQL recording rule 을 모은다. victim 의 latency pressure indicator 와 active dominant dimension
+    # 두 종으로 dashboard 와 alert 가 latency 압박 실측 시간대 한정의 의미 있는 신호만 보게 한다.
+    - name: correlation-exporter.recording
+      interval: 30s
+      rules:
+        # correlation_victim_latency_pressure:5m
+        # victim Pod 의 latency p99 가 임계 (0.1s) 를 초과하면 1, 그 외에는 시리즈 미존재로 둬 active
+        # dominant dimension 산정의 AND 게이팅 입력으로 사용된다. 임계 0.1s 는 본 시리즈 (#65) 의
+        # NetObsHighStageLatencyP99 와 동일 수준으로 잡아 운영 임계 정합을 유지한다. 운영자가
+        # 환경별 tunable 로 조정하려면 본 recording rule 표현식의 0.1 상수를 변경한다. netobs 의
+        # latency 메트릭은 src_namespace / src_pod / src_pod_uid 라벨을 쓰는데 correlation 메트릭은
+        # victim_namespace / victim_pod / victim_pod_uid 를 써서 label_replace 로 키 이름을 정합
+        # 시킨 뒤 sum by 로 src_* 라벨을 drop 한다.
+        - record: correlation_victim_latency_pressure:5m
+          expr: |
+            sum by(victim_namespace, victim_pod, victim_pod_uid) (
+              label_replace(
+                label_replace(
+                  label_replace(
+                    (
+                      histogram_quantile(0.99,
+                        sum by(le, src_namespace, src_pod, src_pod_uid) (
+                          rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])
+                        )
+                      ) > 0.1
+                    ) * 0 + 1,
+                    "victim_namespace", "$1", "src_namespace", "(.*)"
+                  ),
+                  "victim_pod", "$1", "src_pod", "(.*)"
+                ),
+                "victim_pod_uid", "$1", "src_pod_uid", "(.*)"
+              )
+            )
+
     # correlation-exporter.alerts 는 noisy neighbor 발견과 exporter 자체의 헬스 두 축으로 alert 를
     # 묶는다. severity 와 component 라벨은 netobs-gpuobs.alerts 와 동일 컨벤션을 따른다.
     - name: correlation-exporter.alerts
