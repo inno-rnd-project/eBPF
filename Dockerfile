@@ -6,7 +6,7 @@
 # 인자 없이 `docker build .`를 실행했을 때 기존 동작을 보존하기 위한 fallback이며,
 # Makefile의 image-build-<name>-agent 패턴 룰은 항상 --build-arg로 명시 전달한다.
 # ============================================================================
-FROM golang:1.22-bookworm AS builder
+FROM golang:1.24-bookworm AS builder
 ARG TARGETARCH=amd64
 ARG TARGET_AGENT=netobs-agent
 # CGO_ENABLED 기본값은 0(정적 바이너리). go-nvml처럼 CGO `import "C"` 경로로 구현된

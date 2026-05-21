@@ -17,7 +17,7 @@ Kubernetes observability agent suite combining eBPF-based network latency tracin
 ## Prerequisites
 
 Shared:
-- Go 1.22+
+- Go 1.24+
 - Linux kernel with BTF support (required by netobs)
 
 For netobs (network observer):

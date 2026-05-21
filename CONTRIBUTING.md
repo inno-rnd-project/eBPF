@@ -16,7 +16,7 @@
 
 이 프로젝트는 Linux 커널 eBPF 프로그램과 Go 에이전트로 구성되므로, 다음 도구가 준비되어야 한다.
 
-- Go 1.22 이상
+- Go 1.24 이상
 - clang (BPF 컴파일)
 - bpftool (`vmlinux.h` 생성)
 - BTF가 활성화된 Linux 커널 (5.2 이상 권장)
