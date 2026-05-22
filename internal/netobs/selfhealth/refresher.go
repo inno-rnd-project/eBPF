@@ -51,9 +51,10 @@ func (b bpfDropSource) Total() uint64 { return readDroppedTotal(b.m) }
 // 현재 entry 수를 세고, MaxEntries 는 MapInfo 의 정적 값을 그대로 반환해 BPF 정의가 바뀌어도 Go
 // 측 상수 수정 없이 자동 추종된다.
 type bpfMapSizer struct {
-	m    *cebpf.Map
-	name string
-	max  uint64
+	m       *cebpf.Map
+	name    string
+	max     uint64
+	keySize uint32
 }
 
 func newBpfMapSizer(name string, m *cebpf.Map) (*bpfMapSizer, error) {
@@ -64,32 +65,41 @@ func newBpfMapSizer(name string, m *cebpf.Map) (*bpfMapSizer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &bpfMapSizer{m: m, name: name, max: uint64(info.MaxEntries)}, nil
+	return &bpfMapSizer{m: m, name: name, max: uint64(info.MaxEntries), keySize: info.KeySize}, nil
 }
 
 func (s *bpfMapSizer) Name() string       { return s.name }
 func (s *bpfMapSizer) MaxEntries() uint64 { return s.max }
 
-// Entries 는 BPF map 의 현재 entry 수를 NextKeyBytes iterate 로 센다. cilium/ebpf 의
-// NextKeyBytes 가 raw key 를 자동으로 m.keySize 만큼 할당해 돌려주므로 호출 측이 key 타입을
-// 알 필요가 없고 value lookup 도 skip 되어 LRU_HASH 와 LRU_PERCPU_HASH 양쪽에 동일 코드가
-// 동작한다. iterate 비용은 단일 ticker 사이클당 1 회 (최대 16384 entry) 라 scrape hot path 와
-// 분리된 본 자리에서 무해하다.
+// Entries 는 BPF map 의 현재 entry 수를 NextKey iterate 로 센다. cilium/ebpf 의 NextKey 가 input
+// key 의 길이를 m.keySize 와 정확히 일치시켜 marshal 하므로 cursor / next 두 buffer 를 본 함수
+// 진입에서 keySize 만큼 미리 할당해 두고 매 호출마다 copy 로 cursor 를 갱신한다. value lookup 은
+// 수행하지 않아 LRU_HASH 와 LRU_PERCPU_HASH 양쪽에 동일 코드가 동작하며, iterate 비용은 단일
+// ticker 사이클당 1 회 (최대 16384 entry) 라 scrape hot path 와 분리된 본 자리에서 무해하다.
 func (s *bpfMapSizer) Entries() (uint64, error) {
+	if s.keySize == 0 {
+		return 0, errors.New("invalid map key size")
+	}
 	var count uint64
-	var prevKey interface{}
+	cursor := make([]byte, s.keySize)
+	next := make([]byte, s.keySize)
+	firstCall := true
 	for {
-		// 첫 호출은 prevKey=nil 로 첫 키를 받아온다 (cilium/ebpf 가 NULL 포인터로 syscall 발행).
-		// 이후 호출은 직전 키를 입력으로 다음 키를 받는다. EOF 는 ErrKeyNotExist 로 시그널된다.
-		nextKey, err := s.m.NextKeyBytes(prevKey)
-		if err != nil {
+		// 첫 호출은 nil interface 로 NULL 포인터 syscall 을 유도해 첫 키를 받고, 이후 호출은
+		// 이전 키를 keySize 정확한 길이의 cursor buffer 로 전달해 marshal length 검증을 통과한다.
+		var inKey interface{}
+		if !firstCall {
+			inKey = cursor
+		}
+		if err := s.m.NextKey(inKey, &next); err != nil {
 			if errors.Is(err, cebpf.ErrKeyNotExist) {
 				return count, nil
 			}
 			return 0, err
 		}
 		count++
-		prevKey = nextKey
+		copy(cursor, next)
+		firstCall = false
 	}
 }
 
