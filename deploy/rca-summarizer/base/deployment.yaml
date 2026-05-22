@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rca-summarizer
+  namespace: ebpf-project
+  labels:
+    app.kubernetes.io/name: rca-summarizer
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: rca-summarizer
+spec:
+  # cluster 단위 단일 webhook receiver 라 노드 분산이 불필요해 replica 1 로 고정한다. webhook 응답
+  # latency 임계 30s 안에서 in-memory Store 가 alert 당 1 건만 보관하므로 HA 의 복잡도가 가져올
+  # 가치보다 단일 replica 의 단순성이 우선한다. HA / leader election 은 follow-up 이슈로 분리한다.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rca-summarizer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rca-summarizer
+        app.kubernetes.io/part-of: ebpf-project
+        app.kubernetes.io/component: rca-summarizer
+    spec:
+      serviceAccountName: rca-summarizer
+      # summarizer 는 Prometheus HTTP API 와 correlation-exporter HTTP endpoint 만 호출하고
+      # Kubernetes API 는 호출하지 않으므로 SA 토큰 자동 마운트를 비활성화한다.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rca-summarizer
+          image: rca-summarizer
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: rca-summarizer
+          ports:
+            - name: metrics
+              containerPort: 9850
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi

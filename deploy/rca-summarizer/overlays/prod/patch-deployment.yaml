@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rca-summarizer
+  namespace: ebpf-project
+spec:
+  template:
+    spec:
+      containers:
+        - name: rca-summarizer
+          # prod 의 더 많은 alert 수 / webhook 빈도를 처리해야 하므로 base default 보다 메모리
+          # limit 을 상향한다. cpu request 는 base 와 동일 (webhook 사이는 idle 이라 burst 만 보장).
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi

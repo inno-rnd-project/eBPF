@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rca-summarizer
+  namespace: ebpf-project
+data:
+  # dev cluster 는 검증 cadence 가 빨라야 한다. webhook timeout 을 15s 로 줄여 합성 부하 시나리오
+  # 가 더 빠르게 timing 회귀를 검출 가능하게 한다. prod 는 default 30s 를 유지한다.
+  WEBHOOK_TIMEOUT: "15s"

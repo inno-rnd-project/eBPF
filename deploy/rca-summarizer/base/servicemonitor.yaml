@@ -1,0 +1,23 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rca-summarizer
+  namespace: ebpf-project
+  labels:
+    # release 라벨은 kube-prometheus-stack Prometheus 인스턴스의 serviceMonitorSelector 에 매치되도록
+    # 둔다. helm release 이름이 다른 환경은 overlay 의 ServiceMonitor patch 로 본 라벨을 덮는다.
+    release: kube-prometheus-stack
+    app.kubernetes.io/name: rca-summarizer
+    app.kubernetes.io/part-of: ebpf-project
+spec:
+  namespaceSelector:
+    matchNames:
+      - ebpf-project
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rca-summarizer
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s

@@ -40,8 +40,10 @@ OVERLAY_PATH_netobs-dev       := deploy/netobs/overlays/dev
 OVERLAY_PATH_netobs-prod      := deploy/netobs/overlays/prod
 OVERLAY_PATH_gpuobs-dev       := deploy/gpuobs/overlays/dev
 OVERLAY_PATH_gpuobs-prod      := deploy/gpuobs/overlays/prod
-OVERLAY_PATH_correlation-dev  := deploy/correlation/overlays/dev
-OVERLAY_PATH_correlation-prod := deploy/correlation/overlays/prod
+OVERLAY_PATH_correlation-dev    := deploy/correlation/overlays/dev
+OVERLAY_PATH_correlation-prod   := deploy/correlation/overlays/prod
+OVERLAY_PATH_rca-summarizer-dev := deploy/rca-summarizer/overlays/dev
+OVERLAY_PATH_rca-summarizer-prod := deploy/rca-summarizer/overlays/prod
 # injector 는 본 시리즈 #52 의 비목표로 prod overlay 를 두지 않는다. dev / staging 한정.
 OVERLAY_PATH_injector-dev     := deploy/injector/overlays/dev
 # dashboards 는 dev/prod 분기가 없는 클러스터 공용 패키지다. Grafana sidecar 가 cluster 전체
