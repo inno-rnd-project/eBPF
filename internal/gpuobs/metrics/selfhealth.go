@@ -24,13 +24,13 @@ var (
 	)
 
 	// nvmlErrorsTotal 은 NVML 호출 실패 카운터다. call 라벨이 호출 함수명, error_code 라벨이
-	// nvml.Return enum 의 string 표현 (NVML_ERROR_NOT_SUPPORTED 등) 으로 노출되어 운영자가 dashboard
+	// nvml.Return enum 의 string 표현 (ERROR_NOT_SUPPORTED 등) 으로 노출되어 운영자가 dashboard
 	// 와 alert 에서 정수 enum 을 외우지 않아도 의미를 즉시 파악할 수 있다. cardinality 는 호출
 	// 함수명 8 종 × NVML enum 유한 수라 폐쇄적이다.
 	nvmlErrorsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gpuobs_nvml_errors_total",
-			Help: "Cumulative NVML wrapper call errors by function name and NVML return code (string form, e.g. NVML_ERROR_NOT_SUPPORTED). Sustained non-zero rate indicates driver issues or GPU unresponsiveness; use this for the GPUObsAgentNvmlErrorsHigh alert.",
+			Help: "Cumulative NVML wrapper call errors by function name and NVML return code (string form from gonvml.Return.String(), e.g. ERROR_NOT_SUPPORTED). Sustained non-zero rate indicates driver issues or GPU unresponsiveness; use this for the GPUObsAgentNvmlErrorsHigh alert.",
 		},
 		[]string{"call", "error_code"},
 	)

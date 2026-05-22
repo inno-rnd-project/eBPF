@@ -18,68 +18,14 @@ import (
 )
 
 // returnString 은 nvml.Return enum 을 self-health 메트릭의 error_code 라벨용 string 으로 변환한다.
-// gonvml.ErrorString 이 사람용 메시지를 돌려주는 데 비해, 본 함수는 enum 식별자 (NVML_ERROR_NOT_
-// SUPPORTED 등) 를 노출해 PromQL 등호 비교와 alert 정의가 안정 식별자로 가능하게 한다. 미정의
-// enum 은 "UNKNOWN" 으로 collapse 해 라벨 cardinality 폭증을 막는다.
+// gonvml.Return.String() 이 enum 식별자 표현 ("ERROR_NOT_SUPPORTED" 등) 을 돌려주므로 본 함수는
+// 호출만 위임하고 SUCCESS 케이스만 빈 문자열로 collapse 한다. gonvml 업그레이드로 새 enum 이
+// 추가되어도 자동 추종되며 수동 매핑 누락 위험이 없다.
 func returnString(r gonvml.Return) string {
-	switch r {
-	case gonvml.SUCCESS:
+	if r == gonvml.SUCCESS {
 		return ""
-	case gonvml.ERROR_UNINITIALIZED:
-		return "NVML_ERROR_UNINITIALIZED"
-	case gonvml.ERROR_INVALID_ARGUMENT:
-		return "NVML_ERROR_INVALID_ARGUMENT"
-	case gonvml.ERROR_NOT_SUPPORTED:
-		return "NVML_ERROR_NOT_SUPPORTED"
-	case gonvml.ERROR_NO_PERMISSION:
-		return "NVML_ERROR_NO_PERMISSION"
-	case gonvml.ERROR_ALREADY_INITIALIZED:
-		return "NVML_ERROR_ALREADY_INITIALIZED"
-	case gonvml.ERROR_NOT_FOUND:
-		return "NVML_ERROR_NOT_FOUND"
-	case gonvml.ERROR_INSUFFICIENT_SIZE:
-		return "NVML_ERROR_INSUFFICIENT_SIZE"
-	case gonvml.ERROR_INSUFFICIENT_POWER:
-		return "NVML_ERROR_INSUFFICIENT_POWER"
-	case gonvml.ERROR_DRIVER_NOT_LOADED:
-		return "NVML_ERROR_DRIVER_NOT_LOADED"
-	case gonvml.ERROR_TIMEOUT:
-		return "NVML_ERROR_TIMEOUT"
-	case gonvml.ERROR_IRQ_ISSUE:
-		return "NVML_ERROR_IRQ_ISSUE"
-	case gonvml.ERROR_LIBRARY_NOT_FOUND:
-		return "NVML_ERROR_LIBRARY_NOT_FOUND"
-	case gonvml.ERROR_FUNCTION_NOT_FOUND:
-		return "NVML_ERROR_FUNCTION_NOT_FOUND"
-	case gonvml.ERROR_CORRUPTED_INFOROM:
-		return "NVML_ERROR_CORRUPTED_INFOROM"
-	case gonvml.ERROR_GPU_IS_LOST:
-		return "NVML_ERROR_GPU_IS_LOST"
-	case gonvml.ERROR_RESET_REQUIRED:
-		return "NVML_ERROR_RESET_REQUIRED"
-	case gonvml.ERROR_OPERATING_SYSTEM:
-		return "NVML_ERROR_OPERATING_SYSTEM"
-	case gonvml.ERROR_LIB_RM_VERSION_MISMATCH:
-		return "NVML_ERROR_LIB_RM_VERSION_MISMATCH"
-	case gonvml.ERROR_IN_USE:
-		return "NVML_ERROR_IN_USE"
-	case gonvml.ERROR_MEMORY:
-		return "NVML_ERROR_MEMORY"
-	case gonvml.ERROR_NO_DATA:
-		return "NVML_ERROR_NO_DATA"
-	case gonvml.ERROR_VGPU_ECC_NOT_SUPPORTED:
-		return "NVML_ERROR_VGPU_ECC_NOT_SUPPORTED"
-	case gonvml.ERROR_INSUFFICIENT_RESOURCES:
-		return "NVML_ERROR_INSUFFICIENT_RESOURCES"
-	case gonvml.ERROR_FREQ_NOT_SUPPORTED:
-		return "NVML_ERROR_FREQ_NOT_SUPPORTED"
-	case gonvml.ERROR_ARGUMENT_VERSION_MISMATCH:
-		return "NVML_ERROR_ARGUMENT_VERSION_MISMATCH"
-	case gonvml.ERROR_UNKNOWN:
-		return "NVML_ERROR_UNKNOWN"
-	default:
-		return "UNKNOWN"
 	}
+	return r.String()
 }
 
 // observeNvmlCall 은 NVML wrapper 진입에서 호출되어 duration histogram 과 errors counter 를
