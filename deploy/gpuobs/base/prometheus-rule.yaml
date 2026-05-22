@@ -889,16 +889,18 @@ spec:
 
         # GPUObsCudaSymbolUnavailable
         # gpuobs uprobe 의 attach 실패가 5 분 이상 지속되면 발화. #41 의 기존 메트릭을 self-health
-        # row 의 source 로 재사용해 신규 메트릭 도입을 회피한다.
+        # row 의 source 로 재사용해 신규 메트릭 도입을 회피한다. libcuda 심볼 (cu* prefix) 만 cover
+        # 하고 libcudart 심볼 (cuda* prefix) 은 GPUOBS_CUDA_LIBCUDART_PATH 가 비어 있는 운영 의도
+        # 케이스에서도 0 으로 emit 되어 false positive 가 되므로 본 alert 범위에서 제외한다.
         - alert: GPUObsCudaSymbolUnavailable
-          expr: gpuobs_cuda_symbol_available == 0
+          expr: gpuobs_cuda_symbol_available{symbol!~"cuda.*"} == 0
           for: 5m
           labels:
             severity: warning
             component: gpuobs
           annotations:
             summary: "gpuobs CUDA symbol {{ $labels.symbol }} not attached on {{ $labels.instance }}"
-            description: "Uprobe for {{ $labels.symbol }} could not be attached (libcuda / libcudart ABI drift or capability gap). CUDA event metrics may be incomplete. Verify libcuda.so / libcudart.so path and CAP_BPF / CAP_PERFMON / CAP_SYS_PTRACE on the daemonset pod."
+            description: "Uprobe for {{ $labels.symbol }} could not be attached (libcuda ABI drift or capability gap). CUDA event metrics may be incomplete. Verify libcuda.so path and CAP_BPF / CAP_PERFMON / CAP_SYS_PTRACE on the daemonset pod."
 
         # NetObsAgentBpfDropsHigh
         # events ringbuf 가 가득 차서 reserve 가 실패한 비율이 2 분 이상 10/s 를 넘으면 발화.
