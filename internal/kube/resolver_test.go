@@ -1,6 +1,9 @@
 package kube
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // newSeededResolver는 informer 없이 IP 인덱스만 직접 채운 Resolver를 만든다.
 // 실제 informer 경로는 client-go에 위임된 영역이라 여기서는 ResolveIP의 분기와
@@ -195,6 +198,46 @@ func TestResolvePID_MissingProcFile(t *testing.T) {
 	got := r.ResolvePID(1)
 	if !got.IsUnresolved() {
 		t.Fatalf("expected unresolved for missing proc file; got class=%q", got.IdentityClass)
+	}
+}
+
+// TestLastWatchEvent_ZeroBeforeAnyEvent 는 콜백이 한 번도 호출되지 않은 상태에서 zero time.Time
+// 이 반환되는지 검증한다. self-health emit 측이 zero 케이스에서 agent startup time 으로 fallback
+// 처리할 수 있는 sentinel 역할을 한다.
+func TestLastWatchEvent_ZeroBeforeAnyEvent(t *testing.T) {
+	r := newSeededResolver()
+	if got := r.LastWatchEvent(); !got.IsZero() {
+		t.Errorf("LastWatchEvent=%v; want zero before any callback", got)
+	}
+}
+
+// TestMarkWatchEvent_UpdatesLastWatchEvent 는 markWatchEvent 호출 후 LastWatchEvent 가 갱신되는지
+// 검증한다. 모든 informer 콜백이 같은 헬퍼를 거치므로 본 테스트가 9 개 콜백 전체의 timestamp 갱신
+// 정합성을 대표한다.
+func TestMarkWatchEvent_UpdatesLastWatchEvent(t *testing.T) {
+	r := newSeededResolver()
+	before := time.Now()
+	r.markWatchEvent()
+	after := time.Now()
+
+	got := r.LastWatchEvent()
+	if got.Before(before) || got.After(after) {
+		t.Errorf("LastWatchEvent=%v; want in [%v, %v]", got, before, after)
+	}
+}
+
+// TestMarkWatchEvent_MonotonicReplace 는 연이은 호출에서 마지막 호출의 timestamp 만 유지되는지
+// 검증한다. informer 콜백이 burst 로 도착해도 가장 최근 신호만 sync lag 산정에 쓰이도록 한다.
+func TestMarkWatchEvent_MonotonicReplace(t *testing.T) {
+	r := newSeededResolver()
+	r.markWatchEvent()
+	first := r.LastWatchEvent()
+	time.Sleep(2 * time.Millisecond)
+	r.markWatchEvent()
+	second := r.LastWatchEvent()
+
+	if !second.After(first) {
+		t.Errorf("second=%v not after first=%v; want monotonic replace", second, first)
 	}
 }
 

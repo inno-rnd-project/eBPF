@@ -98,6 +98,25 @@ func main() {
 	// Kubernetes metadata informer.
 	go kr.Start(ctx)
 
+	// informer sync lag emitter. 30s 주기로 lastWatchEvent 와 현재 시각의 차이를 self-health
+	// gauge 로 노출한다. agent startup 직후 첫 이벤트 수신 전 윈도우에서는 agent 기동 시각으로
+	// fallback 해 startup 단계에서도 의미 있는 신호를 노출한다.
+	agentStartTime := time.Now()
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		// 첫 tick 전에도 한 번 emit 해 첫 scrape 시점에 0 이 아닌 값이 노출되도록 한다.
+		emitInformerLag(agentStartTime, kr)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				emitInformerLag(agentStartTime, kr)
+			}
+		}
+	}()
+
 	mapper := drop.NewMapper(drop.DefaultPaths(cfg.DropReasonFormatPath))
 
 	// eBPF runner. ctx가 취소되면 내부에서 ringbuf를 닫고 events 채널을 close한 뒤
@@ -199,4 +218,15 @@ func main() {
 	}
 
 	log.Printf("exiting")
+}
+
+// emitInformerLag 는 kube.Resolver 의 마지막 watch event 시각과 현재 시각의 차이를 self-health
+// gauge 로 emit 한다. zero (informer 미수신) 케이스에서는 agent 기동 시각으로 fallback 해 startup
+// 직후 윈도우에서도 의미 있는 staleness 신호를 노출한다.
+func emitInformerLag(startTime time.Time, kr *kube.Resolver) {
+	last := kr.LastWatchEvent()
+	if last.IsZero() {
+		last = startTime
+	}
+	metrics.SetInformerSyncLag(time.Since(last).Seconds())
 }
