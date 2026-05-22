@@ -1,0 +1,56 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rca-e2e-cpu-throttle
+  namespace: ebpf-project
+  labels:
+    app.kubernetes.io/name: workload-injector
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: load-injector
+    injector.kind: cpu
+    rca-e2e: "true"
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 60
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: workload-injector
+        app.kubernetes.io/component: load-injector
+        injector.kind: cpu
+        rca-e2e: "true"
+    spec:
+      serviceAccountName: workload-injector
+      restartPolicy: Never
+      containers:
+        - name: workload-injector
+          # 운영자가 make image-build-workload-injector 후 dev 노드에 로컬 image 로 두면
+          # imagePullPolicy: Never 그대로 Pod 가 실행된다.
+          image: workload-injector:0.4.8
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: workload-injector
+          env:
+            - name: KIND
+              value: "cpu"
+            - name: TARGET_NAMESPACE
+              value: "correlation-stress"
+            - name: TARGET_POD
+              value: "victim"
+            # GPUIdleWithCPUThrottle 발화 임계 (pod:cpu_throttle_score:5m > 0.3) 를 안정적으로
+            # 넘기기 위해 800m 으로 둔다. 5m duration 안에서 alert for: 5m 을 통과한다.
+            - name: INTENSITY
+              value: "800m"
+            - name: DURATION
+              value: "6m"
+          ports:
+            - name: metrics
+              containerPort: 9840
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
