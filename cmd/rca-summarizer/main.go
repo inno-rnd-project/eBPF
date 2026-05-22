@@ -22,7 +22,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	rcametrics "netobs/internal/rca/metrics"
+	"netobs/internal/rca/registry"
 	"netobs/internal/rca/server"
+	"netobs/internal/rca/sources"
+	"netobs/internal/rca/store"
 )
 
 // config 는 -listen 등 binary 의 모든 운영 toggle 을 모은다. env fallback 은 flag 보다 후순위라
@@ -85,12 +89,19 @@ func main() {
 	reg := prometheus.NewRegistry()
 	var ready atomic.Bool
 
-	// skeleton 단계: webhook 과 rca handler 는 nil 로 두어 501 을 돌려준다. 후속 commit 에서
-	// registry / sources / store 가 wire-up 된다. metrics endpoint 는 본 commit 부터 실제 leg
-	// 가드를 위해 노출한다.
+	rcaRegistry := registry.New()
+	src := sources.New(cfg.correlationSnapshotURL, cfg.prometheusURL, 0, 0, 0)
+	st := store.New()
+	met := rcametrics.New()
+	for _, c := range met.Collectors() {
+		reg.MustRegister(c)
+	}
+
 	mux := server.NewMux(server.Options{
 		Registry: reg,
 		Ready:    &ready,
+		Webhook:  server.NewWebhookHandler(rcaRegistry, src, st, met),
+		RCA:      server.NewRCAHandler(st),
 	})
 
 	srv := &http.Server{
