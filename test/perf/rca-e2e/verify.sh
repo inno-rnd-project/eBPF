@@ -11,9 +11,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAMESPACE="${RCA_E2E_NAMESPACE:-ebpf-project}"
 ALERT="${RCA_E2E_ALERT:-GPUIdleWithCPUThrottle}"
 EXPECTED_DIM="${RCA_E2E_EXPECTED_DIM:-cpu}"
-RCA_URL="${RCA_E2E_RCA_URL:-http://rca-summarizer.ebpf-project.svc.cluster.local:9850/rca}"
 TIMEOUT_SECONDS="${RCA_E2E_TIMEOUT:-360}"
 POLL_INTERVAL="${RCA_E2E_POLL_INTERVAL:-15}"
+
+# rca-summarizer Service 의 ClusterIP 를 직접 호출한다. dev cluster 의 Service CIDR 가 host
+# (검증 실행 환경) 에서 routable 한 환경 전제다. kubectl run 으로 임시 curl Pod 을 띄우는 패턴은
+# 외부 image pull 가능 여부와 권한에 의존해 환경 휴대성이 떨어져 사용하지 않는다.
+RCA_IP="${RCA_E2E_RCA_IP:-}"
+if [[ -z "${RCA_IP}" ]]; then
+  RCA_IP=$(kubectl get svc -n "${NAMESPACE}" rca-summarizer -o jsonpath='{.spec.clusterIP}')
+fi
+if [[ -z "${RCA_IP}" ]]; then
+  echo "[fatal] failed to resolve rca-summarizer ClusterIP"
+  exit 1
+fi
+RCA_URL="${RCA_E2E_RCA_URL:-http://${RCA_IP}:9850/rca}"
+echo "[setup] rca-summarizer URL: ${RCA_URL}"
 
 cleanup() {
   echo "[cleanup] deleting injector Job"
@@ -27,12 +40,7 @@ kubectl apply -f "${SCRIPT_DIR}/cpu-throttle.yaml"
 echo "[poll] waiting up to ${TIMEOUT_SECONDS}s for ${ALERT} RCA summary"
 deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
 while (( $(date +%s) < deadline )); do
-  # rca-summarizer 가 in-cluster ClusterIP 라 호스트에서 직접 curl 불가하다. 대신 prometheus
-  # 클러스터 내 임시 Pod 또는 kubectl exec 으로 curl 한다. 가장 간단한 방법은 ClusterIP 가
-  # routable 한 환경에서 kubectl run 으로 short-lived curl 컨테이너를 띄우는 것.
-  if response=$(kubectl run rca-e2e-curl-$$ -n "${NAMESPACE}" --rm -i --restart=Never --quiet \
-      --image=curlimages/curl:8.7.1 --command -- \
-      curl -sf --max-time 10 "${RCA_URL}?alert=${ALERT}" 2>/dev/null); then
+  if response=$(curl -sf --max-time 10 "${RCA_URL}?alert=${ALERT}" 2>/dev/null); then
     if echo "${response}" | grep -q "\"dominant_dimension\":\"${EXPECTED_DIM}\""; then
       echo "[pass] ${ALERT} dominant_dimension=${EXPECTED_DIM}"
       echo "${response}"

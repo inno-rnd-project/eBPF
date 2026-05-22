@@ -9,6 +9,7 @@
 - `correlation-exporter`, `netobs-agent`, `gpuobs-agent` Deployment / DaemonSet 가 ready
 - `workload-injector:0.4.8` 이미지가 dev 노드에 로컬 build 되어 있음 (imagePullPolicy=Never)
 - `correlation-stress` namespace 의 `victim` pod 가 존재
+- 본 스크립트 실행 호스트가 dev cluster 의 Service CIDR 에 routable (kubectl 컨텍스트가 dev 를 가리키는 control plane 또는 worker 노드)
 
 ## 실행
 
