@@ -201,6 +201,17 @@ func TestResolvePID_MissingProcFile(t *testing.T) {
 	}
 }
 
+// TestEnabled_FalseWhenClientNil 는 client 미구성 상태의 Resolver 가 Enabled=false 를 반환하는지
+// 검증한다. self-health 의 informer_sync_lag emitter 가 본 분기로 false positive 발화를 막는다.
+func TestEnabled_FalseWhenClientNil(t *testing.T) {
+	t.Setenv("KUBECONFIG", "/nonexistent/path")
+	t.Setenv("HOME", "/nonexistent-home")
+	r := NewResolver("test-node", 0)
+	if r.Enabled() {
+		t.Errorf("Enabled=true; want false on resolver without kube client")
+	}
+}
+
 // TestLastWatchEvent_ZeroBeforeAnyEvent 는 콜백이 한 번도 호출되지 않은 상태에서 zero time.Time
 // 이 반환되는지 검증한다. self-health emit 측이 zero 케이스에서 agent startup time 으로 fallback
 // 처리할 수 있는 sentinel 역할을 한다.

@@ -99,23 +99,29 @@ func main() {
 	go kr.Start(ctx)
 
 	// informer sync lag emitter. 30s 주기로 lastWatchEvent 와 현재 시각의 차이를 self-health
-	// gauge 로 노출한다. agent startup 직후 첫 이벤트 수신 전 윈도우에서는 agent 기동 시각으로
-	// fallback 해 startup 단계에서도 의미 있는 신호를 노출한다.
-	agentStartTime := time.Now()
-	go func() {
-		t := time.NewTicker(30 * time.Second)
-		defer t.Stop()
-		// 첫 tick 전에도 한 번 emit 해 첫 scrape 시점에 0 이 아닌 값이 노출되도록 한다.
-		emitInformerLag(agentStartTime, kr)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				emitInformerLag(agentStartTime, kr)
+	// gauge 로 노출한다. kube client 가 비활성 (in-cluster 와 KUBECONFIG 모두 부재) 인 local 환경
+	// 에서는 lastWatchEvent 가 영원히 zero 라 fallback 이 단조 증가해 ObsAgentInformerStale 가
+	// false positive 발화한다. Enabled() 가 false 면 emitter 자체를 spawn 하지 않아 시리즈가
+	// 노출되지 않게 한다 (alert 의 informer_sync_lag 매칭이 자연 skip 된다).
+	if kr.Enabled() {
+		agentStartTime := time.Now()
+		go func() {
+			t := time.NewTicker(30 * time.Second)
+			defer t.Stop()
+			// 첫 tick 전에도 한 번 emit 해 첫 scrape 시점에 0 이 아닌 값이 노출되도록 한다.
+			emitInformerLag(agentStartTime, kr)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					emitInformerLag(agentStartTime, kr)
+				}
 			}
-		}
-	}()
+		}()
+	} else {
+		log.Printf("informer sync lag emitter: skipped (kube resolver disabled)")
+	}
 
 	mapper := drop.NewMapper(drop.DefaultPaths(cfg.DropReasonFormatPath))
 

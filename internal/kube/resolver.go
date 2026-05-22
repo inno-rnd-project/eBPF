@@ -216,6 +216,13 @@ func (r *Resolver) HasSynced() bool {
 	return r.synced.Load()
 }
 
+// Enabled 는 kube client 가 정상 구성되어 informer 가 동작 가능한 상태인지 반환한다. local 디버깅
+// binary 처럼 in-cluster config 와 KUBECONFIG 가 모두 없는 환경에서는 false 가 반환되며, self-health
+// 의 informer_sync_lag emit 측이 본 함수로 비활성 케이스를 분기해 false positive alert 를 막는다.
+func (r *Resolver) Enabled() bool {
+	return r.client != nil
+}
+
 // markWatchEvent 는 informer 콜백 진입 시점에 호출되어 lastWatchEventNs 를 현재 wall clock 으로
 // 갱신한다. atomic store 라 콜백 hot path 의 lock 비용이 0 이며 callback 9 종 (Pod / Service / Node
 // × Add / Update / Delete) 이 모두 본 헬퍼를 거치도록 통일했다.

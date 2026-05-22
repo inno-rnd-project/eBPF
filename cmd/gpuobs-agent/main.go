@@ -86,11 +86,11 @@ func main() {
 		go kr.Start(ctx)
 	}
 
-	// informer sync lag emitter. kr 가 nil (PodMetricsEnabled=false) 인 device-only 모드에서는
-	// informer 자체가 없어 emit 도 skip 한다. 30s 주기로 lastWatchEvent 와 현재 시각의 차이를
-	// self-health gauge 로 노출하고, 첫 이벤트 수신 전 윈도우에서는 agent 기동 시각으로 fallback
-	// 해 startup 단계에서도 의미 있는 staleness 신호를 유지한다.
-	if kr != nil {
+	// informer sync lag emitter. kr 가 nil (PodMetricsEnabled=false) 인 device-only 모드 또는
+	// kube client 가 비활성 (in-cluster 와 KUBECONFIG 모두 부재) 인 local 환경에서는 시리즈를
+	// 노출하지 않는다. 30s 주기로 lastWatchEvent 와 현재 시각의 차이를 self-health gauge 로
+	// 노출하고, 첫 이벤트 수신 전 윈도우에서는 agent 기동 시각으로 fallback 한다.
+	if kr != nil && kr.Enabled() {
 		agentStartTime := time.Now()
 		go func() {
 			t := time.NewTicker(30 * time.Second)
@@ -105,6 +105,8 @@ func main() {
 				}
 			}
 		}()
+	} else {
+		log.Printf("informer sync lag emitter: skipped (kube resolver disabled)")
 	}
 
 	// NVML 초기화는 수집이 활성화된 경우에만 시도한다. GPU_METRICS_ENABLED=false 환경에서는
