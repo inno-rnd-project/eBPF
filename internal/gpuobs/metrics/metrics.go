@@ -585,6 +585,9 @@ func Register(reg prometheus.Registerer) {
 		cudaEventsLostTotal,
 		cudaPidMultiGPUCount,
 		cudaLaunchBaselinePerSec,
+		nvmlCallDuration,
+		nvmlErrorsTotal,
+		informerSyncLagSeconds,
 	)
 }
 
