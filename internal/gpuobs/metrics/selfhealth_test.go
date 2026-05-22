@@ -47,9 +47,9 @@ func TestObserveNvmlCall_ErrorEmitsBothMetrics(t *testing.T) {
 	reg := prometheus.NewPedanticRegistry()
 	reg.MustRegister(nvmlCallDuration, nvmlErrorsTotal)
 
-	ObserveNvmlCall("Snapshot", 0.01, "NVML_ERROR_NOT_SUPPORTED")
+	ObserveNvmlCall("Snapshot", 0.01, "ERROR_NOT_SUPPORTED")
 
-	if got := testutil.ToFloat64(nvmlErrorsTotal.WithLabelValues("Snapshot", "NVML_ERROR_NOT_SUPPORTED")); got != 1 {
+	if got := testutil.ToFloat64(nvmlErrorsTotal.WithLabelValues("Snapshot", "ERROR_NOT_SUPPORTED")); got != 1 {
 		t.Errorf("errors counter=%v; want 1", got)
 	}
 	if got := testutil.CollectAndCount(nvmlCallDuration); got != 1 {
@@ -62,14 +62,14 @@ func TestObserveNvmlCall_ErrorEmitsBothMetrics(t *testing.T) {
 func TestObserveNvmlCall_LabelCardinalityClosed(t *testing.T) {
 	resetSelfHealth()
 
-	ObserveNvmlCall("Device", 0.001, "NVML_ERROR_NOT_SUPPORTED")
-	ObserveNvmlCall("Device", 0.001, "NVML_ERROR_NOT_SUPPORTED")
-	ObserveNvmlCall("Device", 0.001, "NVML_ERROR_GPU_IS_LOST")
+	ObserveNvmlCall("Device", 0.001, "ERROR_NOT_SUPPORTED")
+	ObserveNvmlCall("Device", 0.001, "ERROR_NOT_SUPPORTED")
+	ObserveNvmlCall("Device", 0.001, "ERROR_GPU_IS_LOST")
 
-	if got := testutil.ToFloat64(nvmlErrorsTotal.WithLabelValues("Device", "NVML_ERROR_NOT_SUPPORTED")); got != 2 {
+	if got := testutil.ToFloat64(nvmlErrorsTotal.WithLabelValues("Device", "ERROR_NOT_SUPPORTED")); got != 2 {
 		t.Errorf("NOT_SUPPORTED=%v; want 2", got)
 	}
-	if got := testutil.ToFloat64(nvmlErrorsTotal.WithLabelValues("Device", "NVML_ERROR_GPU_IS_LOST")); got != 1 {
+	if got := testutil.ToFloat64(nvmlErrorsTotal.WithLabelValues("Device", "ERROR_GPU_IS_LOST")); got != 1 {
 		t.Errorf("GPU_IS_LOST=%v; want 1", got)
 	}
 }
@@ -94,7 +94,7 @@ func TestGpuobsSelfHealthRegister(t *testing.T) {
 	Register(reg)
 
 	ObserveNvmlCall("DeviceCount", 0.001, "")
-	ObserveNvmlCall("Device", 0.001, "NVML_ERROR_NOT_SUPPORTED")
+	ObserveNvmlCall("Device", 0.001, "ERROR_NOT_SUPPORTED")
 	SetInformerSyncLag(1.0)
 
 	mfs, err := reg.Gather()

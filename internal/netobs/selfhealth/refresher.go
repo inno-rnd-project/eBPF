@@ -70,36 +70,23 @@ func newBpfMapSizer(name string, m *cebpf.Map) (*bpfMapSizer, error) {
 func (s *bpfMapSizer) Name() string       { return s.name }
 func (s *bpfMapSizer) MaxEntries() uint64 { return s.max }
 
-// Entries 는 BPF map 의 현재 entry 수를 NextKey iterate 로 센다. cilium/ebpf 가 generic key /
-// value 직접 lookup 을 요구하지 않는 entry counting 전용 API 를 노출하지 않아 iter.Next 를
-// destination 없이 호출할 수 없으므로 buffer 를 1 회 할당해 재사용한다. iterate 비용은 map 의
-// max 16384 기준 단일 ticker 사이클당 1 회뿐이라 scrape hot path 와 분리된 본 자리에서 무해하다.
+// Entries 는 BPF map 의 현재 entry 수를 NextKeyBytes iterate 로 센다. cilium/ebpf 의
+// NextKeyBytes 가 raw key 를 자동으로 m.keySize 만큼 할당해 돌려주므로 호출 측이 key 타입을
+// 알 필요가 없고 value lookup 도 skip 되어 LRU_HASH 와 LRU_PERCPU_HASH 양쪽에 동일 코드가
+// 동작한다. iterate 비용은 단일 ticker 사이클당 1 회 (최대 16384 entry) 라 scrape hot path 와
+// 분리된 본 자리에서 무해하다.
 func (s *bpfMapSizer) Entries() (uint64, error) {
-	// LRU_HASH (starts) 와 LRU_PERCPU_HASH (pod_bytes) 양쪽이 BatchLookup 을 지원하지만 dest
-	// buffer 의 정확한 타입을 본 함수가 알 수 없어 NextKey 만으로 count 한다. value 는 *struct{} 로
-	// 받아 lookup 자체를 skip 한다 (cilium/ebpf 는 dest 가 nil 인 NextKey 패턴 미지원이므로).
 	var count uint64
-	var prevKey []byte
+	var prevKey interface{}
 	for {
-		// NextKey 는 dest 가 첫 호출에서 nil 이면 첫 키를 반환하고, 이후 호출은 이전 키를 받아
-		// 다음 키를 반환한다. EOF (ErrKeyNotExist) 시점에 iterate 가 끝난다.
-		var nextKey []byte
-		if prevKey == nil {
-			err := s.m.NextKey(nil, &nextKey)
-			if err != nil {
-				if errors.Is(err, cebpf.ErrKeyNotExist) {
-					return 0, nil
-				}
-				return 0, err
+		// 첫 호출은 prevKey=nil 로 첫 키를 받아온다 (cilium/ebpf 가 NULL 포인터로 syscall 발행).
+		// 이후 호출은 직전 키를 입력으로 다음 키를 받는다. EOF 는 ErrKeyNotExist 로 시그널된다.
+		nextKey, err := s.m.NextKeyBytes(prevKey)
+		if err != nil {
+			if errors.Is(err, cebpf.ErrKeyNotExist) {
+				return count, nil
 			}
-		} else {
-			err := s.m.NextKey(prevKey, &nextKey)
-			if err != nil {
-				if errors.Is(err, cebpf.ErrKeyNotExist) {
-					return count, nil
-				}
-				return 0, err
-			}
+			return 0, err
 		}
 		count++
 		prevKey = nextKey
