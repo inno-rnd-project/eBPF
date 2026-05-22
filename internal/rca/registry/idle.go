@@ -1,0 +1,50 @@
+package registry
+
+// registerIdle 은 gpu-idle 그룹의 5 종 mapping 을 등록한다. 5 alert 모두 src_namespace 와 src_pod
+// 라벨로 victim 을 식별 가능하고, cause 별로 dominant_dimension 이 alert 이름에 인코딩되어 있어
+// mapping 흐름이 동일하다 (cause 만 다름).
+func registerIdle(r *Registry) {
+	r.register("GPUIdleWithPCIeSaturation", idleMapping("network", []string{
+		"node:gpu_pcie_saturation_score:5m",
+		"gpuobs_device_pcie_rx_bps",
+		"gpuobs_device_pcie_tx_bps",
+	}))
+	r.register("GPUIdleWithNetworkPressure", idleMapping("network", []string{
+		"pod:network_throughput_score:5m",
+		"pod:network_retrans_score:5m",
+	}))
+	r.register("GPUIdleWithCPUThrottle", idleMapping("cpu", []string{
+		"pod:cpu_throttle_score:5m",
+	}))
+	r.register("GPUIdleWithMemoryPressure", idleMapping("memory", []string{
+		"pod:memory_pressure_score:5m",
+	}))
+	r.register("GPUIdleWithHostComputeStall", idleMapping("cpu", []string{
+		"pod:host_compute_stall_score:5m",
+		"gpuobs_cuda_kernel_launches_total",
+	}))
+}
+
+// idleMapping 은 GPUIdleWith* 5 종 alert 의 공통 흐름을 closure 로 캡슐화한다. dimension 은
+// alert 이름에서 추출한 cause 차원이며 evidence 는 cause 별로 dashboard 에서 운영자가 즉시
+// 참조 가능한 메트릭 키를 채운다. victim Pod 식별이 가능하면 noisy neighbor Top-N 의 [0] 으로
+// top_suspect 를 갱신한다.
+func idleMapping(dimension string, evidence []string) Mapping {
+	return func(labels map[string]string, sources Sources) RCASummary {
+		srcNS := labelOr(labels, "src_namespace", "")
+		srcPod := labelOr(labels, "src_pod", "")
+
+		summary := RCASummary{
+			DominantDimension: dimension,
+			TopSuspect:        formatPod(srcNS, srcPod),
+			EvidenceMetrics:   append([]string(nil), evidence...),
+		}
+		if sources != nil && srcNS != "" && srcPod != "" {
+			neighbors := sources.TopNeighbors(srcNS, srcPod)
+			if len(neighbors) > 0 {
+				summary.TopSuspect = formatPod(neighbors[0].SuspectNamespace, neighbors[0].SuspectPod)
+			}
+		}
+		return summary
+	}
+}
