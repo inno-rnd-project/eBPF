@@ -1,0 +1,32 @@
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: rca-summarizer
+  namespace: ebpf-project
+  labels:
+    app.kubernetes.io/name: rca-summarizer
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: rca-summarizer
+spec:
+  # route 는 본 PR 의 RCA mapping 이 등록된 9 alert 만 매치한다. continue=true 로 두어 기본
+  # receiver (Slack / PagerDuty 등) 가 같은 알람을 추가로 처리할 수 있게 한다. RCA 요약은
+  # 운영자에게 보조 신호로 제공되어야 하며 기본 알림 경로를 차단하지 않는다.
+  route:
+    receiver: rca-summarizer
+    continue: true
+    groupBy: ["alertname"]
+    groupWait: 10s
+    groupInterval: 30s
+    repeatInterval: 5m
+    matchers:
+      - name: alertname
+        matchType: =~
+        value: "NetObsDropBurst|GPUObsCudaStreamWaitHigh|GPUObsThermalThrottleSustained|GPUIdleWithPCIeSaturation|GPUIdleWithNetworkPressure|GPUIdleWithCPUThrottle|GPUIdleWithMemoryPressure|GPUIdleWithHostComputeStall|CorrelationStrongNoisyNeighbor"
+  receivers:
+    - name: rca-summarizer
+      webhookConfigs:
+        # in-cluster DNS 로 cross-namespace 호출이 가능하다. rca-summarizer Service 의 port 9850
+        # 과 /webhook path 가 본 PR commit 6 의 deployment manifest 에 정의되어 있다.
+        - url: http://rca-summarizer.ebpf-project.svc.cluster.local:9850/webhook
+          sendResolved: true
+          maxAlerts: 0
