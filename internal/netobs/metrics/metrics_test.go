@@ -44,6 +44,10 @@ func resetMetrics() {
 	legacyDropTotal = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "netobs_drop_total"}, []string{"reason"})
 	dstClassifierEmits = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "netobs_dst_classifier_emits_total"}, []string{"outcome"})
 	nicCapacityBytesPerSec = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "netobs_node_nic_capacity_bytes_per_sec"}, []string{"node"})
+	bpfProgramLoaded = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "netobs_bpf_program_loaded"}, []string{"symbol"})
+	bpfRingbufDropsTotal = prometheus.NewCounter(prometheus.CounterOpts{Name: "netobs_bpf_ringbuf_drops_total"})
+	bpfMapUtilizationRatio = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "netobs_bpf_map_utilization_ratio"}, []string{"map"})
+	informerSyncLagSeconds = prometheus.NewGauge(prometheus.GaugeOpts{Name: "netobs_informer_sync_lag_seconds"})
 	dstClassifier.Store(nil)
 	podMetricsEnabled.Store(true)
 }
