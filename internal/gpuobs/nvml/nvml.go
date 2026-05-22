@@ -9,11 +9,36 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	gonvml "github.com/NVIDIA/go-nvml/pkg/nvml"
 
+	"netobs/internal/gpuobs/metrics"
 	"netobs/internal/gpuobs/types"
 )
+
+// returnString 은 nvml.Return enum 을 self-health 메트릭의 error_code 라벨용 string 으로 변환한다.
+// gonvml.Return.String() 이 enum 식별자 표현 ("ERROR_NOT_SUPPORTED" 등) 을 돌려주므로 본 함수는
+// 호출만 위임하고 SUCCESS 케이스만 빈 문자열로 collapse 한다. gonvml 업그레이드로 새 enum 이
+// 추가되어도 자동 추종되며 수동 매핑 누락 위험이 없다.
+func returnString(r gonvml.Return) string {
+	if r == gonvml.SUCCESS {
+		return ""
+	}
+	return r.String()
+}
+
+// observeNvmlCall 은 NVML wrapper 진입에서 호출되어 duration histogram 과 errors counter 를
+// metrics 패키지에 emit 한다. 호출 측은 defer 문에서 본 함수를 호출하며, deferred 호출이 ret 값을
+// 참조하도록 *gonvml.Return 또는 closure 캡처 패턴을 사용한다.
+func observeNvmlCall(call string, start time.Time, ret *gonvml.Return) {
+	dur := time.Since(start).Seconds()
+	var code string
+	if ret != nil {
+		code = returnString(*ret)
+	}
+	metrics.ObserveNvmlCall(call, dur, code)
+}
 
 // NVML은 NVIDIA Management Library 호출을 추상화한 인터페이스다.
 type NVML interface {
@@ -59,7 +84,12 @@ func nvmlErr(op string, ret gonvml.Return) error {
 type nvmlImpl struct{}
 
 func (n *nvmlImpl) DeviceCount() (uint, error) {
+	var nvmlRet gonvml.Return
+	start := time.Now()
+	defer func() { observeNvmlCall("DeviceCount", start, &nvmlRet) }()
+
 	count, ret := gonvml.DeviceGetCount()
+	nvmlRet = ret
 	if err := nvmlErr("device count", ret); err != nil {
 		return 0, err
 	}
@@ -67,7 +97,12 @@ func (n *nvmlImpl) DeviceCount() (uint, error) {
 }
 
 func (n *nvmlImpl) Device(index uint) (Device, error) {
+	var nvmlRet gonvml.Return
+	start := time.Now()
+	defer func() { observeNvmlCall("Device", start, &nvmlRet) }()
+
 	handle, ret := gonvml.DeviceGetHandleByIndex(int(index))
+	nvmlRet = ret
 	if err := nvmlErr(fmt.Sprintf("device handle idx=%d", index), ret); err != nil {
 		return nil, err
 	}
@@ -78,10 +113,12 @@ func (n *nvmlImpl) Device(index uint) (Device, error) {
 	// UUID와 모델명은 device 수명 동안 불변이므로 최초 1회 조회해 `info`에 캐싱한다.
 	// 이후 Snapshot은 NVML 재조회 없이 캐시된 값을 그대로 재사용한다.
 	uuid, ret := handle.GetUUID()
+	nvmlRet = ret
 	if err := d.wrapErr("device uuid", ret); err != nil {
 		return nil, err
 	}
 	name, ret := handle.GetName()
+	nvmlRet = ret
 	if err := d.wrapErr("device name", ret); err != nil {
 		return nil, err
 	}
@@ -105,11 +142,17 @@ func (n *nvmlImpl) Device(index uint) (Device, error) {
 // Device(index) 가 동반하는 GPM init / 정적 info populate / threshold fetch 등을 모두 우회하므로
 // DeviceSet.Sync 가 매 polling 사이클에서 모든 index 의 UUID 를 조회하는 데 사용된다.
 func (n *nvmlImpl) DeviceUUID(index uint) (string, error) {
+	var nvmlRet gonvml.Return
+	start := time.Now()
+	defer func() { observeNvmlCall("DeviceUUID", start, &nvmlRet) }()
+
 	handle, ret := gonvml.DeviceGetHandleByIndex(int(index))
+	nvmlRet = ret
 	if err := nvmlErr(fmt.Sprintf("device handle idx=%d", index), ret); err != nil {
 		return "", err
 	}
 	uuid, ret := handle.GetUUID()
+	nvmlRet = ret
 	if err := nvmlErr(fmt.Sprintf("device uuid idx=%d", index), ret); err != nil {
 		return "", err
 	}
@@ -117,7 +160,12 @@ func (n *nvmlImpl) DeviceUUID(index uint) (string, error) {
 }
 
 func (n *nvmlImpl) Shutdown() error {
-	return nvmlErr("nvml shutdown", gonvml.Shutdown())
+	var nvmlRet gonvml.Return
+	start := time.Now()
+	defer func() { observeNvmlCall("Shutdown", start, &nvmlRet) }()
+
+	nvmlRet = gonvml.Shutdown()
+	return nvmlErr("nvml shutdown", nvmlRet)
 }
 
 type deviceImpl struct {
@@ -262,6 +310,12 @@ func (d *deviceImpl) isUnsupported(metric string) bool {
 // 현재 구현에서는 에러를 돌려줄 경로가 없지만, 다른 백엔드에서의 재조회 패턴을 허용하기 위해
 // 인터페이스 시그니처는 그대로 유지한다.
 func (d *deviceImpl) Info() (types.GPUDevice, error) {
+	// Info 는 정적 캐시 반환이라 NVML 호출이 없지만 호출 빈도 분포를 동등하게 노출하기 위해
+	// observeNvmlCall 을 거친다. err 가 발생할 경로가 없어 ret 는 SUCCESS (빈 error_code) 로 둔다.
+	var nvmlRet gonvml.Return
+	start := time.Now()
+	defer func() { observeNvmlCall("Info", start, &nvmlRet) }()
+
 	info := d.info
 	info.Index = uint(d.currentIdx.Load())
 	return info, nil
@@ -275,23 +329,41 @@ func (d *deviceImpl) updateIndex(newIndex uint) {
 }
 
 func (d *deviceImpl) Snapshot() (types.GPUSnapshot, error) {
+	// Snapshot 내부의 모든 NVML 호출 boundary 의 합산 latency 를 측정한다. 개별 호출별 latency
+	// 는 markUnsupported / NOT_SUPPORTED 캐싱 패턴이 이미 처리하므로 외부 진입 경계 1 회만
+	// observe 한다. nvmlRet 는 첫 번째 필수 NVML 호출 (utilization) 의 ret 으로 두어 hot-path
+	// 실패 코드 분포만 errors_total 에 반영한다.
+	var nvmlRet gonvml.Return
+	start := time.Now()
+	defer func() { observeNvmlCall("Snapshot", start, &nvmlRet) }()
+
 	util, ret := d.handle.GetUtilizationRates()
+	nvmlRet = ret
 	if err := d.wrapErr("utilization", ret); err != nil {
 		return types.GPUSnapshot{}, err
 	}
 
 	mem, ret := d.handle.GetMemoryInfo()
+	if ret != gonvml.SUCCESS {
+		nvmlRet = ret
+	}
 	if err := d.wrapErr("memory info", ret); err != nil {
 		return types.GPUSnapshot{}, err
 	}
 
 	temp, ret := d.handle.GetTemperature(gonvml.TEMPERATURE_GPU)
+	if ret != gonvml.SUCCESS {
+		nvmlRet = ret
+	}
 	if err := d.wrapErr("temperature", ret); err != nil {
 		return types.GPUSnapshot{}, err
 	}
 
 	// NVML power reporting 단위는 milliwatts이므로 1000으로 나눠 Watts로 변환한다.
 	powerMilliWatts, ret := d.handle.GetPowerUsage()
+	if ret != gonvml.SUCCESS {
+		nvmlRet = ret
+	}
 	if err := d.wrapErr("power usage", ret); err != nil {
 		return types.GPUSnapshot{}, err
 	}
@@ -684,6 +756,12 @@ func (d *deviceImpl) fillGpm(snap *types.GPUSnapshot) {
 // collector usage에서는 Snapshot과 동시 실행되지 않지만, Device 인터페이스가 public이라 mu로 fillGpm과
 // 직렬화한다. 호출이 두 번 들어오더라도 두 번째는 gpmAllocated=false 가드로 nop.
 func (d *deviceImpl) Close() error {
+	// Close 는 GpmSample.Free 만 호출하고 NVML 일반 ret 분기가 없어 error_code 라벨은 빈
+	// 문자열로 둔다. duration 측정은 hot-plug 시 device handle 해제 비용의 분포를 가시화한다.
+	var nvmlRet gonvml.Return
+	start := time.Now()
+	defer func() { observeNvmlCall("Close", start, &nvmlRet) }()
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.gpmAllocated {
@@ -880,7 +958,12 @@ func (d *deviceImpl) fillComputeMode(snap *types.GPUSnapshot) {
 // 단순 합산은 double-count가 되므로 max를 채택한다.
 // compute 호출이 실패하면 그것을 결정적 에러로 간주해 즉시 반환하고, graphics 호출은 NOT_SUPPORTED 등을 흡수한다 — 즉 graphics 부재는 skip한다.
 func (d *deviceImpl) RunningProcesses() ([]types.GPUProcess, error) {
+	var nvmlRet gonvml.Return
+	start := time.Now()
+	defer func() { observeNvmlCall("RunningProcesses", start, &nvmlRet) }()
+
 	compute, ret := d.handle.GetComputeRunningProcesses()
+	nvmlRet = ret
 	if err := d.wrapErr("running processes (compute)", ret); err != nil {
 		return nil, err
 	}

@@ -19,6 +19,7 @@ import (
 	"netobs/internal/netobs/metadata"
 	"netobs/internal/netobs/metrics"
 	"netobs/internal/netobs/podbytes"
+	"netobs/internal/netobs/selfhealth"
 	"netobs/internal/netobs/types"
 	"netobs/internal/server"
 )
@@ -97,6 +98,31 @@ func main() {
 	// Kubernetes metadata informer.
 	go kr.Start(ctx)
 
+	// informer sync lag emitter. 30s 주기로 lastWatchEvent 와 현재 시각의 차이를 self-health
+	// gauge 로 노출한다. kube client 가 비활성 (in-cluster 와 KUBECONFIG 모두 부재) 인 local 환경
+	// 에서는 lastWatchEvent 가 영원히 zero 라 fallback 이 단조 증가해 ObsAgentInformerStale 가
+	// false positive 발화한다. Enabled() 가 false 면 emitter 자체를 spawn 하지 않아 시리즈가
+	// 노출되지 않게 한다 (alert 의 informer_sync_lag 매칭이 자연 skip 된다).
+	if kr.Enabled() {
+		agentStartTime := time.Now()
+		go func() {
+			t := time.NewTicker(30 * time.Second)
+			defer t.Stop()
+			// 첫 tick 전에도 한 번 emit 해 첫 scrape 시점에 0 이 아닌 값이 노출되도록 한다.
+			emitInformerLag(agentStartTime, kr)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					emitInformerLag(agentStartTime, kr)
+				}
+			}
+		}()
+	} else {
+		log.Printf("informer sync lag emitter: skipped (kube resolver disabled)")
+	}
+
 	mapper := drop.NewMapper(drop.DefaultPaths(cfg.DropReasonFormatPath))
 
 	// eBPF runner. ctx가 취소되면 내부에서 ringbuf를 닫고 events 채널을 close한 뒤
@@ -109,6 +135,15 @@ func main() {
 			ebpfReady.Store(true)
 			if rt != nil {
 				podBytesCollector.SetMap(rt.PodBytes)
+				// self-health refresher 는 BPF map handle 이 준비된 시점에 한 번 spawn 한다.
+				// 구성 실패는 self-health 만 disable 하고 agent 전체 기동은 진행해 운영자가
+				// up{} 와 program_loaded 메트릭으로 1 차 진단을 시작할 수 있게 한다.
+				if rf, err := selfhealth.NewRefresher(rt.Starts, rt.PodBytes, rt.EventsDropped); err != nil {
+					log.Printf("self-health refresher: %v", err)
+				} else {
+					rf.Start(ctx)
+					log.Printf("self-health refresher: started (interval=%s)", selfhealth.DefaultRefreshInterval)
+				}
 			}
 		})
 		close(errCh)
@@ -189,4 +224,15 @@ func main() {
 	}
 
 	log.Printf("exiting")
+}
+
+// emitInformerLag 는 kube.Resolver 의 마지막 watch event 시각과 현재 시각의 차이를 self-health
+// gauge 로 emit 한다. zero (informer 미수신) 케이스에서는 agent 기동 시각으로 fallback 해 startup
+// 직후 윈도우에서도 의미 있는 staleness 신호를 노출한다.
+func emitInformerLag(startTime time.Time, kr *kube.Resolver) {
+	last := kr.LastWatchEvent()
+	if last.IsZero() {
+		last = startTime
+	}
+	metrics.SetInformerSyncLag(time.Since(last).Seconds())
 }

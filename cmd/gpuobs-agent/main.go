@@ -86,6 +86,29 @@ func main() {
 		go kr.Start(ctx)
 	}
 
+	// informer sync lag emitter. kr 가 nil (PodMetricsEnabled=false) 인 device-only 모드 또는
+	// kube client 가 비활성 (in-cluster 와 KUBECONFIG 모두 부재) 인 local 환경에서는 시리즈를
+	// 노출하지 않는다. 30s 주기로 lastWatchEvent 와 현재 시각의 차이를 self-health gauge 로
+	// 노출하고, 첫 이벤트 수신 전 윈도우에서는 agent 기동 시각으로 fallback 한다.
+	if kr != nil && kr.Enabled() {
+		agentStartTime := time.Now()
+		go func() {
+			t := time.NewTicker(30 * time.Second)
+			defer t.Stop()
+			emitInformerLag(agentStartTime, kr)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					emitInformerLag(agentStartTime, kr)
+				}
+			}
+		}()
+	} else {
+		log.Printf("informer sync lag emitter: skipped (kube resolver disabled)")
+	}
+
 	// NVML 초기화는 수집이 활성화된 경우에만 시도한다. GPU_METRICS_ENABLED=false 환경에서는
 	// libnvidia-ml.so.1 로드 자체를 건너뛰어 불필요한 초기화 비용과 실패 로그를 제거한다.
 	// 활성화된 상태에서 non-GPU 노드나 driver 미설치로 Init이 실패하면 warn 로그만 남기고
@@ -176,4 +199,15 @@ func main() {
 	}
 
 	log.Printf("exiting")
+}
+
+// emitInformerLag 는 kube.Resolver 의 마지막 watch event 시각과 현재 시각의 차이를 self-health
+// gauge 로 emit 한다. zero (informer 미수신) 케이스에서는 agent 기동 시각으로 fallback 해 startup
+// 직후 윈도우에서도 의미 있는 staleness 신호를 노출한다. netobs main 의 동명 헬퍼와 동일 의미.
+func emitInformerLag(startTime time.Time, kr *kube.Resolver) {
+	last := kr.LastWatchEvent()
+	if last.IsZero() {
+		last = startTime
+	}
+	metrics.SetInformerSyncLag(time.Since(last).Seconds())
 }

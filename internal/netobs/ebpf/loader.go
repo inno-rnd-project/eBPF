@@ -13,8 +13,27 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 
+	"netobs/internal/netobs/metrics"
 	"netobs/internal/netobs/types"
 )
+
+// trackedSymbols 는 netlat BPF 가 attach 시도할 kprobe / kretprobe 심볼 11 종이다. required 2 종 +
+// optional 9 종으로 구성되며 슬라이스 순서는 Run 의 attach 루프 순서와 정합한다. gpuobs 의
+// trackedSymbols (cuda loader.go:29) 와 동일하게 metrics.SetBpfProgramLoaded 의 라벨 cardinality
+// 를 폐쇄적으로 잡아 attach 단계 이전에도 모든 심볼이 0 으로 선등록되도록 한다.
+var trackedSymbols = []string{
+	"tcp_sendmsg",
+	"tcp_sendmsg_ret",
+	"veth_xmit",
+	"__dev_queue_xmit",
+	"tcp_retransmit_skb",
+	"kfree_skb_reason",
+	"tcp_cleanup_rbuf",
+	"tcp_v4_rcv",
+	"tcp_v4_do_rcv",
+	"tcp_rcv_established",
+	"tcp_recvmsg",
+}
 
 func ipToU32(ipStr string) (uint32, error) {
 	ip := net.ParseIP(ipStr).To4()
@@ -33,16 +52,21 @@ func attachRequiredKprobe(symbol string, prog *cebpf.Program, links *[]link.Link
 		return err
 	}
 	*links = append(*links, l)
+	metrics.SetBpfProgramLoaded(symbol, true)
 	log.Printf("attached kprobe/%s", symbol)
 	return nil
 }
 
+// attachRequiredKretprobe 는 kretprobe 심볼을 attach 한다. metrics 측 라벨은 동일 심볼명을 쓰지
+// 않고 "<symbol>_ret" 접미를 붙여 kretprobe 의 attach 실패가 kprobe 와 구분되어 진단되도록 한다.
+// trackedSymbols 의 "tcp_sendmsg_ret" 항목과 정합한다.
 func attachRequiredKretprobe(symbol string, prog *cebpf.Program, links *[]link.Link) error {
 	l, err := link.Kretprobe(symbol, prog, nil)
 	if err != nil {
 		return err
 	}
 	*links = append(*links, l)
+	metrics.SetBpfProgramLoaded(symbol+"_ret", true)
 	log.Printf("attached kretprobe/%s", symbol)
 	return nil
 }
@@ -54,6 +78,7 @@ func attachOptionalKprobe(symbol string, prog *cebpf.Program, links *[]link.Link
 		return
 	}
 	*links = append(*links, l)
+	metrics.SetBpfProgramLoaded(symbol, true)
 	log.Printf("attached kprobe/%s", symbol)
 }
 
@@ -63,12 +88,26 @@ type Runtime struct {
 	// PodBytes는 (cgroup_id, direction, layer) 키로 누적되는 LRU PERCPU HASH 맵으로,
 	// podbytes collector가 scrape 시점에 iterate해 Prometheus counter로 emit한다.
 	PodBytes *cebpf.Map
+	// Starts 는 (tid → netobs_start_info) 의 LRU_HASH 맵이다. self-health refresher 가
+	// 30s 주기 entry 수 iterate 로 netobs_bpf_map_utilization_ratio 를 산정할 때 참조한다.
+	Starts *cebpf.Map
+	// EventsDropped 는 events ringbuf 의 reserve 실패 percpu counter (BPF_MAP_TYPE_PERCPU_ARRAY,
+	// max_entries=1) 다. self-health refresher 가 baseline-then-delta 로 본 카운터를 읽어
+	// netobs_bpf_ringbuf_drops_total 에 누적한다.
+	EventsDropped *cebpf.Map
 }
 
 // Run은 BPF 오브젝트 로드, 프로브 attach, ringbuf reader 준비가 모두 끝난 시점에
 // onReady를 호출해 상위에 readiness를 알리고 Runtime 핸들을 넘긴다. onReady가 nil이면 무시한다.
 func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady func(*Runtime)) error {
 	defer close(out)
+
+	// 진단 시그널 일관성: attach 시도 자체가 일어나기 전에 모든 심볼을 0 으로 선등록해 둔다.
+	// LoadNetObsObjects 실패 / capability 부족 등으로 attach 단계조차 못 가는 상황도 운영자가
+	// netobs_bpf_program_loaded 메트릭만 보고 진단할 수 있다 (gpuobs cuda loader 의 동일 패턴).
+	for _, sym := range trackedSymbols {
+		metrics.SetBpfProgramLoaded(sym, false)
+	}
 
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return err
@@ -137,7 +176,9 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 
 	if onReady != nil {
 		onReady(&Runtime{
-			PodBytes: objs.PodBytes,
+			PodBytes:      objs.PodBytes,
+			Starts:        objs.Starts,
+			EventsDropped: objs.EventsDropped,
 		})
 	}
 

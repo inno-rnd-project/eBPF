@@ -106,10 +106,11 @@ type NetObsProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type NetObsMapSpecs struct {
-	Events      *ebpf.MapSpec `ebpf:"events"`
-	PodBytes    *ebpf.MapSpec `ebpf:"pod_bytes"`
-	Starts      *ebpf.MapSpec `ebpf:"starts"`
-	TargetDaddr *ebpf.MapSpec `ebpf:"target_daddr"`
+	Events        *ebpf.MapSpec `ebpf:"events"`
+	EventsDropped *ebpf.MapSpec `ebpf:"events_dropped"`
+	PodBytes      *ebpf.MapSpec `ebpf:"pod_bytes"`
+	Starts        *ebpf.MapSpec `ebpf:"starts"`
+	TargetDaddr   *ebpf.MapSpec `ebpf:"target_daddr"`
 }
 
 // NetObsVariableSpecs contains global variables before they are loaded into the kernel.
@@ -138,15 +139,17 @@ func (o *NetObsObjects) Close() error {
 //
 // It can be passed to LoadNetObsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NetObsMaps struct {
-	Events      *ebpf.Map `ebpf:"events"`
-	PodBytes    *ebpf.Map `ebpf:"pod_bytes"`
-	Starts      *ebpf.Map `ebpf:"starts"`
-	TargetDaddr *ebpf.Map `ebpf:"target_daddr"`
+	Events        *ebpf.Map `ebpf:"events"`
+	EventsDropped *ebpf.Map `ebpf:"events_dropped"`
+	PodBytes      *ebpf.Map `ebpf:"pod_bytes"`
+	Starts        *ebpf.Map `ebpf:"starts"`
+	TargetDaddr   *ebpf.Map `ebpf:"target_daddr"`
 }
 
 func (m *NetObsMaps) Close() error {
 	return _NetObsClose(
 		m.Events,
+		m.EventsDropped,
 		m.PodBytes,
 		m.Starts,
 		m.TargetDaddr,

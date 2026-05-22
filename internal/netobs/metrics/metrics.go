@@ -219,6 +219,10 @@ func Register(reg prometheus.Registerer) {
 		podStageLatencyLabeled,
 		dstClassifierEmits,
 		nicCapacityBytesPerSec,
+		bpfProgramLoaded,
+		bpfRingbufDropsTotal,
+		bpfMapUtilizationRatio,
+		informerSyncLagSeconds,
 	)
 }
 

@@ -20,6 +20,19 @@ struct {
     __uint(max_entries, 1 << 24);            /* 16 MiB */
 } events SEC(".maps");
 
+/* events_dropped 는 events ringbuf 의 bpf_ringbuf_reserve 가 NULL 을 돌려준 케이스 (ringbuf 가
+ * 가득 차서 record 를 못 잡은 상황) 를 percpu 카운터로 누적한다. cilium/ebpf 의 ringbuf API 가
+ * lost sample 카운터를 노출하지 않아 cuda 측 cuda_dropped 와 동일한 패턴으로 BPF 측에서 직접
+ * 카운트한다. userspace 가 주기적으로 read + sum 해 netobs_bpf_ringbuf_drops_total 카운터에
+ * baseline-then-delta 로 add 한다. percpu 라 producer 측 atomic 비용이 0 이다.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u64);
+} events_dropped SEC(".maps");
+
 /* key=0, value=target dst IPv4 in network byte order, 0이면 비활성화 */
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -191,6 +204,14 @@ static __always_inline void inc_pod_bytes(__u64 cgroup_id, __u8 direction, __u8 
     bpf_map_update_elem(&pod_bytes, &key, &init, BPF_ANY);
 }
 
+static __always_inline void inc_ringbuf_dropped(void)
+{
+    __u32 key = 0;
+    __u64 *v = bpf_map_lookup_elem(&events_dropped, &key);
+    if (v)
+        (*v)++;        /* percpu 슬롯이라 비-원자 증가로 충분하다 */
+}
+
 static __always_inline void emit_event(const struct netobs_start_info *s,
                                        __u8 stage,
                                        __u32 reason,
@@ -200,8 +221,10 @@ static __always_inline void emit_event(const struct netobs_start_info *s,
     struct netobs_event *e;
 
     e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        inc_ringbuf_dropped();
         return;
+    }
 
     e->ts_ns         = bpf_ktime_get_ns();
     e->cgroup_id     = s->cgroup_id;

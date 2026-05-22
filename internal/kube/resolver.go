@@ -31,6 +31,13 @@ type Resolver struct {
 
 	synced atomic.Bool
 
+	// lastWatchEventNs 는 가장 최근에 informer 콜백 (Pod / Service / Node 의 Add / Update / Delete)
+	// 이 호출된 시점의 wall clock 을 UnixNano 로 보관한다. self-health 의 informer_sync_lag_seconds
+	// 메트릭이 본 값과 현재 시각의 차이를 emit 해 API server 단절이나 RBAC 실수로 watch 가 끊긴
+	// 케이스를 가시화한다. atomic.Int64 라 콜백 hot path 의 lock 비용이 0 이다. zero 값은 informer
+	// 가 아직 어떤 이벤트도 수신하지 못한 상태 (startup 직후 또는 비활성 상태) 를 의미한다.
+	lastWatchEventNs atomic.Int64
+
 	mu sync.RWMutex
 
 	podByIP     map[string]podCacheEntry
@@ -142,36 +149,45 @@ func (r *Resolver) Start(ctx context.Context) {
 
 	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
+			r.markWatchEvent()
 			r.onUpsertPod(obj)
 		},
 		UpdateFunc: func(_, newObj interface{}) {
+			r.markWatchEvent()
 			r.onUpsertPod(newObj)
 		},
 		DeleteFunc: func(obj interface{}) {
+			r.markWatchEvent()
 			r.onDeletePod(obj)
 		},
 	})
 
 	serviceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
+			r.markWatchEvent()
 			r.onUpsertService(obj)
 		},
 		UpdateFunc: func(_, newObj interface{}) {
+			r.markWatchEvent()
 			r.onUpsertService(newObj)
 		},
 		DeleteFunc: func(obj interface{}) {
+			r.markWatchEvent()
 			r.onDeleteService(obj)
 		},
 	})
 
 	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
+			r.markWatchEvent()
 			r.onUpsertNode(obj)
 		},
 		UpdateFunc: func(_, newObj interface{}) {
+			r.markWatchEvent()
 			r.onUpsertNode(newObj)
 		},
 		DeleteFunc: func(obj interface{}) {
+			r.markWatchEvent()
 			r.onDeleteNode(obj)
 		},
 	})
@@ -198,6 +214,31 @@ func (r *Resolver) Start(ctx context.Context) {
 // client 미구성으로 비활성 상태일 때도 false를 반환해 /readyz가 그 상태를 드러낼 수 있게 한다.
 func (r *Resolver) HasSynced() bool {
 	return r.synced.Load()
+}
+
+// Enabled 는 kube client 가 정상 구성되어 informer 가 동작 가능한 상태인지 반환한다. local 디버깅
+// binary 처럼 in-cluster config 와 KUBECONFIG 가 모두 없는 환경에서는 false 가 반환되며, self-health
+// 의 informer_sync_lag emit 측이 본 함수로 비활성 케이스를 분기해 false positive alert 를 막는다.
+func (r *Resolver) Enabled() bool {
+	return r.client != nil
+}
+
+// markWatchEvent 는 informer 콜백 진입 시점에 호출되어 lastWatchEventNs 를 현재 wall clock 으로
+// 갱신한다. atomic store 라 콜백 hot path 의 lock 비용이 0 이며 callback 9 종 (Pod / Service / Node
+// × Add / Update / Delete) 이 모두 본 헬퍼를 거치도록 통일했다.
+func (r *Resolver) markWatchEvent() {
+	r.lastWatchEventNs.Store(time.Now().UnixNano())
+}
+
+// LastWatchEvent 는 가장 최근 informer 콜백 시점의 wall clock 을 반환한다. 어떤 콜백도 호출되지
+// 않은 상태에서는 zero time.Time 을 돌려주며, 호출 측 (netobs / gpuobs main 의 informer_sync_lag
+// emitter) 이 zero 케이스에서 agent startup time 으로 fallback 처리한다.
+func (r *Resolver) LastWatchEvent() time.Time {
+	ns := r.lastWatchEventNs.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
 }
 
 func (r *Resolver) onUpsertPod(obj interface{}) {
