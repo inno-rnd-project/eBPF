@@ -88,6 +88,13 @@ type Runtime struct {
 	// PodBytes는 (cgroup_id, direction, layer) 키로 누적되는 LRU PERCPU HASH 맵으로,
 	// podbytes collector가 scrape 시점에 iterate해 Prometheus counter로 emit한다.
 	PodBytes *cebpf.Map
+	// Starts 는 (tid → netobs_start_info) 의 LRU_HASH 맵이다. self-health refresher 가
+	// 30s 주기 entry 수 iterate 로 netobs_bpf_map_utilization_ratio 를 산정할 때 참조한다.
+	Starts *cebpf.Map
+	// EventsDropped 는 events ringbuf 의 reserve 실패 percpu counter (BPF_MAP_TYPE_PERCPU_ARRAY,
+	// max_entries=1) 다. self-health refresher 가 baseline-then-delta 로 본 카운터를 읽어
+	// netobs_bpf_ringbuf_drops_total 에 누적한다.
+	EventsDropped *cebpf.Map
 }
 
 // Run은 BPF 오브젝트 로드, 프로브 attach, ringbuf reader 준비가 모두 끝난 시점에
@@ -169,7 +176,9 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 
 	if onReady != nil {
 		onReady(&Runtime{
-			PodBytes: objs.PodBytes,
+			PodBytes:      objs.PodBytes,
+			Starts:        objs.Starts,
+			EventsDropped: objs.EventsDropped,
 		})
 	}
 

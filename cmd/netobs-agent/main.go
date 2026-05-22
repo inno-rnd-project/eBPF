@@ -19,6 +19,7 @@ import (
 	"netobs/internal/netobs/metadata"
 	"netobs/internal/netobs/metrics"
 	"netobs/internal/netobs/podbytes"
+	"netobs/internal/netobs/selfhealth"
 	"netobs/internal/netobs/types"
 	"netobs/internal/server"
 )
@@ -109,6 +110,15 @@ func main() {
 			ebpfReady.Store(true)
 			if rt != nil {
 				podBytesCollector.SetMap(rt.PodBytes)
+				// self-health refresher 는 BPF map handle 이 준비된 시점에 한 번 spawn 한다.
+				// 구성 실패는 self-health 만 disable 하고 agent 전체 기동은 진행해 운영자가
+				// up{} 와 program_loaded 메트릭으로 1 차 진단을 시작할 수 있게 한다.
+				if rf, err := selfhealth.NewRefresher(rt.Starts, rt.PodBytes, rt.EventsDropped); err != nil {
+					log.Printf("self-health refresher: %v", err)
+				} else {
+					rf.Start(ctx)
+					log.Printf("self-health refresher: started (interval=%s)", selfhealth.DefaultRefreshInterval)
+				}
 			}
 		})
 		close(errCh)
