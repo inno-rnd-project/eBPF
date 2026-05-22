@@ -77,6 +77,19 @@ func NewCollector(step time.Duration) *Collector {
 	}
 }
 
+// Snapshot 은 가장 최근 Replace 가 보관한 NoisyNeighbor 리스트의 안전한 복사본을 반환한다.
+// rca-summarizer 가 /snapshot endpoint 로 본 결과를 in-memory cache hit 으로 활용해 webhook
+// 응답 시점에 매번 Prometheus query 로 Top-N 을 재계산하지 않게 한다. 반환 슬라이스는 호출자가
+// 자유롭게 수정해도 내부 상태에 영향이 없다.
+func (c *Collector) Snapshot() []correlation.NoisyNeighbor {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.snapshot) == 0 {
+		return nil
+	}
+	return append([]correlation.NoisyNeighbor(nil), c.snapshot...)
+}
+
 // Replace 는 reconcile cycle 산출물로 snapshot 을 교체한다. 입력 슬라이스는 호출 후에도 호출자
 // 측에서 수정 가능하도록 내부적으로 복사본을 보관한다. dominant dimension 도 본 시점에 1 회
 // 산정해 캐시에 둬 scrape 마다 Collect 가 재계산하지 않게 한다.

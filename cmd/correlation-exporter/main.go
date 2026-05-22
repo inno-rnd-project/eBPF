@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -168,6 +169,19 @@ func main() {
 			return
 		}
 		_, _ = w.Write([]byte("ok"))
+	})
+	// /snapshot 은 가장 최근 reconcile cycle 의 NoisyNeighbor Top-N 결과를 JSON 으로 노출한다.
+	// rca-summarizer 가 webhook handler 에서 본 endpoint 를 호출해 Prometheus query 재계산을
+	// 회피하고 30s 응답 임계를 통과한다. 첫 reconcile 전에는 빈 배열을 돌려준다.
+	mux.HandleFunc("/snapshot", func(w http.ResponseWriter, _ *http.Request) {
+		snap := collector.Snapshot()
+		if snap == nil {
+			snap = []correlation.NoisyNeighbor{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(snap); err != nil {
+			log.Printf("snapshot encode: %v", err)
+		}
 	})
 
 	srv := &http.Server{

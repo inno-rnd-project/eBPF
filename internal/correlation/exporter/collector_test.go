@@ -51,6 +51,43 @@ correlation_noisy_neighbor_score{rank="1",resource_dimension="cpu",suspect_names
 	}
 }
 
+// TestCollector_SnapshotReturnsIndependentCopy 는 Snapshot 이 내부 상태와 분리된 안전한 복사본을
+// 반환해 호출자가 결과를 수정해도 다음 Snapshot / Collect 가 영향받지 않는지 검증한다. rca-summarizer
+// 가 본 결과를 mutate 할 일은 없지만 race 안전성과 캡슐화 정합성의 회귀 가드다.
+func TestCollector_SnapshotReturnsIndependentCopy(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	c.Replace([]correlation.NoisyNeighbor{
+		neighbor("v1", "s1", correlation.DimensionCPU, 1, 0.85, 2),
+		neighbor("v1", "s2", correlation.DimensionGPU, 1, 0.70, 0),
+	})
+
+	snap := c.Snapshot()
+	if len(snap) != 2 {
+		t.Fatalf("snapshot len=%d; want 2", len(snap))
+	}
+
+	// 호출자가 반환값을 mutate 해도 내부 상태가 보존되어야 한다.
+	snap[0].Score = -1
+	snap = snap[:0]
+
+	again := c.Snapshot()
+	if len(again) != 2 {
+		t.Errorf("snapshot len=%d after caller truncation; want 2 (internal state must be isolated)", len(again))
+	}
+	if again[0].Score != 0.85 {
+		t.Errorf("snapshot[0].Score=%v after caller mutation; want 0.85", again[0].Score)
+	}
+}
+
+// TestCollector_SnapshotEmptyBeforeReplace 는 Replace 호출 전 Snapshot 이 nil 을 반환해 첫 reconcile
+// 전 stale 값을 노출하지 않는지 검증한다.
+func TestCollector_SnapshotEmptyBeforeReplace(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	if got := c.Snapshot(); got != nil {
+		t.Errorf("Snapshot=%v before Replace; want nil", got)
+	}
+}
+
 // TestCollector_ReplaceClearsStale 는 직전 snapshot 의 라벨이 다음 snapshot 에서 자동으로 사라지는지
 // 검증한다 (stale series GC 회귀 가드).
 func TestCollector_ReplaceClearsStale(t *testing.T) {
