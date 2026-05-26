@@ -65,7 +65,7 @@
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
       "targets": [
         {
-          "expr": "injector_active{target_namespace=~\"$target_namespace\",target_pod=~\"$target_pod\",kind=~\"$kind\"}",
+          "expr": "max by(target_namespace, target_pod, kind) (injector_active{target_namespace=~\"$target_namespace\",target_pod=~\"$target_pod\",kind=~\"$kind\"})",
           "legendFormat": "{{target_namespace}}/{{target_pod}} {{kind}}",
           "refId": "A"
         }
@@ -91,7 +91,7 @@
       "gridPos": { "h": 12, "w": 24, "x": 0, "y": 8 },
       "targets": [
         {
-          "expr": "correlation_blast_radius_score{target_namespace=~\"$target_namespace\",target_pod=~\"$target_pod\",kind=~\"$kind\"}",
+          "expr": "max by(target_namespace, target_pod, kind, victim_namespace, victim_pod) (correlation_blast_radius_score{target_namespace=~\"$target_namespace\",target_pod=~\"$target_pod\",kind=~\"$kind\"})",
           "instant": true,
           "format": "table",
           "refId": "A"
@@ -162,12 +162,12 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
       "targets": [
         {
-          "expr": "injector_baseline_latency_seconds{target_namespace=~\"$target_namespace\",target_pod=~\"$target_pod\",kind=~\"$kind\"}",
+          "expr": "max by(target_namespace, target_pod, kind, victim_namespace, victim_pod) (injector_baseline_latency_seconds{target_namespace=~\"$target_namespace\",target_pod=~\"$target_pod\",kind=~\"$kind\"})",
           "legendFormat": "baseline {{victim_pod}}",
           "refId": "A"
         },
         {
-          "expr": "injector_impact_latency_seconds{target_namespace=~\"$target_namespace\",target_pod=~\"$target_pod\",kind=~\"$kind\"}",
+          "expr": "max by(target_namespace, target_pod, kind, victim_namespace, victim_pod) (injector_impact_latency_seconds{target_namespace=~\"$target_namespace\",target_pod=~\"$target_pod\",kind=~\"$kind\"})",
           "legendFormat": "impact {{victim_pod}}",
           "refId": "B"
         }
