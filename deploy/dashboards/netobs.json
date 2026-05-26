@@ -60,13 +60,14 @@
     {
       "id": 1,
       "type": "timeseries",
-      "title": "Stage latency p99 by stage (filtered by node)",
+      "title": "Send path stage latency p99 (sendmsg_ret / tcp_write_xmit / tcp_transmit_skb / to_devq)",
+      "description": "#82 send path 4 stage 분해. tcp_sendmsg syscall 진입부터 __dev_queue_xmit NIC queue 진입까지의 kernel 내부 처리 시간을 stage 단위로 노출한다. tcp_write_xmit 는 TCP control path (cwnd / nagle / window throttle), tcp_transmit_skb 는 개별 segment transmit entry 의 latency 다 (TSO/GSO 활성 시 첫 segment 만 측정).",
       "datasource": "${datasource}",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "fieldConfig": { "defaults": { "unit": "s" } },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum by (le, stage, node) (rate(netobs_stage_latency_labeled_seconds_bucket{node=~\"$node\",src_namespace=~\"$src_namespace\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le, stage, node) (rate(netobs_stage_latency_labeled_seconds_bucket{node=~\"$node\",src_namespace=~\"$src_namespace\",stage=~\"sendmsg_ret|tcp_write_xmit|tcp_transmit_skb|to_devq\"}[5m])))",
           "legendFormat": "{{stage}} ({{node}})",
           "refId": "A"
         }
@@ -75,13 +76,14 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Stage latency p95 by stage (filtered by node)",
+      "title": "Receive path stage latency p99 (rcv_demux / rcv_established / rcv_app)",
+      "description": "#65 receive path 3 stage. tcp_v4_do_rcv socket lookup 직후부터 tcp_recvmsg app boundary 까지의 처리 시간을 stage 단위로 노출한다. send path 패널과 같은 화면 비교로 양방향 stage breakdown 을 한 눈에 본다.",
       "datasource": "${datasource}",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "fieldConfig": { "defaults": { "unit": "s" } },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le, stage, node) (rate(netobs_stage_latency_labeled_seconds_bucket{node=~\"$node\",src_namespace=~\"$src_namespace\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le, stage, node) (rate(netobs_stage_latency_labeled_seconds_bucket{node=~\"$node\",src_namespace=~\"$src_namespace\",stage=~\"rcv_demux|rcv_established|rcv_app\"}[5m])))",
           "legendFormat": "{{stage}} ({{node}})",
           "refId": "A"
         }
