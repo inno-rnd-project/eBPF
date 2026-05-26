@@ -66,7 +66,7 @@
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
       "targets": [
         {
-          "expr": "gpuobs_device_utilization_percent{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}",
+          "expr": "max by(node, gpu_uuid, gpu_index, gpu_model) (gpuobs_device_utilization_percent{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"})",
           "legendFormat": "{{node}} gpu{{gpu_index}} ({{gpu_model}})",
           "refId": "A"
         }
@@ -82,12 +82,12 @@
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
       "targets": [
         {
-          "expr": "gpuobs_device_memory_used_bytes{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}",
+          "expr": "max by(node, gpu_uuid, gpu_index, gpu_model) (gpuobs_device_memory_used_bytes{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"})",
           "legendFormat": "used {{node}} gpu{{gpu_index}}",
           "refId": "A"
         },
         {
-          "expr": "gpuobs_device_memory_total_bytes{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}",
+          "expr": "max by(node, gpu_uuid, gpu_index, gpu_model) (gpuobs_device_memory_total_bytes{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"})",
           "legendFormat": "total {{node}} gpu{{gpu_index}}",
           "refId": "B"
         }
@@ -103,12 +103,12 @@
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
       "targets": [
         {
-          "expr": "gpuobs_device_temperature_celsius{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}",
+          "expr": "max by(node, gpu_uuid, gpu_index, gpu_model) (gpuobs_device_temperature_celsius{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"})",
           "legendFormat": "current {{node}} gpu{{gpu_index}}",
           "refId": "A"
         },
         {
-          "expr": "gpuobs_device_temperature_threshold_celsius{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}",
+          "expr": "max by(node, gpu_uuid, gpu_index, gpu_model, threshold) (gpuobs_device_temperature_threshold_celsius{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"})",
           "legendFormat": "{{threshold}} {{node}} gpu{{gpu_index}}",
           "refId": "B"
         }
@@ -124,12 +124,12 @@
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
       "targets": [
         {
-          "expr": "gpuobs_device_power_usage_watts{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}",
+          "expr": "max by(node, gpu_uuid, gpu_index, gpu_model) (gpuobs_device_power_usage_watts{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"})",
           "legendFormat": "usage {{node}} gpu{{gpu_index}}",
           "refId": "A"
         },
         {
-          "expr": "gpuobs_device_power_limit_watts{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}",
+          "expr": "max by(node, gpu_uuid, gpu_index, gpu_model) (gpuobs_device_power_limit_watts{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"})",
           "legendFormat": "limit {{node}} gpu{{gpu_index}}",
           "refId": "B"
         }
@@ -146,7 +146,7 @@
       ],
       "targets": [
         {
-          "expr": "gpuobs_device_throttle_active{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"} == 1",
+          "expr": "max by(node, gpu_uuid, gpu_index, gpu_model, reason) (gpuobs_device_throttle_active{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}) == 1",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -163,7 +163,7 @@
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
       "targets": [
         {
-          "expr": "gpuobs_pod_memory_used_bytes{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",src_pod=~\"$src_pod\"}",
+          "expr": "max by(node, src_namespace, src_pod, src_pod_uid, gpu_uuid, gpu_index) (gpuobs_pod_memory_used_bytes{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",src_pod=~\"$src_pod\"})",
           "legendFormat": "{{src_namespace}}/{{src_pod}} gpu{{gpu_index}}",
           "refId": "A"
         }
@@ -222,8 +222,8 @@
       },
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
       "targets": [
-        { "expr": "gpuobs_device_temperature_celsius{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}", "legendFormat": "temperature {{node}} gpu{{gpu_index}}", "refId": "A" },
-        { "expr": "gpuobs_device_power_usage_watts{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"}", "legendFormat": "power {{node}} gpu{{gpu_index}}", "refId": "B" }
+        { "expr": "max by(node, gpu_uuid, gpu_index, gpu_model) (gpuobs_device_temperature_celsius{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"})", "legendFormat": "temperature {{node}} gpu{{gpu_index}}", "refId": "A" },
+        { "expr": "max by(node, gpu_uuid, gpu_index, gpu_model) (gpuobs_device_power_usage_watts{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\"})", "legendFormat": "power {{node}} gpu{{gpu_index}}", "refId": "B" }
       ]
     },
     {
@@ -242,8 +242,8 @@
       },
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
       "targets": [
-        { "expr": "gpuobs_device_clock_mhz{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",clock=\"graphics\"}", "legendFormat": "graphics clock {{node}} gpu{{gpu_index}}", "refId": "A" },
-        { "expr": "gpuobs_device_throttle_active{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",reason=\"hw_thermal_slowdown\"}", "legendFormat": "hw_thermal_slowdown {{node}} gpu{{gpu_index}}", "refId": "B" }
+        { "expr": "max by(node, gpu_uuid, gpu_index, gpu_model, clock) (gpuobs_device_clock_mhz{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",clock=\"graphics\"})", "legendFormat": "graphics clock {{node}} gpu{{gpu_index}}", "refId": "A" },
+        { "expr": "max by(node, gpu_uuid, gpu_index, gpu_model, reason) (gpuobs_device_throttle_active{node=~\"$node\",gpu_uuid=~\"$gpu_uuid\",reason=\"hw_thermal_slowdown\"})", "legendFormat": "hw_thermal_slowdown {{node}} gpu{{gpu_index}}", "refId": "B" }
       ]
     },
     {
@@ -263,7 +263,7 @@
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
       "targets": [
         {
-          "expr": "gpuobs_cuda_symbol_available",
+          "expr": "max by(node, symbol) (gpuobs_cuda_symbol_available)",
           "legendFormat": "{{symbol}}",
           "refId": "A"
         }
@@ -279,7 +279,7 @@
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum by (le, call) (rate(gpuobs_nvml_call_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.99, sum by(le, node, call) (rate(gpuobs_nvml_call_duration_seconds_bucket[5m])))",
           "legendFormat": "{{call}} p99",
           "refId": "A"
         }
@@ -295,7 +295,7 @@
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
       "targets": [
         {
-          "expr": "rate(gpuobs_nvml_errors_total[5m])",
+          "expr": "sum by(node, call, error_code) (rate(gpuobs_nvml_errors_total[5m]))",
           "legendFormat": "{{call}} {{error_code}}",
           "refId": "A"
         }
@@ -311,8 +311,8 @@
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
       "targets": [
         {
-          "expr": "gpuobs_informer_sync_lag_seconds",
-          "legendFormat": "{{instance}}",
+          "expr": "max by(job) (gpuobs_informer_sync_lag_seconds)",
+          "legendFormat": "{{job}}",
           "refId": "A"
         }
       ]
@@ -327,8 +327,8 @@
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
       "targets": [
         {
-          "expr": "up{job=\"gpuobs-agent\"}",
-          "legendFormat": "{{instance}}",
+          "expr": "max by(job) (up{job=\"gpuobs-agent\"})",
+          "legendFormat": "{{job}}",
           "refId": "A"
         }
       ]
