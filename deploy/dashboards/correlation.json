@@ -65,13 +65,13 @@
       "gridPos": { "h": 12, "w": 24, "x": 0, "y": 0 },
       "targets": [
         {
-          "expr": "correlation_noisy_neighbor_score{victim_namespace=~\"$victim_namespace\",victim_pod=~\"$victim_pod\",resource_dimension=~\"$resource_dimension\"}",
+          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_score{victim_namespace=~\"$victim_namespace\",victim_pod=~\"$victim_pod\",resource_dimension=~\"$resource_dimension\"})",
           "instant": true,
           "format": "table",
           "refId": "A"
         },
         {
-          "expr": "correlation_noisy_neighbor_lag_seconds{victim_namespace=~\"$victim_namespace\",victim_pod=~\"$victim_pod\",resource_dimension=~\"$resource_dimension\"}",
+          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_lag_seconds{victim_namespace=~\"$victim_namespace\",victim_pod=~\"$victim_pod\",resource_dimension=~\"$resource_dimension\"})",
           "instant": true,
           "format": "table",
           "refId": "B"
@@ -192,12 +192,12 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
       "targets": [
         {
-          "expr": "correlation_reconcile_duration_seconds",
+          "expr": "max by(job) (correlation_reconcile_duration_seconds)",
           "legendFormat": "duration_seconds",
           "refId": "A"
         },
         {
-          "expr": "time() - correlation_reconcile_last_success_timestamp_seconds",
+          "expr": "time() - max by(job) (correlation_reconcile_last_success_timestamp_seconds)",
           "legendFormat": "last_success_age_seconds",
           "refId": "B"
         }
@@ -222,12 +222,12 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
       "targets": [
         {
-          "expr": "rate(correlation_reconcile_pairs_total[10m])",
+          "expr": "sum by(job) (rate(correlation_reconcile_pairs_total[10m]))",
           "legendFormat": "pairs_per_sec",
           "refId": "A"
         },
         {
-          "expr": "rate(correlation_reconcile_neighbors_total[10m])",
+          "expr": "sum by(job) (rate(correlation_reconcile_neighbors_total[10m]))",
           "legendFormat": "neighbors_per_sec",
           "refId": "B"
         }
@@ -252,12 +252,12 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
       "targets": [
         {
-          "expr": "rate(correlation_reconcile_skipped_total[10m])",
+          "expr": "sum by(job, reason) (rate(correlation_reconcile_skipped_total[10m]))",
           "legendFormat": "skipped {{reason}}",
           "refId": "A"
         },
         {
-          "expr": "rate(correlation_reconcile_errors_total[10m])",
+          "expr": "sum by(job) (rate(correlation_reconcile_errors_total[10m]))",
           "legendFormat": "errors",
           "refId": "B"
         }
@@ -316,14 +316,14 @@
       "gridPos": { "h": 12, "w": 24, "x": 0, "y": 34 },
       "targets": [
         {
-          "expr": "correlation_noisy_neighbor_score and on(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_pvalue < 0.05)",
+          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_score and on(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_pvalue < 0.05))",
           "legendFormat": "score",
           "refId": "A",
           "instant": true,
           "format": "table"
         },
         {
-          "expr": "correlation_noisy_neighbor_pvalue < 0.05",
+          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_pvalue < 0.05)",
           "legendFormat": "pvalue",
           "refId": "B",
           "instant": true,
