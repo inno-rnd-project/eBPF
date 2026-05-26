@@ -45,14 +45,17 @@ func NewWithMaxEntries(max int) *Store {
 }
 
 // Set 은 alert 이름의 최근 RCASummary 를 갱신한다. UpdatedAt 은 본 호출 시점의 wall clock 으로
-// 채워진다. 이미 존재하는 alert 이름은 항상 덮어쓰며, 신규 alert 이름은 entries 수가 maxEntries
-// 미만일 때만 추가된다. cap 초과 시 신규 entry 는 silent drop 되고 ok=false 가 반환된다.
-func (s *Store) Set(summary registry.RCASummary) (Entry, bool) {
+// 채워진다. 이미 존재하는 alert 이름은 항상 덮어쓴다. 신규 alert 이름의 경우 registered=true 인
+// 등록 alert (registry.Dispatch 가 ok=true 를 돌려준 케이스) 은 cap 무관하게 항상 추가되고,
+// registered=false 인 미등록 alert 은 entries 수가 maxEntries 미만일 때만 추가된다. 본 분기로
+// 적대적 webhook 이 임의 alertname 으로 cap 을 채워도 등록 alert 의 진단 흐름이 차단되지 않는다.
+// cap 초과로 거부된 미등록 entry 는 silent drop 되고 ok=false 가 반환된다.
+func (s *Store) Set(summary registry.RCASummary, registered bool) (Entry, bool) {
 	entry := Entry{Summary: summary, UpdatedAt: time.Now()}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.entries[summary.AlertName]; !exists {
-		if len(s.entries) >= s.maxEntries {
+		if !registered && len(s.entries) >= s.maxEntries {
 			return Entry{}, false
 		}
 	}
