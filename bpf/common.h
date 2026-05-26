@@ -21,6 +21,13 @@ enum netobs_event_stage {
     NETOBS_STAGE_RCV_DEMUX      = 7,
     NETOBS_STAGE_RCV_ESTABLISHED = 8,
     NETOBS_STAGE_RCV_APP        = 9,
+    /* #82 send path stage 분해. tcp_sendmsg (= STAGE_SENDMSG_RET) 와 __dev_queue_xmit
+     * (= STAGE_TO_DEVQ) 사이의 두 stage 를 추가해 send path 의 kernel 내부 처리 시간을 4 분
+     * 단위로 노출한다. tcp_write_xmit 는 TCP window throttle / nagle / cwnd 등 control path
+     * latency 를 cover 하고, __tcp_transmit_skb 는 개별 segment transmit 시점이라 TSO/GSO
+     * 활성 시 첫 segment 만 측정한다 (seen_transmit flag). */
+    NETOBS_STAGE_TCP_WRITE_XMIT  = 10,
+    NETOBS_STAGE_TCP_TRANSMIT_SKB = 11,
 };
 
 /* pod_bytes 누적 맵의 key/value. key는 (cgroup_id, direction, layer) 삼중 합성이며 동일 Pod의
@@ -82,6 +89,23 @@ struct netobs_start_info {
     __u32 snd_cwnd;
     __u32 srtt_us;
     __u32 snd_ssthresh;
+
+    /* snd_ssthresh (u32) 뒤 ts_write_xmit (u64) 의 8-byte align 으로 컴파일러가 자동 4-byte
+     * padding 을 삽입한다. Go 측 generated NetObsNetobsStartInfo 에는 명시적 _ [4]byte 슬롯이
+     * 들어가 있으므로 C 측에도 본 슬롯을 명시 선언해 컴파일러 의존성 없이 layout 일관성을
+     * 보장한다.
+     */
+    __u8  pad_align[4];
+
+    /* #82 send path stage 분해. tcp_write_xmit / __tcp_transmit_skb 의 entry timestamp 를
+     * carry-over 해 kretprobe 시점에서 latency 산정에 사용한다. seen_transmit 는 TSO/GSO 활성
+     * 시 단일 sendmsg 가 N 회의 __tcp_transmit_skb 를 트리거할 때 첫 segment 만 latency 를 측정
+     * 하도록 가드해 starts map slot race 를 회피한다. */
+    __u64 ts_write_xmit;
+    __u64 ts_transmit_skb;
+    __u8  seen_write_xmit;
+    __u8  seen_transmit;
+    __u8  pad82[6];
 };
 
 struct netobs_event {

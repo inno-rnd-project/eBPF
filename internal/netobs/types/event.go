@@ -21,6 +21,11 @@ const (
 	StageRcvDemux        = 7
 	StageRcvEstablished  = 8
 	StageRcvApp          = 9
+	// #82 send path stage 4 분해. tcp_sendmsg (= StageSendmsgRet) 와 __dev_queue_xmit
+	// (= StageToDevQ) 사이의 두 stage 다. tcp_write_xmit 는 TCP control path, tcp_transmit_skb
+	// 는 개별 segment transmit entry 라 TSO/GSO 활성 시 첫 segment 만 latency 가 측정된다.
+	StageTcpWriteXmit    = 10
+	StageTcpTransmitSkb  = 11
 )
 
 type Event struct {
@@ -112,17 +117,23 @@ func StageName(stage uint8) string {
 		return "rcv_established"
 	case StageRcvApp:
 		return "rcv_app"
+	case StageTcpWriteXmit:
+		return "tcp_write_xmit"
+	case StageTcpTransmitSkb:
+		return "tcp_transmit_skb"
 	default:
 		return "unknown"
 	}
 }
 
-// StageDirection 은 stage 별 흐름 방향을 반환한다. send path 5 종은 "egress", #65 의 rcv path 4 종은
-// "ingress" 로 분류한다. enricher 가 Direction 라벨 산정에 사용하며, 알 수 없는 stage 는 "unknown"
-// 으로 둬 메트릭 라벨이 빈 문자열로 비지 않게 한다.
+// StageDirection 은 stage 별 흐름 방향을 반환한다. send path 7 종 (#82 의 tcp_write_xmit / tcp_
+// transmit_skb 포함) 은 "egress", #65 의 rcv path 4 종은 "ingress" 로 분류한다. enricher 가
+// Direction 라벨 산정에 사용하며, 알 수 없는 stage 는 "unknown" 으로 둬 메트릭 라벨이 빈 문자열
+// 로 비지 않게 한다.
 func StageDirection(stage uint8) string {
 	switch stage {
-	case StageSendmsgRet, StageToVeth, StageToDevQ, StageRetrans, StageDrop:
+	case StageSendmsgRet, StageToVeth, StageToDevQ, StageRetrans, StageDrop,
+		StageTcpWriteXmit, StageTcpTransmitSkb:
 		return "egress"
 	case StageRcvL3, StageRcvDemux, StageRcvEstablished, StageRcvApp:
 		return "ingress"

@@ -25,26 +25,31 @@ type NetObsNetobsPodBytesValue struct {
 }
 
 type NetObsNetobsStartInfo struct {
-	TsNs         uint64
-	CgroupId     uint64
-	SocketCookie uint64
-	Saddr        uint32
-	Daddr        uint32
-	Pid          uint32
-	Tid          uint32
-	Ifindex      uint32
-	SkbIif       uint32
-	Sport        uint16
-	Dport        uint16
-	Comm         [16]int8
-	SeenVeth     uint8
-	SeenDevq     uint8
-	RetSeen      uint8
-	Protocol     uint8
-	SndCwnd      uint32
-	SrttUs       uint32
-	SndSsthresh  uint32
-	_            [4]byte
+	TsNs          uint64
+	CgroupId      uint64
+	SocketCookie  uint64
+	Saddr         uint32
+	Daddr         uint32
+	Pid           uint32
+	Tid           uint32
+	Ifindex       uint32
+	SkbIif        uint32
+	Sport         uint16
+	Dport         uint16
+	Comm          [16]int8
+	SeenVeth      uint8
+	SeenDevq      uint8
+	RetSeen       uint8
+	Protocol      uint8
+	SndCwnd       uint32
+	SrttUs        uint32
+	SndSsthresh   uint32
+	PadAlign      [4]uint8
+	TsWriteXmit   uint64
+	TsTransmitSkb uint64
+	SeenWriteXmit uint8
+	SeenTransmit  uint8
+	Pad82         [6]uint8
 }
 
 // LoadNetObs returns the embedded CollectionSpec for NetObs.
@@ -97,8 +102,12 @@ type NetObsProgramSpecs struct {
 	HandleTcpRetransmitSkb  *ebpf.ProgramSpec `ebpf:"handle_tcp_retransmit_skb"`
 	HandleTcpSendmsg        *ebpf.ProgramSpec `ebpf:"handle_tcp_sendmsg"`
 	HandleTcpSendmsgRet     *ebpf.ProgramSpec `ebpf:"handle_tcp_sendmsg_ret"`
+	HandleTcpTransmitSkb    *ebpf.ProgramSpec `ebpf:"handle_tcp_transmit_skb"`
+	HandleTcpTransmitSkbRet *ebpf.ProgramSpec `ebpf:"handle_tcp_transmit_skb_ret"`
 	HandleTcpV4DoRcv        *ebpf.ProgramSpec `ebpf:"handle_tcp_v4_do_rcv"`
 	HandleTcpV4Rcv          *ebpf.ProgramSpec `ebpf:"handle_tcp_v4_rcv"`
+	HandleTcpWriteXmit      *ebpf.ProgramSpec `ebpf:"handle_tcp_write_xmit"`
+	HandleTcpWriteXmitRet   *ebpf.ProgramSpec `ebpf:"handle_tcp_write_xmit_ret"`
 	HandleVethXmit          *ebpf.ProgramSpec `ebpf:"handle_veth_xmit"`
 }
 
@@ -174,8 +183,12 @@ type NetObsPrograms struct {
 	HandleTcpRetransmitSkb  *ebpf.Program `ebpf:"handle_tcp_retransmit_skb"`
 	HandleTcpSendmsg        *ebpf.Program `ebpf:"handle_tcp_sendmsg"`
 	HandleTcpSendmsgRet     *ebpf.Program `ebpf:"handle_tcp_sendmsg_ret"`
+	HandleTcpTransmitSkb    *ebpf.Program `ebpf:"handle_tcp_transmit_skb"`
+	HandleTcpTransmitSkbRet *ebpf.Program `ebpf:"handle_tcp_transmit_skb_ret"`
 	HandleTcpV4DoRcv        *ebpf.Program `ebpf:"handle_tcp_v4_do_rcv"`
 	HandleTcpV4Rcv          *ebpf.Program `ebpf:"handle_tcp_v4_rcv"`
+	HandleTcpWriteXmit      *ebpf.Program `ebpf:"handle_tcp_write_xmit"`
+	HandleTcpWriteXmitRet   *ebpf.Program `ebpf:"handle_tcp_write_xmit_ret"`
 	HandleVethXmit          *ebpf.Program `ebpf:"handle_veth_xmit"`
 }
 
@@ -189,8 +202,12 @@ func (p *NetObsPrograms) Close() error {
 		p.HandleTcpRetransmitSkb,
 		p.HandleTcpSendmsg,
 		p.HandleTcpSendmsgRet,
+		p.HandleTcpTransmitSkb,
+		p.HandleTcpTransmitSkbRet,
 		p.HandleTcpV4DoRcv,
 		p.HandleTcpV4Rcv,
+		p.HandleTcpWriteXmit,
+		p.HandleTcpWriteXmitRet,
 		p.HandleVethXmit,
 	)
 }

@@ -310,6 +310,110 @@ int BPF_KRETPROBE(handle_tcp_sendmsg_ret, int ret)
     return 0;
 }
 
+/* #82 tcp_write_xmit 는 TCP send buffer 의 segment 들을 nagle / cwnd / window 제약 아래
+ * NIC queue 로 흘려보내는 control path 함수다. entry timestamp 를 starts 에 stash 하고 ret
+ * 시점에 latency 를 산정해 control path 의 throttle 비용을 노출한다. seen_write_xmit flag
+ * 로 같은 tid 의 nested 또는 반복 호출에서 첫 회 latency 만 측정한다.
+ */
+SEC("kprobe/tcp_write_xmit")
+int BPF_KPROBE(handle_tcp_write_xmit, struct sock *sk)
+{
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    struct netobs_start_info *s;
+
+    s = bpf_map_lookup_elem(&starts, &tid);
+    if (!s || s->seen_write_xmit)
+        return 0;
+
+    /* tcp_write_xmit 가 softirq (timer-based retransmit, ack 처리) 컨텍스트에서 호출될 때
+     * current task 의 tid 는 인터럽트당한 임의 process 의 tid 를 빌려 쓴다. 그 tid 가 우연히
+     * starts 에 entry 를 가진 process 라면 unrelated socket 의 start_info 를 잘못 갱신해 wrong
+     * latency 가 emit 된다. sendmsg entry 시점에 stash 된 socket_cookie 와 현재 sk 의 cookie 를
+     * 비교해 같은 socket 의 호출만 통과시킨다. cookie 불일치 시 skip 으로 cross-socket race 를
+     * 차단한다. */
+    if (get_socket_cookie(sk) != s->socket_cookie)
+        return 0;
+
+    s->ts_write_xmit = bpf_ktime_get_ns();
+    s->seen_write_xmit = 1;
+    return 0;
+}
+
+SEC("kretprobe/tcp_write_xmit")
+int BPF_KRETPROBE(handle_tcp_write_xmit_ret)
+{
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    struct netobs_start_info *s;
+    __u64 now;
+    __u32 latency_us;
+
+    s = bpf_map_lookup_elem(&starts, &tid);
+    if (!s || !s->ts_write_xmit)
+        return 0;
+
+    now = bpf_ktime_get_ns();
+    latency_us = (__u32)((now - s->ts_write_xmit) / 1000);
+
+    emit_event(s, NETOBS_STAGE_TCP_WRITE_XMIT, 0, 0, latency_us);
+    /* ts_write_xmit 을 0 으로 reset 해 한 sendmsg 사이클 내 첫 회 측정 후 후속 kretprobe 호출
+     * (TSO/GSO 다중 segment 또는 timer / ack 콜백 경로) 에서 stale ts 로 잘못된 거대 latency 가
+     * emit 되지 않게 한다. seen_write_xmit 은 sendmsg entry 의 zero-init 으로 다음 사이클에서
+     * 자연 reset 되므로 본 자리에서는 ts 만 reset 한다.
+     */
+    s->ts_write_xmit = 0;
+    return 0;
+}
+
+/* #82 __tcp_transmit_skb 는 개별 segment 단위 transmit entry 다. TSO/GSO 활성 시 단일
+ * sendmsg 가 N 회 호출을 트리거하므로 starts map slot race 회피를 위해 첫 segment 만
+ * latency 를 측정한다 (seen_transmit flag). 후속 segment 는 stage event 자체를 skip 한다.
+ */
+SEC("kprobe/__tcp_transmit_skb")
+int BPF_KPROBE(handle_tcp_transmit_skb, struct sock *sk, struct sk_buff *skb)
+{
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    struct netobs_start_info *s;
+
+    s = bpf_map_lookup_elem(&starts, &tid);
+    if (!s || s->seen_transmit)
+        return 0;
+
+    /* tcp_write_xmit 과 동일 race 가드. __tcp_transmit_skb 가 softirq 컨텍스트에서 호출될 때
+     * tid 차용으로 인한 cross-socket race 를 차단한다. socket_cookie 가드가 본 PR 의 self-review
+     * 단계에서 발견된 tcp_transmit_skb p99 524ms outlier 의 진짜 원인이며 본 가드로 wrong socket
+     * 의 ts set 자체가 막힌다. */
+    if (get_socket_cookie(sk) != s->socket_cookie)
+        return 0;
+
+    s->ts_transmit_skb = bpf_ktime_get_ns();
+    s->seen_transmit = 1;
+    return 0;
+}
+
+SEC("kretprobe/__tcp_transmit_skb")
+int BPF_KRETPROBE(handle_tcp_transmit_skb_ret)
+{
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    struct netobs_start_info *s;
+    __u64 now;
+    __u32 latency_us;
+
+    s = bpf_map_lookup_elem(&starts, &tid);
+    if (!s || !s->ts_transmit_skb)
+        return 0;
+
+    now = bpf_ktime_get_ns();
+    latency_us = (__u32)((now - s->ts_transmit_skb) / 1000);
+
+    emit_event(s, NETOBS_STAGE_TCP_TRANSMIT_SKB, 0, 0, latency_us);
+    /* tcp_write_xmit_ret 과 동일한 stale ts 가드. ts_transmit_skb 를 0 으로 reset 해 후속
+     * kretprobe 호출에서 huge latency (예: 524ms 의 histogram bucket 상한 outlier) 가 emit 되는
+     * 회귀를 막는다.
+     */
+    s->ts_transmit_skb = 0;
+    return 0;
+}
+
 SEC("kprobe/veth_xmit")
 int BPF_KPROBE(handle_veth_xmit, struct sk_buff *skb)
 {

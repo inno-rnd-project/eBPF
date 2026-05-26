@@ -247,6 +247,37 @@ func TestRecordSelfObserveCounter(t *testing.T) {
 	}
 }
 
+// TestRecord_SendPathStage4Decomposition 은 #82 의 신규 2 stage (tcp_write_xmit, tcp_transmit_skb)
+// event 가 stageLatencyLabeled histogram 에 정확히 emit 되는지 검증한다. latency switch case 의
+// 회귀 가드라 향후 stage enum 추가 시 본 테스트 갱신만으로 누락이 즉시 노출된다.
+func TestRecord_SendPathStage4Decomposition(t *testing.T) {
+	cases := []struct {
+		stage     uint8
+		stageName string
+	}{
+		{types.StageSendmsgRet, "sendmsg_ret"},
+		{types.StageTcpWriteXmit, "tcp_write_xmit"},
+		{types.StageTcpTransmitSkb, "tcp_transmit_skb"},
+		{types.StageToDevQ, "to_devq"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.stageName, func(t *testing.T) {
+			resetMetrics()
+			reg := prometheus.NewPedanticRegistry()
+			reg.MustRegister(stageLatencyLabeled)
+
+			ev := sampleEvent(podID("ns-src", "src-pod", "uid-src"), podID("ns-dst", "dst-pod", "uid-dst"), tc.stage, tc.stageName)
+			Record(ev)
+
+			// histogram series 가 정확히 1 개 emit 되어야 한다 (label set 단일).
+			got := labelValue(t, reg, "netobs_stage_latency_labeled_seconds", "stage")
+			if got != tc.stageName {
+				t.Errorf("stage label=%q want %q", got, tc.stageName)
+			}
+		})
+	}
+}
+
 // podID/serviceID/externalID는 dst_labels_test.go 와 동일 형태의 헬퍼이며, 두 패키지 간 reuse 가
 // 불가능 (test-only) 해 본 파일에 재정의한다.
 func podID(ns, name, uid string) kube.PodIdentity {
