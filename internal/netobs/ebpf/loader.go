@@ -17,13 +17,19 @@ import (
 	"netobs/internal/netobs/types"
 )
 
-// trackedSymbols 는 netlat BPF 가 attach 시도할 kprobe / kretprobe 심볼 11 종이다. required 2 종 +
-// optional 9 종으로 구성되며 슬라이스 순서는 Run 의 attach 루프 순서와 정합한다. gpuobs 의
+// trackedSymbols 는 netlat BPF 가 attach 시도할 kprobe / kretprobe 심볼 15 종이다. required 2 종 +
+// optional 13 종으로 구성되며 슬라이스 순서는 Run 의 attach 루프 순서와 정합한다. gpuobs 의
 // trackedSymbols (cuda loader.go:29) 와 동일하게 metrics.SetBpfProgramLoaded 의 라벨 cardinality
 // 를 폐쇄적으로 잡아 attach 단계 이전에도 모든 심볼이 0 으로 선등록되도록 한다.
 var trackedSymbols = []string{
 	"tcp_sendmsg",
 	"tcp_sendmsg_ret",
+	// #82 send path stage 4 분해의 kernel 함수. tcp_write_xmit 는 TCP control path, __tcp_transmit_skb
+	// 는 개별 segment transmit entry 다. 두 함수 모두 kernel 6.x 에서 stable kprobe 가능 심볼이다.
+	"tcp_write_xmit",
+	"tcp_write_xmit_ret",
+	"__tcp_transmit_skb",
+	"__tcp_transmit_skb_ret",
 	"veth_xmit",
 	"__dev_queue_xmit",
 	"tcp_retransmit_skb",
@@ -80,6 +86,20 @@ func attachOptionalKprobe(symbol string, prog *cebpf.Program, links *[]link.Link
 	*links = append(*links, l)
 	metrics.SetBpfProgramLoaded(symbol, true)
 	log.Printf("attached kprobe/%s", symbol)
+}
+
+// attachOptionalKretprobe 는 attachOptionalKprobe 와 동일 패턴의 kretprobe 버전이다. metrics
+// 측 라벨은 attachRequiredKretprobe 와 마찬가지로 symbol 에 "_ret" 접미사를 붙여 kprobe 와
+// 구분되도록 한다. trackedSymbols 의 "*_ret" 항목과 정합한다.
+func attachOptionalKretprobe(symbol string, prog *cebpf.Program, links *[]link.Link) {
+	l, err := link.Kretprobe(symbol, prog, nil)
+	if err != nil {
+		log.Printf("skip optional kretprobe/%s: %v", symbol, err)
+		return
+	}
+	*links = append(*links, l)
+	metrics.SetBpfProgramLoaded(symbol+"_ret", true)
+	log.Printf("attached kretprobe/%s", symbol)
 }
 
 // Runtime은 Run이 onReady 콜백으로 상위에 넘기는 BPF 런타임 핸들이다. ringbuf events는 채널로 따로
@@ -146,6 +166,14 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 	if err := attachRequiredKretprobe("tcp_sendmsg", objs.HandleTcpSendmsgRet, &links); err != nil {
 		return err
 	}
+
+	// #82 send path stage 4 분해. tcp_write_xmit 은 TCP control path (cwnd / nagle / window throttle)
+	// latency, __tcp_transmit_skb 는 개별 segment transmit latency 를 측정한다. attachOptional
+	// 패턴이라 kernel 빌드 옵션 또는 버전 변경으로 심볼이 사라져도 agent 가 fail-close 되지 않게 한다.
+	attachOptionalKprobe("tcp_write_xmit", objs.HandleTcpWriteXmit, &links)
+	attachOptionalKretprobe("tcp_write_xmit", objs.HandleTcpWriteXmitRet, &links)
+	attachOptionalKprobe("__tcp_transmit_skb", objs.HandleTcpTransmitSkb, &links)
+	attachOptionalKretprobe("__tcp_transmit_skb", objs.HandleTcpTransmitSkbRet, &links)
 
 	attachOptionalKprobe("veth_xmit", objs.HandleVethXmit, &links)
 	attachOptionalKprobe("__dev_queue_xmit", objs.HandleDevQueueXmit, &links)
