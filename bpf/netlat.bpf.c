@@ -346,6 +346,12 @@ int BPF_KRETPROBE(handle_tcp_write_xmit_ret)
     latency_us = (__u32)((now - s->ts_write_xmit) / 1000);
 
     emit_event(s, NETOBS_STAGE_TCP_WRITE_XMIT, 0, 0, latency_us);
+    /* ts_write_xmit 을 0 으로 reset 해 한 sendmsg 사이클 내 첫 회 측정 후 후속 kretprobe 호출
+     * (TSO/GSO 다중 segment 또는 timer / ack 콜백 경로) 에서 stale ts 로 잘못된 거대 latency 가
+     * emit 되지 않게 한다. seen_write_xmit 은 sendmsg entry 의 zero-init 으로 다음 사이클에서
+     * 자연 reset 되므로 본 자리에서는 ts 만 reset 한다.
+     */
+    s->ts_write_xmit = 0;
     return 0;
 }
 
@@ -384,6 +390,11 @@ int BPF_KRETPROBE(handle_tcp_transmit_skb_ret)
     latency_us = (__u32)((now - s->ts_transmit_skb) / 1000);
 
     emit_event(s, NETOBS_STAGE_TCP_TRANSMIT_SKB, 0, 0, latency_us);
+    /* tcp_write_xmit_ret 과 동일한 stale ts 가드. ts_transmit_skb 를 0 으로 reset 해 후속
+     * kretprobe 호출에서 huge latency (예: 524ms 의 histogram bucket 상한 outlier) 가 emit 되는
+     * 회귀를 막는다.
+     */
+    s->ts_transmit_skb = 0;
     return 0;
 }
 
