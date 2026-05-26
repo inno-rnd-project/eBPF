@@ -33,6 +33,9 @@ func TestStageName_RcvLabels(t *testing.T) {
 		{StageRcvDemux, "rcv_demux"},
 		{StageRcvEstablished, "rcv_established"},
 		{StageRcvApp, "rcv_app"},
+		// #82 send path stage 4 분해의 2 신규 enum.
+		{StageTcpWriteXmit, "tcp_write_xmit"},
+		{StageTcpTransmitSkb, "tcp_transmit_skb"},
 		{0, "unknown"},
 		{255, "unknown"},
 	}
@@ -59,6 +62,9 @@ func TestStageDirection(t *testing.T) {
 		{StageRcvDemux, "ingress"},
 		{StageRcvEstablished, "ingress"},
 		{StageRcvApp, "ingress"},
+		// #82 신규 send path stage 2 종 의 방향 분류 (egress).
+		{StageTcpWriteXmit, "egress"},
+		{StageTcpTransmitSkb, "egress"},
 		{0, "unknown"},
 		{99, "unknown"},
 	}
