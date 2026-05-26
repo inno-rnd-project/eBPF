@@ -74,7 +74,7 @@
       "datasource": "${datasource}",
       "gridPos": { "h": 6, "w": 6, "x": 0, "y": 1 },
       "targets": [
-        { "expr": "cluster:gpu_health_score:5m", "refId": "A" }
+        { "expr": "max (cluster:gpu_health_score:5m)", "refId": "A" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -107,7 +107,7 @@
       "datasource": "${datasource}",
       "gridPos": { "h": 6, "w": 6, "x": 6, "y": 1 },
       "targets": [
-        { "expr": "cluster:cpu_health_score:5m", "refId": "A" }
+        { "expr": "max (cluster:cpu_health_score:5m)", "refId": "A" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -140,7 +140,7 @@
       "datasource": "${datasource}",
       "gridPos": { "h": 6, "w": 6, "x": 12, "y": 1 },
       "targets": [
-        { "expr": "cluster:network_health_score:5m", "refId": "A" }
+        { "expr": "max (cluster:network_health_score:5m)", "refId": "A" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -173,7 +173,7 @@
       "datasource": "${datasource}",
       "gridPos": { "h": 6, "w": 6, "x": 18, "y": 1 },
       "targets": [
-        { "expr": "cluster:memory_health_score:5m", "refId": "A" }
+        { "expr": "max (cluster:memory_health_score:5m)", "refId": "A" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -243,10 +243,10 @@
       "datasource": "${datasource}",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
       "targets": [
-        { "expr": "cluster:gpu_health_score:5m", "legendFormat": "gpu", "refId": "A" },
-        { "expr": "cluster:cpu_health_score:5m", "legendFormat": "cpu", "refId": "B" },
-        { "expr": "cluster:network_health_score:5m", "legendFormat": "network", "refId": "C" },
-        { "expr": "cluster:memory_health_score:5m", "legendFormat": "memory", "refId": "D" }
+        { "expr": "max (cluster:gpu_health_score:5m)", "legendFormat": "gpu", "refId": "A" },
+        { "expr": "max (cluster:cpu_health_score:5m)", "legendFormat": "cpu", "refId": "B" },
+        { "expr": "max (cluster:network_health_score:5m)", "legendFormat": "network", "refId": "C" },
+        { "expr": "max (cluster:memory_health_score:5m)", "legendFormat": "memory", "refId": "D" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -275,7 +275,7 @@
       "gridPos": { "h": 7, "w": 12, "x": 0, "y": 21 },
       "targets": [
         {
-          "expr": "pod:cpu_throttle_score:5m{node=~\"$node\"}",
+          "expr": "max by(node, src_namespace, src_pod, src_pod_uid) (pod:cpu_throttle_score:5m{node=~\"$node\"})",
           "legendFormat": "{{src_namespace}}/{{src_pod}}",
           "refId": "A"
         }
@@ -290,7 +290,7 @@
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 21 },
       "targets": [
         {
-          "expr": "pod:memory_pressure_score:5m{node=~\"$node\"}",
+          "expr": "max by(node, src_namespace, src_pod, src_pod_uid) (pod:memory_pressure_score:5m{node=~\"$node\"})",
           "legendFormat": "{{src_namespace}}/{{src_pod}}",
           "refId": "A"
         }
@@ -305,7 +305,7 @@
       "gridPos": { "h": 7, "w": 12, "x": 0, "y": 28 },
       "targets": [
         {
-          "expr": "gpuobs_device_utilization_percent{node=~\"$node\"}",
+          "expr": "max by(node, gpu_uuid, gpu_index, gpu_model) (gpuobs_device_utilization_percent{node=~\"$node\"})",
           "legendFormat": "{{node}} gpu={{gpu_index}}",
           "refId": "A"
         }
@@ -395,7 +395,7 @@
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 44 },
       "targets": [
         {
-          "expr": "gpuobs_pod_memory_used_bytes{src_pod=~\"$pod\"}",
+          "expr": "max by(node, src_namespace, src_pod, src_pod_uid, gpu_uuid, gpu_index) (gpuobs_pod_memory_used_bytes{src_pod=~\"$pod\"})",
           "legendFormat": "{{src_pod}} gpu={{gpu_index}}",
           "refId": "A"
         }
@@ -411,7 +411,7 @@
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 51 },
       "targets": [
         {
-          "expr": "correlation_noisy_neighbor_score{victim_pod=~\"$pod\"}",
+          "expr": "max by(victim_namespace, victim_pod, suspect_namespace, suspect_pod, resource_dimension, rank) (correlation_noisy_neighbor_score{victim_pod=~\"$pod\"})",
           "instant": true,
           "format": "table",
           "refId": "A"
