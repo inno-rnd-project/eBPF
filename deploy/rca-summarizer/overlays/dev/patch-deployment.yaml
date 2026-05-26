@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rca-summarizer
+  namespace: ebpf-project
+spec:
+  template:
+    spec:
+      containers:
+        - name: rca-summarizer
+          # dev cluster 는 로컬 빌드 이미지를 그대로 reuse 하므로 registry pull 을 회피한다.
+          imagePullPolicy: Never

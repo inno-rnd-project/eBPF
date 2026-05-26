@@ -40,8 +40,10 @@ OVERLAY_PATH_netobs-dev       := deploy/netobs/overlays/dev
 OVERLAY_PATH_netobs-prod      := deploy/netobs/overlays/prod
 OVERLAY_PATH_gpuobs-dev       := deploy/gpuobs/overlays/dev
 OVERLAY_PATH_gpuobs-prod      := deploy/gpuobs/overlays/prod
-OVERLAY_PATH_correlation-dev  := deploy/correlation/overlays/dev
-OVERLAY_PATH_correlation-prod := deploy/correlation/overlays/prod
+OVERLAY_PATH_correlation-dev    := deploy/correlation/overlays/dev
+OVERLAY_PATH_correlation-prod   := deploy/correlation/overlays/prod
+OVERLAY_PATH_rca-summarizer-dev := deploy/rca-summarizer/overlays/dev
+OVERLAY_PATH_rca-summarizer-prod := deploy/rca-summarizer/overlays/prod
 # injector 는 본 시리즈 #52 의 비목표로 prod overlay 를 두지 않는다. dev / staging 한정.
 OVERLAY_PATH_injector-dev     := deploy/injector/overlays/dev
 # dashboards 는 dev/prod 분기가 없는 클러스터 공용 패키지다. Grafana sidecar 가 cluster 전체
@@ -73,7 +75,8 @@ BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 	check-prometheus-rules \
 	build-correlation-debug \
 	build-correlation-exporter image-build-correlation-exporter image-push-correlation-exporter \
-	build-workload-injector image-build-workload-injector image-push-workload-injector
+	build-workload-injector image-build-workload-injector image-push-workload-injector \
+	build-rca-summarizer image-build-rca-summarizer image-push-rca-summarizer
 
 # ============================================================================
 # Tests
@@ -254,10 +257,35 @@ image-push-workload-injector: image-build-workload-injector
 	docker tag workload-injector:$(VERSION) $(REGISTRY_BASE)/workload-injector:$(VERSION)
 	docker push $(REGISTRY_BASE)/workload-injector:$(VERSION)
 
-# 우산 타깃. AGENTS 리스트와 correlation-exporter, workload-injector 를 함께 일괄 처리한다.
-build-all:       $(addprefix build-,$(AGENTS)) build-correlation-exporter build-workload-injector
-image-build-all: $(addprefix image-build-,$(AGENTS)) image-build-correlation-exporter image-build-workload-injector
-image-push-all:  $(addprefix image-push-,$(AGENTS)) image-push-correlation-exporter image-push-workload-injector
+# ============================================================================
+# rca-summarizer (Deployment binary)
+# ----------------------------------------------------------------------------
+# rca-summarizer 는 Alertmanager webhook 을 받아 발화 alert 의 root cause analysis 요약을 30 초
+# 안에 산출해 /rca endpoint 로 노출한다. correlation-exporter 와 동일하게 cluster 단위 단일
+# Deployment 로 배치되며 build 흐름은 explicit 타깃 패턴을 따른다. PORT 9850 은 9810 / 9820 /
+# 9830 / 9840 의 다음 자연스러운 번호다.
+# ============================================================================
+RCA_SUMMARIZER_PORT := 9850
+
+build-rca-summarizer:
+	go fmt ./cmd/rca-summarizer ./internal/rca/...
+	CGO_ENABLED=0 go build -o ./bin/rca-summarizer ./cmd/rca-summarizer
+
+image-build-rca-summarizer:
+	docker build \
+		--build-arg TARGET_AGENT=rca-summarizer \
+		--build-arg AGENT_PORT=$(RCA_SUMMARIZER_PORT) \
+		--build-arg CGO_ENABLED=0 \
+		-t rca-summarizer:$(VERSION) .
+
+image-push-rca-summarizer: image-build-rca-summarizer
+	docker tag rca-summarizer:$(VERSION) $(REGISTRY_BASE)/rca-summarizer:$(VERSION)
+	docker push $(REGISTRY_BASE)/rca-summarizer:$(VERSION)
+
+# 우산 타깃. AGENTS 리스트와 correlation-exporter, workload-injector, rca-summarizer 를 함께 일괄 처리한다.
+build-all:       $(addprefix build-,$(AGENTS)) build-correlation-exporter build-workload-injector build-rca-summarizer
+image-build-all: $(addprefix image-build-,$(AGENTS)) image-build-correlation-exporter image-build-workload-injector image-build-rca-summarizer
+image-push-all:  $(addprefix image-push-,$(AGENTS)) image-push-correlation-exporter image-push-workload-injector image-push-rca-summarizer
 
 # ============================================================================
 # Overlay render / deploy / delete

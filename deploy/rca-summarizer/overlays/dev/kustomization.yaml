@@ -7,9 +7,9 @@ resources:
   - ../../base
 
 images:
-  - name: correlation-exporter
-    newName: ghcr.io/inno-rnd-project/correlation-exporter
+  - name: rca-summarizer
     newTag: "0.6.8"
 
 patches:
   - path: patch-deployment.yaml
+  - path: patch-configmap.yaml

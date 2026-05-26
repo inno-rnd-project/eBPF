@@ -63,6 +63,15 @@ configMapGenerator:
         app.kubernetes.io/name: ebpf-project
         app.kubernetes.io/component: grafana-dashboard
         app.kubernetes.io/part-of: ebpf-project
+  - name: rca-dashboard
+    files:
+      - rca.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+        app.kubernetes.io/name: rca-summarizer
+        app.kubernetes.io/component: grafana-dashboard
+        app.kubernetes.io/part-of: ebpf-project
 
 generatorOptions:
   disableNameSuffixHash: true

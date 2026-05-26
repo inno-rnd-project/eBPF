@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rca-summarizer
+  namespace: ebpf-project
+  labels:
+    app.kubernetes.io/name: rca-summarizer
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: rca-summarizer
+# rca-summarizer 가 envFrom 으로 본 ConfigMap 의 모든 키를 환경 변수로 주입한다. cmd/rca-summarizer
+# 가 env 보다 flag 가 우선하는 fallback 정책으로 파싱하므로 overlay 가 args 로 덮어쓸 수 있다.
+# 기본 endpoint 는 in-cluster service DNS 이며 helm release 이름이 다른 환경은 overlay 의 ConfigMap
+# patch 또는 별도 env 로 override 한다.
+data:
+  LISTEN_ADDR: ":9850"
+  PROMETHEUS_URL: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
+  CORRELATION_SNAPSHOT_URL: "http://correlation-exporter.ebpf-project.svc.cluster.local:9830/snapshot"
+  WEBHOOK_TIMEOUT: "30s"
