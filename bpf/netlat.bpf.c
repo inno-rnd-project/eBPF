@@ -310,6 +310,83 @@ int BPF_KRETPROBE(handle_tcp_sendmsg_ret, int ret)
     return 0;
 }
 
+/* #82 tcp_write_xmit 는 TCP send buffer 의 segment 들을 nagle / cwnd / window 제약 아래
+ * NIC queue 로 흘려보내는 control path 함수다. entry timestamp 를 starts 에 stash 하고 ret
+ * 시점에 latency 를 산정해 control path 의 throttle 비용을 노출한다. seen_write_xmit flag
+ * 로 같은 tid 의 nested 또는 반복 호출에서 첫 회 latency 만 측정한다.
+ */
+SEC("kprobe/tcp_write_xmit")
+int BPF_KPROBE(handle_tcp_write_xmit, struct sock *sk)
+{
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    struct netobs_start_info *s;
+
+    s = bpf_map_lookup_elem(&starts, &tid);
+    if (!s || s->seen_write_xmit)
+        return 0;
+
+    s->ts_write_xmit = bpf_ktime_get_ns();
+    s->seen_write_xmit = 1;
+    return 0;
+}
+
+SEC("kretprobe/tcp_write_xmit")
+int BPF_KRETPROBE(handle_tcp_write_xmit_ret)
+{
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    struct netobs_start_info *s;
+    __u64 now;
+    __u32 latency_us;
+
+    s = bpf_map_lookup_elem(&starts, &tid);
+    if (!s || !s->ts_write_xmit)
+        return 0;
+
+    now = bpf_ktime_get_ns();
+    latency_us = (__u32)((now - s->ts_write_xmit) / 1000);
+
+    emit_event(s, NETOBS_STAGE_TCP_WRITE_XMIT, 0, 0, latency_us);
+    return 0;
+}
+
+/* #82 __tcp_transmit_skb 는 개별 segment 단위 transmit entry 다. TSO/GSO 활성 시 단일
+ * sendmsg 가 N 회 호출을 트리거하므로 starts map slot race 회피를 위해 첫 segment 만
+ * latency 를 측정한다 (seen_transmit flag). 후속 segment 는 stage event 자체를 skip 한다.
+ */
+SEC("kprobe/__tcp_transmit_skb")
+int BPF_KPROBE(handle_tcp_transmit_skb, struct sock *sk, struct sk_buff *skb)
+{
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    struct netobs_start_info *s;
+
+    s = bpf_map_lookup_elem(&starts, &tid);
+    if (!s || s->seen_transmit)
+        return 0;
+
+    s->ts_transmit_skb = bpf_ktime_get_ns();
+    s->seen_transmit = 1;
+    return 0;
+}
+
+SEC("kretprobe/__tcp_transmit_skb")
+int BPF_KRETPROBE(handle_tcp_transmit_skb_ret)
+{
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    struct netobs_start_info *s;
+    __u64 now;
+    __u32 latency_us;
+
+    s = bpf_map_lookup_elem(&starts, &tid);
+    if (!s || !s->ts_transmit_skb)
+        return 0;
+
+    now = bpf_ktime_get_ns();
+    latency_us = (__u32)((now - s->ts_transmit_skb) / 1000);
+
+    emit_event(s, NETOBS_STAGE_TCP_TRANSMIT_SKB, 0, 0, latency_us);
+    return 0;
+}
+
 SEC("kprobe/veth_xmit")
 int BPF_KPROBE(handle_veth_xmit, struct sk_buff *skb)
 {
