@@ -48,6 +48,9 @@ func NewWebhookHandler(reg *registry.Registry, src registry.Sources, st *store.S
 				continue
 			}
 			summary, ok := reg.Dispatch(alertname, a.Labels, src)
+			// store.Set 의 두 번째 반환값이 false 면 cap 초과로 신규 alertname 이 거부된 케이스다.
+			// 적대적 webhook 으로 임의 alertname 이 무한 도달해도 store 메모리가 폐쇄된다. 등록
+			// alert 9 종은 항상 store 에 자리가 있어 진단 흐름이 끊기지 않는다.
 			st.Set(summary)
 			if ok {
 				// mapping 등록 alert (9 종) 만 metrics 에 emit 해 alert_name 라벨 카디널리티 폐쇄성
