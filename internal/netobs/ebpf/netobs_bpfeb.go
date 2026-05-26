@@ -44,7 +44,7 @@ type NetObsNetobsStartInfo struct {
 	SndCwnd       uint32
 	SrttUs        uint32
 	SndSsthresh   uint32
-	_             [4]byte
+	PadAlign      [4]uint8
 	TsWriteXmit   uint64
 	TsTransmitSkb uint64
 	SeenWriteXmit uint8

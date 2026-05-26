@@ -90,6 +90,13 @@ struct netobs_start_info {
     __u32 srtt_us;
     __u32 snd_ssthresh;
 
+    /* snd_ssthresh (u32) 뒤 ts_write_xmit (u64) 의 8-byte align 으로 컴파일러가 자동 4-byte
+     * padding 을 삽입한다. Go 측 generated NetObsNetobsStartInfo 에는 명시적 _ [4]byte 슬롯이
+     * 들어가 있으므로 C 측에도 본 슬롯을 명시 선언해 컴파일러 의존성 없이 layout 일관성을
+     * 보장한다.
+     */
+    __u8  pad_align[4];
+
     /* #82 send path stage 분해. tcp_write_xmit / __tcp_transmit_skb 의 entry timestamp 를
      * carry-over 해 kretprobe 시점에서 latency 산정에 사용한다. seen_transmit 는 TSO/GSO 활성
      * 시 단일 sendmsg 가 N 회의 __tcp_transmit_skb 를 트리거할 때 첫 segment 만 latency 를 측정

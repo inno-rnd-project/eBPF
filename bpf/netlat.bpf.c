@@ -325,6 +325,15 @@ int BPF_KPROBE(handle_tcp_write_xmit, struct sock *sk)
     if (!s || s->seen_write_xmit)
         return 0;
 
+    /* tcp_write_xmit 가 softirq (timer-based retransmit, ack 처리) 컨텍스트에서 호출될 때
+     * current task 의 tid 는 인터럽트당한 임의 process 의 tid 를 빌려 쓴다. 그 tid 가 우연히
+     * starts 에 entry 를 가진 process 라면 unrelated socket 의 start_info 를 잘못 갱신해 wrong
+     * latency 가 emit 된다. sendmsg entry 시점에 stash 된 socket_cookie 와 현재 sk 의 cookie 를
+     * 비교해 같은 socket 의 호출만 통과시킨다. cookie 불일치 시 skip 으로 cross-socket race 를
+     * 차단한다. */
+    if (get_socket_cookie(sk) != s->socket_cookie)
+        return 0;
+
     s->ts_write_xmit = bpf_ktime_get_ns();
     s->seen_write_xmit = 1;
     return 0;
@@ -367,6 +376,13 @@ int BPF_KPROBE(handle_tcp_transmit_skb, struct sock *sk, struct sk_buff *skb)
 
     s = bpf_map_lookup_elem(&starts, &tid);
     if (!s || s->seen_transmit)
+        return 0;
+
+    /* tcp_write_xmit 과 동일 race 가드. __tcp_transmit_skb 가 softirq 컨텍스트에서 호출될 때
+     * tid 차용으로 인한 cross-socket race 를 차단한다. socket_cookie 가드가 본 PR 의 self-review
+     * 단계에서 발견된 tcp_transmit_skb p99 524ms outlier 의 진짜 원인이며 본 가드로 wrong socket
+     * 의 ts set 자체가 막힌다. */
+    if (get_socket_cookie(sk) != s->socket_cookie)
         return 0;
 
     s->ts_transmit_skb = bpf_ktime_get_ns();
