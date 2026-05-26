@@ -206,6 +206,11 @@ func main() {
 			// Collector가 stale pointer로 매 scrape마다 EBADF errno를 받지 않도록 명시적으로
 			// invalidate한다. 이후 Collect는 nil-map 가드로 빈 결과를 반환한다.
 			podBytesCollector.SetMap(nil)
+			// BPF runtime 이 종료된 시점에 readiness gate 도 false 로 reset 한다. 이렇게 두면
+			// /readyz 가 즉시 503 을 돌려주어 Kubernetes Service endpoint 에서 제외되고, kubelet
+			// 의 readiness probe 가 fail 후 Service 트래픽이 본 pod 으로 라우팅되지 않는다. BPF
+			// 없는 좀비 상태로 stale 메트릭만 노출하는 자리를 막는다.
+			ebpfReady.Store(false)
 			errCh = nil
 
 		case <-doneSignal:

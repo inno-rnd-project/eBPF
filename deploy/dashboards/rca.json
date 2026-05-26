@@ -34,7 +34,7 @@
       "fieldConfig": { "defaults": { "custom": { "align": "left" } } },
       "targets": [
         {
-          "expr": "rca_summary_last_summary_info",
+          "expr": "max by(alert_name, dominant_dimension, top_suspect, primary_drop_flow) (rca_summary_last_summary_info)",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -77,8 +77,8 @@
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
       "targets": [
         {
-          "expr": "up{job=\"rca-summarizer\"}",
-          "legendFormat": "{{instance}}",
+          "expr": "max by(job) (up{job=\"rca-summarizer\"})",
+          "legendFormat": "{{job}}",
           "refId": "A"
         }
       ]
@@ -100,7 +100,7 @@
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
       "targets": [
         {
-          "expr": "rca_summary_emitted_total",
+          "expr": "max by(alert_name) (rca_summary_emitted_total)",
           "legendFormat": "{{alert_name}}",
           "refId": "A"
         }
