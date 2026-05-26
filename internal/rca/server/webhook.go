@@ -21,13 +21,19 @@ type alertmanagerAlert struct {
 	Labels map[string]string `json:"labels"`
 }
 
+// MaxWebhookPayloadBytes 는 단일 Alertmanager webhook payload 의 상한이다. 1 MiB 면 Alertmanager
+// 가 group_interval 단위로 burst 발송하는 일반 케이스의 수십 배라 정상 운영에는 영향이 없고,
+// 비정상 대용량 payload 가 본 프로세스의 메모리를 점유하는 케이스를 차단한다.
+const MaxWebhookPayloadBytes = 1 << 20
+
 // NewWebhookHandler 는 POST /webhook 핸들러를 만든다. payload 의 firing 알람만 처리하고
-// resolved 알람은 emit 없이 200 으로 ack 한다. mapping 미등록 alert 는 raw labels echo back 한
-// RCASummary 를 store 에 그대로 보관해 silent drop 을 회피한다.
+// resolved 알람은 emit 없이 200 으로 ack 한다. mapping 미등록 alert 는 store 에는 raw labels
+// echo back 한 RCASummary 를 그대로 보관해 silent drop 을 회피하지만, metrics 에는 emit 하지
+// 않아 등록 alert 9 종으로 라벨 카디널리티가 폐쇄된다.
 func NewWebhookHandler(reg *registry.Registry, src registry.Sources, st *store.Store, met *rcametrics.Metrics) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var p alertmanagerPayload
-		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxWebhookPayloadBytes)).Decode(&p); err != nil {
 			http.Error(w, "invalid payload: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -41,9 +47,14 @@ func NewWebhookHandler(reg *registry.Registry, src registry.Sources, st *store.S
 			if alertname == "" {
 				continue
 			}
-			summary, _ := reg.Dispatch(alertname, a.Labels, src)
+			summary, ok := reg.Dispatch(alertname, a.Labels, src)
 			st.Set(summary)
-			met.Record(summary)
+			if ok {
+				// mapping 등록 alert (9 종) 만 metrics 에 emit 해 alert_name 라벨 카디널리티 폐쇄성
+				// 을 보장한다. 외부에서 임의 alertname 으로 webhook 이 도달해도 메트릭 시리즈가
+				// 폭증하지 않는다. 미등록 alert 의 진단 흐름은 /rca endpoint 의 store entry 로 유지.
+				met.Record(summary)
+			}
 			processed++
 		}
 

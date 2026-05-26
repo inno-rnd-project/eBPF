@@ -4,10 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
 )
+
+// MaxSnapshotResponseBytes 는 correlation-exporter /snapshot 응답의 상한이다. Top-N 기본 10 *
+// dimension 4 * cluster 활성 victim 수백 단위라 일반 운영에서는 수십 KB 이하이며, 1 MiB 한도
+// 는 비정상 대용량 응답이 본 프로세스 메모리를 점유하는 케이스를 방어한다.
+const MaxSnapshotResponseBytes = 1 << 20
 
 // httpSnapshotSource 는 correlation-exporter 의 /snapshot endpoint 에서 NoisyNeighbor 리스트를
 // HTTP GET 으로 가져와 staleCache 에 저장한다. cache hit 시 HTTP 호출을 건너뛰어 webhook 응답
@@ -86,7 +92,7 @@ func (s *httpSnapshotSource) doFetch(ctx context.Context) ([]snapshotEntry, erro
 	}
 
 	var raw []wireNeighbor
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, MaxSnapshotResponseBytes)).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}
 

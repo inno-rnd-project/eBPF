@@ -5,6 +5,7 @@
 package sources
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -53,28 +54,46 @@ func New(snapshotURL, prometheusURL string, fetchTimeout, snapshotTTL time.Durat
 	}
 }
 
-// TopNeighbors 는 snapshotSource 에서 victim 매칭 후 Top-N 을 잘라 돌려준다. snapshot fetch /
-// parse 실패 시 빈 슬라이스를 돌려주어 mapping 이 fallback 경로로 진입한다.
+// TopNeighbors 는 snapshotSource 에서 victim 매칭 entry 를 모두 모은 뒤 Score 절대값 내림차순
+// 으로 정렬해 상위 topN 을 돌려준다. correlation-exporter snapshot 은 (victim, dimension, rank)
+// 그룹 단위 정렬이라 victim 매칭 entry 가 등장 순서로는 가장 강한 score 가 [0] 이라는 보장이 없다.
+// dispatch 측 (registry idle / gpuobs mapping) 은 [0] 만 참조하므로 본 자리에서 정렬을 강제해야
+// 진짜 dominant suspect 가 채택된다. snapshot fetch / parse 실패 시 빈 슬라이스를 돌려주어
+// mapping 이 fallback 경로로 진입한다.
 func (s *Sources) TopNeighbors(victimNamespace, victimPod string) []registry.NeighborInfo {
 	snap := s.snapshot.fetch()
-	out := make([]registry.NeighborInfo, 0, s.topN)
+	candidates := make([]registry.NeighborInfo, 0, len(snap))
 	for _, n := range snap {
+		if n.VictimNamespace != victimNamespace || n.VictimPod != victimPod {
+			continue
+		}
 		if n.SuspectNamespace == victimNamespace && n.SuspectPod == victimPod {
 			continue // self-match 회피
 		}
-		if n.VictimNamespace == victimNamespace && n.VictimPod == victimPod {
-			out = append(out, registry.NeighborInfo{
-				SuspectNamespace: n.SuspectNamespace,
-				SuspectPod:       n.SuspectPod,
-				Dimension:        n.Dimension,
-				Score:            n.Score,
-			})
-			if len(out) >= s.topN {
-				break
-			}
-		}
+		candidates = append(candidates, registry.NeighborInfo{
+			SuspectNamespace: n.SuspectNamespace,
+			SuspectPod:       n.SuspectPod,
+			Dimension:        n.Dimension,
+			Score:            n.Score,
+		})
 	}
-	return out
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return absScore(candidates[i].Score) > absScore(candidates[j].Score)
+	})
+	if len(candidates) > s.topN {
+		candidates = candidates[:s.topN]
+	}
+	return candidates
+}
+
+// absScore 는 Pearson 상관계수의 부호와 무관하게 상관 강도만 비교하기 위한 헬퍼다. NoisyNeighbor
+// 의 Score 는 max_abs_value 라 이미 비음수지만 향후 signed score 가 도입되어도 본 자리의 정렬
+// 의미가 깨지지 않게 한다.
+func absScore(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // TopDropFlows 는 promQLSource 에 namespace 필터 instant query 를 위임한다. fetch 실패 시 빈

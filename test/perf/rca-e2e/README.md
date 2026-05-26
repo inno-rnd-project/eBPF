@@ -17,9 +17,10 @@
 ./verify.sh
 ```
 
-본 스크립트는 cpu kind 부하 인가 후 60 초 안에 `GPUIdleWithCPUThrottle` alert 에 대한
-RCA 요약 응답의 `dominant_dimension` 필드가 `cpu` 인지 확인한다. 마지막에는 메모리 규칙에
-따라 injector Job 을 정리한다.
+본 스크립트는 cpu kind 부하 인가 후 최대 360 초 (15 초 간격 polling) 안에
+`GPUIdleWithCPUThrottle` alert 에 대한 RCA 요약 응답의 `dominant_dimension` 필드가 `cpu` 인지
+확인한다. 임계값은 `RCA_E2E_TIMEOUT` env 로 override 가능하다. 마지막에는 메모리 규칙에 따라
+injector Job 을 정리한다.
 
 ## 종료 코드
 

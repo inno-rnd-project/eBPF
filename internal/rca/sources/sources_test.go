@@ -78,6 +78,34 @@ func TestSources_TopNeighborsFiltersByVictim(t *testing.T) {
 	}
 }
 
+// TestSources_TopNeighborsSortedByScoreDesc 는 correlation-exporter snapshot 이 (victim, dimension,
+// rank) 그룹 정렬이라 같은 victim 의 dimension 사전순 첫 entry 가 가장 강한 score 가 아닐 수 있는
+// 케이스에서 TopNeighbors 가 score 절대값 내림차순으로 재정렬해 진짜 dominant suspect 를 [0] 으로
+// 노출하는지 검증한다.
+func TestSources_TopNeighborsSortedByScoreDesc(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// snapshot 등장 순서가 (victim, dimension, rank) 정렬이라 weakSuspect 가 strongSuspect 보다
+		// 먼저 등장하는 시나리오. 정렬 없이 단순 break 하면 [0] 이 weakSuspect 가 된다.
+		_, _ = w.Write([]byte(`[
+			{"victim":{"namespace":"default","pod":"v","pod_uid":"uv"}, "suspect":{"namespace":"noisy","pod":"weak","pod_uid":"u-weak"}, "dimension":"cpu", "score":0.4},
+			{"victim":{"namespace":"default","pod":"v","pod_uid":"uv"}, "suspect":{"namespace":"noisy","pod":"strong","pod_uid":"u-strong"}, "dimension":"memory", "score":0.95}
+		]`))
+	}))
+	defer srv.Close()
+
+	s := New(srv.URL, "", time.Second, time.Minute, 5)
+	got := s.TopNeighbors("default", "v")
+	if len(got) != 2 {
+		t.Fatalf("got %d neighbors; want 2", len(got))
+	}
+	if got[0].SuspectPod != "strong" {
+		t.Errorf("got[0].SuspectPod=%q; want strong (highest score)", got[0].SuspectPod)
+	}
+	if got[0].Score != 0.95 {
+		t.Errorf("got[0].Score=%v; want 0.95", got[0].Score)
+	}
+}
+
 // TestHttpPromQLSource_DecodesTopkResult 는 Prometheus instant query 응답의 vector 형식이 정확히
 // DropFlowInfo 슬라이스로 변환되는지 검증한다.
 func TestHttpPromQLSource_DecodesTopkResult(t *testing.T) {

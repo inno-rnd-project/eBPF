@@ -192,7 +192,10 @@ func TestRCAHandler_AllReturnsArray(t *testing.T) {
 	r, _ := http.Post(srv.URL+"/webhook", "application/json", strings.NewReader(p))
 	r.Body.Close()
 
-	resp, _ := http.Get(srv.URL + "/rca")
+	resp, err := http.Get(srv.URL + "/rca")
+	if err != nil {
+		t.Fatalf("GET /rca: %v", err)
+	}
 	defer resp.Body.Close()
 	var got []store.Entry
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
@@ -226,5 +229,45 @@ func TestWebhook_UnknownAlertEchoesRawLabels(t *testing.T) {
 	r.Body.Close()
 	if _, ok := st.Get("NotMapped"); !ok {
 		t.Errorf("unmapped alert should still be stored for diagnostic")
+	}
+}
+
+// TestWebhook_UnknownAlertSkipsMetricsEmit 는 mapping 미등록 alert 가 store 에는 저장되지만
+// metrics emit 은 건너뛰어 rca_summary_emitted_total 의 alert_name 라벨이 9 종으로 폐쇄되는지
+// 검증한다. 외부에서 임의 alertname 으로 webhook 이 도달해도 cardinality 가 폭증하지 않는다.
+func TestWebhook_UnknownAlertSkipsMetricsEmit(t *testing.T) {
+	mux, _, met, _ := fixtures(t)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	p := `{"alerts":[{"status":"firing","labels":{"alertname":"AdversarialNoise","foo":"bar"}}]}`
+	r, _ := http.Post(srv.URL+"/webhook", "application/json", strings.NewReader(p))
+	r.Body.Close()
+
+	cv, ok := met.Collectors()[0].(*prometheus.CounterVec)
+	if !ok {
+		t.Fatalf("collectors[0] not CounterVec")
+	}
+	if got := testutil.ToFloat64(cv.WithLabelValues("AdversarialNoise")); got != 0 {
+		t.Errorf("emitted_total{AdversarialNoise}=%v; want 0 (unmapped alert must not emit metrics)", got)
+	}
+}
+
+// TestWebhook_OversizedPayloadRejected 는 MaxWebhookPayloadBytes 를 넘는 본문이 400 응답으로
+// 차단되는지 검증한다. http.MaxBytesReader 가 한도 초과 시 ReadAll 단계에서 에러를 돌려준다.
+func TestWebhook_OversizedPayloadRejected(t *testing.T) {
+	mux, _, _, _ := fixtures(t)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// 한도 (1 MiB) 보다 큰 dummy payload. 정상적이지 않은 JSON 이라도 ReadAll 단계에서 차단된다.
+	huge := strings.Repeat("a", (1<<20)+1024)
+	resp, err := http.Post(srv.URL+"/webhook", "application/json", strings.NewReader(huge))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Errorf("status=%d; want non-200 (oversized payload must be rejected)", resp.StatusCode)
 	}
 }

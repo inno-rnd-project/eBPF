@@ -2,7 +2,8 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: rca-e2e-cpu-throttle
-  namespace: ebpf-project
+  # namespace 는 verify.sh 의 RCA_E2E_NAMESPACE override 와 일관성을 위해 본 manifest 에서
+  # 생략한다. verify.sh 가 kubectl apply -n "$NAMESPACE" 로 명시 주입한다.
   labels:
     app.kubernetes.io/name: workload-injector
     app.kubernetes.io/part-of: ebpf-project

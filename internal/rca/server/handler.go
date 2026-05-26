@@ -1,7 +1,8 @@
-// Package server 는 rca-summarizer 의 HTTP mux 와 stub handler 를 정의한다. mapping registry,
-// Top-N source, in-memory Store 등 비즈니스 로직은 후속 commit 에서 본 mux 의 /webhook 과
-// /rca handler 에 wire-up 된다. correlation-exporter 의 custom mux 패턴을 차용해 readiness
-// gate 와 prometheus registry 노출을 동일 구조로 둔다.
+// Package server 는 rca-summarizer 의 HTTP mux 와 endpoint handler 를 정의한다. Options 에
+// 주입된 webhook / rca handler 가 mapping registry, Top-N source, in-memory Store 와 결합되어
+// /webhook, /rca 두 경로에서 실제 RCA 산정 흐름을 처리한다. nil handler 가 주입된 경로는 501
+// Not Implemented 를 돌려줘 부분 구성 단계의 lifecycle 검증을 허용한다. correlation-exporter
+// 의 custom mux 패턴을 차용해 readiness gate 와 prometheus registry 노출을 동일 구조로 둔다.
 package server
 
 import (
@@ -14,9 +15,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// Options 는 NewMux 가 받는 외부 의존을 묶는다. Webhook 과 RCA 는 후속 commit 에서 mapping +
-// Store + Sources 로 채워질 핸들러다. 본 commit 의 skeleton 은 두 핸들러를 nil 로 받으면 501
-// Not Implemented 를 돌려줘 lifecycle 만 검증 가능한 상태로 둔다.
+// Options 는 NewMux 가 받는 외부 의존을 묶는다. Webhook 과 RCA 는 mapping registry + Store +
+// Sources 로 wire-up 된 실 핸들러를 받는다. 두 핸들러가 nil 로 비어 있으면 501 Not Implemented
+// 를 돌려줘 부분 구성 또는 단위 테스트의 lifecycle 만 검증 가능한 상태로 둔다.
 type Options struct {
 	Registry *prometheus.Registry
 	Ready    *atomic.Bool
@@ -70,8 +71,8 @@ func NewMux(opts Options) http.Handler {
 }
 
 // methodGate 는 inner 가 nil 이면 501 Not Implemented 를 반환하고, HTTP method 가 기대와 다르면
-// 405 Method Not Allowed 를 반환한다. skeleton commit 에서 inner=nil 케이스가 lifecycle 검증을
-// 통과하면서도 운영자가 본 endpoint 가 미구현임을 즉시 알 수 있게 한다.
+// 405 Method Not Allowed 를 반환한다. nil inner 케이스는 부분 구성 단계의 lifecycle 검증과
+// 단위 테스트가 endpoint 가 의도적으로 비어 있음을 명확히 구분 가능하게 한다.
 func methodGate(method string, inner http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != method {

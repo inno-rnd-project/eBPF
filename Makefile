@@ -75,7 +75,8 @@ BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 	check-prometheus-rules \
 	build-correlation-debug \
 	build-correlation-exporter image-build-correlation-exporter image-push-correlation-exporter \
-	build-workload-injector image-build-workload-injector image-push-workload-injector
+	build-workload-injector image-build-workload-injector image-push-workload-injector \
+	build-rca-summarizer image-build-rca-summarizer image-push-rca-summarizer
 
 # ============================================================================
 # Tests

@@ -1,9 +1,11 @@
-// rca-summarizer 는 Alertmanager webhook 을 받아 발화 alert 의 root cause analysis 요약을
-// 30 초 안에 산출해 /rca endpoint 로 노출하는 long-running 프로세스다. mapping registry 와 Top-N
-// source 는 후속 commit 에서 채워지며 본 binary 의 책임은 HTTP server lifecycle 과 config 관리다.
+// rca-summarizer 는 Alertmanager webhook 을 받아 alert 별 RCA 요약을 조합하는 long-running
+// 프로세스다. /webhook 으로 수신한 발화 / 해결 이벤트를 mapping registry 로 dispatch 해 source
+// 결과 (correlation-exporter snapshot, Prometheus instant query) 를 모으고 in-memory Store 와
+// Prometheus metrics 에 반영한 뒤 /rca?alert=<name> JSON 응답과 /metrics 로 노출한다. webhook
+// 응답 wall-clock 상한은 cfg.webhookTimeout 으로 http.Server WriteTimeout 에 전파된다.
 //
 // cluster 에 Deployment 단일 replica 로 배치된다. kube-prometheus-stack 의 Alertmanager 가
-// AlertmanagerConfig 를 통해 /webhook 으로 발화 / 해결 알람을 보내고, kube-prometheus-stack 의
+// AlertmanagerConfig 를 통해 /webhook 으로 알람을 보내고, kube-prometheus-stack 의
 // ServiceMonitor 가 /metrics 를 scrape 한다.
 package main
 
@@ -108,6 +110,12 @@ func main() {
 		Addr:              cfg.listenAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		// webhookTimeout 을 ReadTimeout 과 WriteTimeout 에 전파해 wall-clock 상한을 강제한다.
+		// 본 상한 안에서 webhook handler 가 registry.Dispatch 와 sources 호출 (snapshot HTTP,
+		// Prometheus instant query) 을 모두 마쳐야 하며, 초과 시 클라이언트 (Alertmanager) 가
+		// timeout 으로 인지해 다음 group_interval 에서 재발송 한다.
+		ReadTimeout:  cfg.webhookTimeout,
+		WriteTimeout: cfg.webhookTimeout,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

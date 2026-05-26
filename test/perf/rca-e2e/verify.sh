@@ -29,13 +29,13 @@ RCA_URL="${RCA_E2E_RCA_URL:-http://${RCA_IP}:9850/rca}"
 echo "[setup] rca-summarizer URL: ${RCA_URL}"
 
 cleanup() {
-  echo "[cleanup] deleting injector Job"
-  kubectl delete -f "${SCRIPT_DIR}/cpu-throttle.yaml" --ignore-not-found=true --wait=false || true
+  echo "[cleanup] deleting injector Job from namespace ${NAMESPACE}"
+  kubectl delete -n "${NAMESPACE}" -f "${SCRIPT_DIR}/cpu-throttle.yaml" --ignore-not-found=true --wait=false || true
 }
 trap cleanup EXIT
 
-echo "[setup] applying cpu injector"
-kubectl apply -f "${SCRIPT_DIR}/cpu-throttle.yaml"
+echo "[setup] applying cpu injector to namespace ${NAMESPACE}"
+kubectl apply -n "${NAMESPACE}" -f "${SCRIPT_DIR}/cpu-throttle.yaml"
 
 echo "[poll] waiting up to ${TIMEOUT_SECONDS}s for ${ALERT} RCA summary"
 deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
