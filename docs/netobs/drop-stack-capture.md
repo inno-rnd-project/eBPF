@@ -29,9 +29,7 @@ drop 외 stage (send 7 종, rcv 4 종) 의 emit 경로 는 `stack_id = -1` 로 �
 
 `/proc/kallsyms` 는 DaemonSet 에 hostPath read-only 마운트 로 노출한다. `kptr_restrict=1` 환경 에서도 `privileged: true` 컨테이너 의 `CAP_SYSLOG` 로 실제 주소 reading 이 가능함 을 dev cluster 의 `netobs-agent` 에서 사전 검증했다.
 
-resolver 의 핫 패스 비용 은 `stack_id → (top_function, stack_hash)` LRU cache (cap 1024) 로 회피한다. cache miss 시 `BPF_MAP_TYPE_STACK_TRACE` 의 `Lookup(stack_id)` 으로 IP 배열 을 얻고 사전 로드된 in-memory sorted symbol map 으로 O(log n) 검색해 frame 별 함수명 을 산정한다.
-
-KASLR offset 은 `_text` 심볼 주소 기준 으로 정규화해 reboot 후 에도 동일 stack 이 동일 fingerprint 로 잡히게 한다. BPF program reload 시 stack_id 의미가 reset 되므로 `ebpfReady` false 전환 시 resolver cache 도 함께 invalidate 한다.
+resolver 의 핫 패스 비용 은 `stack_id → (top_function, stack_hash)` LRU cache (cap 1024) 로 회피한다. cache miss 시 `BPF_MAP_TYPE_STACK_TRACE` 의 `Lookup(stack_id)` 으로 IP 배열 을 얻고 사전 로드된 in-memory sorted symbol map 으로 O(log n) 검색해 frame 별 함수명 을 산정한다. IP 는 kallsyms 에서 추출된 절대 주소 그대로 비교 하며 `_text` base 는 `Resolver.Base()` 로 진단 노출 만 한다 (follow-up 의 cross-reboot stack identity 도입 시 정규화 base 로 활용 예정). BPF program reload 시 stack_id 의미가 reset 되므로 `ebpfReady` false 전환 시 resolver cache 도 함께 invalidate 한다.
 
 resolver 의 startup 이 실패해도 fail-open 정책 으로 stack 메트릭 만 skip 하고 기존 drop 메트릭 (`netobs_drop_events_labeled_total`, `netobs_drop_events_flow_total`) 은 정상 emit 한다.
 
@@ -45,11 +43,11 @@ resolver 의 startup 이 실패해도 fail-open 정책 으로 stack 메트릭 �
 
 ### stack_hash 의 의미
 
-`bpf_get_stackid` 가 반환하는 u32 stack id 를 hex 8 글자 로 표기 한다. stack 의 의미적 hash 가 아닌 단순 식별자 이며 BPF program reload 후 에는 동일 stack 이라도 다른 hash 로 잡힐 수 있다 (resolver cache invalidate 와 정합).
+`bpf_get_stackid` 가 반환하는 u32 stack id 를 hex 8 글자 로 표기 한다. stack 의 의미적 hash 가 아닌 단일 BPF program lifetime 안 에서만 유의미한 단순 식별자 이며 BPF program reload 후 에는 동일 stack 이라도 다른 hash 로 잡힐 수 있다 (resolver cache invalidate 와 정합). cross-reboot 또는 cross-reload stack identity 가 필요한 경우 follow-up 에서 IP 정규화 기반 fingerprint 로 확장한다.
 
 ## cardinality 가드
 
-기존 `DropFlowGuard` 와 동일 패턴 으로 `NetObsDropStackAllowNamespaces` 와 `NetObsDropStackMaxActive` env 를 도입한다. `dropEventsLabeled` 가 admit 한 flow 에 한해 stack 메트릭 을 추가 emit 해 라벨 폭주 를 회피한다. `DropFlowGuard` 와 admit 결과 가 독립이라 별도 max_active 로 cap 한다.
+기존 `DropFlowGuard` 와 동일 패턴 으로 `NETOBS_DROP_STACK_ALLOW_NAMESPACES` 와 `NETOBS_DROP_STACK_MAX_ACTIVE` env 를 도입한다 (Go config struct 의 `DropStackAllowNamespaces` / `DropStackMaxActive` 필드 와 대응). `DropStackGuard` 가 admit 한 flow 에 한해 stack 메트릭 을 추가 emit 해 라벨 폭주 를 회피한다. `DropFlowGuard` 와 admit 결과 가 독립이라 별도 max_active 로 cap 한다.
 
 신규 메트릭 라벨 셋 은 다음 으로 고정한다.
 
@@ -85,4 +83,4 @@ kernel 요건 은 `bpf_get_stackid` 의 stable kernel 4.6 이상, `BPF_MAP_TYPE_
 
 ## 회귀 검증
 
-dev cluster 의 자연 drop 6.79/s (`NOT_SPECIFIED`, `QUEUE_PURGE`, `REASON_1`, `TC_EGRESS`, `QDISC_DROP`) 와 `observability-test` 의 cilium CNP DROP rule 을 활용해 reason 별 stack 분포 가 노출 되는지 확인 한다. CNP DROP 의 `kfree_skb_reason` 실제 호출 여부 는 `test/perf/drop-stack/verify.sh` 작업 시작 전에 `bpftrace` 로 사전 확인 하고 미호출 시 `nc` 비-listening 포트 로 `TCP_CLOSE` reason 을 유발 하는 fallback trigger 로 대체한다.
+dev cluster 의 자연 drop 6.79/s (`NOT_SPECIFIED`, `QUEUE_PURGE`, `REASON_1`, `TC_EGRESS`, `QDISC_DROP`) 와 allow-list 등록 namespace 의 워크로드 drop 을 활용해 reason 별 stack 분포 가 노출 되는지 확인 한다. `test/perf/drop-stack/verify.sh` 는 auto 모드 에서 `nc` 비-listening 포트 의 `TCP_CLOSE` reason trigger (`nc-noport`) 로 고정 동작 하며 `DROP_STACK_TRIGGER_MODE=cnp-drop` env override 로 cilium CNP DROP rule trigger 로 전환 가능 하다. CNP DROP 의 `kfree_skb_reason` 호출 여부 사전 점검 은 follow-up 으로 두며 운영자 가 필요 시 노드 에서 `bpftrace` 로 수동 확인 한다.

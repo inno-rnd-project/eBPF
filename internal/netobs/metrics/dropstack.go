@@ -35,12 +35,13 @@ var (
 	// 한다.
 	dropStackTopFunctionAdmitter = newTopFunctionAdmitter(64)
 
-	// dropStackTotal 은 본 PR 의 신규 메트릭 이다. dropEventsLabeled admit 후 추가 emit 되며 라벨 셋
-	// 은 docs/netobs/drop-stack-capture.md 의 명세 와 정합 한다.
+	// dropStackTotal 은 본 PR 의 신규 메트릭 이다. DropStackGuard.Admit 통과 와 resolver 의 Resolve
+	// ok=true 두 조건 을 모두 만족 하는 drop event 에 대해서 만 추가 emit 되며 라벨 셋 은 docs/netobs/
+	// drop-stack-capture.md 의 명세 와 정합 한다.
 	dropStackTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "netobs_drop_stack_total",
-			Help: "Drop events with kernel stack capture for #83. Emitted only after dropEventsLabeled admits the flow and the userspace symbol resolver successfully resolves the top function. top_function is folded to \"other\" beyond the first 64 unique values to cap label cardinality. stack_hash is the hex 8-char form of bpf_get_stackid's u32 return value and is meaningful only within a single BPF program lifetime.",
+			Help: "Drop events with kernel stack capture for #83. Emitted only when DropStackGuard.Admit allows the flow (namespace allow-list and top-N LRU) and the userspace symbol resolver successfully resolves the top function. top_function is folded to \"other\" beyond the first 64 unique values to cap label cardinality. stack_hash is the hex 8-char form of bpf_get_stackid's u32 return value and is meaningful only within a single BPF program lifetime.",
 		},
 		[]string{"node", "src_namespace", "src_workload", "drop_reason", "drop_category", "stack_hash", "top_function"},
 	)
