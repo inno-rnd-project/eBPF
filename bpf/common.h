@@ -139,10 +139,18 @@ struct netobs_event {
     /* #65 TCP 상태 메트릭. rcv_* stage 의 emit 에서만 채워지며 그 외 stage 는 0. srtt_us 는 kernel
      * scale 을 BPF 에서 >> 3 한 실제 µs 단위다. 본 3 필드 추가로 struct size 가 88 byte → 96 byte 로
      * 확장되며 (12 byte 필드 + 8-align trailing 의 정합) Go 측 Event 의 unsafe.Sizeof 회귀 가드도
-     * 96 으로 함께 갱신한다. */
+     * 96 으로 함께 갱신한다. #83 에서 stack_id 와 pad83 추가로 96 → 104 byte 로 재확장된다. */
     __u32 snd_cwnd;
     __u32 srtt_us;
     __u32 snd_ssthresh;
+
+    /* #83 drop event 의 kernel stack capture. handle_kfree_skb_reason 에서 bpf_get_stackid 의
+     * 반환값을 그대로 carry 하며 drop 외 stage 는 -1 로 명시 가드된다. __s32 4 byte 뒤에 컴파일러가
+     * 8-byte align trailing padding 4 byte 를 자동 삽입하나 #82 의 pad82 와 동일 패턴으로 pad83 을
+     * 명시 선언해 컴파일러 의존성 없이 C / Go layout 일관성을 확보한다. struct size 는 96 → 104
+     * byte 로 확장된다. */
+    __s32 stack_id;
+    __u8  pad83[4];
 };
 
 #endif

@@ -115,6 +115,7 @@ type NetObsProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type NetObsMapSpecs struct {
+	DropStacks    *ebpf.MapSpec `ebpf:"drop_stacks"`
 	Events        *ebpf.MapSpec `ebpf:"events"`
 	EventsDropped *ebpf.MapSpec `ebpf:"events_dropped"`
 	PodBytes      *ebpf.MapSpec `ebpf:"pod_bytes"`
@@ -148,6 +149,7 @@ func (o *NetObsObjects) Close() error {
 //
 // It can be passed to LoadNetObsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NetObsMaps struct {
+	DropStacks    *ebpf.Map `ebpf:"drop_stacks"`
 	Events        *ebpf.Map `ebpf:"events"`
 	EventsDropped *ebpf.Map `ebpf:"events_dropped"`
 	PodBytes      *ebpf.Map `ebpf:"pod_bytes"`
@@ -157,6 +159,7 @@ type NetObsMaps struct {
 
 func (m *NetObsMaps) Close() error {
 	return _NetObsClose(
+		m.DropStacks,
 		m.Events,
 		m.EventsDropped,
 		m.PodBytes,

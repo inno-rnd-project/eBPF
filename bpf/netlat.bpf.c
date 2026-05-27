@@ -41,6 +41,19 @@ struct {
     __type(value, __u32);
 } target_daddr SEC(".maps");
 
+/* #83 drop event 발생 시점의 kernel stack trace 를 보관하는 stack id 맵이다. handle_kfree_skb_reason
+ * 의 bpf_get_stackid 가 본 맵에 stack frame 배열을 적재하고 stack id 만 ringbuf event 에 carry 하는
+ * 패턴이다. PERF_MAX_STACK_DEPTH 는 linux/perf_event.h 의 127 로 vmlinux 의존성 없이 hardcode 한다.
+ * max_entries 10240 은 unique stack 의 일반적인 cap 이며 userspace symbol resolver 의 LRU cache cap
+ * 1024 와 함께 본 PR 의 cardinality 가드 첫 단계로 동작한다. */
+#define NETOBS_PERF_MAX_STACK_DEPTH 127
+struct {
+    __uint(type, BPF_MAP_TYPE_STACK_TRACE);
+    __uint(max_entries, 10240);
+    __type(key, __u32);
+    __type(value, __u64[NETOBS_PERF_MAX_STACK_DEPTH]);
+} drop_stacks SEC(".maps");
+
 /* pod_bytes 는 Pod 단위 RX/TX bytes / packets 누적 맵이다. LRU_PERCPU_HASH 라 hot path 의 CPU 간
  * contention 이 없고, max_entries 도달 시 오래된 entry 가 자연 evict 되어 종료 Pod 의 stale 시리즈
  * cleanup 부담을 BPF 측에서 자동 해소한다. max_entries 16384 는 (활성 Pod 4096) x (direction 2) x
@@ -212,11 +225,15 @@ static __always_inline void inc_ringbuf_dropped(void)
         (*v)++;        /* percpu 슬롯이라 비-원자 증가로 충분하다 */
 }
 
+/* emit_event 의 stack_id 인자는 #83 drop event 의 kernel stack capture 용이다. drop 외 stage 는
+ * 항상 -1 을 전달해 비-drop 메트릭 라벨에 stack 차원이 새지 않도록 가드한다. drop emit 만
+ * handle_kfree_skb_reason 에서 bpf_get_stackid 의 반환값을 그대로 넘긴다. */
 static __always_inline void emit_event(const struct netobs_start_info *s,
                                        __u8 stage,
                                        __u32 reason,
                                        __u32 ret,
-                                       __u32 latency_us)
+                                       __u32 latency_us,
+                                       __s32 stack_id)
 {
     struct netobs_event *e;
 
@@ -251,6 +268,12 @@ static __always_inline void emit_event(const struct netobs_start_info *s,
     e->snd_cwnd      = s->snd_cwnd;
     e->srtt_us       = s->srtt_us;
     e->snd_ssthresh  = s->snd_ssthresh;
+
+    e->stack_id      = stack_id;
+    e->pad83[0]      = 0;
+    e->pad83[1]      = 0;
+    e->pad83[2]      = 0;
+    e->pad83[3]      = 0;
 
     bpf_ringbuf_submit(e, 0);
 }
@@ -294,7 +317,7 @@ int BPF_KRETPROBE(handle_tcp_sendmsg_ret, int ret)
     now = bpf_ktime_get_ns();
     latency_us = (__u32)((now - s->ts_ns) / 1000);
 
-    emit_event(s, NETOBS_STAGE_SENDMSG_RET, 0, ret, latency_us);
+    emit_event(s, NETOBS_STAGE_SENDMSG_RET, 0, ret, latency_us, -1);
     s->ret_seen = 1;
 
     /* L4 egress 바이트는 ret > 0 (실제 전송 바이트) 일 때만 누적한다. ret <= 0 은 -errno 또는
@@ -354,7 +377,7 @@ int BPF_KRETPROBE(handle_tcp_write_xmit_ret)
     now = bpf_ktime_get_ns();
     latency_us = (__u32)((now - s->ts_write_xmit) / 1000);
 
-    emit_event(s, NETOBS_STAGE_TCP_WRITE_XMIT, 0, 0, latency_us);
+    emit_event(s, NETOBS_STAGE_TCP_WRITE_XMIT, 0, 0, latency_us, -1);
     /* ts_write_xmit 을 0 으로 reset 해 한 sendmsg 사이클 내 첫 회 측정 후 후속 kretprobe 호출
      * (TSO/GSO 다중 segment 또는 timer / ack 콜백 경로) 에서 stale ts 로 잘못된 거대 latency 가
      * emit 되지 않게 한다. seen_write_xmit 은 sendmsg entry 의 zero-init 으로 다음 사이클에서
@@ -405,7 +428,7 @@ int BPF_KRETPROBE(handle_tcp_transmit_skb_ret)
     now = bpf_ktime_get_ns();
     latency_us = (__u32)((now - s->ts_transmit_skb) / 1000);
 
-    emit_event(s, NETOBS_STAGE_TCP_TRANSMIT_SKB, 0, 0, latency_us);
+    emit_event(s, NETOBS_STAGE_TCP_TRANSMIT_SKB, 0, 0, latency_us, -1);
     /* tcp_write_xmit_ret 과 동일한 stale ts 가드. ts_transmit_skb 를 0 으로 reset 해 후속
      * kretprobe 호출에서 huge latency (예: 524ms 의 histogram bucket 상한 outlier) 가 emit 되는
      * 회귀를 막는다.
@@ -431,7 +454,7 @@ int BPF_KPROBE(handle_veth_xmit, struct sk_buff *skb)
     now = bpf_ktime_get_ns();
     latency_us = (__u32)((now - s->ts_ns) / 1000);
 
-    emit_event(s, NETOBS_STAGE_TO_VETH, 0, 0, latency_us);
+    emit_event(s, NETOBS_STAGE_TO_VETH, 0, 0, latency_us, -1);
     s->seen_veth = 1;
 
     if (s->ret_seen && s->seen_devq)
@@ -467,7 +490,7 @@ int BPF_KPROBE(handle_dev_queue_xmit, struct sk_buff *skb)
     now = bpf_ktime_get_ns();
     latency_us = (__u32)((now - s->ts_ns) / 1000);
 
-    emit_event(s, NETOBS_STAGE_TO_DEVQ, 0, 0, latency_us);
+    emit_event(s, NETOBS_STAGE_TO_DEVQ, 0, 0, latency_us, -1);
     s->seen_devq = 1;
 
     if (s->ret_seen && s->seen_veth)
@@ -494,7 +517,7 @@ int BPF_KPROBE(handle_tcp_retransmit_skb, struct sock *sk, struct sk_buff *skb, 
         return 0;
 
     bpf_get_current_comm(&s.comm, sizeof(s.comm));
-    emit_event(&s, NETOBS_STAGE_RETRANS, 0, 0, 0);
+    emit_event(&s, NETOBS_STAGE_RETRANS, 0, 0, 0, -1);
     return 0;
 }
 
@@ -568,7 +591,7 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
         fill_dev_from_skb(skb, &s);
 
     bpf_get_current_comm(&s.comm, sizeof(s.comm));
-    emit_event(&s, stage, 0, 0, 0);
+    emit_event(&s, stage, 0, 0, 0, -1);
 }
 
 /* #65 receive path stage 별 kprobe.
@@ -614,6 +637,7 @@ int BPF_KPROBE(handle_kfree_skb_reason, struct sk_buff *skb, int reason)
     struct netobs_start_info s = {};
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u16 family;
+    __s32 stack_id;
 
     sk = BPF_CORE_READ(skb, sk);
     if (!sk)
@@ -636,7 +660,13 @@ int BPF_KPROBE(handle_kfree_skb_reason, struct sk_buff *skb, int reason)
     if (!match_target(s.daddr))
         return 0;
 
+    /* #83 drop event 의 kernel stack capture. BPF_F_FAST_STACK_CMP 는 stack id 산정에 frame
+     * pointer 비교가 아닌 빠른 hash 기반 비교를 사용해 hot path 비용을 최소화한다. ctx 는 kprobe 의
+     * 호출 시점 register frame 이라 race 가드가 별도 필요하지 않다. 실패 시 -EFAULT 등 음수를 반환
+     * 하며 userspace resolver 는 stack_id < 0 인 event 의 stack 메트릭 emit 을 skip 한다. */
+    stack_id = bpf_get_stackid(ctx, &drop_stacks, BPF_F_FAST_STACK_CMP);
+
     bpf_get_current_comm(&s.comm, sizeof(s.comm));
-    emit_event(&s, NETOBS_STAGE_DROP, reason, 0, 0);
+    emit_event(&s, NETOBS_STAGE_DROP, reason, 0, 0, stack_id);
     return 0;
 }
