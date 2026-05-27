@@ -115,6 +115,11 @@ type Runtime struct {
 	// max_entries=1) 다. self-health refresher 가 baseline-then-delta 로 본 카운터를 읽어
 	// netobs_bpf_ringbuf_drops_total 에 누적한다.
 	EventsDropped *cebpf.Map
+	// DropStacks 는 #83 의 BPF_MAP_TYPE_STACK_TRACE 맵 (max_entries=10240) 이다. handle_kfree_skb_
+	// reason 의 bpf_get_stackid 가 본 맵에 stack frame 배열을 적재하고 stack id 를 ringbuf event 에
+	// carry 한다. userspace symbol resolver 가 본 맵을 Lookup(stack_id) 으로 조회해 IP 배열을 얻고
+	// kallsyms 로 frame 별 함수명을 산정한다.
+	DropStacks *cebpf.Map
 }
 
 // Run은 BPF 오브젝트 로드, 프로브 attach, ringbuf reader 준비가 모두 끝난 시점에
@@ -207,6 +212,7 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 			PodBytes:      objs.PodBytes,
 			Starts:        objs.Starts,
 			EventsDropped: objs.EventsDropped,
+			DropStacks:    objs.DropStacks,
 		})
 	}
 

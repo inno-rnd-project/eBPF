@@ -20,6 +20,7 @@ import (
 	"netobs/internal/netobs/metrics"
 	"netobs/internal/netobs/podbytes"
 	"netobs/internal/netobs/selfhealth"
+	"netobs/internal/netobs/symbols"
 	"netobs/internal/netobs/types"
 	"netobs/internal/server"
 )
@@ -51,6 +52,14 @@ func main() {
 	} else {
 		log.Printf("drop flow guard: disabled (NETOBS_DROP_FLOW_ALLOW_NAMESPACES empty)")
 	}
+	// #83 의 drop stack 메트릭 cardinality 가드. allow-list 가 비어 있으면 emit 자체가 skip 되어
+	// cardinality 0 series 로 유지된다.
+	if len(cfg.DropStackAllowNamespaces) > 0 {
+		metrics.SetDropStackGuard(metrics.NewDropStackGuard(cfg.DropStackAllowNamespaces, cfg.DropStackMaxActive))
+		log.Printf("drop stack guard: allow_namespaces=%v max_active=%d", cfg.DropStackAllowNamespaces, cfg.DropStackMaxActive)
+	} else {
+		log.Printf("drop stack guard: disabled (NETOBS_DROP_STACK_ALLOW_NAMESPACES empty)")
+	}
 
 	// #65 의 receive path TCP 상태 sample 을 수신 Pod 단위 gauge 로 노출하는 aggregator. Collector
 	// 인터페이스를 직접 구현해 prometheus.Registerer 에 등록되며, Record 가 rcv_* stage event 의 TCP
@@ -61,6 +70,10 @@ func main() {
 	log.Printf("tcp state aggregator: registered (rcv_demux/rcv_established/rcv_app)")
 
 	var ebpfReady atomic.Bool
+	// dropStackResolver 는 onReady 시점에 생성되며 ebpfReady false 전환 시 Invalidate 가 호출되어
+	// stale stack_id 매핑 회귀를 막는다. resolver init 실패 (kallsyms 미접근 등) 케이스는 nil 로 두어
+	// metrics 패키지가 stack 메트릭 emit 만 fail-open 으로 skip 한다.
+	var dropStackResolver atomic.Pointer[symbols.Resolver]
 	kr := kube.NewResolver(cfg.NodeName, cfg.MetadataRefresh)
 	enricher := metadata.NewEnricher(kr)
 
@@ -135,10 +148,21 @@ func main() {
 			ebpfReady.Store(true)
 			if rt != nil {
 				podBytesCollector.SetMap(rt.PodBytes)
+				// #83 의 drop stack resolver. kallsyms 접근 실패 또는 권한 부족으로 init 이 실패하면
+				// nil 로 두어 metrics 패키지가 stack 메트릭 emit 만 fail-open 으로 skip 한다.
+				resolver, err := symbols.New(cfg.KallsymsPath, rt.DropStacks, 1024,
+					metrics.IncDropStackResolverCacheHit, metrics.IncDropStackResolverCacheMiss)
+				if err != nil {
+					log.Printf("drop stack resolver: disabled (%v)", err)
+				} else {
+					dropStackResolver.Store(resolver)
+					metrics.SetDropStackResolver(resolver)
+					log.Printf("drop stack resolver: enabled (kallsyms=%s _text=%#x)", cfg.KallsymsPath, resolver.Base())
+				}
 				// self-health refresher 는 BPF map handle 이 준비된 시점에 한 번 spawn 한다.
 				// 구성 실패는 self-health 만 disable 하고 agent 전체 기동은 진행해 운영자가
 				// up{} 와 program_loaded 메트릭으로 1 차 진단을 시작할 수 있게 한다.
-				if rf, err := selfhealth.NewRefresher(rt.Starts, rt.PodBytes, rt.EventsDropped); err != nil {
+				if rf, err := selfhealth.NewRefresher(rt.Starts, rt.PodBytes, rt.EventsDropped, rt.DropStacks); err != nil {
 					log.Printf("self-health refresher: %v", err)
 				} else {
 					rf.Start(ctx)
@@ -209,8 +233,12 @@ func main() {
 			// BPF runtime 이 종료된 시점에 readiness gate 도 false 로 reset 한다. 이렇게 두면
 			// /readyz 가 즉시 503 을 돌려주어 Kubernetes Service endpoint 에서 제외되고, kubelet
 			// 의 readiness probe 가 fail 후 Service 트래픽이 본 pod 으로 라우팅되지 않는다. BPF
-			// 없는 좀비 상태로 stale 메트릭만 노출하는 자리를 막는다.
+			// 없는 좀비 상태로 stale 메트릭만 노출하는 자리를 막는다. #83 의 drop stack resolver
+			// 도 BPF reload 시 stack_id 의미가 reset 되므로 함께 Invalidate 한다.
 			ebpfReady.Store(false)
+			if r := dropStackResolver.Load(); r != nil {
+				r.Invalidate()
+			}
 			errCh = nil
 
 		case <-doneSignal:

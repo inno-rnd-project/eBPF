@@ -122,8 +122,12 @@ type Refresher struct {
 
 // NewRefresher 는 production 경로의 refresher 를 만든다. starts 와 pod_bytes 두 map 의 sizer 구성
 // 중 하나가 실패하면 본 함수가 에러를 돌려준다 (agent main 이 self-health 만 실패해도 전체 기동을
-// 막지 않도록 호출 측에서 log only 처리할 수 있도록 에러를 노출).
-func NewRefresher(starts, podBytes, eventsDropped *cebpf.Map) (*Refresher, error) {
+// 막지 않도록 호출 측에서 log only 처리할 수 있도록 에러를 노출). dropStacks 는 #83 의 stack trace
+// 맵으로 BPF_MAP_TYPE_STACK_TRACE 라 NextKey 동작이 cilium/ebpf 버전에 따라 다를 수 있다. sizer 구성
+// 자체는 Info 호출이라 항상 성공하며, Entries() 의 iterate 가 실패하면 refreshOnce 의 기존 log
+// + skip 패턴으로 utilization 메트릭만 emit 되지 않는다 (docs/netobs/drop-stack-capture.md 의 fallback
+// 명세와 정합).
+func NewRefresher(starts, podBytes, eventsDropped, dropStacks *cebpf.Map) (*Refresher, error) {
 	startsSizer, err := newBpfMapSizer("starts", starts)
 	if err != nil {
 		return nil, err
@@ -132,9 +136,17 @@ func NewRefresher(starts, podBytes, eventsDropped *cebpf.Map) (*Refresher, error
 	if err != nil {
 		return nil, err
 	}
+	sizers := []mapSizer{startsSizer, podBytesSizer}
+	if dropStacks != nil {
+		if stacksSizer, err := newBpfMapSizer("netobs_drop_stacks", dropStacks); err == nil {
+			sizers = append(sizers, stacksSizer)
+		} else {
+			log.Printf("selfhealth: drop stacks sizer skipped: %v", err)
+		}
+	}
 	return &Refresher{
 		drops:    bpfDropSource{m: eventsDropped},
-		sizers:   []mapSizer{startsSizer, podBytesSizer},
+		sizers:   sizers,
 		interval: DefaultRefreshInterval,
 	}, nil
 }

@@ -37,6 +37,12 @@ spec:
               value: "30s"
             - name: DROP_REASON_FORMAT_PATH
               value: "/sys/kernel/tracing/events/skb/kfree_skb/format"
+            # #83 drop event 의 kernel stack capture 가 사용 하는 kallsyms 경로 다. host 의
+            # /proc/kallsyms 를 그대로 bind mount 해 container 의 /host/proc/kallsyms 로 노출 하고
+            # 본 env 로 명시적 으로 가리켜 future container runtime 변경 / PID namespace 격리 변경
+            # 에도 의존성 이 안정적 으로 유지 되게 한다.
+            - name: NETOBS_KALLSYMS_PATH
+              value: "/host/proc/kallsyms"
           ports:
             - name: metrics
               containerPort: 9810
@@ -77,6 +83,12 @@ spec:
             - name: sys-kernel-debug
               mountPath: /sys/kernel/debug
               readOnly: true
+            # #83 drop stack capture 의 userspace symbol resolver 가 사용 하는 host /proc/kallsyms
+            # 의 read-only bind mount 다. privileged 컨테이너 의 CAP_SYSLOG 로 kptr_restrict=1
+            # 상태 에서도 실제 주소 reading 이 가능 함을 dev cluster 에서 사전 검증 했다.
+            - name: host-proc-kallsyms
+              mountPath: /host/proc/kallsyms
+              readOnly: true
       volumes:
         - name: sys-fs-bpf
           hostPath:
@@ -98,3 +110,7 @@ spec:
           hostPath:
             path: /sys/kernel/debug
             type: Directory
+        - name: host-proc-kallsyms
+          hostPath:
+            path: /proc/kallsyms
+            type: File

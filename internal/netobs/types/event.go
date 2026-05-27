@@ -12,20 +12,20 @@ import (
 )
 
 const (
-	StageSendmsgRet      = 1
-	StageToVeth          = 2
-	StageToDevQ          = 3
-	StageRetrans         = 4
-	StageDrop            = 5
-	StageRcvL3           = 6
-	StageRcvDemux        = 7
-	StageRcvEstablished  = 8
-	StageRcvApp          = 9
+	StageSendmsgRet     = 1
+	StageToVeth         = 2
+	StageToDevQ         = 3
+	StageRetrans        = 4
+	StageDrop           = 5
+	StageRcvL3          = 6
+	StageRcvDemux       = 7
+	StageRcvEstablished = 8
+	StageRcvApp         = 9
 	// #82 send path stage 4 분해. tcp_sendmsg (= StageSendmsgRet) 와 __dev_queue_xmit
 	// (= StageToDevQ) 사이의 두 stage 다. tcp_write_xmit 는 TCP control path, tcp_transmit_skb
 	// 는 개별 segment transmit entry 라 TSO/GSO 활성 시 첫 segment 만 latency 가 측정된다.
-	StageTcpWriteXmit    = 10
-	StageTcpTransmitSkb  = 11
+	StageTcpWriteXmit   = 10
+	StageTcpTransmitSkb = 11
 )
 
 type Event struct {
@@ -56,21 +56,29 @@ type Event struct {
 
 	// #65 TCP 상태 메트릭. rcv_* stage 의 emit 에서만 채워지며 그 외 stage 는 0. SrttUs 는 kernel
 	// 의 << 3 scale 을 BPF 단에서 >> 3 한 실제 µs 단위라 추가 변환이 필요 없다. 본 3 필드 추가로
-	// struct size 가 88 → 96 byte 로 확장되며 BPF 측 netobs_event 와 정합한다.
+	// struct size 가 88 → 96 byte 로 확장되며 BPF 측 netobs_event 와 정합한다. #83 에서 StackID 와
+	// Pad83 추가로 96 → 104 byte 로 재확장된다.
 	SndCwnd     uint32
 	SrttUs      uint32
 	SndSsthresh uint32
+
+	// #83 drop event 의 kernel stack capture. handle_kfree_skb_reason 의 bpf_get_stackid 반환값을
+	// 그대로 carry 하며 drop 외 stage 는 -1 로 명시 가드된다. BPF 측 netobs_event 의 stack_id 와 정합
+	// 하고, Pad83 슬롯은 컴파일러의 8-byte align trailing padding 을 명시 선언해 C / Go layout
+	// 일관성을 확보한다.
+	StackID int32
+	Pad83   [4]byte
 }
 
 type EnrichedEvent struct {
-	Raw            Event
-	Stage          string
-	CommText       string
-	Direction      string
-	TrafficScope   string
-	ObservedNode   string
-	SrcIPText      string
-	DstIPText      string
+	Raw          Event
+	Stage        string
+	CommText     string
+	Direction    string
+	TrafficScope string
+	ObservedNode string
+	SrcIPText    string
+	DstIPText    string
 	// ProtocolText 는 IP protocol number 의 사람 읽을 수 있는 라벨이다. drop flow 5-tuple 메트릭의
 	// protocol 라벨로 사용된다. 알려지지 않은 protocol 은 "unknown" 으로 표시한다.
 	ProtocolText   string
