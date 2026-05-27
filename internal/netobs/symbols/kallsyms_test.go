@@ -71,11 +71,11 @@ ffffffffa8eac3c0 T tcp_v4_rcv
 		ip   uint64
 		want string
 	}{
-		{0xffffffffa8d7fd30, "kfree_skb_reason"},                  // exact match
-		{0xffffffffa8d7fd50, "kfree_skb_reason"},                  // mid-function offset
-		{0xffffffffa8eac3c0, "tcp_v4_rcv"},                        // exact next symbol
-		{0xffffffffa7000000, ""},                                  // before _text
-		{0xffffffffa8d7fa01, "kfree_skb"},                         // mid kfree_skb
+		{0xffffffffa8d7fd30, "kfree_skb_reason"}, // exact match
+		{0xffffffffa8d7fd50, "kfree_skb_reason"}, // mid-function offset
+		{0xffffffffa8eac3c0, "tcp_v4_rcv"},       // exact next symbol
+		{0xffffffffa7000000, ""},                 // before _text
+		{0xffffffffa8d7fa01, "kfree_skb"},        // mid kfree_skb
 	}
 	for _, tc := range cases {
 		got := tbl.resolve(tc.ip)

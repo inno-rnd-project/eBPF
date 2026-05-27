@@ -12,20 +12,20 @@ import (
 )
 
 const (
-	StageSendmsgRet      = 1
-	StageToVeth          = 2
-	StageToDevQ          = 3
-	StageRetrans         = 4
-	StageDrop            = 5
-	StageRcvL3           = 6
-	StageRcvDemux        = 7
-	StageRcvEstablished  = 8
-	StageRcvApp          = 9
+	StageSendmsgRet     = 1
+	StageToVeth         = 2
+	StageToDevQ         = 3
+	StageRetrans        = 4
+	StageDrop           = 5
+	StageRcvL3          = 6
+	StageRcvDemux       = 7
+	StageRcvEstablished = 8
+	StageRcvApp         = 9
 	// #82 send path stage 4 분해. tcp_sendmsg (= StageSendmsgRet) 와 __dev_queue_xmit
 	// (= StageToDevQ) 사이의 두 stage 다. tcp_write_xmit 는 TCP control path, tcp_transmit_skb
 	// 는 개별 segment transmit entry 라 TSO/GSO 활성 시 첫 segment 만 latency 가 측정된다.
-	StageTcpWriteXmit    = 10
-	StageTcpTransmitSkb  = 11
+	StageTcpWriteXmit   = 10
+	StageTcpTransmitSkb = 11
 )
 
 type Event struct {
@@ -71,14 +71,14 @@ type Event struct {
 }
 
 type EnrichedEvent struct {
-	Raw            Event
-	Stage          string
-	CommText       string
-	Direction      string
-	TrafficScope   string
-	ObservedNode   string
-	SrcIPText      string
-	DstIPText      string
+	Raw          Event
+	Stage        string
+	CommText     string
+	Direction    string
+	TrafficScope string
+	ObservedNode string
+	SrcIPText    string
+	DstIPText    string
 	// ProtocolText 는 IP protocol number 의 사람 읽을 수 있는 라벨이다. drop flow 5-tuple 메트릭의
 	// protocol 라벨로 사용된다. 알려지지 않은 protocol 은 "unknown" 으로 표시한다.
 	ProtocolText   string

@@ -138,9 +138,9 @@ func (g *DropStackGuard) Size() int {
 // unique function 까지 admit 하고 cap 도달 후 신규 function 은 "other" 로 폴딩 해 startup 후 추가 된
 // 신규 caller frame 의 라벨 폭주 를 차단 한다.
 type topFunctionAdmitter struct {
-	mu      sync.Mutex
-	cap     int
-	admit   map[string]struct{}
+	mu       sync.Mutex
+	cap      int
+	admit    map[string]struct{}
 	overflow string
 }
 
