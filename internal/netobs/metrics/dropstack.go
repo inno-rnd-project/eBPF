@@ -6,6 +6,7 @@ package metrics
 import (
 	"container/list"
 	"sync"
+	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -23,8 +24,11 @@ var (
 	dropStackGuard *DropStackGuard
 
 	// dropStackResolverHandle 은 main agent 가 SetDropStackResolver 로 주입 하는 symbols.Resolver
-	// 핸들 이다. nil 일 때 는 stack 메트릭 emit 이 skip 되어 fail-open 정책 을 따른다.
-	dropStackResolverHandle dropStackResolver
+	// 핸들 을 atomic.Value 에 보관 한다. onReady 한 번 의 Store 와 event loop 의 다회 Load 패턴 에
+	// 대해 channel 송수신 happens-before 외 에 명시 적 동기화 를 제공 해 race detector 와 정합 한다.
+	// 비어 있을 때 (Store 미발생) Load 가 nil 을 반환 해 호출 측 의 nil 가드 가 fail-open 분기 를
+	// 그대로 탄다.
+	dropStackResolverHandle atomic.Value
 
 	// dropStackTopFunctionAdmitter 는 top_function 라벨 cardinality 가드 다. first-N admit 의 sticky
 	// 정책 으로 첫 64 개 unique function 만 admit 하고 cap 도달 후 신규 function 은 "other" 로 폴딩
@@ -179,10 +183,11 @@ func SetDropStackGuard(g *DropStackGuard) {
 	dropStackGuard = g
 }
 
-// SetDropStackResolver 는 main agent 가 symbols.Resolver 핸들 을 본 함수 로 주입 한다. nil 전달 시 는
-// resolver init 실패 (kallsyms 접근 불가 등) 케이스 로 stack 메트릭 emit 만 fail-open 으로 skip 된다.
+// SetDropStackResolver 는 main agent 가 symbols.Resolver 핸들 을 본 함수 로 주입 한다. resolver init
+// 실패 (kallsyms 접근 불가 등) 케이스 에 서 는 main 이 본 함수 를 호출 하지 않 으므로 atomic.Value
+// 가 비어 있는 채 로 유지 되어 recordDropStack 의 nil 가드 가 fail-open 분기 를 그대로 탄다.
 func SetDropStackResolver(r dropStackResolver) {
-	dropStackResolverHandle = r
+	dropStackResolverHandle.Store(r)
 }
 
 // IncDropStackResolverCacheHit 와 IncDropStackResolverCacheMiss 는 symbols.Resolver 의 hits / misses
@@ -198,13 +203,19 @@ func IncDropStackResolverCacheMiss() {
 
 // recordDropStack 은 dropEventsLabeled admit 후 stack 메트릭 을 추가 emit 한다. guard 또는 resolver
 // 가 nil 이거나 resolver 가 ok=false 를 돌려 주면 emit 자체 가 skip 된다. 본 함수 의 호출 사이트 는
-// Record 의 StageDrop 분기 한 곳 뿐 이며 별도 export 하지 않는다.
+// Record 의 StageDrop 분기 한 곳 뿐 이며 별도 export 하지 않는다. atomic.Value.Load 는 Store 미발생
+// 상태 에서 nil 을 반환 하므로 fail-open 분기 가 자연 스럽게 유지 된다.
 func recordDropStack(node, srcNs, srcWl, dropReason, dropCategory string,
 	stackID int32) {
-	if dropStackGuard == nil || dropStackResolverHandle == nil {
+	resolverVal := dropStackResolverHandle.Load()
+	if dropStackGuard == nil || resolverVal == nil {
 		return
 	}
-	top, hash, ok := dropStackResolverHandle.Resolve(stackID)
+	resolver, ok := resolverVal.(dropStackResolver)
+	if !ok || resolver == nil {
+		return
+	}
+	top, hash, ok := resolver.Resolve(stackID)
 	if !ok {
 		return
 	}

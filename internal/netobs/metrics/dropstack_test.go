@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"sync/atomic"
 	"testing"
 )
 
@@ -21,10 +22,11 @@ func (f *fakeResolver) Resolve(stackID int32) (string, string, bool) {
 
 // resetDropStackGlobals 는 패키지 전역 의 guard / resolver / admitter 상태 를 테스트 사이 에 초기화
 // 한다. 본 헬퍼 가 없으면 테스트 순서 에 따라 sticky top_function admit set 이 누적 되어 회귀 가드 가
-// 깨진다.
+// 깨진다. atomic.Value 는 첫 Store 의 concrete type 을 고정 하므로 빈 값 으로 재할당 해 type 도 함께
+// 리셋 한다.
 func resetDropStackGlobals() {
 	dropStackGuard = nil
-	dropStackResolverHandle = nil
+	dropStackResolverHandle = atomic.Value{}
 	dropStackTopFunctionAdmitter = newTopFunctionAdmitter(64)
 }
 
@@ -96,12 +98,13 @@ func TestRecordDropStack_FailOpenOnNilResolver(t *testing.T) {
 }
 
 // TestRecordDropStack_SkipsOnResolverNotOK 는 resolver 가 ok=false (음수 stack_id 또는 kallsyms
-// resolve 실패) 를 반환 할 때 stack 메트릭 emit 이 skip 되는지 검증 한다.
+// resolve 실패) 를 반환 할 때 stack 메트릭 emit 이 skip 되는지 검증 한다. atomic.Value 의 Store 가
+// fakeResolver 의 concrete type 을 그대로 보관 하므로 Load 의 type assertion 도 함께 회귀 가드 한다.
 func TestRecordDropStack_SkipsOnResolverNotOK(t *testing.T) {
 	resetDropStackGlobals()
 	dropStackGuard = NewDropStackGuard([]string{"ns"}, 100)
 	fr := &fakeResolver{ok: false}
-	dropStackResolverHandle = fr
+	SetDropStackResolver(fr)
 
 	recordDropStack("node1", "ns", "wl", "TCP_CLOSE", "tcp", 7)
 	if fr.calls != 1 {

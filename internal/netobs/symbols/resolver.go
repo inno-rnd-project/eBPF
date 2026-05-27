@@ -2,7 +2,6 @@ package symbols
 
 import (
 	"container/list"
-	"encoding/binary"
 	"fmt"
 	"sync"
 
@@ -136,19 +135,21 @@ func (r *Resolver) Base() uint64 {
 	return r.table.base
 }
 
+// lookupFrames 는 cilium/ebpf 의 Lookup 이 reflection 기반 으로 native endian 디코딩 을 처리 하도록
+// [PerfMaxStackDepth]uint64 배열 포인터 를 그대로 전달 한다. 수동 byte 버퍼 할당 과 binary.Native
+// Endian.Uint64 loop 가 제거 되어 hot path 비용 이 줄고 endianness 의존 도 라이브러리 측 에 위임 된다.
 func (r *Resolver) lookupFrames(stackID int32) ([]uint64, error) {
 	key := uint32(stackID)
-	buf := make([]byte, PerfMaxStackDepth*8)
-	if err := r.stackMap.Lookup(key, &buf); err != nil {
+	var pcs [PerfMaxStackDepth]uint64
+	if err := r.stackMap.Lookup(key, &pcs); err != nil {
 		return nil, err
 	}
 	frames := make([]uint64, 0, PerfMaxStackDepth)
-	for i := 0; i < PerfMaxStackDepth; i++ {
-		v := binary.NativeEndian.Uint64(buf[i*8 : (i+1)*8])
-		if v == 0 {
+	for _, ip := range pcs {
+		if ip == 0 {
 			break
 		}
-		frames = append(frames, v)
+		frames = append(frames, ip)
 	}
 	return frames, nil
 }
