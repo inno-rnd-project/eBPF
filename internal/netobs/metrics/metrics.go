@@ -223,6 +223,9 @@ func Register(reg prometheus.Registerer) {
 		bpfRingbufDropsTotal,
 		bpfMapUtilizationRatio,
 		informerSyncLagSeconds,
+		dropStackTotal,
+		dropStackResolverCacheHits,
+		dropStackResolverCacheMisses,
 	)
 }
 
@@ -344,6 +347,24 @@ func Record(ev types.EnrichedEvent) {
 				label(ev.DstIPText),
 				strconv.FormatUint(uint64(ev.Raw.Dport), 10),
 			).Inc()
+		}
+		// #83 의 stack 메트릭은 별도 namespace allow-list / LRU 가드 (DropStackGuard) 와 resolver
+		// 의 ok 결과 양쪽이 통과해야 emit 된다. guard 와 resolver 가 nil 이면 fail-open 으로 emit
+		// 자체가 skip 되어 기존 drop 메트릭은 정상 동작을 유지한다.
+		if dropStackGuard != nil && dropStackGuard.Admit(
+			ev.SourceNamespaceLabel(),
+			ev.SrcIPText, ev.Raw.Sport,
+			ev.DstIPText, ev.Raw.Dport,
+			ev.ProtocolText,
+		) {
+			recordDropStack(
+				label(ev.ObservedNodeLabel()),
+				label(ev.SourceNamespaceLabel()),
+				label(ev.SourceWorkloadLabel()),
+				label(ev.DropReasonName),
+				label(ev.DropCategory),
+				ev.Raw.StackID,
+			)
 		}
 
 	case types.StageRetrans:
