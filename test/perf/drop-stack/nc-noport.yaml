@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: drop-stack-nc-noport
+  # namespace 는 verify.sh 의 DROP_STACK_NAMESPACE override 와 일관성을 위해 본 manifest 에서
+  # 생략 한다. verify.sh 가 kubectl apply -n "$NAMESPACE" 로 명시 주입 한다.
+  labels:
+    app.kubernetes.io/name: drop-stack-trigger
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: drop-stack-e2e
+    trigger.kind: nc-noport
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 60
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: drop-stack-trigger
+        trigger.kind: nc-noport
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: trigger
+          # busybox 의 nc 는 -w timeout 만 지원 하고 다른 옵션 은 무시 한다. cilium 의 default
+          # cluster image 풀 에서 안정적 으로 동작 한다.
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            # 비-listening 포트 로 의 TCP 연결 시도 는 kernel 이 RST 응답 후 TCP_CLOSE reason 으로
+            # skb 를 drop 한다. 5 분간 1 초 간격 으로 반복 해 dev cluster 의 자연 drop 6.79/s 와
+            # 합산 된 분포 가 stack 메트릭 에 노출 되는지 확인 한다.
+            - |
+              for i in $(seq 1 300); do
+                nc -w 1 -z 127.0.0.1 65530 || true
+                sleep 1
+              done
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi

@@ -1,0 +1,64 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: drop-stack-egress-deny
+  # namespace 는 verify.sh 의 DROP_STACK_NAMESPACE override 와 일관성을 위해 본 manifest 에서
+  # 생략 한다. verify.sh 가 kubectl apply -n "$NAMESPACE" 로 명시 주입 한다.
+  labels:
+    app.kubernetes.io/name: drop-stack-trigger
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: drop-stack-e2e
+    trigger.kind: cnp-drop
+spec:
+  # observability-test namespace 의 모든 Pod 를 대상 으로 8888/tcp egress 연결 을 차단 한다. cilium
+  # 의 BPF datapath drop 이 kfree_skb_reason 을 호출 하는 환경 에서 drop stack 메트릭 의 reason ×
+  # stack_hash 분포 에 본 trigger 에 의한 drop 이 noise 위에 올라가 식별 가능 하다. CNP 가 kfree_
+  # skb_reason 을 우회 하는 환경 (예: TC_ACT_SHOT 직접 반환) 에서는 본 trigger 가 작동 하지 않으며
+  # nc-noport.yaml 의 fallback 으로 자동 전환 된다.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: drop-stack-trigger
+  egress:
+    - toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
+      toCIDR:
+        - 127.0.0.0/8
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: drop-stack-cnp-emitter
+  labels:
+    app.kubernetes.io/name: drop-stack-trigger
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: drop-stack-e2e
+    trigger.kind: cnp-drop
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 60
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: drop-stack-trigger
+        trigger.kind: cnp-drop
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: trigger
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              for i in $(seq 1 300); do
+                nc -w 1 -z 127.0.0.1 8888 || true
+                sleep 1
+              done
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
