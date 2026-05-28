@@ -1014,3 +1014,61 @@ spec:
           annotations:
             summary: "{{ $labels.job }} informer stale {{ $value | humanizeDuration }} on {{ $labels.instance }}"
             description: "{{ $labels.job }} on {{ $labels.instance }} has not received any kube watch event for {{ $value | humanizeDuration }}. Check API server reachability, NetworkPolicy, and the agent ServiceAccount RBAC (pods/services/nodes watch verbs)."
+
+    # netobs-gpuobs.cross-correlation.recording 그룹은 #86 의 GPU-network cross-correlation 통합
+    # 패널이 직접 참조하는 사전 집계 시계열을 둔다. 패널은 단일 timeseries 에 4 시계열 (GPU
+    # utilization, GPU memory used ratio, network throughput, network p99 latency) 과 correlation
+    # overlay 1 시리즈를 같은 timeline 에 정렬한다. dev cluster spike 결과 gpuobs_pod_* 의 Pod
+    # scope utilization 이 NVML 비지원 환경 (RTX 3090 단일 GPU, MIG / MPS 미적용) 이라 산정 불가
+    # 라 GPU 시계열은 device scope (node, gpu_uuid) 로 강등하고 network 시계열은 Pod scope (node,
+    # src_namespace, src_pod, src_pod_uid) 그대로 둔다. 두 도메인의 join 은 같은 timeline 정렬만
+    # 보장하며 Pod 단위 정합은 본 이슈 범위 밖이다. 본 group 의 4 record 모두 5 분 윈도우 평균 /
+    # rate / histogram_quantile 산정이라 evaluation 직후 즉시 채워지지 않고 최소 5 분의 sample
+    # 누적이 필요하다. Grafana 패널은 unit override (percentunit / bps / s) 로 SI prefix 자동 표기
+    # 를 받으므로 본 record 의 raw 값을 그대로 query 단에서 참조한다.
+    - name: netobs-gpuobs.cross-correlation.recording
+      interval: 30s
+      rules:
+        # node:gpu_util_ratio:5m
+        # device 단위 GPU utilization 의 5 분 평균을 0-1 스케일 percentunit 으로 변환. 기존
+        # node:gpu_util_p95:5m 가 p95 percentile 이라 worst-case 신호인 반면 본 record 는 average
+        # 신호로 GPU 의 sustained 부하 추세를 보여준다. cross-correlation 패널은 spike 보다 sustained
+        # 추세 비교가 의도라 average 를 채택한다. 라벨 셋은 (node, gpu_uuid) 보존.
+        - record: node:gpu_util_ratio:5m
+          expr: avg_over_time(gpuobs_device_utilization_percent[5m]) / 100
+
+        # node:gpu_memory_used_ratio:5m
+        # device 단위 GPU memory used / total 의 5 분 평균. 0-1 percentunit 스케일. Pod scope GPU
+        # memory ratio (pod:gpu_memory_utilization_ratio:5m) 가 base 시리즈 부재로 dev cluster 에서
+        # 산출되지 않는 환경 한계를 우회하는 device scope fallback 이다. join key 는 (node, gpu_uuid,
+        # gpu_index) 로 두 device 메트릭 의 라벨 셋이 동일해 매칭 비용이 최소다.
+        - record: node:gpu_memory_used_ratio:5m
+          expr: |
+            avg_over_time(gpuobs_device_memory_used_bytes[5m])
+            / on(node, gpu_uuid, gpu_index)
+            avg_over_time(gpuobs_device_memory_total_bytes[5m])
+
+        # pod:network_throughput_bps:5m
+        # Pod 단위 양방향 network throughput 의 5 분 평균을 bits/sec 로 변환. 기존
+        # pod:network_egress_rate:5m 가 egress 단방향 만 다루고 unit 이 bytes/sec 라 Grafana 의
+        # bps 자동 SI prefix 표기 (Mbps / Gbps) 와 어울리지 않는다. 본 record 는 layer="l4" 의 ingress
+        # + egress 합산을 8 배해 bps 로 직접 노출한다. Pod 라벨 셋은 (node, src_namespace, src_pod,
+        # src_pod_uid) 유지.
+        - record: pod:network_throughput_bps:5m
+          expr: |
+            sum by(node, src_namespace, src_pod, src_pod_uid) (
+              rate(netobs_pod_bytes_total{layer="l4"}[5m])
+            ) * 8
+
+        # pod:network_p99_latency_seconds:5m
+        # Pod 단위 stage latency 의 5 분 윈도우 p99. histogram_quantile 의 le 합산을 Pod 라벨 셋
+        # 차원으로 두어 stage 별 분리 없이 Pod 단위 latency 의 worst-case 신호를 단일 시계열로
+        # 노출한다. cross-correlation 패널 의 의도는 network pressure 신호 한 가지이므로 stage 분
+        # 리 (rcv / xmit / retrans 등) 는 후속 drill-down 자리 (netobs-overview dashboard) 에 위임.
+        - record: pod:network_p99_latency_seconds:5m
+          expr: |
+            histogram_quantile(0.99,
+              sum by(le, node, src_namespace, src_pod, src_pod_uid) (
+                rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])
+              )
+            )
