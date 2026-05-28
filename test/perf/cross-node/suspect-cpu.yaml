@@ -1,0 +1,60 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cross-node-suspect-cpu
+  # namespace 는 verify.sh 의 CROSS_NODE_NAMESPACE override 와 일관성을 위해 본 manifest 에서 생략
+  # 한다. verify.sh 가 kubectl apply -n "$NAMESPACE" 로 명시 주입 한다.
+  labels:
+    app.kubernetes.io/name: workload-injector
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: load-injector
+    injector.kind: cpu
+    cross-node-e2e: "true"
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 60
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: workload-injector
+        app.kubernetes.io/component: load-injector
+        injector.kind: cpu
+        cross-node-e2e: "true"
+    spec:
+      serviceAccountName: workload-injector
+      restartPolicy: Never
+      containers:
+        - name: workload-injector
+          image: workload-injector:0.4.8
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: workload-injector
+          env:
+            - name: KIND
+              value: "cpu"
+            # cross-node interference 의 핵심 정책 은 stress 노드 와 victim 노드 를 분리 하는 것 이다.
+            # TARGET_NAMESPACE 와 TARGET_POD 는 victim 식별 용 (다른 노드 의 latency-sensitive Pod) 이며
+            # TARGET_NODE 는 stress 가 실제로 spawn 될 노드 의 명시 override 다.
+            - name: TARGET_NAMESPACE
+              value: "correlation-stress"
+            - name: TARGET_POD
+              value: "victim"
+            - name: TARGET_NODE
+              value: "ebpf-worker1"
+            # node:cpu_pressure_score:5m 의 임계 (0.3) 를 안정적 으로 넘기 위해 800m 으로 둔다. 5m
+            # window 에서 cross-node correlator 의 Pearson 산정 이 의미 있는 표본 수 를 확보 한다.
+            - name: INTENSITY
+              value: "800m"
+            - name: DURATION
+              value: "8m"
+          ports:
+            - name: metrics
+              containerPort: 9840
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
