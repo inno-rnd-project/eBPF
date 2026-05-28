@@ -235,6 +235,63 @@ spec:
               pod:gpu_memory_utilization_ratio:5m
             )
 
+        # #84 cross-node interference layer 의 node 단위 pressure score 5 종. 본 그룹의 pod-level
+        # cause score 4 종 (cpu_throttle / memory_pressure / network_throughput / host_compute_stall) 을
+        # node 차원으로 max rollup 한다. correlation-exporter 의 cross-node correlator 가 본 시계열을
+        # victim_node / suspect_node 후보로 입력 받아 (victim_node != suspect_node) 페어의 Pearson 상관
+        # 계수를 산정한다. 통합 node:pressure_score:5m 은 4 dimension max 의 평균으로 [0, 1] 단일
+        # 점수를 노출해 운영자가 노드 단위 압박을 단일 시계열로 본다.
+        - record: node:cpu_pressure_score:5m
+          expr: max by(node) (pod:cpu_throttle_score:5m)
+
+        - record: node:memory_pressure_score:5m
+          expr: max by(node) (pod:memory_pressure_score:5m)
+
+        # network 압박은 throughput saturation 과 retrans rate 두 신호의 max 로 둔다. 두 신호가 서로
+        # 다른 스케일이라 단순 합산은 dominant cause weighting 에서 의미가 흐려져 max 만 채택한다.
+        - record: node:network_pressure_score:5m
+          expr: |
+            max by(node) (
+              pod:network_throughput_score:5m
+              or
+              pod:network_retrans_score:5m
+            )
+
+        # gpu 압박은 host_compute_stall_score 로 두어 host 측 launch 부족 또는 device memory 압박이
+        # 노드 의 GPU 작업 진행을 막는 신호를 노드 단위로 노출한다.
+        - record: node:gpu_pressure_score:5m
+          expr: max by(node) (pod:host_compute_stall_score:5m)
+
+        # 통합 pressure score 는 4 dimension 의 평균으로 정규화한다. 합 / 4 가 [0, 1] 범위를 자연스럽게
+        # 유지해 운영자가 dashboard 또는 수동 query에서 노드 단위 압박을 단일 시계열로 확인할 수 있게
+        # 한다. cross-node correlator는 본 통합 score를 입력으로 받지 않고 4 dimension score를 직접
+        # 사용해 dimension 라벨 분포까지 노출한다. 본 통합 시리즈는 노출 (보조 신호) 만 담당한다.
+        # 결측 dimension은 node 라벨이 없는 vector(0) 대신 cpu_pressure 기준 시계열에 0을 곱한 형태로
+        # fallback해 vector 연산의 라벨 매칭 실패 (node 라벨이 한쪽에만 있어 결과가 empty가 되는 케이스)
+        # 를 회피한다. node:cpu_pressure_score:5m이 결측인 노드는 본 통합 score 자체가 emit되지 않으나
+        # 본 시리즈의 의도가 "어떤 dimension이라도 활성인 노드의 통합 점수" 이므로 cpu 자체가 비활성인
+        # 노드는 분석 대상에서 자연 제외된다.
+        - record: node:pressure_score:5m
+          expr: |
+            (
+              node:cpu_pressure_score:5m
+              + (node:memory_pressure_score:5m or node:cpu_pressure_score:5m * 0)
+              + (node:network_pressure_score:5m or node:cpu_pressure_score:5m * 0)
+              + (node:gpu_pressure_score:5m or node:cpu_pressure_score:5m * 0)
+            ) / 4
+
+        # cross-node correlator 의 victim 후보 latency 다. histogram_quantile 의 le 합산을 node 차원
+        # 으로 둬 노드 단위 p99 를 산출한다. 노드 의 모든 pod p99 가 conflate 되어 latency-sensitive
+        # workload 식별 력은 흐릿하나 본 시리즈의 raw signal 이며 follow-up 에서 workload-label filter
+        # 도입 으로 보강 가능하다.
+        - record: node:netobs_pod_stage_latency_p99:5m
+          expr: |
+            histogram_quantile(0.99,
+              sum by(node, le) (
+                rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])
+              )
+            )
+
     # netobs-gpuobs.dominant-cause.recording 그룹은 #66 의 GPU 유휴 dominant cause 가중치 산정에
     # 사용하는 recording rule 을 모은다. 본 그룹의 첫 5 종은 node 와 Pod 차원으로 흩어진 cause score
     # 5 종을 cluster 단위 단일 값으로 max rollup 해 dominant cause weight 산정 단계에서 동일한 차원

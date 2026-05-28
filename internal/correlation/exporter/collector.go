@@ -27,6 +27,15 @@ var neighborLabels = []string{
 	"rank",
 }
 
+// crossNodeLabels 는 #84 의 correlation_cross_node_score 메트릭 라벨 셋 이다. pod 정보 없 이 노드
+// 한 쌍 과 dimension 만 으로 cardinality 가 노드 수^2 * 4 로 cap 된다. 기존 neighborLabels 와 의 의
+// 도 적인 분리 로 pod-level 과 node-level 두 view 가 alert / dashboard 에서 독립 적 으로 다뤄진다.
+var crossNodeLabels = []string{
+	"victim_node",
+	"suspect_node",
+	"dimension",
+}
+
 // Collector 는 마지막 reconcile cycle 의 NoisyNeighbor snapshot 을 보관해 Prometheus scrape 시점에
 // score 와 lag 메트릭으로 emit 한다. prometheus.Collector 인터페이스를 직접 구현해 snapshot 교체
 // 시 GaugeVec.Reset() 패턴이 가질 race 위험을 차단하고 stale series 가 코드 경로상 존재하지 않게
@@ -38,14 +47,19 @@ type Collector struct {
 	// scrape 가 호출되는 Collect hot path 에서 매번 victim 단위 dimension max 집계와 sum 정규화를
 	// 재실행하지 않게 한다. snapshot 이 바뀔 때만 갱신된다.
 	dominant []correlation.DominantDimension
+	// crossNode 는 #84 의 cross-node interference snapshot 이다. ReplaceCrossNode 가 reconcile cycle
+	// 마다 갱신 하고 Collect 가 correlation_cross_node_score gauge 로 emit 한다. nil 또는 빈 슬라이스
+	// 면 series 가 0 개 emit 되어 cross-node opt-in 비활성 운영 모드 와 정합 한다.
+	crossNode []correlation.NodeInterference
 	// step 은 LagSteps 를 초 단위로 변환할 때 곱해진다. exporter 가 Correlator 의 Config.Step 과
 	// 동일 값을 받아 lag step 의 시간 의미를 보존한다.
 	step time.Duration
 
-	scoreDesc    *prometheus.Desc
-	lagDesc      *prometheus.Desc
-	pvalueDesc   *prometheus.Desc
-	dominantDesc *prometheus.Desc
+	scoreDesc          *prometheus.Desc
+	lagDesc            *prometheus.Desc
+	pvalueDesc         *prometheus.Desc
+	dominantDesc       *prometheus.Desc
+	crossNodeScoreDesc *prometheus.Desc
 }
 
 // NewCollector 는 Prometheus scrape 시 emit 할 metric desc 두 개를 미리 만들어 두는 Collector 를
@@ -73,6 +87,11 @@ func NewCollector(step time.Duration) *Collector {
 			"correlation_dominant_dimension",
 			"#69 의 victim 단위 dominant dimension. 4 dimension (cpu / gpu / memory / network) 별 max score 를 sum 정규화한 weight 중 가장 큰 dimension 1 종만 emit 된다. 정확 동률 시 dimension enum 사전순 가장 앞 라벨이 채택된다. raw 메트릭이라 latency pressure 와 무관하게 항상 emit 되며 active 시간대 한정 view 는 correlation_dominant_dimension_active:5m recording rule 을 본다.",
 			[]string{"victim_namespace", "victim_pod", "victim_pod_uid", "dimension"}, nil,
+		),
+		crossNodeScoreDesc: prometheus.NewDesc(
+			"correlation_cross_node_score",
+			"#84 cross-node interference layer 의 Pearson 상관계수 최대 절대값. suspect_node 의 자원 압박 (dimension) 과 victim_node 의 p99 latency 사이의 동조 정도다. CrossNodeEnabled opt-in 시 만 emit 되며 victim_node == suspect_node 인 시리즈는 enumerate 단에서 자동 제외된다.",
+			crossNodeLabels, nil,
 		),
 	}
 }
@@ -102,20 +121,35 @@ func (c *Collector) Replace(neighbors []correlation.NoisyNeighbor) {
 	c.mu.Unlock()
 }
 
+// ReplaceCrossNode 는 #84 cross-node interference의 snapshot을 교체한다. main 의 reconcileOnce 가
+// CrossNodeEnabled 와 무관하게 매 cycle 본 함수를 호출하나, 비활성 운영 모드에서는 SelectTopN
+// CrossNode 가 IsCrossNode=true 항목 0 개 결과 (빈 슬라이스) 를 돌려 주므로 crossNode 가 비어 있어
+// series 가 emit 되지 않는다.
+func (c *Collector) ReplaceCrossNode(crossNode []correlation.NodeInterference) {
+	copied := append([]correlation.NodeInterference(nil), crossNode...)
+	c.mu.Lock()
+	c.crossNode = copied
+	c.mu.Unlock()
+}
+
 // Describe 는 prometheus.Collector 인터페이스를 만족한다.
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.scoreDesc
 	ch <- c.lagDesc
 	ch <- c.pvalueDesc
 	ch <- c.dominantDesc
+	ch <- c.crossNodeScoreDesc
 }
 
 // Collect 는 현재 snapshot 의 모든 NoisyNeighbor 를 score / lag 두 메트릭으로 emit 한다. snapshot
-// 이 nil 또는 빈 슬라이스면 series 를 0 개 emit 해 첫 reconcile 전 stale 0 값을 보내지 않는다.
+// 이 nil 또는 빈 슬라이스면 series 를 0 개 emit 해 첫 reconcile 전 stale 0 값을 보내지 않는다. #84
+// cross-node snapshot 도 동일 시점에 함께 emit 되며 두 layer 가 라벨 셋 분리 로 독립 시리즈 셋 을
+// 만든다.
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.mu.RLock()
 	snapshot := c.snapshot
 	dominant := c.dominant
+	crossNode := c.crossNode
 	step := c.step
 	c.mu.RUnlock()
 
@@ -150,6 +184,19 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			d.Victim.Pod,
 			d.Victim.PodUID,
 			string(d.Dimension),
+		)
+	}
+	// #84 cross-node interference. NodeInterference 슬라이스 의 각 항목 을 correlation_cross_node_
+	// score gauge 로 emit 한다. SelectTopNCrossNode 단계 에서 victim_node == suspect_node 가 이미
+	// 제외 되어 본 자리 에서 추가 가드 가 필요 없다.
+	for _, n := range crossNode {
+		ch <- prometheus.MustNewConstMetric(
+			c.crossNodeScoreDesc,
+			prometheus.GaugeValue,
+			n.Score,
+			n.VictimNode,
+			n.SuspectNode,
+			string(n.Dimension),
 		)
 	}
 }
@@ -246,9 +293,17 @@ func (h *Health) RecordCycle(duration time.Duration, results []correlation.Corre
 			constant.Inc()
 		}
 		// distinct metric 수 산출. EnumeratePairs 가 만든 양방향 페어이므로 Src 와 Dst 양측 모두
-		// 집합에 넣어 dataset 가 emit 한 모든 unique query 를 셋다.
-		observedMetrics[r.Pair.SrcMetric] = struct{}{}
-		observedMetrics[r.Pair.DstMetric] = struct{}{}
+		// 집합에 넣어 dataset 가 emit 한 모든 unique query 를 셋다. #84 의 cross-node 결과 는 Pair 가
+		// 비어 있고 NodePair 에 metric 이 담기므로 IsCrossNode 분기 로 NodePair 측 metric 을 누락 없이
+		// 누적 한다 (본 분기 가 없으면 cross-node DefaultMetrics 5종 이 observed 에서 누락 되어
+		// ReconcilePartial 카운터 가 매 cycle 거짓 증가 한다).
+		if r.IsCrossNode {
+			observedMetrics[r.NodePair.SrcMetric] = struct{}{}
+			observedMetrics[r.NodePair.DstMetric] = struct{}{}
+		} else {
+			observedMetrics[r.Pair.SrcMetric] = struct{}{}
+			observedMetrics[r.Pair.DstMetric] = struct{}{}
+		}
 	}
 	observed := len(observedMetrics)
 	h.ReconcileMetricsExpected.Set(float64(expectedMetrics))

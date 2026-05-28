@@ -46,6 +46,21 @@ type Config struct {
 	// window (30m / 30s step = 60 samples) 에서도 OK 결과가 나오도록 Pearson 의 MinSamples 와 분리해
 	// 더 낮게 둔다. lag p 적용 후 표본 수 n - p 가 본 값 미만이면 GrangerOK=false 로 자연 skip 된다.
 	GrangerMinSamples int
+
+	// CrossNodeEnabled 는 #84 의 cross-node interference layer 토글 이다. true 일 때 Correlate 가
+	// node 단위 시계열 페어 도 함께 산출 해 결과 슬라이스 에 IsCrossNode=true 항목 으로 append 한다.
+	// default false 라 본 layer 가 운영자 의 명시 opt-in 없이는 비활성 으로 유지 된다.
+	CrossNodeEnabled bool
+
+	// CrossNodeMaxPairs 는 cross-node 페어 enumerate 의 상한 이다. 노드 수 가 제한적 이라 (dev 4,
+	// prod 수십) 실제 cap 발동 케이스 는 거의 없 으나 미래 pod-level cross-node 확장 시 reserved
+	// 옵션 으로 활용 가능 하다. 0 이하 면 1024 로 fallback 한다.
+	CrossNodeMaxPairs int
+
+	// CrossNodeMetrics 는 #84 의 node 단위 입력 시계열 query 리스트다. DefaultMetrics와 분리되어
+	// CrossNodeEnabled=true 일 때만 Correlator.Correlate 가 fetcher 호출 셋에 합류시킨다. opt-in
+	// 비활성 운영 모드에서 본 query들이 매 cycle Prometheus 부하를 추가하는 것을 회피한다.
+	CrossNodeMetrics []string
 }
 
 // DefaultConfig 는 운영자가 zero-config 로 본 라이브러리를 호출할 때 쓰이는 default Config 다.
@@ -75,5 +90,16 @@ func DefaultConfig() Config {
 		FetchTimeout:      30 * time.Second,
 		GrangerLag:        2,
 		GrangerMinSamples: 30,
+		CrossNodeEnabled:  false,
+		CrossNodeMaxPairs: 1024,
+		// #84 cross-node interference layer 의 node 단위 입력 시계열 5종. CrossNodeEnabled opt-in
+		// 시에만 Correlate 가 fetcher 호출 셋에 합류시킨다.
+		CrossNodeMetrics: []string{
+			"node:cpu_pressure_score:5m",
+			"node:memory_pressure_score:5m",
+			"node:network_pressure_score:5m",
+			"node:gpu_pressure_score:5m",
+			"node:netobs_pod_stage_latency_p99:5m",
+		},
 	}
 }

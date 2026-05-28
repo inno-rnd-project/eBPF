@@ -47,6 +47,12 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 
 	queries := append([]string{}, c.config.DefaultMetrics...)
 	queries = append(queries, c.config.ExtraMetrics...)
+	// #84 cross-node interference layer 의 node 단위 입력 시계열은 CrossNodeEnabled opt-in 시에만
+	// fetcher 호출 셋에 합류한다. opt-in 비활성 운영 모드에서 본 query 5종이 매 cycle Prometheus
+	// 부하를 추가하는 것을 회피하기 위해 본 자리에서 조건부로 append 한다.
+	if c.config.CrossNodeEnabled {
+		queries = append(queries, c.config.CrossNodeMetrics...)
+	}
 
 	// 각 query 를 goroutine 으로 병렬 fetch 한다. 표준 라이브러리 sync.WaitGroup + 인덱스 기반
 	// 사전 할당 슬라이스로 query 순서를 보존하고 비결정성을 차단한다. 모든 query 가 독립적이고
@@ -120,6 +126,36 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 		r.GrangerOK = g.OK
 		results = append(results, r)
 	}
+
+	// #84 cross-node interference layer. CrossNodeEnabled opt-in 시 node 단위 시계열 의 페어 를
+	// 추가 산출 해 IsCrossNode=true 로 마킹 한 결과 를 동일 슬라이스 에 append 한다. EnumerateNodePairs
+	// 가 node 라벨 만 있는 시계열 만 후보 로 인정 하므로 본 호출 은 pod-level 페어 산출 과 완전히
+	// 분리 된다.
+	if c.config.CrossNodeEnabled {
+		nodePairs := EnumerateNodePairs(all)
+		// maxPairs 는 cross-node 페어 enumerate 의 상한 이다. Go 빌트인 cap() 과 의 이름 충돌 회피 를
+		// 위해 maxPairs 로 명명 한다.
+		maxPairs := c.config.CrossNodeMaxPairs
+		if maxPairs <= 0 {
+			maxPairs = 1024
+		}
+		if len(nodePairs) > maxPairs {
+			nodePairs = nodePairs[:maxPairs]
+		}
+		for _, p := range nodePairs {
+			r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
+			r.NodePair = p.Key
+			r.IsCrossNode = true
+			srcVals := getValues(p.Src)
+			dstVals := getValues(p.Dst)
+			g := granger.Test(srcVals, dstVals, c.config.GrangerLag, c.config.GrangerMinSamples)
+			r.FStatistic = g.F
+			r.PValue = g.PValue
+			r.GrangerOK = g.OK
+			results = append(results, r)
+		}
+	}
+
 	return results, nil
 }
 

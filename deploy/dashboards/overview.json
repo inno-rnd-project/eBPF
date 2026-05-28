@@ -470,10 +470,68 @@
       }
     },
     {
+      "id": 450,
+      "type": "row",
+      "title": "Cross-node interference",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 59 },
+      "collapsed": false
+    },
+    {
+      "id": 21,
+      "type": "heatmap",
+      "title": "Cross-node score heatmap (victim × suspect)",
+      "description": "#84 cross-node interference layer 의 victim_node 와 suspect_node 사이의 Pearson 상관계수 최대 절대값. dimension 라벨 4 종을 sum 으로 묶어 노드 페어 단위 cross-flow 강도를 노출한다. CrossNodeEnabled opt-in 시 만 데이터가 존재한다.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 60 },
+      "targets": [
+        {
+          "expr": "sum by(victim_node, suspect_node) (correlation_cross_node_score)",
+          "format": "heatmap",
+          "legendFormat": "{{victim_node}} ← {{suspect_node}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "calculate": false,
+        "color": { "scheme": "Spectral", "mode": "scheme", "steps": 8 }
+      }
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Cross-node score by dimension",
+      "description": "#84 cross-node interference layer 의 dimension 별 시계열. cpu / memory / network / gpu 4 dimension 의 시간 추이로 어느 자원 압박 이 cross-node latency 에 영향을 주는지 식별한다.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 60 },
+      "targets": [
+        {
+          "expr": "max by(dimension, victim_node, suspect_node) (correlation_cross_node_score)",
+          "legendFormat": "{{dimension}} {{victim_node}}←{{suspect_node}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "orange", "value": 0.7 },
+              { "color": "red", "value": 0.85 }
+            ]
+          }
+        }
+      }
+    },
+    {
       "id": 500,
       "type": "row",
       "title": "Alert summary",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 59 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 68 },
       "collapsed": false
     },
     {
@@ -481,7 +539,7 @@
       "type": "bargauge",
       "title": "Firing alerts by severity",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 60 },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 69 },
       "targets": [
         {
           "expr": "count by(severity) (ALERTS{alertstate=\"firing\"})",
@@ -510,7 +568,7 @@
       "type": "bargauge",
       "title": "Firing alerts by component",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 60 },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 69 },
       "targets": [
         {
           "expr": "count by(component) (ALERTS{alertstate=\"firing\"})",

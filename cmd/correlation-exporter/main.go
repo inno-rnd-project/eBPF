@@ -97,6 +97,11 @@ func main() {
 	if v := strings.TrimSpace(os.Getenv("LISTEN_ADDR")); v != "" {
 		listenAddr = v
 	}
+	// #84 cross-node interference layer 의 토글. CROSS_NODE 환경변수 가 "1" / "true" 일 때 opt-in
+	// 활성 으로 둔다. -cross-node flag 가 우선순위 가 더 높다.
+	if v := strings.TrimSpace(os.Getenv("CROSS_NODE")); v == "1" || strings.EqualFold(v, "true") {
+		cfg.CrossNodeEnabled = true
+	}
 
 	fs := flag.NewFlagSet("correlation-exporter", flag.ContinueOnError)
 	fs.StringVar(&cfg.PrometheusURL, "prometheus-url", cfg.PrometheusURL, "Prometheus base URL (env PROMETHEUS_URL fallback)")
@@ -107,6 +112,7 @@ func main() {
 	fs.DurationVar(&reconcileInterval, "reconcile-interval", reconcileInterval, "interval between reconcile cycles")
 	fs.StringVar(&listenAddr, "listen", listenAddr, "metrics server listen address")
 	fs.IntVar(&topN, "top-n", topN, fmt.Sprintf("Top-N noisy neighbors per (victim, dimension), max %d", maxTopN))
+	fs.BoolVar(&cfg.CrossNodeEnabled, "cross-node", cfg.CrossNodeEnabled, "#84: enable cross-node interference layer (node-level pair enumeration, correlation_cross_node_score gauge)")
 
 	var extra stringSlice
 	fs.Var(&extra, "extra-metric", "additional Prometheus query (repeat for multiple)")
@@ -253,11 +259,20 @@ func reconcileOnce(
 	}
 	neighbors := correlation.SelectTopN(results, topN)
 	collector.Replace(neighbors)
+	// #84 cross-node interference snapshot 도 동일 reconcile cycle 에서 갱신 한다. CrossNodeEnabled
+	// 가 false 면 results 에 IsCrossNode=true 항목 이 없 으므로 빈 슬라이스 가 전달 되어 series 가
+	// emit 되지 않는다.
+	crossNode := correlation.SelectTopNCrossNode(results, topN)
+	collector.ReplaceCrossNode(crossNode)
 	duration := time.Since(cycleStart)
-	expectedMetrics := len(corr.Config().DefaultMetrics) + len(corr.Config().ExtraMetrics)
+	cfg := corr.Config()
+	expectedMetrics := len(cfg.DefaultMetrics) + len(cfg.ExtraMetrics)
+	if cfg.CrossNodeEnabled {
+		expectedMetrics += len(cfg.CrossNodeMetrics)
+	}
 	health.RecordCycle(duration, results, neighbors, expectedMetrics)
 	ready.Store(true)
-	log.Printf("reconcile ok: pairs=%d neighbors=%d duration=%s", len(results), len(neighbors), duration)
+	log.Printf("reconcile ok: pairs=%d neighbors=%d cross_node=%d duration=%s", len(results), len(neighbors), len(crossNode), duration)
 }
 
 // hasCLIFlag 는 args 에 -flag, --flag, -flag=, --flag= 패턴이 있는지 검사한다. flag 우선 정책을

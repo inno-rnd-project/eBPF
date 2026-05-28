@@ -304,6 +304,15 @@ delete-%:
 # Version management
 # deploy 하위 임의 경로의 overlay kustomization을 find로 자동 수집해 image tag를 갱신한다.
 # 새 agent의 overlay가 추가돼도 bump 규칙 수정이 필요하지 않다.
+#
+# WARNING: bump가 모든 overlay의 newTag를 일괄 갱신하므로 bump 직후 곧바로 deploy-*를 실행하면
+# 새 tag의 이미지가 registry에 없는 agent (본 PR에서 변경하지 않은 agent 포함) 가 ImagePullBackOff
+# 상태로 떨어진다. 본 함정을 회피하려면 다음 두 패턴 중 하나를 따른다.
+#
+#   1) bump 직후 image-push-all을 먼저 수행 후 deploy-* 실행 (가장 안전, 권장)
+#   2) PR에서 실제로 코드가 변경된 agent만 image-push-<name>으로 갱신하고 deploy-* 대상도 동일
+#      agent로 한정 (다른 agent overlay도 tag가 갱신되어 있으므로 그 agent가 restart되는 순간
+#      ImagePullBackOff 위험은 그대로 남는다. 단기 PR 검증 한정)
 # ============================================================================
 bump:
 	@CUR=$$(cat VERSION); \
@@ -318,7 +327,8 @@ bump:
 	for f in $$(find deploy -type f -name kustomization.yaml -path '*/overlays/*' 2>/dev/null); do \
 		sed -i 's/newTag: ".*"/newTag: "'$$NEW'"/' "$$f"; \
 	done; \
-	echo "bumped $$CUR -> $$NEW"
+	echo "bumped $$CUR -> $$NEW"; \
+	echo "[reminder] bump 직후 deploy-* 전에 image-push-all 또는 변경된 agent의 image-push-<name>을 실행하라"
 
 # ============================================================================
 # Housekeeping
