@@ -292,9 +292,17 @@ func (h *Health) RecordCycle(duration time.Duration, results []correlation.Corre
 			constant.Inc()
 		}
 		// distinct metric 수 산출. EnumeratePairs 가 만든 양방향 페어이므로 Src 와 Dst 양측 모두
-		// 집합에 넣어 dataset 가 emit 한 모든 unique query 를 셋다.
-		observedMetrics[r.Pair.SrcMetric] = struct{}{}
-		observedMetrics[r.Pair.DstMetric] = struct{}{}
+		// 집합에 넣어 dataset 가 emit 한 모든 unique query 를 셋다. #84 의 cross-node 결과 는 Pair 가
+		// 비어 있고 NodePair 에 metric 이 담기므로 IsCrossNode 분기 로 NodePair 측 metric 을 누락 없이
+		// 누적 한다 (본 분기 가 없으면 cross-node DefaultMetrics 5종 이 observed 에서 누락 되어
+		// ReconcilePartial 카운터 가 매 cycle 거짓 증가 한다).
+		if r.IsCrossNode {
+			observedMetrics[r.NodePair.SrcMetric] = struct{}{}
+			observedMetrics[r.NodePair.DstMetric] = struct{}{}
+		} else {
+			observedMetrics[r.Pair.SrcMetric] = struct{}{}
+			observedMetrics[r.Pair.DstMetric] = struct{}{}
+		}
 	}
 	observed := len(observedMetrics)
 	h.ReconcileMetricsExpected.Set(float64(expectedMetrics))

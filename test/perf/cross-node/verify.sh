@@ -39,11 +39,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# correlation-exporter 의 CrossNodeEnabled 가 true 인지 사전 검증 한다. 미설정 시 series 자체 가
-# emit 되지 않 으므로 본 단계 에서 즉시 진단 출력 후 종료 한다.
+# correlation-exporter 의 CrossNodeEnabled 가 true 인지 사전 검증 한다. yaml 의 env block 은 name 과
+# value 가 두 줄 로 나뉘어 grep -E 의 단일 라인 매칭 으로 잡을 수 없 으므로 jsonpath 로 env value
+# 또는 args flag 를 정확히 추출 한다.
 echo "[setup] checking correlation-exporter CrossNodeEnabled flag"
-if ! kubectl get deploy -n "${NAMESPACE}" correlation-exporter -o yaml 2>/dev/null | grep -qE "CROSS_NODE.*true|--cross-node"; then
-  echo "[warn] correlation-exporter 에 CROSS_NODE=true env 또는 --cross-node flag 가 보이지 않는다."
+cross_env=$(kubectl get deploy -n "${NAMESPACE}" correlation-exporter \
+  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CROSS_NODE")].value}' 2>/dev/null || true)
+cross_arg=$(kubectl get deploy -n "${NAMESPACE}" correlation-exporter \
+  -o jsonpath='{range .spec.template.spec.containers[0].args[*]}{@}{"\n"}{end}' 2>/dev/null | grep -E '^--?cross-node' || true)
+if [[ "${cross_env}" != "true" && -z "${cross_arg}" ]]; then
+  echo "[warn] correlation-exporter 에 CROSS_NODE=true env 또는 --cross-node flag 가 설정 되어 있지 않다."
   echo "       opt-in 활성 후 재시도 하라: kubectl set env -n ${NAMESPACE} deploy/correlation-exporter CROSS_NODE=true"
 fi
 
@@ -51,12 +56,20 @@ echo "[setup] applying suspect-cpu Job to namespace ${NAMESPACE} (TARGET_NODE=${
 kubectl apply -n "${NAMESPACE}" -f "${SCRIPT_DIR}/suspect-cpu.yaml"
 
 # 1차 가드: victim_node == suspect_node 시리즈 가 0 개 인지 확인 한다. EnumerateNodePairs 의 핵심
-# 정책 (동일 노드 페어 자동 제외) 회귀 가드 다.
+# 정책 (동일 노드 페어 자동 제외) 회귀 가드 다. PromQL 은 label = label 비교 를 지원 하지 않 으므로
+# correlation_cross_node_score 전체 시리즈 를 받아 python3 로 victim_node == suspect_node entry 를
+# 세는 방식 으로 가드 한다.
 echo "[guard] verifying no victim_node == suspect_node series exists"
-self_loop=$(curl -sf --max-time 10 --data-urlencode 'query=count(correlation_cross_node_score{victim_node=suspect_node})' "${PROM_URL}/api/v1/query" 2>/dev/null || true)
-if echo "${self_loop}" | grep -qE '"value":\[[0-9.]+,"[1-9]'; then
-  echo "[fail] victim_node == suspect_node 시리즈 가 존재 한다 (enumerate 가드 미동작)"
-  echo "       ${self_loop}"
+self_loop_count=$(curl -sf --max-time 10 --data-urlencode 'query=correlation_cross_node_score' "${PROM_URL}/api/v1/query" 2>/dev/null | python3 -c "import json,sys
+try:
+    r=json.load(sys.stdin)['data']['result']
+    print(sum(1 for x in r if x['metric'].get('victim_node')==x['metric'].get('suspect_node')))
+except Exception:
+    print(-1)" 2>/dev/null || echo "-1")
+if [[ "${self_loop_count}" == "-1" ]]; then
+  echo "[warn] self-loop 가드 의 prometheus query 실패. 시리즈 아직 미존재 일 수 있어 계속 진행 한다."
+elif [[ "${self_loop_count}" -gt 0 ]]; then
+  echo "[fail] victim_node == suspect_node 시리즈 가 ${self_loop_count} 개 존재 한다 (enumerate 가드 미동작)"
   exit 1
 fi
 

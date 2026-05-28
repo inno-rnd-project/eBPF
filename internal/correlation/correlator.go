@@ -127,12 +127,14 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 	// 분리 된다.
 	if c.config.CrossNodeEnabled {
 		nodePairs := EnumerateNodePairs(all)
-		cap := c.config.CrossNodeMaxPairs
-		if cap <= 0 {
-			cap = 1024
+		// maxPairs 는 cross-node 페어 enumerate 의 상한 이다. Go 빌트인 cap() 과 의 이름 충돌 회피 를
+		// 위해 maxPairs 로 명명 한다.
+		maxPairs := c.config.CrossNodeMaxPairs
+		if maxPairs <= 0 {
+			maxPairs = 1024
 		}
-		if len(nodePairs) > cap {
-			nodePairs = nodePairs[:cap]
+		if len(nodePairs) > maxPairs {
+			nodePairs = nodePairs[:maxPairs]
 		}
 		for _, p := range nodePairs {
 			r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
