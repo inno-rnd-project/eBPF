@@ -279,9 +279,15 @@ static __always_inline void inc_flow_bytes(__u64 cgroup_id, __u8 is_ipv4,
         return;
     }
 
+    /* BPF_ANY 로 즉시 갱신 하면 동시 lookup miss 한 두 CPU 가 각자 의 init.bytes 로 덮어 써 한 쪽
+     * delta 가 유실 된다. BPF_NOEXIST 로 zero value 만 먼저 등록 한 뒤 다시 lookup 해 atomic add 를
+     * 수행 해 첫 패킷 부터 race-safe 누적 을 보장 한다.
+     */
     __builtin_memset(&init, 0, sizeof(init));
-    init.bytes = bytes_delta;
-    bpf_map_update_elem(&flow_bytes, &key, &init, BPF_ANY);
+    bpf_map_update_elem(&flow_bytes, &key, &init, BPF_NOEXIST);
+    val = bpf_map_lookup_elem(&flow_bytes, &key);
+    if (val)
+        __sync_fetch_and_add(&val->bytes, bytes_delta);
 }
 
 /* emit_event 의 stack_id 인자는 #83 drop event 의 kernel stack capture 용이다. drop 외 stage 는

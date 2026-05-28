@@ -14,7 +14,7 @@
 `observability-test` namespace의 client → server 자연 트래픽을 활용한다. 별도 stress workload를 띄우지 않으므로 외부 입력 없이 회귀 가드만 수행한다.
 
 - 1차 가드: `count(netobs_flow_bytes_total{src_namespace="observability-test"}) >= 2` (egress + ingress 최소 2 entry)
-- 2차 가드: `sum(netobs_flow_bytes_total{src_namespace="observability-test",src_pod="client"}) > 0` (client Pod의 누적 bytes 양수)
+- 2차 가드: `sum(netobs_flow_bytes_total{src_namespace="observability-test",src_workload="client"}) > 0` (client workload의 누적 bytes 양수. Deployment hash가 변동하는 `src_pod` 대신 안정적인 `src_workload` 라벨을 사용)
 
 ## 실행
 

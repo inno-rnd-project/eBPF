@@ -49,6 +49,15 @@ netobs_flow_bytes_total{node, src_namespace, src_workload, src_pod, src_pod_uid,
 
 `internal/netobs/selfhealth/refresher.go`의 `netobs_bpf_map_utilization_ratio`에 `map="flow_bytes"` 라벨을 추가해 1024 LRU cap의 포화 신호를 노출한다.
 
+## src / dst 라벨의 sender convention
+
+본 메트릭의 `src_*` 라벨은 항상 송신측 Pod, `dst_*` 라벨은 항상 수신측 Pod를 가리킨다. BPF가 sk에서 채운 raw 5-tuple은 `src=local` 형태이나 ingress 방향에서는 `src`와 `dst`를 swap해 프로젝트 내 `emit_rcv_event` 의 saddr/daddr swap 패턴 및 `netobs_stage_events_labeled_total` / `netobs_drop_events_flow_total` 의 sender 의미 라벨과 정합을 맞춘다.
+
+- egress (BPF cgroup 주인이 sender): `src_*` = local Pod, `dst_*` = remote peer
+- ingress (BPF cgroup 주인이 receiver): swap 적용으로 `src_*` = remote peer (IP resolve), `dst_*` = local Pod
+
+FlowGuard의 namespace 가드는 swap과 무관하게 본 노드의 local Pod namespace로 검사한다. 운영자가 `NETOBS_FLOW_ALLOW_NAMESPACES`에 등록한 namespace의 Pod이 보내거나 받는 모든 flow의 양 방향이 본 노드 agent에서 captured 된다.
+
 ## 양 종단 동시 관측
 
 동일 connection은 Pod A의 agent와 Pod B의 agent 양쪽에서 각각 관측된다. 한 connection에 대해 BPF flow_bytes map에는 다음 4 entry가 분산 누적된다.
@@ -56,7 +65,7 @@ netobs_flow_bytes_total{node, src_namespace, src_workload, src_pod, src_pod_uid,
 - Pod A의 agent: `(cgroup_A, egress)` 와 `(cgroup_A, ingress)` 두 entry
 - Pod B의 agent: `(cgroup_B, egress)` 와 `(cgroup_B, ingress)` 두 entry
 
-cgroup_id가 노드별로 다르므로 BPF 측에서는 자동으로 별개 entry로 분리되나 운영자가 `sum(netobs_flow_bytes_total)` 같은 cluster-wide 합산 시 동일 connection의 바이트가 양 종단에서 중복 계산된다. cluster-wide 합산이 필요하면 다음 패턴으로 한 방향만 채택해 중복 회피한다.
+cgroup_id가 노드별로 다르므로 BPF 측에서는 자동으로 별개 entry로 분리되나 sender convention 적용 후 같은 connection의 동일 방향 시리즈가 양 agent에서 동일 라벨 셋으로 보고된다 (예: A의 egress = B의 ingress, label 동일). 운영자가 cluster-wide 합산 시 직접 중복 계산되므로 한 방향만 채택해 중복 회피한다.
 
 ```
 sum by(...) (netobs_flow_bytes_total{direction="egress"})
@@ -66,7 +75,10 @@ sum by(...) (netobs_flow_bytes_total{direction="egress"})
 
 ## sanity check
 
-운영자는 동일 (`src_namespace`, `src_pod`) 의 flow 합계와 pod-level 합계가 ±5% 오차 범위에서 일치하는지로 누락 신호를 검증한다.
+운영자는 다음 식으로 누락 신호를 검증한다. egress와 ingress 각각을 local Pod 기준으로 비교한다.
+
+- egress: `sum by(src_pod_uid) (netobs_flow_bytes_total{direction="egress"})` 가 `netobs_pod_bytes_total{layer="l4", direction="egress"}` 와 ±5% 오차 범위에서 일치해야 한다
+- ingress: `sum by(dst_pod_uid) (netobs_flow_bytes_total{direction="ingress"})` 가 `netobs_pod_bytes_total{layer="l4", direction="ingress"}` 와 ±5% 오차 범위에서 일치해야 한다
 
 ```
 sum by(src_namespace, src_pod) (netobs_flow_bytes_total)
@@ -88,6 +100,6 @@ sum by(src_namespace, src_pod) (netobs_flow_bytes_total)
 dev cluster의 `observability-test` namespace의 client → server 자연 트래픽을 활용한다. `NETOBS_FLOW_ALLOW_NAMESPACES=observability-test` env 주입 후 다음 두 조건의 회귀 가드를 둔다.
 
 - `count(netobs_flow_bytes_total{src_namespace="observability-test"}) >= 2` (egress + ingress 최소 2 entry)
-- `sum(netobs_flow_bytes_total{src_pod="client"}) > 0`
+- `sum(netobs_flow_bytes_total{src_workload="client"}) > 0` (Deployment hash 가 변동 하는 src_pod 대신 안정적인 src_workload 라벨 사용)
 
 가드 통과 직후 임시 env 제거로 dev cluster 환경을 PR 시작 전 상태로 복구한다.

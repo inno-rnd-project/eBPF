@@ -28,12 +28,19 @@ echo "[setup] prometheus URL: ${PROM_URL}"
 echo "[setup] allow_namespace=${ALLOW_NAMESPACE} timeout=${TIMEOUT_SECONDS}s"
 
 # netobs-agent 의 NETOBS_FLOW_ALLOW_NAMESPACES env 가 ALLOW_NAMESPACE 를 포함 하는지 사전 검증 한다.
-# 미설정 시 즉시 진단 출력 후 종료 한다.
+# env 는 콤마 구분 list 이므로 단순 non-empty 가 아니라 ALLOW_NAMESPACE 가 실제 토큰 으로 들어 있는지
+# 확인 해야 잘못 된 다른 namespace 설정 케이스 도 actionable 한 warning 으로 잡힌다.
 echo "[setup] checking netobs-agent NETOBS_FLOW_ALLOW_NAMESPACES env"
 flow_env=$(kubectl get ds -n "${NAMESPACE}" netobs-agent \
   -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="NETOBS_FLOW_ALLOW_NAMESPACES")].value}' 2>/dev/null || true)
-if [[ -z "${flow_env}" ]]; then
-  echo "[warn] netobs-agent 에 NETOBS_FLOW_ALLOW_NAMESPACES env 가 설정 되어 있지 않다."
+allow_present=0
+if [[ -n "${flow_env}" ]]; then
+  if echo "${flow_env}" | tr ',' '\n' | grep -qFx "${ALLOW_NAMESPACE}"; then
+    allow_present=1
+  fi
+fi
+if [[ ${allow_present} -eq 0 ]]; then
+  echo "[warn] netobs-agent 의 NETOBS_FLOW_ALLOW_NAMESPACES (=\"${flow_env}\") 가 ${ALLOW_NAMESPACE} 를 포함 하지 않는다."
   echo "       opt-in 활성 후 재시도 하라: kubectl set env -n ${NAMESPACE} ds/netobs-agent NETOBS_FLOW_ALLOW_NAMESPACES=${ALLOW_NAMESPACE}"
 fi
 
