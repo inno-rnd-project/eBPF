@@ -47,6 +47,12 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 
 	queries := append([]string{}, c.config.DefaultMetrics...)
 	queries = append(queries, c.config.ExtraMetrics...)
+	// #84 cross-node interference layer 의 node 단위 입력 시계열은 CrossNodeEnabled opt-in 시에만
+	// fetcher 호출 셋에 합류한다. opt-in 비활성 운영 모드에서 본 query 5종이 매 cycle Prometheus
+	// 부하를 추가하는 것을 회피하기 위해 본 자리에서 조건부로 append 한다.
+	if c.config.CrossNodeEnabled {
+		queries = append(queries, c.config.CrossNodeMetrics...)
+	}
 
 	// 각 query 를 goroutine 으로 병렬 fetch 한다. 표준 라이브러리 sync.WaitGroup + 인덱스 기반
 	// 사전 할당 슬라이스로 query 순서를 보존하고 비결정성을 차단한다. 모든 query 가 독립적이고

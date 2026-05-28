@@ -121,9 +121,10 @@ func (c *Collector) Replace(neighbors []correlation.NoisyNeighbor) {
 	c.mu.Unlock()
 }
 
-// ReplaceCrossNode 는 #84 cross-node interference 의 snapshot 을 교체한다. CrossNodeEnabled 가 false
-// 인 운영 모드 에서는 main 이 본 함수 를 호출 하지 않 으므로 crossNode 슬라이스 는 nil 그대로 유지
-// 되어 series 가 emit 되지 않는다.
+// ReplaceCrossNode 는 #84 cross-node interference의 snapshot을 교체한다. main 의 reconcileOnce 가
+// CrossNodeEnabled 와 무관하게 매 cycle 본 함수를 호출하나, 비활성 운영 모드에서는 SelectTopN
+// CrossNode 가 IsCrossNode=true 항목 0 개 결과 (빈 슬라이스) 를 돌려 주므로 crossNode 가 비어 있어
+// series 가 emit 되지 않는다.
 func (c *Collector) ReplaceCrossNode(crossNode []correlation.NodeInterference) {
 	copied := append([]correlation.NodeInterference(nil), crossNode...)
 	c.mu.Lock()

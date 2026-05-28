@@ -33,9 +33,11 @@ PROM_URL="http://${PROM_IP}:${PROM_PORT}"
 echo "[setup] prometheus URL: ${PROM_URL}"
 echo "[setup] victim_node=${VICTIM_NODE} suspect_node=${SUSPECT_NODE} threshold=${SCORE_THRESHOLD}"
 
+RENDERED_MANIFEST="$(mktemp -t cross-node-suspect-XXXXXX.yaml)"
 cleanup() {
   echo "[cleanup] removing suspect-cpu Job from namespace ${NAMESPACE}"
-  kubectl delete -n "${NAMESPACE}" -f "${SCRIPT_DIR}/suspect-cpu.yaml" --ignore-not-found=true --wait=false || true
+  kubectl delete -n "${NAMESPACE}" -f "${RENDERED_MANIFEST}" --ignore-not-found=true --wait=false || true
+  rm -f "${RENDERED_MANIFEST}"
 }
 trap cleanup EXIT
 
@@ -47,13 +49,19 @@ cross_env=$(kubectl get deploy -n "${NAMESPACE}" correlation-exporter \
   -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CROSS_NODE")].value}' 2>/dev/null || true)
 cross_arg=$(kubectl get deploy -n "${NAMESPACE}" correlation-exporter \
   -o jsonpath='{range .spec.template.spec.containers[0].args[*]}{@}{"\n"}{end}' 2>/dev/null | grep -E '^--?cross-node' || true)
-if [[ "${cross_env}" != "true" && -z "${cross_arg}" ]]; then
-  echo "[warn] correlation-exporter 에 CROSS_NODE=true env 또는 --cross-node flag 가 설정 되어 있지 않다."
+# correlation-exporter 의 main.go 가 "1" 과 "true" 둘 다 활성 값으로 수용 하므로 검증 도 양쪽을 통과
+# 시킨다.
+if [[ "${cross_env}" != "true" && "${cross_env}" != "1" && -z "${cross_arg}" ]]; then
+  echo "[warn] correlation-exporter 에 CROSS_NODE=true/1 env 또는 --cross-node flag 가 설정 되어 있지 않다."
   echo "       opt-in 활성 후 재시도 하라: kubectl set env -n ${NAMESPACE} deploy/correlation-exporter CROSS_NODE=true"
 fi
 
+# suspect-cpu.yaml 의 TARGET_NODE 는 __CROSS_NODE_SUSPECT__ placeholder 다. verify.sh 가 SUSPECT_NODE
+# env 값을 sed 로 치환해 dev cluster 마다 다른 노드명을 동일 manifest로 다룰 수 있게 한다.
+echo "[setup] rendering suspect-cpu manifest with TARGET_NODE=${SUSPECT_NODE}"
+sed "s|__CROSS_NODE_SUSPECT__|${SUSPECT_NODE}|g" "${SCRIPT_DIR}/suspect-cpu.yaml" > "${RENDERED_MANIFEST}"
 echo "[setup] applying suspect-cpu Job to namespace ${NAMESPACE} (TARGET_NODE=${SUSPECT_NODE})"
-kubectl apply -n "${NAMESPACE}" -f "${SCRIPT_DIR}/suspect-cpu.yaml"
+kubectl apply -n "${NAMESPACE}" -f "${RENDERED_MANIFEST}"
 
 # 1차 가드: victim_node == suspect_node 시리즈 가 0 개 인지 확인 한다. EnumerateNodePairs 의 핵심
 # 정책 (동일 노드 페어 자동 제외) 회귀 가드 다. PromQL 은 label = label 비교 를 지원 하지 않 으므로
@@ -79,7 +87,15 @@ deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
 query="correlation_cross_node_score{victim_node=\"${VICTIM_NODE}\",suspect_node=\"${SUSPECT_NODE}\",dimension=\"cpu\"}"
 while (( $(date +%s) < deadline )); do
   if response=$(curl -sf --max-time 10 --data-urlencode "query=${query}" "${PROM_URL}/api/v1/query" 2>/dev/null); then
-    value=$(echo "${response}" | grep -oE '"value":\[[0-9.]+,"[0-9.]+"\]' | grep -oE '"[0-9.]+"\]' | grep -oE '[0-9.]+' | head -1)
+    # grep 기반 추출은 공백 / 과학적 표기법 / NaN 등의 JSON 포맷 변형에 취약하므로 python3 의 json
+    # 모듈로 첫 번째 result entry 의 value 를 안전 하게 추출 한다.
+    value=$(echo "${response}" | python3 -c "import json,sys
+try:
+    res = json.load(sys.stdin)['data']['result']
+    if res:
+        print(res[0]['value'][1])
+except Exception:
+    pass" 2>/dev/null || echo "")
     if [[ -n "${value}" ]]; then
       if awk "BEGIN { exit !(${value} >= ${SCORE_THRESHOLD}) }"; then
         echo "[pass] cross_node_score=${value} >= ${SCORE_THRESHOLD}"

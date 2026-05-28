@@ -56,6 +56,11 @@ type Config struct {
 	// prod 수십) 실제 cap 발동 케이스 는 거의 없 으나 미래 pod-level cross-node 확장 시 reserved
 	// 옵션 으로 활용 가능 하다. 0 이하 면 1024 로 fallback 한다.
 	CrossNodeMaxPairs int
+
+	// CrossNodeMetrics 는 #84 의 node 단위 입력 시계열 query 리스트다. DefaultMetrics와 분리되어
+	// CrossNodeEnabled=true 일 때만 Correlator.Correlate 가 fetcher 호출 셋에 합류시킨다. opt-in
+	// 비활성 운영 모드에서 본 query들이 매 cycle Prometheus 부하를 추가하는 것을 회피한다.
+	CrossNodeMetrics []string
 }
 
 // DefaultConfig 는 운영자가 zero-config 로 본 라이브러리를 호출할 때 쓰이는 default Config 다.
@@ -81,18 +86,20 @@ func DefaultConfig() Config {
 			`avg by(node, src_namespace, src_pod, src_pod_uid) (pod:gpu_memory_utilization_ratio:5m)`,
 			// netobs 의 pod-level latency p99.
 			`histogram_quantile(0.99, sum by(node, src_namespace, src_pod, src_pod_uid, le) (rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])))`,
-			// #84 cross-node interference layer 의 node 단위 입력 시계열 5종. EnumerateNodePairs 가
-			// 본 시리즈 만 후보로 인정 해 pod-level EnumeratePairs 와 의 입력 중복이 자동 차단 된다.
-			"node:cpu_pressure_score:5m",
-			"node:memory_pressure_score:5m",
-			"node:network_pressure_score:5m",
-			"node:gpu_pressure_score:5m",
-			"node:netobs_pod_stage_latency_p99:5m",
 		},
 		FetchTimeout:      30 * time.Second,
 		GrangerLag:        2,
 		GrangerMinSamples: 30,
 		CrossNodeEnabled:  false,
 		CrossNodeMaxPairs: 1024,
+		// #84 cross-node interference layer 의 node 단위 입력 시계열 5종. CrossNodeEnabled opt-in
+		// 시에만 Correlate 가 fetcher 호출 셋에 합류시킨다.
+		CrossNodeMetrics: []string{
+			"node:cpu_pressure_score:5m",
+			"node:memory_pressure_score:5m",
+			"node:network_pressure_score:5m",
+			"node:gpu_pressure_score:5m",
+			"node:netobs_pod_stage_latency_p99:5m",
+		},
 	}
 }

@@ -51,4 +51,4 @@ dimension 라벨 4종 × 노드 페어 수 (n × (n-1)) 로 cardinality 가 cap�
 
 ## 회귀 검증
 
-dev cluster 의 한 노드 (`ebpf-worker1`) 에 workload-injector cpu Kind 부하 를 인가 하고 다른 노드 (`gpu` 또는 `ebpf-worker2`) 에 latency-sensitive workload 를 두어 `correlation_cross_node_score{victim_node="gpu",suspect_node="ebpf-worker1",dimension="cpu"}` 가 0.5 이상으로 산정되는지 회귀 가드한다. `victim_node == suspect_node`인 시리즈가 0개임을 함께 확인 한다. 가드 통과 직후 두 워크로드 는 `kubectl delete` 로 정리 해 dev cluster 상주 를 회피 한다.
+dev cluster의 한 노드 (`ebpf-worker1`) 에 workload-injector cpu Kind 부하를 인가하고 다른 노드 (`gpu` 또는 `ebpf-worker2`) 에 latency-sensitive workload를 두어 `correlation_cross_node_score{victim_node="gpu",suspect_node="ebpf-worker1",dimension="cpu"}` 가 임계 (`test/perf/cross-node/verify.sh` 의 `CROSS_NODE_THRESHOLD` 기본값 0.3) 이상으로 산정되는지 회귀 가드한다. `victim_node == suspect_node`인 시리즈가 0 개임을 함께 확인한다. 가드 통과 직후 두 워크로드는 `kubectl delete`로 정리해 dev cluster 상주를 회피한다.

@@ -39,27 +39,43 @@ func TestEnumerateNodePairs_ExcludesSameNode(t *testing.T) {
 	}
 }
 
-// TestEnumerateNodePairs_GeneratesBothDirections 는 두 노드에 다른 metric 시계열이 있을 때 양방향
-// 페어 (X→Y, Y→X) 가 모두 생성되는지 검증한다. 비대칭 분석을 위한 정책이다.
-func TestEnumerateNodePairs_GeneratesBothDirections(t *testing.T) {
+// TestEnumerateNodePairs_OnlyPressureToLatency 는 noisy neighbor 모델의 단일 방향 (Src=non-latency
+// suspect, Dst=latency victim) 페어만 생성되는지 검증한다. 반대 방향 (latency → pressure) 과 같은
+// 종류 페어 (pressure → pressure, latency → latency) 는 사전 필터로 자동 제외되어 Granger 인과성
+// 검정의 행렬 연산 비용을 회피한다.
+func TestEnumerateNodePairs_OnlyPressureToLatency(t *testing.T) {
 	items := []LabeledSeries{
 		nodeSeries("n1", "node:cpu_pressure_score:5m"),
 		nodeSeries("n2", "node:netobs_pod_stage_latency_p99:5m"),
 	}
 	got := EnumerateNodePairs(items)
-	// n1.cpu → n2.latency, n2.latency → n1.cpu 두 페어
-	if len(got) != 2 {
-		t.Fatalf("페어 수=%d want 2", len(got))
+	// 유효 페어는 (n1 pressure → n2 latency) 단일 방향 1개뿐이다.
+	if len(got) != 1 {
+		t.Fatalf("페어 수=%d want 1 (pre-filter 미동작)", len(got))
 	}
-	seen := map[string]bool{}
-	for _, p := range got {
-		seen[p.Key.SrcNode+"|"+p.Key.SrcMetric+"->"+p.Key.DstNode+"|"+p.Key.DstMetric] = true
+	p := got[0]
+	if p.Key.SrcNode != "n1" || p.Key.SrcMetric != "node:cpu_pressure_score:5m" {
+		t.Errorf("Src=%s|%s want n1|node:cpu_pressure_score:5m", p.Key.SrcNode, p.Key.SrcMetric)
 	}
-	if !seen["n1|node:cpu_pressure_score:5m->n2|node:netobs_pod_stage_latency_p99:5m"] {
-		t.Errorf("n1→n2 페어 누락")
+	if p.Key.DstNode != "n2" || p.Key.DstMetric != "node:netobs_pod_stage_latency_p99:5m" {
+		t.Errorf("Dst=%s|%s want n2|node:netobs_pod_stage_latency_p99:5m", p.Key.DstNode, p.Key.DstMetric)
 	}
-	if !seen["n2|node:netobs_pod_stage_latency_p99:5m->n1|node:cpu_pressure_score:5m"] {
-		t.Errorf("n2→n1 페어 누락")
+}
+
+// TestEnumerateNodePairs_ExcludesReverseDirection 은 latency → pressure 의 역방향 페어가 사전 필터로
+// 제외되는지 검증한다. EnumerateNodePairs가 reverse 방향까지 생성하면 SelectTopNCrossNode에서 다시
+// 걸러지므로 비용 낭비다.
+func TestEnumerateNodePairs_ExcludesReverseDirection(t *testing.T) {
+	items := []LabeledSeries{
+		nodeSeries("n1", "node:netobs_pod_stage_latency_p99:5m"),
+		nodeSeries("n2", "node:cpu_pressure_score:5m"),
+	}
+	got := EnumerateNodePairs(items)
+	if len(got) != 1 {
+		t.Fatalf("페어 수=%d want 1", len(got))
+	}
+	if isLatencyMetric(got[0].Key.SrcMetric) {
+		t.Errorf("Src=%s 가 latency 메트릭임 (reverse direction 페어가 enumerate됨)", got[0].Key.SrcMetric)
 	}
 }
 
@@ -76,17 +92,17 @@ func TestEnumerateNodePairs_ExcludesPodLevelSeries(t *testing.T) {
 	}
 }
 
-// TestEnumerateNodePairs_SkipsSameMetricPairs 는 두 노드에 같은 metric 의 시계열이 있을 때 본 페어
-// 가 자동 제외되는지 검증한다. noisy neighbor 모델 (suspect cause score → victim latency) 의 비대칭
-// 페어 정책 회귀 가드다.
-func TestEnumerateNodePairs_SkipsSameMetricPairs(t *testing.T) {
+// TestEnumerateNodePairs_SkipsPressureToPressure 는 두 노드에 같은 pressure 메트릭 (둘 다 non-
+// latency) 의 시계열이 있을 때 본 페어가 자동 제외되는지 검증한다. noisy neighbor 모델의 단일 방향
+// (pressure → latency) 정책 회귀 가드다.
+func TestEnumerateNodePairs_SkipsPressureToPressure(t *testing.T) {
 	items := []LabeledSeries{
 		nodeSeries("n1", "node:cpu_pressure_score:5m"),
 		nodeSeries("n2", "node:cpu_pressure_score:5m"),
 	}
 	got := EnumerateNodePairs(items)
 	if len(got) != 0 {
-		t.Errorf("같은 metric 두 노드 페어 가 생성됨 (len=%d)", len(got))
+		t.Errorf("pressure → pressure 페어가 생성됨 (len=%d)", len(got))
 	}
 }
 

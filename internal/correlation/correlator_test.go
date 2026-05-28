@@ -197,9 +197,9 @@ func (r *recordingFetcher) Fetch(ctx context.Context, query string, start, end t
 }
 
 // TestDefaultConfigContainsCorrelationInputs 는 default config 가 본 시리즈의 신규 pod 단위 cause
-// score 와 #84 의 node-level pressure score 를 함께 포함하는지 검증한다. EnumeratePairs 가 pod 라벨
-// 가드로 node-level 시계열을 자동 제외하고 EnumerateNodePairs 가 동일 시계열을 cross-node 입력으로
-// 받아 두 layer 가 동일 DefaultMetrics 셋에서 독립 동작한다.
+// score를 DefaultMetrics에 포함하고 #84 의 node-level pressure score를 별도 CrossNodeMetrics 필드
+// 에 분리 보관하는지 검증한다. opt-in 비활성 운영 모드에서 node-level query가 fetcher 호출 셋에
+// 자동 합류하지 않도록 두 리스트가 분리되어 있어야 한다.
 func TestDefaultConfigContainsCorrelationInputs(t *testing.T) {
 	cfg := DefaultConfig()
 	requiredPod := []string{
@@ -214,18 +214,28 @@ func TestDefaultConfigContainsCorrelationInputs(t *testing.T) {
 		"node:gpu_pressure_score:5m",
 		"node:netobs_pod_stage_latency_p99:5m",
 	}
-	seen := make(map[string]bool, len(cfg.DefaultMetrics))
+	defaultSeen := make(map[string]bool, len(cfg.DefaultMetrics))
 	for _, m := range cfg.DefaultMetrics {
-		seen[m] = true
+		defaultSeen[m] = true
 	}
 	for _, r := range requiredPod {
-		if !seen[r] {
+		if !defaultSeen[r] {
 			t.Errorf("DefaultMetrics missing pod-level metric %q", r)
 		}
 	}
+	// node-level 메트릭은 DefaultMetrics에 포함되지 않아야 한다 (opt-in 비활성 시 fetch 회피).
+	for _, m := range cfg.DefaultMetrics {
+		if len(m) > 5 && m[:5] == "node:" {
+			t.Errorf("DefaultMetrics 가 node-level metric %q 를 포함함 (CrossNodeMetrics 로 분리되어야 함)", m)
+		}
+	}
+	crossSeen := make(map[string]bool, len(cfg.CrossNodeMetrics))
+	for _, m := range cfg.CrossNodeMetrics {
+		crossSeen[m] = true
+	}
 	for _, r := range requiredNode {
-		if !seen[r] {
-			t.Errorf("DefaultMetrics missing node-level metric %q", r)
+		if !crossSeen[r] {
+			t.Errorf("CrossNodeMetrics missing node-level metric %q", r)
 		}
 	}
 	if cfg.Window <= 0 || cfg.Step <= 0 || cfg.MinSamples <= 0 {

@@ -40,22 +40,25 @@ type NodeInterference struct {
 	GrangerOK     bool              `json:"granger_ok"`
 }
 
-// EnumerateNodePairs 는 입력 LabeledSeries 슬라이스 에서 node 단위 페어 를 생성 한다. 정책 은 다음과
+// EnumerateNodePairs 는 입력 LabeledSeries 슬라이스에서 node 단위 페어를 생성한다. 정책은 다음과
 // 같다.
 //
-//   - node 라벨 만 있고 src_namespace / src_pod 라벨 이 없는 node-level 시계열 만 후보 로 인정 한다.
-//     pod 단위 시계열 (src_namespace / src_pod 채워 짐) 은 본 함수 의 schema 와 불일치 라 자동 제외 해
-//     pod-level EnumeratePairs 와 의 입력 중복 을 차단 한다.
-//   - victim_node != suspect_node 인 페어 만 생성 한다. 동일 노드 페어 는 same-node noisy neighbor
-//     의 분석 자리 이며 본 layer 의 의도 와 어긋 난다.
-//   - (X_node, Y_node) 와 (Y_node, X_node) 를 별도 페어 로 둘 다 생성 한다. 비대칭 분석 (X 자원 이 Y
-//     latency 를 예측 vs Y 자원 이 X latency 를 예측) 을 위해서다.
+//   - node 라벨만 있고 src_namespace / src_pod 라벨이 없는 node-level 시계열만 후보로 인정한다.
+//     pod 단위 시계열 (src_namespace / src_pod 채워짐) 은 본 함수의 schema와 불일치라 자동 제외해
+//     pod-level EnumeratePairs와의 입력 중복을 차단한다.
+//   - victim_node != suspect_node 인 페어만 생성한다. 동일 노드 페어는 same-node noisy neighbor의
+//     분석 자리이며 본 layer의 의도와 어긋난다.
+//   - Src가 non-latency suspect (pressure score), Dst가 latency victim인 단일 방향 페어만 생성한다.
+//     noisy neighbor 모델 (suspect 자원 압박이 victim latency를 예측) 에 부합하지 않는 방향
+//     (latency → pressure, pressure → pressure, latency → latency) 은 SelectTopNCrossNode 단계에서도
+//     모두 필터링되므로 enumerate 단계에서 미리 제외해 Granger 인과성 검정의 행렬 연산 비용을
+//     회피한다. dev cluster 4 노드 기준 192 페어 중 48 페어만 유효해 약 75% 비용 절감이 가능하다.
 //
-// 노드 키 정렬 로 출력 순서 가 결정적 이며 단위 테스트 가 안정 적 으로 비교 가능 하다. 노드 단위 라
-// cross-product N_nodes^2 만 발생 해 dev cluster 4 노드 기준 12 페어, prod 수십 노드 도 수백 페어 로
-// cardinality 부담 이 거의 없다.
+// 노드 키 정렬로 출력 순서가 결정적이며 단위 테스트가 안정적으로 비교 가능하다. 노드 단위라
+// cross-product N_nodes^2만 발생해 dev cluster 4 노드 기준 12 페어 디렉션, prod 수십 노드도 수백
+// 페어로 cardinality 부담이 거의 없다.
 func EnumerateNodePairs(items []LabeledSeries) []NodePair {
-	// 1단계: node 키 기준 그룹화. node-level 시계열 만 후보 로 모은다.
+	// 1단계: node 키 기준 그룹화. node-level 시계열만 후보로 모은다.
 	byNode := make(map[string][]LabeledSeries)
 	for _, item := range items {
 		node := item.Series.Labels["node"]
@@ -64,7 +67,7 @@ func EnumerateNodePairs(items []LabeledSeries) []NodePair {
 		if node == "" {
 			continue
 		}
-		// pod 라벨 이 들어 있는 시계열 은 pod-level 분석 의 입력 이라 본 함수 가 자동 제외 한다.
+		// pod 라벨이 들어 있는 시계열은 pod-level 분석의 입력이라 본 함수가 자동 제외한다.
 		if ns != "" || pod != "" {
 			continue
 		}
@@ -77,7 +80,7 @@ func EnumerateNodePairs(items []LabeledSeries) []NodePair {
 	}
 	sort.Strings(nodeKeys)
 
-	// 2단계: 노드 페어 enumerate. victim_node != suspect_node 인 모든 조합 을 양방향 으로 생성 한다.
+	// 2단계: Src가 non-latency suspect이고 Dst가 latency victim인 단일 방향 페어만 enumerate.
 	out := make([]NodePair, 0)
 	for _, srcNode := range nodeKeys {
 		srcGroup := byNode[srcNode]
@@ -87,11 +90,11 @@ func EnumerateNodePairs(items []LabeledSeries) []NodePair {
 			}
 			dstGroup := byNode[dstNode]
 			for _, src := range srcGroup {
+				if isLatencyMetric(src.Metric) {
+					continue
+				}
 				for _, dst := range dstGroup {
-					if src.Metric == dst.Metric {
-						// 같은 metric 이지만 다른 노드 의 시계열 은 cross-node 비교 가 가능 하나
-						// 본 PR 의 noisy neighbor 모델 (suspect 자원 압박 → victim latency) 에 부합
-						// 하지 않 으므로 isLatencyMetric 분류 에 맡기지 않고 명시 제외 한다.
+					if !isLatencyMetric(dst.Metric) {
 						continue
 					}
 					out = append(out, NodePair{

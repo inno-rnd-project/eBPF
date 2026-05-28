@@ -265,7 +265,11 @@ func reconcileOnce(
 	crossNode := correlation.SelectTopNCrossNode(results, topN)
 	collector.ReplaceCrossNode(crossNode)
 	duration := time.Since(cycleStart)
-	expectedMetrics := len(corr.Config().DefaultMetrics) + len(corr.Config().ExtraMetrics)
+	cfg := corr.Config()
+	expectedMetrics := len(cfg.DefaultMetrics) + len(cfg.ExtraMetrics)
+	if cfg.CrossNodeEnabled {
+		expectedMetrics += len(cfg.CrossNodeMetrics)
+	}
 	health.RecordCycle(duration, results, neighbors, expectedMetrics)
 	ready.Store(true)
 	log.Printf("reconcile ok: pairs=%d neighbors=%d cross_node=%d duration=%s", len(results), len(neighbors), len(crossNode), duration)

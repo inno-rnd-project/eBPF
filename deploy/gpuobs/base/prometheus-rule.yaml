@@ -262,16 +262,20 @@ spec:
         - record: node:gpu_pressure_score:5m
           expr: max by(node) (pod:host_compute_stall_score:5m)
 
-        # 통합 pressure score 는 4 dimension max 의 평균 으로 정규화 한다. 합 / 4 가 [0, 1] 범위 를
-        # 자연스럽게 유지 해 cross-node correlator 의 dimension classifier 가 별도 정규화 단계 없이
-        # 본 시계열 만으로 victim 후보 식별이 가능하다.
+        # 통합 pressure score 는 4 dimension 의 평균으로 정규화한다. 합 / 4 가 [0, 1] 범위를 자연스럽게
+        # 유지해 cross-node correlator의 dimension classifier가 별도 정규화 단계 없이 본 시계열만으로
+        # victim 후보 식별이 가능하다. 결측 dimension은 node 라벨이 없는 vector(0) 대신 cpu_pressure
+        # 기준 시계열에 0을 곱한 형태로 fallback해 vector 연산의 라벨 매칭 실패 (node 라벨이 한쪽에만
+        # 있어 결과 가 empty가 되는 케이스) 를 회피한다. node:cpu_pressure_score:5m이 결측인 노드는
+        # 본 통합 score 자체가 emit되지 않으나 본 시리즈의 의도가 "어떤 dimension이라도 활성인 노드의
+        # 통합 점수" 이므로 cpu 자체가 비활성인 노드는 분석 대상에서 자연 제외된다.
         - record: node:pressure_score:5m
           expr: |
             (
-              (node:cpu_pressure_score:5m or vector(0))
-              + (node:memory_pressure_score:5m or vector(0))
-              + (node:network_pressure_score:5m or vector(0))
-              + (node:gpu_pressure_score:5m or vector(0))
+              node:cpu_pressure_score:5m
+              + (node:memory_pressure_score:5m or node:cpu_pressure_score:5m * 0)
+              + (node:network_pressure_score:5m or node:cpu_pressure_score:5m * 0)
+              + (node:gpu_pressure_score:5m or node:cpu_pressure_score:5m * 0)
             ) / 4
 
         # cross-node correlator 의 victim 후보 latency 다. histogram_quantile 의 le 합산을 node 차원
