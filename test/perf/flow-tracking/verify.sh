@@ -37,14 +37,44 @@ if [[ -z "${flow_env}" ]]; then
   echo "       opt-in 활성 후 재시도 하라: kubectl set env -n ${NAMESPACE} ds/netobs-agent NETOBS_FLOW_ALLOW_NAMESPACES=${ALLOW_NAMESPACE}"
 fi
 
+# flow_bytes BPF map이 LRU 1024 cap이라 client 엔트리가 짧은 idle 후 evict될 수 있다. verify 도중 client
+# Pod에 sustained TCP 트래픽을 background로 인가해 entry가 LRU에 살아 있도록 한다. 종료 시 cleanup
+# trap이 background 프로세스를 정리한다.
+CLIENT_POD="${FLOW_CLIENT_POD:-}"
+SERVER_HOST="${FLOW_SERVER_HOST:-server.${ALLOW_NAMESPACE}}"
+if [[ -z "${CLIENT_POD}" ]]; then
+  CLIENT_POD=$(kubectl get pods -n "${ALLOW_NAMESPACE}" -l app=client -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+fi
+TRAFFIC_PID=""
+cleanup() {
+  if [[ -n "${TRAFFIC_PID}" ]]; then
+    kill "${TRAFFIC_PID}" 2>/dev/null || true
+    wait "${TRAFFIC_PID}" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+if [[ -n "${CLIENT_POD}" ]]; then
+  echo "[setup] starting background client traffic: ${CLIENT_POD} -> ${SERVER_HOST}"
+  (
+    while true; do
+      kubectl exec -n "${ALLOW_NAMESPACE}" "${CLIENT_POD}" -- curl -sf --max-time 1 "${SERVER_HOST}" >/dev/null 2>&1 || true
+      sleep 1
+    done
+  ) &
+  TRAFFIC_PID=$!
+else
+  echo "[warn] client Pod 를 발견 하지 못함 (app=client 라벨). sustained 트래픽 없이 진행 한다."
+fi
+
 echo "[poll] waiting up to ${TIMEOUT_SECONDS}s for netobs_flow_bytes_total series"
 deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
 
 # 1차 가드: count(netobs_flow_bytes_total{src_namespace="${ALLOW_NAMESPACE}"}) >= 2 (egress + ingress
-# 두 entry 최소). 2차 가드: sum(netobs_flow_bytes_total{src_pod="client"}) > 0 (client Pod 의 누적 bytes
-# 가 양수).
+# 두 entry 최소). 2차 가드: sum(netobs_flow_bytes_total{src_workload="client"}) > 0 (client workload 의
+# 누적 bytes 가 양수). src_pod 가 Deployment hash 를 포함 한 이름 이라 매칭 안정성 을 위해 src_workload
+# 라벨 을 사용 한다.
 query_count="count(netobs_flow_bytes_total{src_namespace=\"${ALLOW_NAMESPACE}\"})"
-query_sum="sum(netobs_flow_bytes_total{src_namespace=\"${ALLOW_NAMESPACE}\",src_pod=\"client\"})"
+query_sum="sum(netobs_flow_bytes_total{src_namespace=\"${ALLOW_NAMESPACE}\",src_workload=\"client\"})"
 
 extract_value() {
   echo "$1" | python3 -c "import json,sys
