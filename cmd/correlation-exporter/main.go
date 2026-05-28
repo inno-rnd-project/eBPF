@@ -259,11 +259,16 @@ func reconcileOnce(
 	}
 	neighbors := correlation.SelectTopN(results, topN)
 	collector.Replace(neighbors)
+	// #84 cross-node interference snapshot 도 동일 reconcile cycle 에서 갱신 한다. CrossNodeEnabled
+	// 가 false 면 results 에 IsCrossNode=true 항목 이 없 으므로 빈 슬라이스 가 전달 되어 series 가
+	// emit 되지 않는다.
+	crossNode := correlation.SelectTopNCrossNode(results, topN)
+	collector.ReplaceCrossNode(crossNode)
 	duration := time.Since(cycleStart)
 	expectedMetrics := len(corr.Config().DefaultMetrics) + len(corr.Config().ExtraMetrics)
 	health.RecordCycle(duration, results, neighbors, expectedMetrics)
 	ready.Store(true)
-	log.Printf("reconcile ok: pairs=%d neighbors=%d duration=%s", len(results), len(neighbors), duration)
+	log.Printf("reconcile ok: pairs=%d neighbors=%d cross_node=%d duration=%s", len(results), len(neighbors), len(crossNode), duration)
 }
 
 // hasCLIFlag 는 args 에 -flag, --flag, -flag=, --flag= 패턴이 있는지 검사한다. flag 우선 정책을

@@ -150,6 +150,48 @@ func TestCollector_EmptySnapshot(t *testing.T) {
 	}
 }
 
+// TestCollector_EmitsCrossNodeScore 는 ReplaceCrossNode 가 보관한 NodeInterference snapshot 이
+// correlation_cross_node_score gauge 로 정확히 emit 되는지 검증한다. victim_node, suspect_node,
+// dimension 3 라벨 셋이 라벨 셋 분리 정책에 정합하는지 회귀 가드 다.
+func TestCollector_EmitsCrossNodeScore(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	c.ReplaceCrossNode([]correlation.NodeInterference{
+		{
+			VictimNode:  "gpu",
+			SuspectNode: "ebpf-worker1",
+			Dimension:   correlation.DimensionCPU,
+			Rank:        1,
+			Score:       0.82,
+			LagSteps:    1,
+			SampleCount: 60,
+		},
+	})
+	want := `# HELP correlation_cross_node_score #84 cross-node interference layer 의 Pearson 상관계수 최대 절대값. suspect_node 의 자원 압박 (dimension) 과 victim_node 의 p99 latency 사이의 동조 정도다. CrossNodeEnabled opt-in 시 만 emit 되며 victim_node == suspect_node 인 시리즈는 enumerate 단에서 자동 제외된다.
+# TYPE correlation_cross_node_score gauge
+correlation_cross_node_score{dimension="cpu",suspect_node="ebpf-worker1",victim_node="gpu"} 0.82
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want), "correlation_cross_node_score"); err != nil {
+		t.Errorf("cross_node_score emit mismatch:\n%v", err)
+	}
+}
+
+// TestCollector_CrossNodeEmptySnapshot 은 ReplaceCrossNode 미호출 또는 빈 슬라이스 호출 시 series 가
+// 0 개 emit 되어 CrossNodeEnabled=false 비활성 운영 모드 가 series 폭주 없이 유지 되는지 확인한다.
+func TestCollector_CrossNodeEmptySnapshot(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	if count := testutil.CollectAndCount(c, "correlation_cross_node_score"); count != 0 {
+		t.Errorf("nil cross_node count=%d want 0", count)
+	}
+	c.ReplaceCrossNode(nil)
+	if count := testutil.CollectAndCount(c, "correlation_cross_node_score"); count != 0 {
+		t.Errorf("nil replace count=%d want 0", count)
+	}
+	c.ReplaceCrossNode([]correlation.NodeInterference{})
+	if count := testutil.CollectAndCount(c, "correlation_cross_node_score"); count != 0 {
+		t.Errorf("empty replace count=%d want 0", count)
+	}
+}
+
 // TestCollector_ConcurrentReplaceAndCollect 는 reconcile 의 Replace 와 Prometheus scrape 의 Collect
 // 가 동시 호출되어도 race 가 발생하지 않는지 -race 빌드에서 검증한다.
 func TestCollector_ConcurrentReplaceAndCollect(t *testing.T) {
