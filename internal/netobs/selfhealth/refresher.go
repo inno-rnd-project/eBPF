@@ -127,7 +127,7 @@ type Refresher struct {
 // 자체는 Info 호출이라 항상 성공하며, Entries() 의 iterate 가 실패하면 refreshOnce 의 기존 log
 // + skip 패턴으로 utilization 메트릭만 emit 되지 않는다 (docs/netobs/drop-stack-capture.md 의 fallback
 // 명세와 정합).
-func NewRefresher(starts, podBytes, eventsDropped, dropStacks *cebpf.Map) (*Refresher, error) {
+func NewRefresher(starts, podBytes, eventsDropped, dropStacks, flowBytes *cebpf.Map) (*Refresher, error) {
 	startsSizer, err := newBpfMapSizer("starts", starts)
 	if err != nil {
 		return nil, err
@@ -142,6 +142,14 @@ func NewRefresher(starts, podBytes, eventsDropped, dropStacks *cebpf.Map) (*Refr
 			sizers = append(sizers, stacksSizer)
 		} else {
 			log.Printf("selfhealth: drop stacks sizer skipped: %v", err)
+		}
+	}
+	// #85 flow_bytes map utilization 노출. LRU_HASH (non-percpu) 라 NextKey iterate 가 안정적이다.
+	if flowBytes != nil {
+		if flowSizer, err := newBpfMapSizer("flow_bytes", flowBytes); err == nil {
+			sizers = append(sizers, flowSizer)
+		} else {
+			log.Printf("selfhealth: flow_bytes sizer skipped: %v", err)
 		}
 	}
 	return &Refresher{

@@ -16,6 +16,7 @@ import (
 	"netobs/internal/netobs/config"
 	"netobs/internal/netobs/drop"
 	ebpfx "netobs/internal/netobs/ebpf"
+	"netobs/internal/netobs/flow"
 	"netobs/internal/netobs/metadata"
 	"netobs/internal/netobs/metrics"
 	"netobs/internal/netobs/podbytes"
@@ -83,6 +84,20 @@ func main() {
 	podBytesCollector := podbytes.New(enricher, cfg.NodeName, cfg.PodMetricsEnabled)
 	reg.MustRegister(podBytesCollector)
 
+	// #85 flow.Collector 는 BPF flow_bytes 누적 맵 을 scrape 시점 에 iterate 해 netobs_flow_bytes_total
+	// 5-tuple counter 를 emit 한다. FlowAllowNamespaces 가 비어 있으면 FlowGuard 의 모든 admit 이 거부
+	// 되어 series 가 emit 되지 않는다 (opt-in 안전 default).
+	var flowCollector *flow.Collector
+	if len(cfg.FlowAllowNamespaces) > 0 {
+		flowGuard := metrics.NewFlowGuard(cfg.FlowAllowNamespaces, cfg.FlowMaxActive)
+		dstClassifier := metadata.NewDstLabelClassifier(cfg.PodFlowDstEnabled, cfg.PodFlowDstUIDAllowNamespaces)
+		flowCollector = flow.New(enricher, kr, flowGuard, dstClassifier, cfg.NodeName, cfg.PodMetricsEnabled)
+		reg.MustRegister(flowCollector)
+		log.Printf("flow guard: allow_namespaces=%v max_active=%d", cfg.FlowAllowNamespaces, cfg.FlowMaxActive)
+	} else {
+		log.Printf("flow guard: disabled (NETOBS_FLOW_ALLOW_NAMESPACES empty)")
+	}
+
 	ready := func() (bool, string) {
 		if !kr.HasSynced() {
 			return false, "kube resolver informer not synced"
@@ -148,6 +163,9 @@ func main() {
 			ebpfReady.Store(true)
 			if rt != nil {
 				podBytesCollector.SetMap(rt.PodBytes)
+				if flowCollector != nil {
+					flowCollector.SetMap(rt.FlowBytes)
+				}
 				// #83 의 drop stack resolver. kallsyms 접근 실패 또는 권한 부족으로 init 이 실패하면
 				// nil 로 두어 metrics 패키지가 stack 메트릭 emit 만 fail-open 으로 skip 한다.
 				resolver, err := symbols.New(cfg.KallsymsPath, rt.DropStacks, 1024,
@@ -162,7 +180,7 @@ func main() {
 				// self-health refresher 는 BPF map handle 이 준비된 시점에 한 번 spawn 한다.
 				// 구성 실패는 self-health 만 disable 하고 agent 전체 기동은 진행해 운영자가
 				// up{} 와 program_loaded 메트릭으로 1 차 진단을 시작할 수 있게 한다.
-				if rf, err := selfhealth.NewRefresher(rt.Starts, rt.PodBytes, rt.EventsDropped, rt.DropStacks); err != nil {
+				if rf, err := selfhealth.NewRefresher(rt.Starts, rt.PodBytes, rt.EventsDropped, rt.DropStacks, rt.FlowBytes); err != nil {
 					log.Printf("self-health refresher: %v", err)
 				} else {
 					rf.Start(ctx)
@@ -228,8 +246,12 @@ func main() {
 			}
 			// ebpfx.Run 반환 시점에 deferred objs.Close()가 이미 PodBytes 맵 FD를 닫았다.
 			// Collector가 stale pointer로 매 scrape마다 EBADF errno를 받지 않도록 명시적으로
-			// invalidate한다. 이후 Collect는 nil-map 가드로 빈 결과를 반환한다.
+			// invalidate한다. 이후 Collect는 nil-map 가드로 빈 결과를 반환한다. #85 flow.Collector
+			// 도 동일한 stale FD 회피를 위해 함께 invalidate 한다.
 			podBytesCollector.SetMap(nil)
+			if flowCollector != nil {
+				flowCollector.SetMap(nil)
+			}
 			// BPF runtime 이 종료된 시점에 readiness gate 도 false 로 reset 한다. 이렇게 두면
 			// /readyz 가 즉시 503 을 돌려주어 Kubernetes Service endpoint 에서 제외되고, kubelet
 			// 의 readiness probe 가 fail 후 Service 트래픽이 본 pod 으로 라우팅되지 않는다. BPF

@@ -23,10 +23,15 @@ import (
 // errLogMinInterval 은 silent-skip 에러 로그 의 최소 간격 이다. podbytes.Collector 와 동일 1 분 throttle.
 const errLogMinInterval = time.Minute
 
-// PodResolver 는 cgroup_id 와 IP 를 PodIdentity 로 풀어 주는 lookup 인터페이스 다. metadata.Enricher 가
-// 본 인터페이스 를 만족 하며 단위 테스트 에서는 가짜 구현 으로 대체 가능 하다.
-type PodResolver interface {
+// CgroupResolver 는 cgroup_id 를 PodIdentity 로 풀어 주는 lookup 인터페이스 다. metadata.Enricher 가
+// 본 인터페이스 를 만족 한다.
+type CgroupResolver interface {
 	ResolveCgroup(cgroupID uint64) (kube.PodIdentity, bool)
+}
+
+// IPResolver 는 IP 문자열 을 PodIdentity 로 풀어 주는 lookup 인터페이스 다. kube.Resolver 가 본 인터페이스
+// 를 만족 한다. dst 라벨 셋 의 dst_namespace / dst_pod_uid 결정 에 사용 된다.
+type IPResolver interface {
 	ResolveIP(ip string) kube.PodIdentity
 }
 
@@ -54,7 +59,8 @@ func directionLabel(v uint8) string {
 // namespace, dst_pod_uid) 의 master switch 와 allow-list 정책 을 그대로 차용 한다.
 type Collector struct {
 	bpfMap         atomic.Pointer[cebpf.Map]
-	resolver       PodResolver
+	cgroup         CgroupResolver
+	ip             IPResolver
 	guard          *metrics.FlowGuard
 	dstClassifier  *metadata.DstLabelClassifier
 	node           string
@@ -67,7 +73,9 @@ type Collector struct {
 
 // New 는 Collector 를 구성 한다. guard 가 nil 또는 allow-list 가 비어 있으면 본 collector 는 어떤
 // 시리즈 도 emit 하지 않는다. dstClassifier 가 nil 이면 dst 라벨 셋 이 모두 빈 문자열 로 emit 된다.
-func New(resolver PodResolver, guard *metrics.FlowGuard, dstClassifier *metadata.DstLabelClassifier, node string, enabled bool) *Collector {
+// cgroup 은 cgroup_id → PodIdentity 매핑 을 (typically metadata.Enricher), ip 는 IP → PodIdentity
+// 매핑 을 (typically kube.Resolver) 담당 한다. ip 가 nil 이면 dst 라벨 두 칸 이 빈 문자열 로 채워진다.
+func New(cgroup CgroupResolver, ip IPResolver, guard *metrics.FlowGuard, dstClassifier *metadata.DstLabelClassifier, node string, enabled bool) *Collector {
 	labels := []string{
 		"node",
 		"src_namespace", "src_workload", "src_pod", "src_pod_uid",
@@ -78,7 +86,8 @@ func New(resolver PodResolver, guard *metrics.FlowGuard, dstClassifier *metadata
 		"direction",
 	}
 	return &Collector{
-		resolver:      resolver,
+		cgroup:        cgroup,
+		ip:            ip,
 		guard:         guard,
 		dstClassifier: dstClassifier,
 		node:          node,
@@ -131,7 +140,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 // emitEntry 는 단일 BPF map entry 를 라벨 변환 과 FlowGuard 검증 후 메트릭 으로 변환 한다. Collect 의
 // hot loop 에서 호출 되며 가드 실패 entry 는 즉시 skip 한다.
 func (c *Collector) emitEntry(ch chan<- prometheus.Metric, key ebpfx.NetObsNetobsFlowKey, value ebpfx.NetObsNetobsFlowValue) {
-	pod, ok := c.resolver.ResolveCgroup(key.CgroupId)
+	pod, ok := c.cgroup.ResolveCgroup(key.CgroupId)
 	if !ok || !pod.IsPod() || pod.PodUID == "" {
 		return
 	}
@@ -146,8 +155,8 @@ func (c *Collector) emitEntry(ch chan<- prometheus.Metric, key ebpfx.NetObsNetob
 	}
 
 	var dstNS, dstUID string
-	if c.dstClassifier != nil {
-		dstIdentity := c.resolver.ResolveIP(dstIP)
+	if c.dstClassifier != nil && c.ip != nil {
+		dstIdentity := c.ip.ResolveIP(dstIP)
 		dstNS, _, dstUID, _ = c.dstClassifier.Labels(dstIdentity)
 	}
 
