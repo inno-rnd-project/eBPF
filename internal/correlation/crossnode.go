@@ -114,23 +114,22 @@ func EnumerateNodePairs(items []LabeledSeries) []NodePair {
 	return out
 }
 
-// SelectTopNCrossNode 는 CorrelationResult 슬라이스 에서 IsCrossNode=true 항목 만 추출 해 cross-node
-// noisy neighbor 의 (victim_node, dimension) 그룹별 상위 topN 페어 를 채택 한다. 다음 규칙 을 단정적
-// 으로 적용 한다.
+// SelectTopNCrossNode 는 CorrelationResult 슬라이스에서 IsCrossNode=true 항목만 추출해 cross-node
+// noisy neighbor의 (victim_node, dimension) 그룹별 상위 topN 페어를 채택한다. 다음 규칙을 단정적
+// 으로 적용한다.
 //
-//   - IsCrossNode == false 인 결과 는 pod-level 분석 의 자리 이므로 본 함수 에서 제외 한다.
-//   - 페어 정확히 한쪽 이 latency 메트릭 이고 반대쪽 이 non-latency cause score 인 페어 만 채택 한다.
-//     pod-level SelectTopN 과 동일 조건 이다.
-//   - Src 가 non-latency suspect, Dst 가 latency victim 인 방향 만 사용 한다. EnumerateNodePairs 가
-//     만드는 반대 방향 (Y, X) 은 같은 (victim_node, suspect_node) 가 두 번 등장 하지 않도록 자동
-//     dedup 의미 로 제외 한다.
-//   - Status 가 StatusOK 또는 StatusPartial 인 결과 만 채택 한다.
-//   - suspect 메트릭 에서 dimension 을 분류 해 DimensionUnknown 이면 제외 한다.
-//   - (victim_node, suspect_node, dimension) 단일 키 로 max score dedup 한다.
-//   - (victim_node, dimension) 그룹별 max_abs_value 내림차순 으로 정렬 해 상위 topN 개 에 rank 1..topN
-//     부여 한다.
+//   - IsCrossNode == false 인 결과는 pod-level 분석의 자리이므로 본 함수에서 제외한다.
+//   - 페어 정확히 한쪽이 latency 메트릭이고 반대쪽이 non-latency cause score인 페어만 채택한다.
+//     EnumerateNodePairs가 사전 필터로 Src=non-latency / Dst=latency 방향만 enumerate하므로 본 두
+//     조건은 정상 동작 경로에서는 항상 통과한다. 다른 호출 경로 (직접 CorrelationResult 슬라이스를
+//     주입하는 단위 테스트 등) 의 안전성을 위해 defense-in-depth로 검증 단계를 유지한다.
+//   - Status가 StatusOK 또는 StatusPartial인 결과만 채택한다.
+//   - suspect 메트릭에서 dimension을 분류해 DimensionUnknown이면 제외한다.
+//   - (victim_node, suspect_node, dimension) 단일 키로 max score dedup한다.
+//   - (victim_node, dimension) 그룹별 max_abs_value 내림차순으로 정렬해 상위 topN 개에 rank 1..topN
+//     부여한다.
 //
-// 결과 는 (victim_node, dimension, rank) 순 으로 정렬 된 슬라이스 다. topN <= 0 이면 nil 을 반환 한다.
+// 결과는 (victim_node, dimension, rank) 순으로 정렬된 슬라이스다. topN <= 0 이면 nil을 반환한다.
 func SelectTopNCrossNode(results []CorrelationResult, topN int) []NodeInterference {
 	if topN <= 0 {
 		return nil
@@ -157,6 +156,9 @@ func SelectTopNCrossNode(results []CorrelationResult, topN int) []NodeInterferen
 		if r.Status != StatusOK && r.Status != StatusPartial {
 			continue
 		}
+		// defense-in-depth. EnumerateNodePairs가 사전 필터로 Src=non-latency / Dst=latency 만 enumerate
+		// 하므로 본 두 조건은 정상 경로에서 항상 통과하나 단위 테스트 등의 직접 주입 경로 안전성을
+		// 위해 검증을 유지한다.
 		srcLatency := isLatencyMetric(r.NodePair.SrcMetric)
 		dstLatency := isLatencyMetric(r.NodePair.DstMetric)
 		if srcLatency == dstLatency {

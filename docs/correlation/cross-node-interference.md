@@ -10,7 +10,7 @@
 
 ## dimension 의미
 
-기존 pod-level 4 dimension (`cpu`, `memory`, `network`, `gpu`) 을 노드 레벨로 rollup한 4종 score를 신설한다. `correlation_cross_node_score`의 `dimension` 라벨은 본 4종 값으로 emit되며 `classifyDimension` 휴리스틱이 그대로 재사용된다. 본 이슈 본문의 단수 표현 "node_pressure_score" 는 4 dimension의 통합 score 1종 (`node:pressure_score:5m`) 으로 별도 정의해 운영자 가 노드 단위 압박을 단일 시계열로 볼 수 있게 한다.
+기존 pod-level 4 dimension (`cpu`, `memory`, `network`, `gpu`) 을 노드 레벨로 rollup한 4종 score를 신설한다. `correlation_cross_node_score`의 `dimension` 라벨은 본 4종 값으로 emit되며 `classifyDimension` 휴리스틱이 그대로 재사용된다. cross-node correlator의 입력은 본 4종 dimension score를 직접 사용하고 (`Config.CrossNodeMetrics` 필드 참고) 별도 통합 score (`node:pressure_score:5m`) 는 운영자가 노드 단위 압박을 단일 시계열로 dashboard / 수동 query에서 즉시 보기 위한 보조 시리즈로만 노출한다.
 
 ## recording rule 정의
 
@@ -22,7 +22,7 @@
 | `node:memory_pressure_score:5m` | `max by(node) (pod:memory_pressure_score:5m)` | 노드 의 가장 큰 memory 압박 |
 | `node:network_pressure_score:5m` | `max by(node) (pod:network_throughput_score:5m or pod:network_retrans_score:5m)` | 노드 의 가장 큰 network 압박 |
 | `node:gpu_pressure_score:5m` | `max by(node) (pod:host_compute_stall_score:5m)` | 노드 의 가장 큰 host-GPU compute stall 압박 |
-| `node:pressure_score:5m` | 4 dimension max 합산 정규화 | 노드 단위 통합 압박 |
+| `node:pressure_score:5m` | 4 dimension 평균 정규화 | 노드 단위 통합 압박 (보조 시리즈, correlator 입력 아님) |
 | `node:netobs_pod_stage_latency_p99:5m` | `histogram_quantile(0.99, sum by(node, le) (rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])))` | 노드 단위 p99 latency (cross-node victim 식별용) |
 
 ## 분석 layer 구성
