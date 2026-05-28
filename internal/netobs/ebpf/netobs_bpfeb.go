@@ -12,6 +12,19 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type NetObsNetobsFlowKey struct {
+	CgroupId  uint64
+	Saddr     uint32
+	Daddr     uint32
+	Sport     uint16
+	Dport     uint16
+	Protocol  uint8
+	Direction uint8
+	Pad       [2]uint8
+}
+
+type NetObsNetobsFlowValue struct{ Bytes uint64 }
+
 type NetObsNetobsPodBytesKey struct {
 	CgroupId  uint64
 	Direction uint8
@@ -49,7 +62,8 @@ type NetObsNetobsStartInfo struct {
 	TsTransmitSkb uint64
 	SeenWriteXmit uint8
 	SeenTransmit  uint8
-	Pad82         [6]uint8
+	IsIpv4        uint8
+	Pad82         [5]uint8
 }
 
 // LoadNetObs returns the embedded CollectionSpec for NetObs.
@@ -118,6 +132,7 @@ type NetObsMapSpecs struct {
 	DropStacks    *ebpf.MapSpec `ebpf:"drop_stacks"`
 	Events        *ebpf.MapSpec `ebpf:"events"`
 	EventsDropped *ebpf.MapSpec `ebpf:"events_dropped"`
+	FlowBytes     *ebpf.MapSpec `ebpf:"flow_bytes"`
 	PodBytes      *ebpf.MapSpec `ebpf:"pod_bytes"`
 	Starts        *ebpf.MapSpec `ebpf:"starts"`
 	TargetDaddr   *ebpf.MapSpec `ebpf:"target_daddr"`
@@ -152,6 +167,7 @@ type NetObsMaps struct {
 	DropStacks    *ebpf.Map `ebpf:"drop_stacks"`
 	Events        *ebpf.Map `ebpf:"events"`
 	EventsDropped *ebpf.Map `ebpf:"events_dropped"`
+	FlowBytes     *ebpf.Map `ebpf:"flow_bytes"`
 	PodBytes      *ebpf.Map `ebpf:"pod_bytes"`
 	Starts        *ebpf.Map `ebpf:"starts"`
 	TargetDaddr   *ebpf.Map `ebpf:"target_daddr"`
@@ -162,6 +178,7 @@ func (m *NetObsMaps) Close() error {
 		m.DropStacks,
 		m.Events,
 		m.EventsDropped,
+		m.FlowBytes,
 		m.PodBytes,
 		m.Starts,
 		m.TargetDaddr,

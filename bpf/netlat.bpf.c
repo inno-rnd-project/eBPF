@@ -66,6 +66,19 @@ struct {
     __type(value, struct netobs_pod_bytes_value);
 } pod_bytes SEC(".maps");
 
+/* #85 Pod 간 정상 flow 의 5-tuple RX/TX 누적 맵이다. pod_bytes 의 LRU_PERCPU_HASH 와 분리해 per-CPU
+ * × 1024 의 memory footprint 부담을 회피하고 BPF_MAP_TYPE_LRU_HASH 로 두 어 1024 entry 의 단일 instance
+ * 만 유지한다. race 안전성 은 inc_flow_bytes 의 __sync_fetch_and_add 로 확보한다. tcp_sendmsg_ret 의
+ * ret > 0 분기 와 tcp_cleanup_rbuf 의 copied > 0 분기 에서 5-tuple key 로 본 맵 에 bytes 를 누적 한다.
+ * userspace flow.Collector 가 scrape 시점 에 본 맵 을 iterate 해 netobs_flow_bytes_total 로 emit 한다.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 1024);
+    __type(key, struct netobs_flow_key);
+    __type(value, struct netobs_flow_value);
+} flow_bytes SEC(".maps");
+
 static __always_inline int match_target(__u32 daddr_net)
 {
     __u32 key = 0;
@@ -125,6 +138,8 @@ static __always_inline __u64 sock_cgroup_id(struct sock *sk)
 
 static __always_inline void fill_conn_from_sock(struct sock *sk, struct netobs_start_info *s)
 {
+    __u16 family;
+
     s->saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
     s->daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
     s->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
@@ -133,6 +148,11 @@ static __always_inline void fill_conn_from_sock(struct sock *sk, struct netobs_s
 
     s->ifindex = BPF_CORE_READ(sk, __sk_common.skc_bound_dev_if);
     s->skb_iif = 0;
+
+    /* #85 IPv4 family flag stash. tcp_sendmsg_ret 에서 sk 가 직접 노출 되지 않 으므로 본 entry 시점
+     * 에서 한 번 읽 어 inc_flow_bytes 의 IPv4 가드 입력 으로 사용 한다. */
+    family = BPF_CORE_READ(sk, __sk_common.skc_family);
+    s->is_ipv4 = (family == NETOBS_AF_INET) ? 1 : 0;
 
     /* #64 drop flow 5-tuple emit 에 protocol 라벨이 필요하다. sk_protocol 은 kernel 의 bitfield 라
      * BPF_CORE_READ_BITFIELD_PROBED 매크로로 안전하게 읽는다. CO-RE 로 kernel 버전 간 layout
@@ -223,6 +243,45 @@ static __always_inline void inc_ringbuf_dropped(void)
     __u64 *v = bpf_map_lookup_elem(&events_dropped, &key);
     if (v)
         (*v)++;        /* percpu 슬롯이라 비-원자 증가로 충분하다 */
+}
+
+/* #85 inc_flow_bytes 는 5-tuple key 로 flow_bytes 맵 에 bytes 를 누적 한다. inc_pod_bytes 와 동일
+ * 한 lookup-then-update 패턴 이지만 LRU_HASH (non-percpu) 라 race 안전성 을 위해 __sync_fetch_and_add
+ * 를 사용 한다. cgroup_id 가 0 이거나 IPv4 가 아닌 (is_ipv4 != 1) socket 은 모두 자동 skip 해 host
+ * 작업 과 비-IPv4 flow 가 본 맵 에 등장 하지 않게 한다. 호출자 는 fill_conn_from_sock 가 채운
+ * start_info 또는 sk 에서 직접 읽 은 5-tuple 을 그대로 전달 한다.
+ */
+static __always_inline void inc_flow_bytes(__u64 cgroup_id, __u8 is_ipv4,
+                                           __u32 saddr, __u32 daddr,
+                                           __u16 sport, __u16 dport,
+                                           __u8 protocol, __u8 direction,
+                                           __u64 bytes_delta)
+{
+    struct netobs_flow_key key;
+    struct netobs_flow_value *val;
+    struct netobs_flow_value init;
+
+    if (!cgroup_id || !is_ipv4 || bytes_delta == 0)
+        return;
+
+    __builtin_memset(&key, 0, sizeof(key));
+    key.cgroup_id = cgroup_id;
+    key.saddr     = saddr;
+    key.daddr     = daddr;
+    key.sport     = sport;
+    key.dport     = dport;
+    key.protocol  = protocol;
+    key.direction = direction;
+
+    val = bpf_map_lookup_elem(&flow_bytes, &key);
+    if (val) {
+        __sync_fetch_and_add(&val->bytes, bytes_delta);
+        return;
+    }
+
+    __builtin_memset(&init, 0, sizeof(init));
+    init.bytes = bytes_delta;
+    bpf_map_update_elem(&flow_bytes, &key, &init, BPF_ANY);
 }
 
 /* emit_event 의 stack_id 인자는 #83 drop event 의 kernel stack capture 용이다. drop 외 stage 는
@@ -324,8 +383,14 @@ int BPF_KRETPROBE(handle_tcp_sendmsg_ret, int ret)
      * 0바이트 전송으로 카운터에 반영하면 안 된다. cgroup_id는 entry 시점에 stash 된 값을 사용해
      * sync syscall 컨텍스트의 task cgroup과 일관성을 유지한다. packets_delta=0인 이유는
      * inc_pod_bytes 주석 참고. */
-    if (ret > 0)
+    if (ret > 0) {
         inc_pod_bytes(s->cgroup_id, NETOBS_DIR_EGRESS, NETOBS_LAYER_L4, (__u64)ret, 0);
+        /* #85 5-tuple flow tracker 의 egress 누적. start_info 의 stash 된 5-tuple 과 is_ipv4 가드 를
+         * 그대로 전달 해 IPv4 한정 sendmsg 만 본 맵 에 들어가게 한다. */
+        inc_flow_bytes(s->cgroup_id, s->is_ipv4,
+                       s->saddr, s->daddr, s->sport, s->dport,
+                       s->protocol, NETOBS_DIR_EGRESS, (__u64)ret);
+    }
 
     if (s->seen_veth && s->seen_devq)
         bpf_map_delete_elem(&starts, &tid);
@@ -535,6 +600,10 @@ SEC("kprobe/tcp_cleanup_rbuf")
 int BPF_KPROBE(handle_tcp_cleanup_rbuf, struct sock *sk, int copied)
 {
     __u64 cgroup_id;
+    __u16 family;
+    __u32 saddr, daddr;
+    __u16 sport, dport;
+    __u8 protocol;
 
     if (copied <= 0)
         return 0;
@@ -546,6 +615,23 @@ int BPF_KPROBE(handle_tcp_cleanup_rbuf, struct sock *sk, int copied)
     /* L4 ingress 바이트만 누적한다. tcp_cleanup_rbuf는 userspace read 1회마다 호출되어 packets
      * 단위와 무관해서 packets_delta=0. inc_pod_bytes 주석 참고. */
     inc_pod_bytes(cgroup_id, NETOBS_DIR_INGRESS, NETOBS_LAYER_L4, (__u64)copied, 0);
+
+    /* #85 5-tuple flow tracker 의 ingress 누적. tcp_cleanup_rbuf 는 sk 를 직접 인자 로 받으므로 IPv4
+     * 가드 와 5-tuple 추출 을 inline 으로 수행 한다. start_info stash 와 무관 한 별도 path 다.
+     */
+    if (!sk)
+        return 0;
+    family = BPF_CORE_READ(sk, __sk_common.skc_family);
+    if (family != NETOBS_AF_INET)
+        return 0;
+    saddr    = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+    daddr    = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+    sport    = BPF_CORE_READ(sk, __sk_common.skc_num);
+    dport    = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+    protocol = BPF_CORE_READ_BITFIELD_PROBED(sk, sk_protocol);
+    inc_flow_bytes(cgroup_id, /*is_ipv4=*/1,
+                   saddr, daddr, sport, dport, protocol,
+                   NETOBS_DIR_INGRESS, (__u64)copied);
     return 0;
 }
 
