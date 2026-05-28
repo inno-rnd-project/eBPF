@@ -97,6 +97,11 @@ func main() {
 	if v := strings.TrimSpace(os.Getenv("LISTEN_ADDR")); v != "" {
 		listenAddr = v
 	}
+	// #84 cross-node interference layer 의 토글. CROSS_NODE 환경변수 가 "1" / "true" 일 때 opt-in
+	// 활성 으로 둔다. -cross-node flag 가 우선순위 가 더 높다.
+	if v := strings.TrimSpace(os.Getenv("CROSS_NODE")); v == "1" || strings.EqualFold(v, "true") {
+		cfg.CrossNodeEnabled = true
+	}
 
 	fs := flag.NewFlagSet("correlation-exporter", flag.ContinueOnError)
 	fs.StringVar(&cfg.PrometheusURL, "prometheus-url", cfg.PrometheusURL, "Prometheus base URL (env PROMETHEUS_URL fallback)")
@@ -107,6 +112,7 @@ func main() {
 	fs.DurationVar(&reconcileInterval, "reconcile-interval", reconcileInterval, "interval between reconcile cycles")
 	fs.StringVar(&listenAddr, "listen", listenAddr, "metrics server listen address")
 	fs.IntVar(&topN, "top-n", topN, fmt.Sprintf("Top-N noisy neighbors per (victim, dimension), max %d", maxTopN))
+	fs.BoolVar(&cfg.CrossNodeEnabled, "cross-node", cfg.CrossNodeEnabled, "#84: enable cross-node interference layer (node-level pair enumeration, correlation_cross_node_score gauge)")
 
 	var extra stringSlice
 	fs.Var(&extra, "extra-metric", "additional Prometheus query (repeat for multiple)")

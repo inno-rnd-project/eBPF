@@ -46,6 +46,16 @@ type Config struct {
 	// window (30m / 30s step = 60 samples) 에서도 OK 결과가 나오도록 Pearson 의 MinSamples 와 분리해
 	// 더 낮게 둔다. lag p 적용 후 표본 수 n - p 가 본 값 미만이면 GrangerOK=false 로 자연 skip 된다.
 	GrangerMinSamples int
+
+	// CrossNodeEnabled 는 #84 의 cross-node interference layer 토글 이다. true 일 때 Correlate 가
+	// node 단위 시계열 페어 도 함께 산출 해 결과 슬라이스 에 IsCrossNode=true 항목 으로 append 한다.
+	// default false 라 본 layer 가 운영자 의 명시 opt-in 없이는 비활성 으로 유지 된다.
+	CrossNodeEnabled bool
+
+	// CrossNodeMaxPairs 는 cross-node 페어 enumerate 의 상한 이다. 노드 수 가 제한적 이라 (dev 4,
+	// prod 수십) 실제 cap 발동 케이스 는 거의 없 으나 미래 pod-level cross-node 확장 시 reserved
+	// 옵션 으로 활용 가능 하다. 0 이하 면 1024 로 fallback 한다.
+	CrossNodeMaxPairs int
 }
 
 // DefaultConfig 는 운영자가 zero-config 로 본 라이브러리를 호출할 때 쓰이는 default Config 다.
@@ -71,9 +81,18 @@ func DefaultConfig() Config {
 			`avg by(node, src_namespace, src_pod, src_pod_uid) (pod:gpu_memory_utilization_ratio:5m)`,
 			// netobs 의 pod-level latency p99.
 			`histogram_quantile(0.99, sum by(node, src_namespace, src_pod, src_pod_uid, le) (rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])))`,
+			// #84 cross-node interference layer 의 node 단위 입력 시계열 5종. EnumerateNodePairs 가
+			// 본 시리즈 만 후보로 인정 해 pod-level EnumeratePairs 와 의 입력 중복이 자동 차단 된다.
+			"node:cpu_pressure_score:5m",
+			"node:memory_pressure_score:5m",
+			"node:network_pressure_score:5m",
+			"node:gpu_pressure_score:5m",
+			"node:netobs_pod_stage_latency_p99:5m",
 		},
 		FetchTimeout:      30 * time.Second,
 		GrangerLag:        2,
 		GrangerMinSamples: 30,
+		CrossNodeEnabled:  false,
+		CrossNodeMaxPairs: 1024,
 	}
 }

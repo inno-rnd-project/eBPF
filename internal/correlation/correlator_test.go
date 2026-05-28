@@ -197,31 +197,46 @@ func (r *recordingFetcher) Fetch(ctx context.Context, query string, start, end t
 }
 
 // TestDefaultConfigContainsCorrelationInputs 는 default config 가 본 시리즈의 신규 pod 단위 cause
-// score 를 포함하는지 검증한다. zero-config 운영의 기반이다. node-level 메트릭은 namespace / pod
-// 라벨이 없어 EnumeratePairs 의 pod 페어 schema 와 불일치라 default 에서 제외된다.
+// score 와 #84 의 node-level pressure score 를 함께 포함하는지 검증한다. EnumeratePairs 가 pod 라벨
+// 가드로 node-level 시계열을 자동 제외하고 EnumerateNodePairs 가 동일 시계열을 cross-node 입력으로
+// 받아 두 layer 가 동일 DefaultMetrics 셋에서 독립 동작한다.
 func TestDefaultConfigContainsCorrelationInputs(t *testing.T) {
 	cfg := DefaultConfig()
-	required := []string{
+	requiredPod := []string{
 		"pod:cpu_throttle_score:5m",
 		"pod:memory_pressure_score:5m",
 		"pod:host_compute_stall_score:5m",
+	}
+	requiredNode := []string{
+		"node:cpu_pressure_score:5m",
+		"node:memory_pressure_score:5m",
+		"node:network_pressure_score:5m",
+		"node:gpu_pressure_score:5m",
+		"node:netobs_pod_stage_latency_p99:5m",
 	}
 	seen := make(map[string]bool, len(cfg.DefaultMetrics))
 	for _, m := range cfg.DefaultMetrics {
 		seen[m] = true
 	}
-	for _, r := range required {
+	for _, r := range requiredPod {
 		if !seen[r] {
-			t.Errorf("DefaultMetrics missing %q", r)
+			t.Errorf("DefaultMetrics missing pod-level metric %q", r)
 		}
 	}
-	// node-level 메트릭은 default 에서 제외되어야 한다 (Pod 페어 schema 불일치).
-	for _, m := range cfg.DefaultMetrics {
-		if len(m) > 5 && m[:5] == "node:" {
-			t.Errorf("DefaultMetrics should NOT include node-level metric %q (Pod-pair schema mismatch)", m)
+	for _, r := range requiredNode {
+		if !seen[r] {
+			t.Errorf("DefaultMetrics missing node-level metric %q", r)
 		}
 	}
 	if cfg.Window <= 0 || cfg.Step <= 0 || cfg.MinSamples <= 0 {
 		t.Errorf("default window/step/minSamples must be positive, got %+v", cfg)
+	}
+	// CrossNodeEnabled 는 default false 로 두어 운영자 의 명시 opt-in 이 없는 한 cross-node 결과 가
+	// emit 되지 않는 회귀 가드.
+	if cfg.CrossNodeEnabled {
+		t.Errorf("CrossNodeEnabled default must be false for opt-in policy")
+	}
+	if cfg.CrossNodeMaxPairs <= 0 {
+		t.Errorf("CrossNodeMaxPairs default must be positive, got %d", cfg.CrossNodeMaxPairs)
 	}
 }

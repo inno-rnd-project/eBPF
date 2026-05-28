@@ -120,6 +120,34 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 		r.GrangerOK = g.OK
 		results = append(results, r)
 	}
+
+	// #84 cross-node interference layer. CrossNodeEnabled opt-in 시 node 단위 시계열 의 페어 를
+	// 추가 산출 해 IsCrossNode=true 로 마킹 한 결과 를 동일 슬라이스 에 append 한다. EnumerateNodePairs
+	// 가 node 라벨 만 있는 시계열 만 후보 로 인정 하므로 본 호출 은 pod-level 페어 산출 과 완전히
+	// 분리 된다.
+	if c.config.CrossNodeEnabled {
+		nodePairs := EnumerateNodePairs(all)
+		cap := c.config.CrossNodeMaxPairs
+		if cap <= 0 {
+			cap = 1024
+		}
+		if len(nodePairs) > cap {
+			nodePairs = nodePairs[:cap]
+		}
+		for _, p := range nodePairs {
+			r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
+			r.NodePair = p.Key
+			r.IsCrossNode = true
+			srcVals := getValues(p.Src)
+			dstVals := getValues(p.Dst)
+			g := granger.Test(srcVals, dstVals, c.config.GrangerLag, c.config.GrangerMinSamples)
+			r.FStatistic = g.F
+			r.PValue = g.PValue
+			r.GrangerOK = g.OK
+			results = append(results, r)
+		}
+	}
+
 	return results, nil
 }
 
