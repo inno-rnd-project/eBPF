@@ -58,6 +58,26 @@ struct netobs_pod_bytes_value {
     __u64 packets;
 };
 
+/* #85 Pod 간 정상 flow 의 5-tuple RX/TX 추적 map 의 key/value. cgroup_id 와 5-tuple 양쪽을 모두 보관해
+ * 동일 connection 의 양 종단 Pod 가 서로 다른 entry 로 누적 되도록 한다. direction 을 key 에 포함해
+ * 동일 connection 의 egress 와 ingress 도 별도 entry 로 누적 된다. saddr / daddr 은 network byte
+ * order, sport / dport 는 host byte order 로 fill_conn_from_sock 의 변환 규칙과 정합 한다. trailing
+ * 8-byte align padding 회피를 위해 #82 의 pad82, #83 의 pad83 와 동일 한 명시 pad 슬롯을 둔다. */
+struct netobs_flow_key {
+    __u64 cgroup_id;
+    __u32 saddr;            /* network byte order */
+    __u32 daddr;            /* network byte order */
+    __u16 sport;            /* host byte order */
+    __u16 dport;            /* host byte order */
+    __u8  protocol;         /* IP protocol number (6=TCP) */
+    __u8  direction;        /* netobs_byte_direction */
+    __u8  pad[2];
+};
+
+struct netobs_flow_value {
+    __u64 bytes;
+};
+
 struct netobs_start_info {
     __u64 ts_ns;
     __u64 cgroup_id;
@@ -105,7 +125,12 @@ struct netobs_start_info {
     __u64 ts_transmit_skb;
     __u8  seen_write_xmit;
     __u8  seen_transmit;
-    __u8  pad82[6];
+    /* #85 IPv4 family flag. fill_conn_from_sock 에서 sk_family 를 한 번 읽 어 본 슬롯에 stash 한다.
+     * tcp_sendmsg_ret 의 inc_flow_bytes 호출 시 sk 가 직접 인자로 노출 되지 않 으므로 본 flag 로 IPv4
+     * 가드 를 수행 한다. 1 byte 사용 으로 기존 pad82 의 6 byte 중 1 byte 를 흡수 해 struct size 는
+     * 변하지 않는다. */
+    __u8  is_ipv4;
+    __u8  pad82[5];
 };
 
 struct netobs_event {

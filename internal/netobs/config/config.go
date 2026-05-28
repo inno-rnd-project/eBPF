@@ -71,6 +71,15 @@ type Config struct {
 	// admit 결과가 독립이라 별도 cap 으로 분리한다. 기본 1024.
 	DropStackMaxActive int
 
+	// FlowAllowNamespaces 는 #85 의 netobs_flow_bytes_total 메트릭 이 emit 되는 src namespace
+	// 화이트리스트 다. 빈 슬라이스 가 기본 이며 그 경우 flow.Collector 가 BPF map iterate 자체 를
+	// skip 해 cardinality 가 0 series 로 유지 된다.
+	FlowAllowNamespaces []string
+
+	// FlowMaxActive 는 정상 flow 메트릭 의 활성 5-tuple 동시 emit 상한 이다. DropFlowMaxActive 와
+	// admit 결과 가 독립 이라 별도 cap 으로 분리 한다. 기본 1024.
+	FlowMaxActive int
+
 	// KallsymsPath 는 #83 의 userspace symbol resolver 가 파싱하는 /proc/kallsyms 경로다. 컨테이너
 	// hostPath 마운트의 위치가 변경되는 경우에 한해 override 한다. 기본은 /proc/kallsyms.
 	KallsymsPath string
@@ -185,6 +194,11 @@ func Parse() (Config, error) {
 		dropStackMaxActive = 1024
 	}
 
+	flowMaxActive, err := strconv.Atoi(getenv("NETOBS_FLOW_MAX_ACTIVE", "1024"))
+	if err != nil || flowMaxActive <= 0 {
+		flowMaxActive = 1024
+	}
+
 	cfg := Config{
 		TargetIP:                     getenv("TARGET_IP", ""),
 		ListenAddr:                   getenv("LISTEN_ADDR", ":9810"),
@@ -200,6 +214,8 @@ func Parse() (Config, error) {
 		DropStackAllowNamespaces:     parseNamespaceList(getenv("NETOBS_DROP_STACK_ALLOW_NAMESPACES", "")),
 		DropStackMaxActive:           dropStackMaxActive,
 		KallsymsPath:                 getenv("NETOBS_KALLSYMS_PATH", "/proc/kallsyms"),
+		FlowAllowNamespaces:          parseNamespaceList(getenv("NETOBS_FLOW_ALLOW_NAMESPACES", "")),
+		FlowMaxActive:                flowMaxActive,
 		NICCapacityBytesPerSec:       nicCapacity,
 	}
 
@@ -230,6 +246,12 @@ func Parse() (Config, error) {
 	fs.StringVar(&dropStackNs, "drop-stack-allow-namespaces", dropStackNs, "comma-separated namespace allow-list for netobs_drop_stack_total kernel stack metric (#83); empty disables emit cluster-wide")
 	fs.IntVar(&cfg.DropStackMaxActive, "drop-stack-max-active", cfg.DropStackMaxActive, "LRU sampling cap for concurrent active 5-tuple flows in drop stack metric (#83). Independent of -drop-flow-max-active")
 	fs.StringVar(&cfg.KallsymsPath, "kallsyms-path", cfg.KallsymsPath, "path to /proc/kallsyms for the drop stack userspace symbol resolver (#83); only override when hostPath mount target differs")
+	var flowNs string
+	if len(cfg.FlowAllowNamespaces) > 0 {
+		flowNs = strings.Join(cfg.FlowAllowNamespaces, ",")
+	}
+	fs.StringVar(&flowNs, "flow-allow-namespaces", flowNs, "comma-separated namespace allow-list for netobs_flow_bytes_total 5-tuple emit (#85); empty disables emit cluster-wide")
+	fs.IntVar(&cfg.FlowMaxActive, "flow-max-active", cfg.FlowMaxActive, "LRU sampling cap for concurrent active 5-tuple flows in flow bytes metric (#85). Independent of -drop-flow-max-active")
 	fs.Float64Var(&cfg.NICCapacityBytesPerSec, "nic-capacity-bytes", cfg.NICCapacityBytesPerSec, "node NIC theoretical capacity in bytes/sec; exposed as netobs_node_nic_capacity_bytes_per_sec for correlation network throughput score (default 1.25e9 = 10 GbE)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// -h/-help 요청은 flag 패키지가 usage를 출력한 뒤 ErrHelp를 반환한다.
@@ -258,6 +280,7 @@ func Parse() (Config, error) {
 	cfg.PodFlowDstUIDAllowNamespaces = parseNamespaceList(dstUIDNs)
 	cfg.DropFlowAllowNamespaces = parseNamespaceList(dropFlowNs)
 	cfg.DropStackAllowNamespaces = parseNamespaceList(dropStackNs)
+	cfg.FlowAllowNamespaces = parseNamespaceList(flowNs)
 
 	// allow-list 각 entry 가 RFC1123 DNS 라벨 규칙에 맞는지 startup 시점에 fail-fast 로 검증한다.
 	// 잘못된 이름 (예: 대문자, 언더스코어 오타) 은 lookup 단계에서 silent miss 가 되어 dst_pod_uid
@@ -277,11 +300,19 @@ func Parse() (Config, error) {
 			return Config{}, fmt.Errorf("invalid -drop-stack-allow-namespaces entry: %w", err)
 		}
 	}
+	for _, ns := range cfg.FlowAllowNamespaces {
+		if err := validateNamespaceName(ns); err != nil {
+			return Config{}, fmt.Errorf("invalid -flow-allow-namespaces entry: %w", err)
+		}
+	}
 	if cfg.DropFlowMaxActive <= 0 {
 		return Config{}, fmt.Errorf("drop-flow-max-active must be positive, got %d", cfg.DropFlowMaxActive)
 	}
 	if cfg.DropStackMaxActive <= 0 {
 		return Config{}, fmt.Errorf("drop-stack-max-active must be positive, got %d", cfg.DropStackMaxActive)
+	}
+	if cfg.FlowMaxActive <= 0 {
+		return Config{}, fmt.Errorf("flow-max-active must be positive, got %d", cfg.FlowMaxActive)
 	}
 
 	return cfg, nil
