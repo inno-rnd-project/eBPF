@@ -49,6 +49,21 @@ netobs_flow_bytes_total{node, src_namespace, src_workload, src_pod, src_pod_uid,
 
 `internal/netobs/selfhealth/refresher.go`의 `netobs_bpf_map_utilization_ratio`에 `map="flow_bytes"` 라벨을 추가해 1024 LRU cap의 포화 신호를 노출한다.
 
+## 양 종단 동시 관측
+
+동일 connection은 Pod A의 agent와 Pod B의 agent 양쪽에서 각각 관측된다. 한 connection에 대해 BPF flow_bytes map에는 다음 4 entry가 분산 누적된다.
+
+- Pod A의 agent: `(cgroup_A, egress)` 와 `(cgroup_A, ingress)` 두 entry
+- Pod B의 agent: `(cgroup_B, egress)` 와 `(cgroup_B, ingress)` 두 entry
+
+cgroup_id가 노드별로 다르므로 BPF 측에서는 자동으로 별개 entry로 분리되나 운영자가 `sum(netobs_flow_bytes_total)` 같은 cluster-wide 합산 시 동일 connection의 바이트가 양 종단에서 중복 계산된다. cluster-wide 합산이 필요하면 다음 패턴으로 한 방향만 채택해 중복 회피한다.
+
+```
+sum by(...) (netobs_flow_bytes_total{direction="egress"})
+```
+
+본 한 방향 합산이 cluster의 모든 TCP 송신 바이트 (= 수신 바이트) 와 같다.
+
 ## sanity check
 
 운영자는 동일 (`src_namespace`, `src_pod`) 의 flow 합계와 pod-level 합계가 ±5% 오차 범위에서 일치하는지로 누락 신호를 검증한다.
