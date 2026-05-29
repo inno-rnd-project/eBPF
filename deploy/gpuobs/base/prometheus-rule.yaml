@@ -1015,6 +1015,52 @@ spec:
             summary: "{{ $labels.job }} informer stale {{ $value | humanizeDuration }} on {{ $labels.instance }}"
             description: "{{ $labels.job }} on {{ $labels.instance }} has not received any kube watch event for {{ $value | humanizeDuration }}. Check API server reachability, NetworkPolicy, and the agent ServiceAccount RBAC (pods/services/nodes watch verbs)."
 
+        # #88 capacity-trends z-score anomaly alert 4종. 본 alert 군은 capacity planning 의 선행
+        # 신호 (즉시 대응 불요 의 warning severity) 라 throttle 류 critical alert 와 component
+        # 라벨로 분리한다 (gpuobs-capacity, netobs-capacity, cpu-capacity, memory-capacity). |z| > 3
+        # 은 정규분포의 99.7% 신뢰구간 outside 라 normal shift 벗어난 usage pattern 을 의미하고,
+        # 30 분 sustained 조건으로 일시적 spike 의 alert flapping 을 차단한다. baseline (30일 offset
+        # 30일) 의 stddev 가 0 인 평탄 구간 은 record 자체가 미 emit 되어 alert 도 자연 통과한다.
+        - alert: GPUUtilAnomalyDetected
+          expr: abs(cluster:gpu_util_zscore:1h) > 3
+          for: 30m
+          labels:
+            severity: warning
+            component: gpuobs-capacity
+          annotations:
+            summary: "GPU utilization capacity anomaly (z={{ $value }})"
+            description: "Cluster GPU utilization 의 z-score 가 30일 baseline 대비 |z|={{ $value }} 로 30 분 sustained 됐다. 95% 신뢰구간 outside 의 normal shift 신호다. capacity-trends heatmap 패널에서 시간대 패턴을 확인하고 필요 시 GPU 자원 재할당 또는 워크로드 schedule 조정을 검토하라."
+
+        - alert: NetworkUtilAnomalyDetected
+          expr: abs(cluster:network_zscore:1h) > 3
+          for: 30m
+          labels:
+            severity: warning
+            component: netobs-capacity
+          annotations:
+            summary: "Network throughput capacity anomaly (z={{ $value }})"
+            description: "Cluster network throughput score 의 z-score 가 30일 baseline 대비 |z|={{ $value }} 로 30 분 sustained 됐다. capacity-trends overlay 패널에서 시간대 분포를 확인하고 필요 시 NIC bandwidth 또는 Pod replica 재설정을 검토하라."
+
+        - alert: CPUThrottleAnomalyDetected
+          expr: abs(cluster:cpu_throttle_zscore:1h) > 3
+          for: 30m
+          labels:
+            severity: warning
+            component: cpu-capacity
+          annotations:
+            summary: "CPU throttle capacity anomaly (z={{ $value }})"
+            description: "Cluster CPU CFS throttle ratio 의 z-score 가 30일 baseline 대비 |z|={{ $value }} 로 30 분 sustained 됐다. capacity-trends heatmap 패널에서 시간대 패턴을 확인하고 필요 시 CPU limit 상향 또는 워크로드 재배치를 검토하라."
+
+        - alert: MemoryPressureAnomalyDetected
+          expr: abs(cluster:memory_pressure_zscore:1h) > 3
+          for: 30m
+          labels:
+            severity: warning
+            component: memory-capacity
+          annotations:
+            summary: "Memory pressure capacity anomaly (z={{ $value }})"
+            description: "Cluster memory working_set / limit ratio 의 z-score 가 30일 baseline 대비 |z|={{ $value }} 로 30 분 sustained 됐다. OOM 임박 위험 으로 memory limit 상향 또는 워크로드 재배치를 검토하라."
+
     # netobs-gpuobs.cross-correlation.recording 그룹은 #86 의 GPU-network cross-correlation 통합
     # 패널이 직접 참조하는 사전 집계 시계열을 둔다. 패널은 단일 timeseries 에 4 시계열 (GPU
     # utilization, GPU memory used ratio, network throughput, network p99 latency) 과 correlation
