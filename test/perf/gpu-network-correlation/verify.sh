@@ -5,12 +5,12 @@
 # 이 동시에 non-empty 시리즈로 emit 되는지 확인한다. correlation overlay 의 noisy_neighbor_score
 # 는 dev cluster idle 시 비어 있을 수 있어 본 가드 의 hard 조건에서 제외하고 present 확인 만
 # warn 으로 처리한다. recording rule 적용 직후 5 분 warmup 이 필요하므로 기본 timeout 을 600s 로
-# 둔다. 본 스크립트 는 dev cluster 전용 이며 prod 에서 실행 하지 않는다. observability-test
-# namespace 의 client → server 자연 트래픽 을 활용 해 별도 워크로드 spawn 은 하지 않는다.
+# 둔다. 본 스크립트 는 dev cluster 전용 이며 prod 에서 실행 하지 않는다. 본 가드의 의도는
+# recording rule 4 종의 산정 회귀 차단이라 특정 namespace 한정 가시성은 검증 대상이 아니며
+# dev cluster 의 자연 트래픽이 어느 namespace 든 emit 되면 통과 한다.
 set -euo pipefail
 
 NAMESPACE="${GPUNET_NAMESPACE:-ebpf-project}"
-ALLOW_NAMESPACE="${GPUNET_ALLOW_NAMESPACE:-observability-test}"
 TIMEOUT_SECONDS="${GPUNET_TIMEOUT:-600}"
 POLL_INTERVAL="${GPUNET_POLL_INTERVAL:-30}"
 
@@ -31,7 +31,7 @@ if [[ -z "${PROM_IP}" ]]; then
 fi
 PROM_URL="http://${PROM_IP}:${PROM_PORT}"
 echo "[setup] prometheus URL: ${PROM_URL}"
-echo "[setup] allow_namespace=${ALLOW_NAMESPACE} timeout=${TIMEOUT_SECONDS}s"
+echo "[setup] timeout=${TIMEOUT_SECONDS}s"
 
 # PrometheusRule netobs-gpuobs-correlation 의 신규 group 이 실제로 적용 되어 있는지 사전 확인 한다.
 # rule 미적용 상태 에서 5 분 warmup 만 기다리면 hard fail 까지 시간 손실이 크다.
@@ -53,10 +53,9 @@ deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
 
 # 1차 가드 4종: 신규 recording rule 시리즈 가 각각 1 개 이상 emit 되는지 확인. dev cluster 의
 # netobs allow_namespaces 설정에 따라 특정 namespace 가 emit 대상이 아닐 수 있어 namespace
-# 필터는 두지 않고 "어떤 namespace 든 4 시계열이 동시에 non-empty 면 통과" 로 둔다. 본 가드의
-# 의도는 recording rule 4 종의 산정 회귀 차단이지 특정 namespace 의 트래픽 가시성 확인이 아니
-# 다. 2차 가드 (warn only): correlation overlay 가 present 한지 확인 하되 비어 있어도 hard fail
-# 시키지 않는다 (idle cluster 정상 동작 케이스).
+# 필터는 두지 않고 "어떤 namespace 든 4 시계열이 동시에 non-empty 면 통과" 로 둔다. 2차 가드
+# (warn only): correlation overlay 가 present 한지 확인 하되 비어 있어도 hard fail 시키지 않는다
+# (idle cluster 정상 동작 케이스).
 query_gpu_util="count(node:gpu_util_ratio:5m)"
 query_gpu_mem="count(node:gpu_memory_used_ratio:5m)"
 query_net_throughput="count(pod:network_throughput_bps:5m)"
@@ -109,5 +108,5 @@ net_throughput=${net_throughput_count} net_p99=${net_p99_count} overlay=${overla
 done
 
 echo "[fail] timed out waiting for cross-correlation recording rule series."
-echo "       PrometheusRule 적용 후 5 분 warmup 경과 와 observability-test 의 client → server 트래픽 활성 여부 를 점검 하라."
+echo "       PrometheusRule 적용 후 5 분 warmup 경과 와 dev cluster 의 자연 트래픽 활성 여부 를 점검 하라."
 exit 1

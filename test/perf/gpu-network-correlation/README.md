@@ -7,7 +7,7 @@
 - dev cluster 의 prometheus 가 `monitoring` namespace 에 ready
 - `netobs-gpuobs-correlation` PrometheusRule 의 `netobs-gpuobs.cross-correlation.recording` group 이 적용된 후 최소 5 분 경과
 - `gpuobs-agent` DaemonSet 이 ready 상태로 `gpuobs_device_*` 메트릭을 emit 중
-- `observability-test` namespace 의 `client` Pod 와 `server` Pod 가 자연 트래픽을 주고 받는 중
+- `netobs-agent` 의 allow_namespaces 에 포함된 namespace 중 어느 하나라도 Pod-to-Pod 트래픽을 발생시키는 중
 
 ## 시나리오 개요
 
@@ -24,7 +24,7 @@
 ./verify.sh
 ```
 
-본 스크립트 는 별도 워크로드 spawn 없이 기존 observability-test namespace 의 자연 트래픽 만으로 최대 600 초 (30 초 간격 polling) 안에 4 가드 통과 여부를 확인한다.
+본 스크립트는 별도 워크로드 spawn 없이 dev cluster 의 자연 트래픽만으로 최대 600 초 (30 초 간격 polling) 안에 4 가드 통과 여부를 확인한다.
 
 ## 종료 코드
 
@@ -36,7 +36,6 @@
 | 변수 | 기본값 | 설명 |
 |---|---|---|
 | `GPUNET_NAMESPACE` | `ebpf-project` | PrometheusRule 의 namespace |
-| `GPUNET_ALLOW_NAMESPACE` | `observability-test` | network 시계열의 src_namespace 라벨 값 |
 | `GPUNET_TIMEOUT` | `600` | 통과 대기 timeout 초 (5 분 warmup 포함) |
 | `GPUNET_POLL_INTERVAL` | `30` | prometheus polling 주기 초 |
 | `GPUNET_PROM_NAMESPACE` | `monitoring` | prometheus Service namespace |
@@ -50,5 +49,5 @@
 - `kubectl get prometheusrule -n ebpf-project netobs-gpuobs-correlation -o yaml` 로 `netobs-gpuobs.cross-correlation.recording` group 적용 여부 확인
 - recording rule 적용 시점 부터 5 분 이상 경과 했는지 확인 (`kubectl get prometheusrule ... -o jsonpath='{.metadata.resourceVersion}'`)
 - `gpuobs-agent` 의 Pod 상태와 `gpuobs_device_utilization_percent` 의 raw 시리즈 존재 확인
-- `observability-test` namespace 의 `client` Pod 가 `Running` 상태이며 `server` Pod 로 트래픽을 발생시키는지 확인
-- `netobs_pod_bytes_total{src_namespace="observability-test"}` 의 rate 가 0 보다 큰지 확인
+- `netobs-agent` 의 allow_namespaces env 에 활성 트래픽 namespace 가 포함되어 있는지 확인
+- `netobs_pod_bytes_total` 의 rate 가 어느 src_namespace 든 0 보다 큰지 확인

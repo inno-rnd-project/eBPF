@@ -1033,22 +1033,25 @@ spec:
         # device 단위 GPU utilization 의 5 분 평균을 0-1 스케일 percentunit 으로 변환. 기존
         # node:gpu_util_p95:5m 가 p95 percentile 이라 worst-case 신호인 반면 본 record 는 average
         # 신호로 GPU 의 sustained 부하 추세를 보여준다. cross-correlation 패널은 spike 보다 sustained
-        # 추세 비교가 의도라 average 를 채택한다. 라벨 셋은 (node, gpu_uuid) 보존.
+        # 추세 비교가 의도라 average 를 채택한다. 라벨 셋은 avg by(node, gpu_uuid, gpu_index) 로 명시
+        # 고정해 job / instance / pod 같은 scrape 라벨을 drop 하고 device 단위 cardinality 만 노출한다.
+        # 본 파일의 다른 node:* record (node:gpu_util_p95:5m 등) 와 동일한 by(...) 규약을 따른다.
         - record: node:gpu_util_ratio:5m
-          expr: avg_over_time(gpuobs_device_utilization_percent[5m]) / 100
+          expr: avg by(node, gpu_uuid, gpu_index) (avg_over_time(gpuobs_device_utilization_percent[5m])) / 100
 
         # node:gpu_memory_used_ratio:5m
         # device 단위 GPU memory used / total 의 5 분 평균. 0-1 percentunit 스케일. Pod scope GPU
         # memory ratio (pod:gpu_memory_utilization_ratio:5m) 가 base 시리즈 부재로 dev cluster 에서
-        # 산출되지 않는 환경 한계를 우회하는 device scope fallback 이다. join key 는 (node, gpu_uuid,
-        # gpu_index) 로 두 device 메트릭 의 라벨 셋이 동일해 매칭 비용이 최소다. group_left() 로 LHS
-        # 의 추가 메타데이터 라벨 (gpu_model 등) 을 결과 시리즈에 보존해 라벨 추가 시 회귀를 차단한다.
-        # 기존 pod:gpu_memory_utilization_ratio:5m 의 division 패턴과 정합.
+        # 산출되지 않는 환경 한계를 우회하는 device scope fallback 이다. 분자 / 분모를 먼저 avg
+        # by(node, gpu_uuid, gpu_index) 로 안정화해 scrape 라벨 (job, instance, pod 등) 을 사전 drop
+        # 한 뒤 ratio 를 계산한다. 안정화 없이 raw 라벨로 division 하면 향후 라벨 추가 시 동일 device
+        # 시그니처 가 다중 sample 로 분기 되어 many-to-many 매칭 에러 가 발생할 위험이 있다. 본 파일의
+        # 다른 node:* record 와 동일한 by(...) 규약 및 cardinality 안정성 을 우선한다.
         - record: node:gpu_memory_used_ratio:5m
           expr: |
-            avg_over_time(gpuobs_device_memory_used_bytes[5m])
-            / on(node, gpu_uuid, gpu_index) group_left()
-            avg_over_time(gpuobs_device_memory_total_bytes[5m])
+            avg by(node, gpu_uuid, gpu_index) (avg_over_time(gpuobs_device_memory_used_bytes[5m]))
+            / on(node, gpu_uuid, gpu_index)
+            avg by(node, gpu_uuid, gpu_index) (avg_over_time(gpuobs_device_memory_total_bytes[5m]))
 
         # pod:network_throughput_bps:5m
         # Pod 단위 양방향 network throughput 의 5 분 평균을 bits/sec 로 변환. 기존
