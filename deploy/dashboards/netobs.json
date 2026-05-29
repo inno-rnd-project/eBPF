@@ -194,6 +194,11 @@
           "title": "Drill into correlation overview",
           "url": "/d/correlation-overview?${__url_time_range}",
           "targetBlank": true
+        },
+        {
+          "title": "Open RCA summarizer",
+          "url": "/d/rca-summarizer?${__url_time_range}",
+          "targetBlank": true
         }
       ]
     },
@@ -246,6 +251,11 @@
         {
           "title": "Drill into correlation overview",
           "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Open RCA summarizer",
+          "url": "/d/rca-summarizer?${__url_time_range}",
           "targetBlank": true
         }
       ]
