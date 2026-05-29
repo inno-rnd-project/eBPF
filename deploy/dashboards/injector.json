@@ -1,12 +1,19 @@
 {
   "title": "workload injector",
   "uid": "workload-injector",
-  "tags": ["injector", "correlation", "ebpf"],
+  "tags": [
+    "injector",
+    "correlation",
+    "ebpf"
+  ],
   "schemaVersion": 38,
   "version": 1,
   "editable": true,
   "graphTooltip": 0,
-  "time": { "from": "now-1h", "to": "now" },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "refresh": "30s",
   "timezone": "browser",
   "templating": {
@@ -62,7 +69,12 @@
       "title": "injector_active timeline (1=active, 0=idle)",
       "description": "kind 별 injector 활성 상태 시계열. 부하 시작 / 종료 시점을 한 눈에 식별.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "targets": [
         {
           "expr": "max by(target_namespace, target_pod, kind) (injector_active{target_namespace=~\"$target_namespace\",target_pod=~\"$target_pod\",kind=~\"$kind\"})",
@@ -80,7 +92,24 @@
             "fillOpacity": 30
           }
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into correlation (victim=target)",
+          "url": "/d/correlation-overview?var-victim_namespace=${target_namespace:regex}&var-victim_pod=${target_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into observability overview (src=target)",
+          "url": "/d/observability-overview?var-src_pod=${target_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into netobs (src=target)",
+          "url": "/d/netobs-overview?var-src_namespace=${target_namespace:regex}&var-src_pod=${target_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 2,
@@ -88,7 +117,12 @@
       "title": "Blast radius (current snapshot, target x victim x kind)",
       "description": "최신 cycle 의 correlation_blast_radius_score. 0.5 이상 노랑, 0.7 이상 주황, 0.85 이상 빨강 임계로 강한 영향을 한 눈에 식별.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 8 },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
       "targets": [
         {
           "expr": "max by(target_namespace, target_pod, kind, victim_namespace, victim_pod) (correlation_blast_radius_score{target_namespace=~\"$target_namespace\",target_pod=~\"$target_pod\",kind=~\"$kind\"})",
@@ -120,7 +154,12 @@
           "id": "sortBy",
           "options": {
             "fields": {},
-            "sort": [{ "field": "score", "desc": true }]
+            "sort": [
+              {
+                "field": "score",
+                "desc": true
+              }
+            ]
           }
         }
       ],
@@ -128,30 +167,71 @@
         "defaults": {},
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "score" },
+            "matcher": {
+              "id": "byName",
+              "options": "score"
+            },
             "properties": [
-              { "id": "unit", "value": "none" },
-              { "id": "decimals", "value": 3 },
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              },
               {
                 "id": "custom.cellOptions",
-                "value": { "type": "color-background", "mode": "gradient" }
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
               },
               {
                 "id": "thresholds",
                 "value": {
                   "mode": "absolute",
                   "steps": [
-                    { "color": "blue", "value": null },
-                    { "color": "yellow", "value": 0.5 },
-                    { "color": "orange", "value": 0.7 },
-                    { "color": "red", "value": 0.85 }
+                    {
+                      "color": "blue",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 0.5
+                    },
+                    {
+                      "color": "orange",
+                      "value": 0.7
+                    },
+                    {
+                      "color": "red",
+                      "value": 0.85
+                    }
                   ]
                 }
               }
             ]
           }
         ]
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into correlation (victim=target)",
+          "url": "/d/correlation-overview?var-victim_namespace=${target_namespace:regex}&var-victim_pod=${target_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into observability overview (src=target)",
+          "url": "/d/observability-overview?var-src_pod=${target_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into netobs (src=target)",
+          "url": "/d/netobs-overview?var-src_namespace=${target_namespace:regex}&var-src_pod=${target_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 3,
@@ -159,7 +239,12 @@
       "title": "baseline vs impact latency (per victim)",
       "description": "부하 윈도우 전후의 victim latency 평균 비교. 두 값의 차이가 곧 blast radius 의 raw 입력.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
       "targets": [
         {
           "expr": "max by(target_namespace, target_pod, kind, victim_namespace, victim_pod) (injector_baseline_latency_seconds{target_namespace=~\"$target_namespace\",target_pod=~\"$target_pod\",kind=~\"$kind\"})",
@@ -181,7 +266,24 @@
             "fillOpacity": 10
           }
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into correlation (victim=target)",
+          "url": "/d/correlation-overview?var-victim_namespace=${target_namespace:regex}&var-victim_pod=${target_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into observability overview (src=target)",
+          "url": "/d/observability-overview?var-src_pod=${target_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into netobs (src=target)",
+          "url": "/d/netobs-overview?var-src_namespace=${target_namespace:regex}&var-src_pod=${target_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 4,
@@ -189,7 +291,12 @@
       "title": "noisy neighbor cross-reference (#51 exporter overlay)",
       "description": "correlation_noisy_neighbor_score 가 injector_active 윈도우와 시간상 align 되는지 시각화. 합성 부하가 #51 의 자연 분석 layer 에 정확히 반영되는지 cross-validate.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
       "targets": [
         {
           "expr": "max(correlation_noisy_neighbor_score) by (resource_dimension)",
@@ -210,7 +317,24 @@
             "fillOpacity": 5
           }
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into correlation (victim=target)",
+          "url": "/d/correlation-overview?var-victim_namespace=${target_namespace:regex}&var-victim_pod=${target_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into observability overview (src=target)",
+          "url": "/d/observability-overview?var-src_pod=${target_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into netobs (src=target)",
+          "url": "/d/netobs-overview?var-src_namespace=${target_namespace:regex}&var-src_pod=${target_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     }
   ]
 }

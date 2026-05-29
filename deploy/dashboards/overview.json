@@ -1,12 +1,22 @@
 {
   "title": "observability overview",
   "uid": "observability-overview",
-  "tags": ["observability", "overview", "ebpf", "netobs", "gpuobs", "correlation"],
+  "tags": [
+    "observability",
+    "overview",
+    "ebpf",
+    "netobs",
+    "gpuobs",
+    "correlation"
+  ],
   "schemaVersion": 38,
   "version": 1,
   "editable": true,
   "graphTooltip": 0,
-  "time": { "from": "now-1h", "to": "now" },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "refresh": "30s",
   "timezone": "browser",
   "templating": {
@@ -32,7 +42,7 @@
         "sort": 1
       },
       {
-        "name": "pod",
+        "name": "src_pod",
         "type": "query",
         "datasource": "${datasource}",
         "query": "label_values(netobs_pod_stage_latency_labeled_seconds_count{node=~\"$node\"}, src_pod)",
@@ -63,7 +73,12 @@
       "id": 100,
       "type": "row",
       "title": "Cluster overview",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "collapsed": false
     },
     {
@@ -72,9 +87,17 @@
       "title": "GPU health",
       "description": "cluster:gpu_health_score:5m. 1 healthy, 0 worst. throttle reason 합산 기준.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 1 },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
       "targets": [
-        { "expr": "max (cluster:gpu_health_score:5m)", "refId": "A" }
+        {
+          "expr": "max (cluster:gpu_health_score:5m)",
+          "refId": "A"
+        }
       ],
       "fieldConfig": {
         "defaults": {
@@ -85,10 +108,22 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "orange", "value": 0.5 },
-              { "color": "yellow", "value": 0.7 },
-              { "color": "green", "value": 0.85 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.5
+              },
+              {
+                "color": "yellow",
+                "value": 0.7
+              },
+              {
+                "color": "green",
+                "value": 0.85
+              }
             ]
           }
         }
@@ -97,7 +132,24 @@
         "colorMode": "background",
         "graphMode": "area",
         "textMode": "value"
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 2,
@@ -105,9 +157,17 @@
       "title": "CPU health",
       "description": "cluster:cpu_health_score:5m. Pod 단위 cpu_throttle_score p95 의 inversion.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 1 },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
       "targets": [
-        { "expr": "max (cluster:cpu_health_score:5m)", "refId": "A" }
+        {
+          "expr": "max (cluster:cpu_health_score:5m)",
+          "refId": "A"
+        }
       ],
       "fieldConfig": {
         "defaults": {
@@ -118,10 +178,22 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "orange", "value": 0.5 },
-              { "color": "yellow", "value": 0.7 },
-              { "color": "green", "value": 0.85 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.5
+              },
+              {
+                "color": "yellow",
+                "value": 0.7
+              },
+              {
+                "color": "green",
+                "value": 0.85
+              }
             ]
           }
         }
@@ -130,7 +202,24 @@
         "colorMode": "background",
         "graphMode": "area",
         "textMode": "value"
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 3,
@@ -138,9 +227,17 @@
       "title": "Network health",
       "description": "cluster:network_health_score:5m. drop rate 100/s 가 worst case 임계.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 1 },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
       "targets": [
-        { "expr": "max (cluster:network_health_score:5m)", "refId": "A" }
+        {
+          "expr": "max (cluster:network_health_score:5m)",
+          "refId": "A"
+        }
       ],
       "fieldConfig": {
         "defaults": {
@@ -151,10 +248,22 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "orange", "value": 0.5 },
-              { "color": "yellow", "value": 0.7 },
-              { "color": "green", "value": 0.85 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.5
+              },
+              {
+                "color": "yellow",
+                "value": 0.7
+              },
+              {
+                "color": "green",
+                "value": 0.85
+              }
             ]
           }
         }
@@ -163,7 +272,24 @@
         "colorMode": "background",
         "graphMode": "area",
         "textMode": "value"
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 4,
@@ -171,9 +297,17 @@
       "title": "Memory health",
       "description": "cluster:memory_health_score:5m. Pod 단위 memory_pressure_score p95 의 inversion.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 1 },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
       "targets": [
-        { "expr": "max (cluster:memory_health_score:5m)", "refId": "A" }
+        {
+          "expr": "max (cluster:memory_health_score:5m)",
+          "refId": "A"
+        }
       ],
       "fieldConfig": {
         "defaults": {
@@ -184,10 +318,22 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "orange", "value": 0.5 },
-              { "color": "yellow", "value": 0.7 },
-              { "color": "green", "value": 0.85 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.5
+              },
+              {
+                "color": "yellow",
+                "value": 0.7
+              },
+              {
+                "color": "green",
+                "value": 0.85
+              }
             ]
           }
         }
@@ -196,7 +342,24 @@
         "colorMode": "background",
         "graphMode": "area",
         "textMode": "value"
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 150,
@@ -204,9 +367,18 @@
       "title": "GPU idle dominant cause",
       "description": "cluster:gpu_idle_dominant_cause:5m. 5 cause weight 의 최대 cause 1 종을 노출. GPU idle 게이팅 (>0.5) 이 트리거되고 5 cause 합이 양수일 때만 emit 되며, idle 아님 또는 5 cause 모두 0 인 시간대는 N/A 로 표시된다.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 7 },
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      },
       "targets": [
-        { "expr": "count by(cause) (cluster:gpu_idle_dominant_cause:5m)", "legendFormat": "{{cause}}", "refId": "A" }
+        {
+          "expr": "count by(cause) (cluster:gpu_idle_dominant_cause:5m)",
+          "legendFormat": "{{cause}}",
+          "refId": "A"
+        }
       ],
       "fieldConfig": {
         "defaults": {
@@ -214,11 +386,21 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "blue", "value": null }
+              {
+                "color": "blue",
+                "value": null
+              }
             ]
           },
           "mappings": [
-            { "type": "value", "options": { "1": { "text": " " } } }
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": " "
+                }
+              }
+            }
           ]
         }
       },
@@ -226,13 +408,35 @@
         "colorMode": "background",
         "graphMode": "none",
         "textMode": "name"
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 200,
       "type": "row",
       "title": "Cluster timeline",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      },
       "collapsed": false
     },
     {
@@ -241,12 +445,33 @@
       "title": "4 카테고리 health score 시계열 (alert annotation 포함)",
       "description": "cluster 단위 health score 의 1 시간 추세. alert firing 시점은 annotation 으로 표시.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
       "targets": [
-        { "expr": "max (cluster:gpu_health_score:5m)", "legendFormat": "gpu", "refId": "A" },
-        { "expr": "max (cluster:cpu_health_score:5m)", "legendFormat": "cpu", "refId": "B" },
-        { "expr": "max (cluster:network_health_score:5m)", "legendFormat": "network", "refId": "C" },
-        { "expr": "max (cluster:memory_health_score:5m)", "legendFormat": "memory", "refId": "D" }
+        {
+          "expr": "max (cluster:gpu_health_score:5m)",
+          "legendFormat": "gpu",
+          "refId": "A"
+        },
+        {
+          "expr": "max (cluster:cpu_health_score:5m)",
+          "legendFormat": "cpu",
+          "refId": "B"
+        },
+        {
+          "expr": "max (cluster:network_health_score:5m)",
+          "legendFormat": "network",
+          "refId": "C"
+        },
+        {
+          "expr": "max (cluster:memory_health_score:5m)",
+          "legendFormat": "memory",
+          "refId": "D"
+        }
       ],
       "fieldConfig": {
         "defaults": {
@@ -258,13 +483,35 @@
             "fillOpacity": 10
           }
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 300,
       "type": "row",
       "title": "Node drill-down ($node)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
       "collapsed": false
     },
     {
@@ -272,7 +519,12 @@
       "type": "timeseries",
       "title": "Node cpu_throttle_score (Pod 별)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 21 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 21
+      },
       "targets": [
         {
           "expr": "max by(node, src_namespace, src_pod, src_pod_uid) (pod:cpu_throttle_score:5m{node=~\"$node\"})",
@@ -280,14 +532,41 @@
           "refId": "A"
         }
       ],
-      "fieldConfig": { "defaults": { "min": 0, "max": 1 } }
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1
+        }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?var-victim_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 7,
       "type": "timeseries",
       "title": "Node memory_pressure_score (Pod 별)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 21 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 21
+      },
       "targets": [
         {
           "expr": "max by(node, src_namespace, src_pod, src_pod_uid) (pod:memory_pressure_score:5m{node=~\"$node\"})",
@@ -295,14 +574,41 @@
           "refId": "A"
         }
       ],
-      "fieldConfig": { "defaults": { "min": 0, "max": 1 } }
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1
+        }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?var-victim_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 8,
       "type": "timeseries",
       "title": "Node GPU utilization (device 별)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 28 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
       "targets": [
         {
           "expr": "max by(node, gpu_uuid, gpu_index, gpu_model) (gpuobs_device_utilization_percent{node=~\"$node\"})",
@@ -311,15 +617,42 @@
         }
       ],
       "fieldConfig": {
-        "defaults": { "unit": "percent", "min": 0, "max": 100, "noValue": "N/A (no GPU)" }
-      }
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "noValue": "N/A (no GPU)"
+        }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?var-victim_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 9,
       "type": "timeseries",
       "title": "Node drop / retrans rate (drop_category 별)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 28 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 28
+      },
       "targets": [
         {
           "expr": "sum by(node, drop_category) (rate(netobs_drop_events_labeled_total{node=~\"$node\"}[5m]))",
@@ -332,7 +665,28 @@
           "refId": "B"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "ops" } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?var-victim_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 10,
@@ -340,7 +694,12 @@
       "title": "Active alerts on node ($node)",
       "description": "ALERTS{alertstate=\"firing\"} 의 instance / node label 매칭 결과. severity 별 색상.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 35 },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      },
       "targets": [
         {
           "expr": "ALERTS{alertstate=\"firing\",node=~\"$node\"}",
@@ -362,13 +721,40 @@
             }
           }
         }
+      ],
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?var-victim_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Open RCA summarizer",
+          "url": "/d/rca-summarizer?${__url_time_range}",
+          "targetBlank": true
+        }
       ]
     },
     {
       "id": 400,
       "type": "row",
-      "title": "Pod drill-down ($pod)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 43 },
+      "title": "Pod drill-down ($src_pod)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      },
       "collapsed": false
     },
     {
@@ -376,15 +762,41 @@
       "type": "timeseries",
       "title": "Stage latency p99",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 44 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 44
+      },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum by(le, src_pod, stage) (rate(netobs_pod_stage_latency_labeled_seconds_bucket{src_pod=~\"$pod\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by(le, src_pod, stage) (rate(netobs_pod_stage_latency_labeled_seconds_bucket{src_pod=~\"$src_pod\"}[5m])))",
           "legendFormat": "{{src_pod}} {{stage}}",
           "refId": "A"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "s" } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs per-pod",
+          "url": "/d/netobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs per-pod",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?var-victim_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 12,
@@ -392,26 +804,58 @@
       "title": "GPU memory used (Pod)",
       "description": "GPU 미사용 Pod 는 빈 결과 (N/A).",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 44 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
       "targets": [
         {
-          "expr": "max by(node, src_namespace, src_pod, src_pod_uid, gpu_uuid, gpu_index) (gpuobs_pod_memory_used_bytes{src_pod=~\"$pod\"})",
+          "expr": "max by(node, src_namespace, src_pod, src_pod_uid, gpu_uuid, gpu_index) (gpuobs_pod_memory_used_bytes{src_pod=~\"$src_pod\"})",
           "legendFormat": "{{src_pod}} gpu={{gpu_index}}",
           "refId": "A"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "bytes", "noValue": "N/A (no GPU usage)" } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "noValue": "N/A (no GPU usage)"
+        }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs per-pod",
+          "url": "/d/netobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs per-pod",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?var-victim_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 13,
       "type": "table",
-      "title": "Noisy neighbor Top-N (victim=$pod)",
+      "title": "Noisy neighbor Top-N (victim=$src_pod)",
       "description": "correlation_noisy_neighbor_score. dimension 별 suspect Pod 순위. (#51 exporter 산출)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 51 },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 51
+      },
       "targets": [
         {
-          "expr": "max by(victim_namespace, victim_pod, suspect_namespace, suspect_pod, resource_dimension, rank) (correlation_noisy_neighbor_score{victim_pod=~\"$pod\"})",
+          "expr": "max by(victim_namespace, victim_pod, suspect_namespace, suspect_pod, resource_dimension, rank) (correlation_noisy_neighbor_score{victim_pod=~\"$src_pod\"})",
           "instant": true,
           "format": "table",
           "refId": "A"
@@ -432,14 +876,21 @@
               "pod": true,
               "service": true
             },
-            "renameByName": { "Value": "score" }
+            "renameByName": {
+              "Value": "score"
+            }
           }
         },
         {
           "id": "sortBy",
           "options": {
             "fields": {},
-            "sort": [{ "field": "score", "desc": true }]
+            "sort": [
+              {
+                "field": "score",
+                "desc": true
+              }
+            ]
           }
         }
       ],
@@ -447,33 +898,82 @@
         "defaults": {},
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "score" },
+            "matcher": {
+              "id": "byName",
+              "options": "score"
+            },
             "properties": [
-              { "id": "unit", "value": "none" },
-              { "id": "decimals", "value": 3 },
-              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } },
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
               {
                 "id": "thresholds",
                 "value": {
                   "mode": "absolute",
                   "steps": [
-                    { "color": "blue", "value": null },
-                    { "color": "yellow", "value": 0.5 },
-                    { "color": "orange", "value": 0.7 },
-                    { "color": "red", "value": 0.85 }
+                    {
+                      "color": "blue",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 0.5
+                    },
+                    {
+                      "color": "orange",
+                      "value": 0.7
+                    },
+                    {
+                      "color": "red",
+                      "value": 0.85
+                    }
                   ]
                 }
               }
             ]
           }
         ]
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs per-pod",
+          "url": "/d/netobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs per-pod",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?var-victim_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 450,
       "type": "row",
       "title": "Cross-node interference",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 59 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 59
+      },
       "collapsed": false
     },
     {
@@ -482,7 +982,12 @@
       "title": "Cross-node score heatmap (victim × suspect)",
       "description": "#84 cross-node interference layer 의 victim_node 와 suspect_node 사이의 Pearson 상관계수 최대 절대값. dimension 라벨 4 종을 sum 으로 묶어 노드 페어 단위 cross-flow 강도를 노출한다. CrossNodeEnabled opt-in 시 만 데이터가 존재한다.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 60 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 60
+      },
       "targets": [
         {
           "expr": "sum by(victim_node, suspect_node) (correlation_cross_node_score)",
@@ -493,7 +998,11 @@
       ],
       "options": {
         "calculate": false,
-        "color": { "scheme": "Spectral", "mode": "scheme", "steps": 8 }
+        "color": {
+          "scheme": "Spectral",
+          "mode": "scheme",
+          "steps": 8
+        }
       }
     },
     {
@@ -502,7 +1011,12 @@
       "title": "Cross-node score by dimension",
       "description": "#84 cross-node interference layer 의 dimension 별 시계열. cpu / memory / network / gpu 4 dimension 의 시간 추이로 어느 자원 압박 이 cross-node latency 에 영향을 주는지 식별한다.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 60 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 60
+      },
       "targets": [
         {
           "expr": "max by(dimension, victim_node, suspect_node) (correlation_cross_node_score)",
@@ -518,10 +1032,22 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "blue", "value": null },
-              { "color": "yellow", "value": 0.5 },
-              { "color": "orange", "value": 0.7 },
-              { "color": "red", "value": 0.85 }
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "orange",
+                "value": 0.7
+              },
+              {
+                "color": "red",
+                "value": 0.85
+              }
             ]
           }
         }
@@ -531,7 +1057,12 @@
       "id": 500,
       "type": "row",
       "title": "Alert summary",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 68 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 68
+      },
       "collapsed": false
     },
     {
@@ -539,7 +1070,12 @@
       "type": "bargauge",
       "title": "Firing alerts by severity",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 69 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 69
+      },
       "targets": [
         {
           "expr": "count by(severity) (ALERTS{alertstate=\"firing\"})",
@@ -548,7 +1084,11 @@
           "refId": "A"
         }
       ],
-      "options": { "orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
@@ -556,19 +1096,37 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "blue", "value": null },
-              { "color": "green", "value": 1 }
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
             ]
           }
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Open RCA summarizer",
+          "url": "/d/rca-summarizer?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 15,
       "type": "bargauge",
       "title": "Firing alerts by component",
       "datasource": "${datasource}",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 69 },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 69
+      },
       "targets": [
         {
           "expr": "count by(component) (ALERTS{alertstate=\"firing\"})",
@@ -577,7 +1135,11 @@
           "refId": "A"
         }
       ],
-      "options": { "orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
@@ -585,12 +1147,25 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "blue", "value": null },
-              { "color": "green", "value": 1 }
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
             ]
           }
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Open RCA summarizer",
+          "url": "/d/rca-summarizer?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     }
   ]
 }

@@ -1,12 +1,18 @@
 {
   "title": "netobs",
   "uid": "netobs-overview",
-  "tags": ["netobs", "ebpf"],
+  "tags": [
+    "netobs",
+    "ebpf"
+  ],
   "schemaVersion": 38,
   "version": 1,
   "editable": true,
   "graphTooltip": 0,
-  "time": { "from": "now-1h", "to": "now" },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "refresh": "30s",
   "timezone": "browser",
   "templating": {
@@ -63,13 +69,39 @@
       "title": "Send path stage latency p99 (sendmsg_ret / tcp_write_xmit / tcp_transmit_skb / to_devq)",
       "description": "#82 send path 4 stage 분해. tcp_sendmsg syscall 진입부터 __dev_queue_xmit NIC queue 진입까지의 kernel 내부 처리 시간을 stage 단위로 노출한다. tcp_write_xmit 는 TCP control path (cwnd / nagle / window throttle), tcp_transmit_skb 는 개별 segment transmit entry 의 latency 다 (TSO/GSO 활성 시 첫 segment 만 측정).",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.99, sum by (le, stage, node) (rate(netobs_stage_latency_labeled_seconds_bucket{node=~\"$node\",src_namespace=~\"$src_namespace\",stage=~\"sendmsg_ret|tcp_write_xmit|tcp_transmit_skb|to_devq\"}[5m])))",
           "legendFormat": "{{stage}} ({{node}})",
           "refId": "A"
+        }
+      ],
+      "links": [
+        {
+          "title": "Back to observability overview",
+          "url": "/d/observability-overview?var-node=${node:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
         }
       ]
     },
@@ -79,13 +111,39 @@
       "title": "Receive path stage latency p99 (rcv_demux / rcv_established / rcv_app)",
       "description": "#65 receive path 3 stage. tcp_v4_do_rcv socket lookup 직후부터 tcp_recvmsg app boundary 까지의 처리 시간을 stage 단위로 노출한다. send path 패널과 같은 화면 비교로 양방향 stage breakdown 을 한 눈에 본다.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.99, sum by (le, stage, node) (rate(netobs_stage_latency_labeled_seconds_bucket{node=~\"$node\",src_namespace=~\"$src_namespace\",stage=~\"rcv_demux|rcv_established|rcv_app\"}[5m])))",
           "legendFormat": "{{stage}} ({{node}})",
           "refId": "A"
+        }
+      ],
+      "links": [
+        {
+          "title": "Back to observability overview",
+          "url": "/d/observability-overview?var-node=${node:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
         }
       ]
     },
@@ -94,14 +152,53 @@
       "type": "timeseries",
       "title": "Drop rate by category (events/s)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-      "fieldConfig": { "defaults": { "unit": "ops" } },
-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        }
+      },
       "targets": [
         {
           "expr": "sum by (drop_category) (rate(netobs_drop_events_labeled_total{node=~\"$node\",src_namespace=~\"$src_namespace\"}[5m]))",
           "legendFormat": "{{drop_category}}",
           "refId": "A"
+        }
+      ],
+      "links": [
+        {
+          "title": "Back to observability overview",
+          "url": "/d/observability-overview?var-node=${node:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Open RCA summarizer",
+          "url": "/d/rca-summarizer?${__url_time_range}",
+          "targetBlank": true
         }
       ]
     },
@@ -110,9 +207,27 @@
       "type": "table",
       "title": "Top drop reasons by workload (5m rate)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
       "transformations": [
-        { "id": "organize", "options": { "indexByName": { "Time": 0, "drop_reason": 1, "drop_category": 2, "src_namespace": 3, "src_workload": 4, "node": 5, "Value": 6 } } }
+        {
+          "id": "organize",
+          "options": {
+            "indexByName": {
+              "Time": 0,
+              "drop_reason": 1,
+              "drop_category": 2,
+              "src_namespace": 3,
+              "src_workload": 4,
+              "node": 5,
+              "Value": 6
+            }
+          }
+        }
       ],
       "targets": [
         {
@@ -121,6 +236,28 @@
           "instant": true,
           "refId": "A"
         }
+      ],
+      "links": [
+        {
+          "title": "Back to observability overview",
+          "url": "/d/observability-overview?var-node=${node:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Open RCA summarizer",
+          "url": "/d/rca-summarizer?${__url_time_range}",
+          "targetBlank": true
+        }
       ]
     },
     {
@@ -128,14 +265,48 @@
       "type": "timeseries",
       "title": "TCP retransmission rate by workload (events/s)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
-      "fieldConfig": { "defaults": { "unit": "ops" } },
-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        }
+      },
       "targets": [
         {
           "expr": "sum by (node, src_namespace, src_workload) (rate(netobs_retrans_events_labeled_total{node=~\"$node\",src_namespace=~\"$src_namespace\"}[5m]))",
           "legendFormat": "{{src_namespace}}/{{src_workload}} ({{node}})",
           "refId": "A"
+        }
+      ],
+      "links": [
+        {
+          "title": "Back to observability overview",
+          "url": "/d/observability-overview?var-node=${node:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
         }
       ]
     },
@@ -144,14 +315,43 @@
       "type": "timeseries",
       "title": "Per-pod stage latency p95 (filtered by src_pod)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
-      "fieldConfig": { "defaults": { "unit": "s" } },
-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        }
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.95, sum by (le, stage, src_pod, src_namespace) (rate(netobs_pod_stage_latency_labeled_seconds_bucket{node=~\"$node\",src_namespace=~\"$src_namespace\",src_pod=~\"$src_pod\"}[5m])))",
           "legendFormat": "{{src_namespace}}/{{src_pod}} {{stage}}",
           "refId": "A"
+        }
+      ],
+      "links": [
+        {
+          "title": "Drill into gpuobs per-pod",
+          "url": "/d/gpuobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation (victim)",
+          "url": "/d/correlation-overview?var-victim_namespace=${src_namespace:regex}&var-victim_pod=${src_pod:regex}&${__url_time_range}",
+          "targetBlank": true
         }
       ]
     },
@@ -160,16 +360,53 @@
       "type": "row",
       "title": "Agent self-health",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      }
     },
     {
       "id": 101,
       "type": "stat",
       "title": "BPF program attach status",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 33 },
-      "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "missing", "color": "red" }, "1": { "text": "attached", "color": "green" } } }] } },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 33
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "missing",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "attached",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
       "targets": [
         {
           "expr": "max by(symbol) (netobs_bpf_program_loaded)",
@@ -183,9 +420,26 @@
       "type": "timeseries",
       "title": "BPF ringbuf drop rate",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 33 },
-      "fieldConfig": { "defaults": { "unit": "ops" } },
-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 33
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      },
       "targets": [
         {
           "expr": "sum by(job) (rate(netobs_bpf_ringbuf_drops_total[5m]))",
@@ -199,9 +453,28 @@
       "type": "timeseries",
       "title": "BPF map utilization",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 33 },
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 33
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      },
       "targets": [
         {
           "expr": "max by(job, map) (netobs_bpf_map_utilization_ratio)",
@@ -215,9 +488,26 @@
       "type": "timeseries",
       "title": "Informer sync lag",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 41 },
-      "fieldConfig": { "defaults": { "unit": "s" } },
-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 41
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      },
       "targets": [
         {
           "expr": "max by(job) (netobs_informer_sync_lag_seconds)",
@@ -231,9 +521,41 @@
       "type": "stat",
       "title": "Agent up",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 41 },
-      "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "down", "color": "red" }, "1": { "text": "up", "color": "green" } } }] } },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 41
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "down",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "up",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
       "targets": [
         {
           "expr": "max by(job) (up{job=\"netobs-agent\"})",
