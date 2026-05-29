@@ -1166,6 +1166,742 @@
           "targetBlank": true
         }
       ]
+    },
+    {
+      "id": 600,
+      "type": "row",
+      "title": "Capacity trends (요일 x 시간대 패턴, 4주 / 30일 baseline)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 77
+      },
+      "collapsed": false
+    },
+    {
+      "id": 601,
+      "type": "heatmap",
+      "title": "[GPU utilization] 요일 x 시간대 heatmap (4주 평균, KST)",
+      "description": "cluster:gpu_util_1h_avg 의 4주치 시계열을 요일 (Y) x 시간대 (X) 매트릭스로 변환. Grafana heatmap 의 calculate=true 와 timezone Asia/Seoul 설정으로 PromQL UTC 9시간 offset 을 KST 로 자동 보정한다.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 78
+      },
+      "timeFrom": "now-4w",
+      "timezone": "Asia/Seoul",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:gpu_util_1h_avg",
+          "legendFormat": "{{__name__}}"
+        }
+      ],
+      "options": {
+        "calculate": true,
+        "calculation": {
+          "xBuckets": {
+            "mode": "size",
+            "value": "1h"
+          },
+          "yBuckets": {
+            "mode": "count",
+            "value": "7"
+          }
+        },
+        "color": {
+          "scheme": "Spectral",
+          "mode": "scheme",
+          "steps": 8,
+          "reverse": true
+        },
+        "cellGap": 1,
+        "tooltip": {
+          "show": true,
+          "yHistogram": false
+        },
+        "yAxis": {
+          "reverse": false,
+          "axisLabel": "요일 (KST)"
+        },
+        "rowsFrame": {
+          "layout": "auto"
+        },
+        "exemplars": {
+          "color": "rgba(255,0,255,0.7)"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다)."
+        }
+      }
+    },
+    {
+      "id": 602,
+      "type": "timeseries",
+      "title": "[GPU utilization] 4주 시간대 trend overlay (KST)",
+      "description": "cluster:gpu_util_1h_avg 의 4주치 시계열 overlay. dashboard 의 기본 1시간 time picker 와 무관하게 panel-level timeFrom=now-4w 적용으로 long window 자동 표시.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 78
+      },
+      "timeFrom": "now-4w",
+      "timezone": "Asia/Seoul",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:gpu_util_1h_avg",
+          "legendFormat": "1h avg"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다).",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 603,
+      "type": "timeseries",
+      "title": "[GPU utilization] z-score (30일 baseline 대비)",
+      "description": "cluster:gpu_util_zscore:1h 시계열. baseline (30일 offset 30일) 의 stddev 가 0 인 평탄 구간은 시리즈 미 emit. |z| > 3 은 95% 신뢰구간 outside 로 capacity-trends alert (Commit 4) 의 발화 조건.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 78
+      },
+      "timeFrom": "now-30d",
+      "timezone": "Asia/Seoul",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:gpu_util_zscore:1h",
+          "legendFormat": "z-score"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": -5,
+          "max": 5,
+          "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다).",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": -5
+              },
+              {
+                "color": "green",
+                "value": -3
+              },
+              {
+                "color": "orange",
+                "value": 3
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 604,
+      "type": "heatmap",
+      "title": "[Network throughput score] 요일 x 시간대 heatmap (4주 평균, KST)",
+      "description": "cluster:network_1h_avg 의 4주치 시계열을 요일 (Y) x 시간대 (X) 매트릭스로 변환. Grafana heatmap 의 calculate=true 와 timezone Asia/Seoul 설정으로 PromQL UTC 9시간 offset 을 KST 로 자동 보정한다.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 86
+      },
+      "timeFrom": "now-4w",
+      "timezone": "Asia/Seoul",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:network_1h_avg",
+          "legendFormat": "{{__name__}}"
+        }
+      ],
+      "options": {
+        "calculate": true,
+        "calculation": {
+          "xBuckets": {
+            "mode": "size",
+            "value": "1h"
+          },
+          "yBuckets": {
+            "mode": "count",
+            "value": "7"
+          }
+        },
+        "color": {
+          "scheme": "Spectral",
+          "mode": "scheme",
+          "steps": 8,
+          "reverse": true
+        },
+        "cellGap": 1,
+        "tooltip": {
+          "show": true,
+          "yHistogram": false
+        },
+        "yAxis": {
+          "reverse": false,
+          "axisLabel": "요일 (KST)"
+        },
+        "rowsFrame": {
+          "layout": "auto"
+        },
+        "exemplars": {
+          "color": "rgba(255,0,255,0.7)"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다)."
+        }
+      }
+    },
+    {
+      "id": 605,
+      "type": "timeseries",
+      "title": "[Network throughput score] 4주 시간대 trend overlay (KST)",
+      "description": "cluster:network_1h_avg 의 4주치 시계열 overlay. dashboard 의 기본 1시간 time picker 와 무관하게 panel-level timeFrom=now-4w 적용으로 long window 자동 표시.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 86
+      },
+      "timeFrom": "now-4w",
+      "timezone": "Asia/Seoul",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:network_1h_avg",
+          "legendFormat": "1h avg"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다).",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 606,
+      "type": "timeseries",
+      "title": "[Network throughput score] z-score (30일 baseline 대비)",
+      "description": "cluster:network_zscore:1h 시계열. baseline (30일 offset 30일) 의 stddev 가 0 인 평탄 구간은 시리즈 미 emit. |z| > 3 은 95% 신뢰구간 outside 로 capacity-trends alert (Commit 4) 의 발화 조건.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 86
+      },
+      "timeFrom": "now-30d",
+      "timezone": "Asia/Seoul",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:network_zscore:1h",
+          "legendFormat": "z-score"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": -5,
+          "max": 5,
+          "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다).",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": -5
+              },
+              {
+                "color": "green",
+                "value": -3
+              },
+              {
+                "color": "orange",
+                "value": 3
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 607,
+      "type": "heatmap",
+      "title": "[CPU throttle ratio] 요일 x 시간대 heatmap (4주 평균, KST)",
+      "description": "cluster:cpu_throttle_1h_avg 의 4주치 시계열을 요일 (Y) x 시간대 (X) 매트릭스로 변환. Grafana heatmap 의 calculate=true 와 timezone Asia/Seoul 설정으로 PromQL UTC 9시간 offset 을 KST 로 자동 보정한다.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 94
+      },
+      "timeFrom": "now-4w",
+      "timezone": "Asia/Seoul",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:cpu_throttle_1h_avg",
+          "legendFormat": "{{__name__}}"
+        }
+      ],
+      "options": {
+        "calculate": true,
+        "calculation": {
+          "xBuckets": {
+            "mode": "size",
+            "value": "1h"
+          },
+          "yBuckets": {
+            "mode": "count",
+            "value": "7"
+          }
+        },
+        "color": {
+          "scheme": "Spectral",
+          "mode": "scheme",
+          "steps": 8,
+          "reverse": true
+        },
+        "cellGap": 1,
+        "tooltip": {
+          "show": true,
+          "yHistogram": false
+        },
+        "yAxis": {
+          "reverse": false,
+          "axisLabel": "요일 (KST)"
+        },
+        "rowsFrame": {
+          "layout": "auto"
+        },
+        "exemplars": {
+          "color": "rgba(255,0,255,0.7)"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다)."
+        }
+      }
+    },
+    {
+      "id": 608,
+      "type": "timeseries",
+      "title": "[CPU throttle ratio] 4주 시간대 trend overlay (KST)",
+      "description": "cluster:cpu_throttle_1h_avg 의 4주치 시계열 overlay. dashboard 의 기본 1시간 time picker 와 무관하게 panel-level timeFrom=now-4w 적용으로 long window 자동 표시.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 94
+      },
+      "timeFrom": "now-4w",
+      "timezone": "Asia/Seoul",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:cpu_throttle_1h_avg",
+          "legendFormat": "1h avg"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다).",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 609,
+      "type": "timeseries",
+      "title": "[CPU throttle ratio] z-score (30일 baseline 대비)",
+      "description": "cluster:cpu_throttle_zscore:1h 시계열. baseline (30일 offset 30일) 의 stddev 가 0 인 평탄 구간은 시리즈 미 emit. |z| > 3 은 95% 신뢰구간 outside 로 capacity-trends alert (Commit 4) 의 발화 조건.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 94
+      },
+      "timeFrom": "now-30d",
+      "timezone": "Asia/Seoul",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:cpu_throttle_zscore:1h",
+          "legendFormat": "z-score"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": -5,
+          "max": 5,
+          "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다).",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": -5
+              },
+              {
+                "color": "green",
+                "value": -3
+              },
+              {
+                "color": "orange",
+                "value": 3
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 610,
+      "type": "heatmap",
+      "title": "[Memory pressure ratio] 요일 x 시간대 heatmap (4주 평균, KST)",
+      "description": "cluster:memory_pressure_1h_avg 의 4주치 시계열을 요일 (Y) x 시간대 (X) 매트릭스로 변환. Grafana heatmap 의 calculate=true 와 timezone Asia/Seoul 설정으로 PromQL UTC 9시간 offset 을 KST 로 자동 보정한다.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 102
+      },
+      "timeFrom": "now-4w",
+      "timezone": "Asia/Seoul",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:memory_pressure_1h_avg",
+          "legendFormat": "{{__name__}}"
+        }
+      ],
+      "options": {
+        "calculate": true,
+        "calculation": {
+          "xBuckets": {
+            "mode": "size",
+            "value": "1h"
+          },
+          "yBuckets": {
+            "mode": "count",
+            "value": "7"
+          }
+        },
+        "color": {
+          "scheme": "Spectral",
+          "mode": "scheme",
+          "steps": 8,
+          "reverse": true
+        },
+        "cellGap": 1,
+        "tooltip": {
+          "show": true,
+          "yHistogram": false
+        },
+        "yAxis": {
+          "reverse": false,
+          "axisLabel": "요일 (KST)"
+        },
+        "rowsFrame": {
+          "layout": "auto"
+        },
+        "exemplars": {
+          "color": "rgba(255,0,255,0.7)"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다)."
+        }
+      }
+    },
+    {
+      "id": 611,
+      "type": "timeseries",
+      "title": "[Memory pressure ratio] 4주 시간대 trend overlay (KST)",
+      "description": "cluster:memory_pressure_1h_avg 의 4주치 시계열 overlay. dashboard 의 기본 1시간 time picker 와 무관하게 panel-level timeFrom=now-4w 적용으로 long window 자동 표시.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 102
+      },
+      "timeFrom": "now-4w",
+      "timezone": "Asia/Seoul",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:memory_pressure_1h_avg",
+          "legendFormat": "1h avg"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다).",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 612,
+      "type": "timeseries",
+      "title": "[Memory pressure ratio] z-score (30일 baseline 대비)",
+      "description": "cluster:memory_pressure_zscore:1h 시계열. baseline (30일 offset 30일) 의 stddev 가 0 인 평탄 구간은 시리즈 미 emit. |z| > 3 은 95% 신뢰구간 outside 로 capacity-trends alert (Commit 4) 의 발화 조건.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 102
+      },
+      "timeFrom": "now-30d",
+      "timezone": "Asia/Seoul",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:memory_pressure_zscore:1h",
+          "legendFormat": "z-score"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": -5,
+          "max": 5,
+          "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다).",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": -5
+              },
+              {
+                "color": "green",
+                "value": -3
+              },
+              {
+                "color": "orange",
+                "value": 3
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     }
   ]
 }
