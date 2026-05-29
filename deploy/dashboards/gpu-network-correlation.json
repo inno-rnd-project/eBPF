@@ -1,0 +1,155 @@
+{
+  "title": "GPU x network cross-correlation",
+  "uid": "gpu-network-correlation",
+  "tags": ["correlation", "gpuobs", "netobs", "cross-domain"],
+  "schemaVersion": 38,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "timezone": "browser",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Datasource",
+        "hide": 0,
+        "current": {},
+        "refresh": 1
+      },
+      {
+        "name": "node",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(gpuobs_device_utilization_percent, node)",
+        "multi": false,
+        "includeAll": false,
+        "label": "Node",
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "src_namespace",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(netobs_pod_bytes_total{node=\"$node\"}, src_namespace)",
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "Pod namespace",
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "src_pod",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(netobs_pod_bytes_total{node=\"$node\",src_namespace=~\"$src_namespace\"}, src_pod)",
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "Pod",
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "GPU x network cross-correlation ($node, $src_namespace/$src_pod)",
+      "description": "GPU device 시계열 (node, gpu_uuid scope) 과 network Pod 시계열 (node, src_namespace, src_pod scope) 을 같은 timeline 에 정렬한다. dev cluster spike 결과 RTX 3090 NVML 이 Pod scope GPU utilization 을 노출하지 않아 GPU 도메인은 device scope 로 강등 적용되었다. 두 도메인의 Pod 인스턴스 단위 정합은 본 패널 범위 밖이며 같은 timeline 위에서 GPU 유휴와 network pressure 의 상관 관계를 시각적으로 비교하는 것이 의도다. overlay 의 correlation_noisy_neighbor_score 는 victim_pod=$src_pod 매칭으로 GPU / network dimension 의 noisy neighbor 신호를 보조 시리즈로 보여준다.",
+      "datasource": "${datasource}",
+      "gridPos": { "h": 16, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "lastNotNull"] }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byFrameRefID", "options": "C" },
+            "properties": [
+              { "id": "unit", "value": "bps" },
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "max", "value": null }
+            ]
+          },
+          {
+            "matcher": { "id": "byFrameRefID", "options": "D" },
+            "properties": [
+              { "id": "unit", "value": "s" },
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "max", "value": null }
+            ]
+          }
+        ]
+      },
+      "links": [
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?var-node=${node}&var-src_pod=${src_pod}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?var-node=${node}&var-src_namespace=${src_namespace}&var-src_pod=${src_pod}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?var-victim_namespace=${src_namespace}&var-victim_pod=${src_pod}",
+          "targetBlank": true
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg by(node) (node:gpu_util_ratio:5m{node=\"$node\"})",
+          "legendFormat": "GPU util (node={{node}})",
+          "datasource": "${datasource}"
+        },
+        {
+          "refId": "B",
+          "expr": "avg by(node) (node:gpu_memory_used_ratio:5m{node=\"$node\"})",
+          "legendFormat": "GPU mem used (node={{node}})",
+          "datasource": "${datasource}"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by(node, src_namespace, src_pod) (pod:network_throughput_bps:5m{node=\"$node\",src_namespace=~\"$src_namespace\",src_pod=~\"$src_pod\"})",
+          "legendFormat": "network throughput ({{src_namespace}}/{{src_pod}})",
+          "datasource": "${datasource}"
+        },
+        {
+          "refId": "D",
+          "expr": "max by(node, src_namespace, src_pod) (pod:network_p99_latency_seconds:5m{node=\"$node\",src_namespace=~\"$src_namespace\",src_pod=~\"$src_pod\"})",
+          "legendFormat": "network p99 latency ({{src_namespace}}/{{src_pod}})",
+          "datasource": "${datasource}"
+        },
+        {
+          "refId": "E",
+          "expr": "max by(victim_namespace, victim_pod, resource_dimension) (correlation_noisy_neighbor_score{victim_namespace=~\"$src_namespace\",victim_pod=~\"$src_pod\",resource_dimension=~\"gpu|network\"})",
+          "legendFormat": "noisy neighbor score ({{victim_namespace}}/{{victim_pod}} dim={{resource_dimension}})",
+          "datasource": "${datasource}"
+        }
+      ]
+    }
+  ]
+}

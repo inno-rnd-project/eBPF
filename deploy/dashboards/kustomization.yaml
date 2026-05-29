@@ -72,6 +72,18 @@ configMapGenerator:
         app.kubernetes.io/name: rca-summarizer
         app.kubernetes.io/component: grafana-dashboard
         app.kubernetes.io/part-of: ebpf-project
+  # #86 GPU-network cross-correlation 통합 패널. gpuobs device 시계열과 netobs Pod 시계열을 같은
+  # timeline 에 정렬해 GPU 유휴와 network pressure 의 상관 관계를 단일 패널에서 본다. part-of 는
+  # ebpf-project 로 두어 overview 와 동일하게 cross-domain 산출물임을 명시한다.
+  - name: gpu-network-correlation-dashboard
+    files:
+      - gpu-network-correlation.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+        app.kubernetes.io/name: ebpf-project
+        app.kubernetes.io/component: grafana-dashboard
+        app.kubernetes.io/part-of: ebpf-project
 
 generatorOptions:
   disableNameSuffixHash: true
