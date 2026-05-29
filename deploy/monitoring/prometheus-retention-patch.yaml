@@ -1,0 +1,10 @@
+# 이슈 #88 의 capacity-trends 패널이 4주 heatmap 과 30일 baseline offset 윈도우를 산정 하므로
+# 최소 60일치 sample 이 prometheus tsdb 에 누적 되어야 한다. kube-prometheus-stack 의 기본
+# retention 10일 과 정합 안 되므로 본 patch 로 60일 상향 적용한다.
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: kube-prometheus-stack-prometheus
+  namespace: monitoring
+spec:
+  retention: 60d
