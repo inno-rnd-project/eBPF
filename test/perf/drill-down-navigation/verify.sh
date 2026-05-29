@@ -39,28 +39,38 @@ for cm in "${!EXPECTED_LINKS[@]}"; do
 
   # kubectl jsonpath 는 key 에 dot 가 있으면 path separator 와 충돌 하므로 `-o json` 전체 응답을
   # python 으로 받아 dict access 한다. nested rows 의 panels 도 재귀 탐색 해 link 총 개수 와 URL
-  # 패턴 매크로 (시간 범위) 채택 여부 를 동시 검증 한다.
+  # 패턴 매크로 (시간 범위) 채택 여부 를 동시 검증 한다. set -euo pipefail 환경 에서 ConfigMap
+  # 부재 시 파이프라인 전체가 즉시 종료 되어 다른 dashboard 검증이 차단 되지 않도록 파이프라인
+  # 끝에 fallback echo 를 두고, python 측 도 JSON parse / null panels 에 대한 방어 코드 를 둔다.
   result=$(kubectl get cm -n "${NAMESPACE}" "${cm}" -o json 2>/dev/null | python3 -c "
 import json, sys
-cm_doc = json.load(sys.stdin)
-data = cm_doc.get('data', {})
-content = data.get('${fname}', '')
+try:
+    cm_doc = json.load(sys.stdin)
+except Exception:
+    print('FAIL invalid json or empty input')
+    sys.exit(2)
+data = cm_doc.get('data') or {}
+content = data.get('${fname}') or ''
 if not content:
     print('FAIL empty configmap or missing file')
     sys.exit(2)
-d = json.loads(content)
+try:
+    d = json.loads(content)
+except Exception:
+    print('FAIL invalid nested json')
+    sys.exit(2)
 total = 0
 without_time = 0
-for p in d.get('panels', []):
-    nested = [p] if p.get('type') != 'row' else p.get('panels', [])
+for p in d.get('panels') or []:
+    nested = [p] if p.get('type') != 'row' else (p.get('panels') or [])
     for sp in nested:
-        for l in sp.get('links', []) or []:
+        for l in sp.get('links') or []:
             total += 1
             url = l.get('url', '')
             if '\${__url_time_range}' not in url:
                 without_time += 1
 print(f'links={total} without_time={without_time}')
-" 2>&1)
+" 2>&1 || echo "FAIL configmap not found or kubectl error")
 
   if [[ "${result}" == FAIL* ]]; then
     echo "[fail] ${cm}: ${result}"
