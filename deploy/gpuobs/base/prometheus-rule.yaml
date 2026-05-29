@@ -1041,11 +1041,13 @@ spec:
         # device 단위 GPU memory used / total 의 5 분 평균. 0-1 percentunit 스케일. Pod scope GPU
         # memory ratio (pod:gpu_memory_utilization_ratio:5m) 가 base 시리즈 부재로 dev cluster 에서
         # 산출되지 않는 환경 한계를 우회하는 device scope fallback 이다. join key 는 (node, gpu_uuid,
-        # gpu_index) 로 두 device 메트릭 의 라벨 셋이 동일해 매칭 비용이 최소다.
+        # gpu_index) 로 두 device 메트릭 의 라벨 셋이 동일해 매칭 비용이 최소다. group_left() 로 LHS
+        # 의 추가 메타데이터 라벨 (gpu_model 등) 을 결과 시리즈에 보존해 라벨 추가 시 회귀를 차단한다.
+        # 기존 pod:gpu_memory_utilization_ratio:5m 의 division 패턴과 정합.
         - record: node:gpu_memory_used_ratio:5m
           expr: |
             avg_over_time(gpuobs_device_memory_used_bytes[5m])
-            / on(node, gpu_uuid, gpu_index)
+            / on(node, gpu_uuid, gpu_index) group_left()
             avg_over_time(gpuobs_device_memory_total_bytes[5m])
 
         # pod:network_throughput_bps:5m

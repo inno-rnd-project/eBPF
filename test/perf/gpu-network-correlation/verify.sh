@@ -20,7 +20,10 @@ PROM_PORT="${GPUNET_PROM_PORT:-9090}"
 
 PROM_IP="${GPUNET_PROM_IP:-}"
 if [[ -z "${PROM_IP}" ]]; then
-  PROM_IP=$(kubectl get svc -n "${PROM_NAMESPACE}" "${PROM_SVC}" -o jsonpath='{.spec.clusterIP}')
+  # set -euo pipefail 환경에서 kubectl 실패 (service 부재 / kubeconfig 오류 등) 시 command
+  # substitution 실패로 스크립트 가 즉시 종료 되어 아래 [fatal] 메시지 가 누락 된다. fallback
+  # 으로 빈 문자열 을 두어 다음 if 가드 가 actionable 한 에러 메시지 를 노출 하도록 한다.
+  PROM_IP=$(kubectl get svc -n "${PROM_NAMESPACE}" "${PROM_SVC}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
 fi
 if [[ -z "${PROM_IP}" ]]; then
   echo "[fatal] failed to resolve ${PROM_SVC} ClusterIP in ${PROM_NAMESPACE}"
