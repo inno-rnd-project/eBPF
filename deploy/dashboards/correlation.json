@@ -1,12 +1,19 @@
 {
   "title": "correlation noisy neighbor",
   "uid": "correlation-overview",
-  "tags": ["correlation", "noisy-neighbor", "ebpf"],
+  "tags": [
+    "correlation",
+    "noisy-neighbor",
+    "ebpf"
+  ],
   "schemaVersion": 38,
   "version": 1,
   "editable": true,
   "graphTooltip": 0,
-  "time": { "from": "now-1h", "to": "now" },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "refresh": "30s",
   "timezone": "browser",
   "templating": {
@@ -51,7 +58,8 @@
         "includeAll": true,
         "label": "Dimension",
         "refresh": 2,
-        "sort": 1
+        "sort": 1,
+        "hide": 2
       }
     ]
   },
@@ -62,7 +70,12 @@
       "title": "Top noisy neighbors (victim x suspect x dimension x rank)",
       "description": "현재 snapshot 의 noisy neighbor 페어. score 내림차순 정렬 후 rank 가 부여된다. lag_seconds 양수는 suspect 가 victim latency 를 선행하는 인과 방향.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "targets": [
         {
           "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_score{victim_namespace=~\"$victim_namespace\",victim_pod=~\"$victim_pod\",resource_dimension=~\"$resource_dimension\"})",
@@ -106,48 +119,100 @@
           "id": "sortBy",
           "options": {
             "fields": {},
-            "sort": [{ "field": "score", "desc": true }]
+            "sort": [
+              {
+                "field": "score",
+                "desc": true
+              }
+            ]
           }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "auto" },
+          "custom": {
+            "align": "auto"
+          },
           "mappings": []
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "score" },
+            "matcher": {
+              "id": "byName",
+              "options": "score"
+            },
             "properties": [
-              { "id": "unit", "value": "none" },
-              { "id": "decimals", "value": 3 },
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              },
               {
                 "id": "custom.cellOptions",
-                "value": { "type": "color-background", "mode": "gradient" }
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
               },
               {
                 "id": "thresholds",
                 "value": {
                   "mode": "absolute",
                   "steps": [
-                    { "color": "blue", "value": null },
-                    { "color": "yellow", "value": 0.5 },
-                    { "color": "orange", "value": 0.7 },
-                    { "color": "red", "value": 0.85 }
+                    {
+                      "color": "blue",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 0.5
+                    },
+                    {
+                      "color": "orange",
+                      "value": 0.7
+                    },
+                    {
+                      "color": "red",
+                      "value": 0.85
+                    }
                   ]
                 }
               }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "lag_seconds" },
+            "matcher": {
+              "id": "byName",
+              "options": "lag_seconds"
+            },
             "properties": [
-              { "id": "unit", "value": "s" },
-              { "id": "decimals", "value": 0 }
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
             ]
           }
         ]
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs (src=victim)",
+          "url": "/d/netobs-overview?var-src_namespace=${victim_namespace:regex}&var-src_pod=${victim_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs (src=victim)",
+          "url": "/d/gpuobs-overview?var-src_pod=${victim_pod:regex}&${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 2,
@@ -155,7 +220,12 @@
       "title": "Dimension 분포 (current snapshot)",
       "description": "dimension 별 noisy neighbor 엔트리 수. 어느 자원 차원에서 가장 많은 동조 페어가 잡히는지 한눈에 확인.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
       "targets": [
         {
           "expr": "count by (resource_dimension) (correlation_noisy_neighbor_score)",
@@ -176,8 +246,14 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "blue", "value": null },
-              { "color": "green", "value": 1 }
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
             ]
           }
         }
@@ -189,7 +265,12 @@
       "title": "Reconcile duration & last success age",
       "description": "마지막 reconcile 의 소요 시간과 마지막 성공으로부터 경과 시간. last success age 가 10 분을 넘으면 CorrelationExporterStalled alert 가 발화한다.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
       "targets": [
         {
           "expr": "max by(job) (correlation_reconcile_duration_seconds)",
@@ -219,7 +300,12 @@
       "title": "Pairs vs neighbors emitted rate",
       "description": "Correlate 산출 페어 수와 SelectTopN 채택 후 emit 된 noisy neighbor 수의 누적 증가율. 비율이 너무 작으면 latency 메트릭 부족 또는 dimension 미분류가 의심된다.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
       "targets": [
         {
           "expr": "sum by(job) (rate(correlation_reconcile_pairs_total[10m]))",
@@ -249,7 +335,12 @@
       "title": "Skipped pairs by reason & reconcile errors",
       "description": "Pearson 산출에서 skip 된 페어 (low_samples, constant) 와 reconcile 실패의 누적 증가율. skipped 가 갑자기 증가하면 recording rule 회귀 또는 데이터 결손이 의심된다.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
       "targets": [
         {
           "expr": "sum by(job, reason) (rate(correlation_reconcile_skipped_total[10m]))",
@@ -279,7 +370,12 @@
       "title": "Active dominant dimension (#69)",
       "description": "correlation_dominant_dimension_active:5m. victim 의 latency p99 가 0.1s 임계를 초과한 시간대에 한해 dominant dimension 1 종 (cpu / gpu / memory / network) 을 라벨로 노출한다. latency 압박이 없는 시간대는 시리즈 미존재로 N/A 가 표시된다.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 28 },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
       "targets": [
         {
           "expr": "group by(victim_namespace, victim_pod, dimension) (correlation_dominant_dimension_active:5m)",
@@ -293,11 +389,21 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "blue", "value": null }
+              {
+                "color": "blue",
+                "value": null
+              }
             ]
           },
           "mappings": [
-            { "type": "value", "options": { "1": { "text": " " } } }
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": " "
+                }
+              }
+            }
           ]
         }
       },
@@ -313,7 +419,12 @@
       "title": "High-confidence noisy neighbors (p < 0.05) (#69)",
       "description": "correlation_noisy_neighbor_score 와 correlation_noisy_neighbor_pvalue 를 join 해 Granger p-value 가 0.05 미만인 high-confidence 페어만 노출한다. p-value 가 낮을수록 src (suspect) 가 dst (victim latency) 를 Granger-cause 한다는 통계적 유의성이 높다.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 34 },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
       "targets": [
         {
           "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_score and on(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_pvalue < 0.05))",
@@ -331,7 +442,21 @@
         }
       ],
       "transformations": [
-        { "id": "organize", "options": { "indexByName": { "victim_namespace": 0, "victim_pod": 1, "suspect_namespace": 2, "suspect_pod": 3, "resource_dimension": 4, "rank": 5, "Value #A": 6, "Value #B": 7 } } }
+        {
+          "id": "organize",
+          "options": {
+            "indexByName": {
+              "victim_namespace": 0,
+              "victim_pod": 1,
+              "suspect_namespace": 2,
+              "suspect_pod": 3,
+              "resource_dimension": 4,
+              "rank": 5,
+              "Value #A": 6,
+              "Value #B": 7
+            }
+          }
+        }
       ]
     }
   ]
