@@ -32,7 +32,7 @@
         "sort": 1
       },
       {
-        "name": "pod",
+        "name": "src_pod",
         "type": "query",
         "datasource": "${datasource}",
         "query": "label_values(netobs_pod_stage_latency_labeled_seconds_count{node=~\"$node\"}, src_pod)",
@@ -367,7 +367,7 @@
     {
       "id": 400,
       "type": "row",
-      "title": "Pod drill-down ($pod)",
+      "title": "Pod drill-down ($src_pod)",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 43 },
       "collapsed": false
     },
@@ -379,7 +379,7 @@
       "gridPos": { "h": 7, "w": 12, "x": 0, "y": 44 },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum by(le, src_pod, stage) (rate(netobs_pod_stage_latency_labeled_seconds_bucket{src_pod=~\"$pod\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by(le, src_pod, stage) (rate(netobs_pod_stage_latency_labeled_seconds_bucket{src_pod=~\"$src_pod\"}[5m])))",
           "legendFormat": "{{src_pod}} {{stage}}",
           "refId": "A"
         }
@@ -395,7 +395,7 @@
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 44 },
       "targets": [
         {
-          "expr": "max by(node, src_namespace, src_pod, src_pod_uid, gpu_uuid, gpu_index) (gpuobs_pod_memory_used_bytes{src_pod=~\"$pod\"})",
+          "expr": "max by(node, src_namespace, src_pod, src_pod_uid, gpu_uuid, gpu_index) (gpuobs_pod_memory_used_bytes{src_pod=~\"$src_pod\"})",
           "legendFormat": "{{src_pod}} gpu={{gpu_index}}",
           "refId": "A"
         }
@@ -405,13 +405,13 @@
     {
       "id": 13,
       "type": "table",
-      "title": "Noisy neighbor Top-N (victim=$pod)",
+      "title": "Noisy neighbor Top-N (victim=$src_pod)",
       "description": "correlation_noisy_neighbor_score. dimension 별 suspect Pod 순위. (#51 exporter 산출)",
       "datasource": "${datasource}",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 51 },
       "targets": [
         {
-          "expr": "max by(victim_namespace, victim_pod, suspect_namespace, suspect_pod, resource_dimension, rank) (correlation_noisy_neighbor_score{victim_pod=~\"$pod\"})",
+          "expr": "max by(victim_namespace, victim_pod, suspect_namespace, suspect_pod, resource_dimension, rank) (correlation_noisy_neighbor_score{victim_pod=~\"$src_pod\"})",
           "instant": true,
           "format": "table",
           "refId": "A"
