@@ -1239,7 +1239,24 @@
           "unit": "percent",
           "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다)."
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 602,
@@ -1285,13 +1302,30 @@
           "displayMode": "list",
           "placement": "bottom"
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 603,
       "type": "timeseries",
       "title": "[GPU utilization] z-score (30일 baseline 대비)",
-      "description": "cluster:gpu_util_zscore:1h 시계열. baseline (30일 offset 30일) 의 stddev 가 0 인 평탄 구간은 시리즈 미 emit. |z| > 3 은 95% 신뢰구간 outside 로 capacity-trends alert (Commit 4) 의 발화 조건.",
+      "description": "cluster:gpu_util_zscore:1h 시계열. baseline (30일 offset 30일) 의 stddev 가 0 인 평탄 구간은 시리즈 미 emit. |z| > 3 은 99.7% 신뢰구간 outside (3-sigma rule) 로 capacity-trends alert (Commit 4) 의 발화 조건.",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 8,
@@ -1358,7 +1392,29 @@
           "displayMode": "list",
           "placement": "bottom"
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Open RCA summarizer",
+          "url": "/d/rca-summarizer?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 604,
@@ -1420,7 +1476,24 @@
           "unit": "percentunit",
           "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다)."
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 605,
@@ -1466,13 +1539,30 @@
           "displayMode": "list",
           "placement": "bottom"
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 606,
       "type": "timeseries",
       "title": "[Network throughput score] z-score (30일 baseline 대비)",
-      "description": "cluster:network_zscore:1h 시계열. baseline (30일 offset 30일) 의 stddev 가 0 인 평탄 구간은 시리즈 미 emit. |z| > 3 은 95% 신뢰구간 outside 로 capacity-trends alert (Commit 4) 의 발화 조건.",
+      "description": "cluster:network_zscore:1h 시계열. baseline (30일 offset 30일) 의 stddev 가 0 인 평탄 구간은 시리즈 미 emit. |z| > 3 은 99.7% 신뢰구간 outside (3-sigma rule) 로 capacity-trends alert (Commit 4) 의 발화 조건.",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 8,
@@ -1539,7 +1629,29 @@
           "displayMode": "list",
           "placement": "bottom"
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Open RCA summarizer",
+          "url": "/d/rca-summarizer?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 607,
@@ -1601,7 +1713,24 @@
           "unit": "percentunit",
           "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다)."
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 608,
@@ -1647,13 +1776,30 @@
           "displayMode": "list",
           "placement": "bottom"
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 609,
       "type": "timeseries",
       "title": "[CPU throttle ratio] z-score (30일 baseline 대비)",
-      "description": "cluster:cpu_throttle_zscore:1h 시계열. baseline (30일 offset 30일) 의 stddev 가 0 인 평탄 구간은 시리즈 미 emit. |z| > 3 은 95% 신뢰구간 outside 로 capacity-trends alert (Commit 4) 의 발화 조건.",
+      "description": "cluster:cpu_throttle_zscore:1h 시계열. baseline (30일 offset 30일) 의 stddev 가 0 인 평탄 구간은 시리즈 미 emit. |z| > 3 은 99.7% 신뢰구간 outside (3-sigma rule) 로 capacity-trends alert (Commit 4) 의 발화 조건.",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 8,
@@ -1720,7 +1866,29 @@
           "displayMode": "list",
           "placement": "bottom"
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Open RCA summarizer",
+          "url": "/d/rca-summarizer?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 610,
@@ -1782,7 +1950,24 @@
           "unit": "percentunit",
           "noValue": "데이터 부족. capacity-trends 패널은 최소 4주의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다)."
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 611,
@@ -1828,13 +2013,30 @@
           "displayMode": "list",
           "placement": "bottom"
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 612,
       "type": "timeseries",
       "title": "[Memory pressure ratio] z-score (30일 baseline 대비)",
-      "description": "cluster:memory_pressure_zscore:1h 시계열. baseline (30일 offset 30일) 의 stddev 가 0 인 평탄 구간은 시리즈 미 emit. |z| > 3 은 95% 신뢰구간 outside 로 capacity-trends alert (Commit 4) 의 발화 조건.",
+      "description": "cluster:memory_pressure_zscore:1h 시계열. baseline (30일 offset 30일) 의 stddev 가 0 인 평탄 구간은 시리즈 미 emit. |z| > 3 은 99.7% 신뢰구간 outside (3-sigma rule) 로 capacity-trends alert (Commit 4) 의 발화 조건.",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 8,
@@ -1901,7 +2103,29 @@
           "displayMode": "list",
           "placement": "bottom"
         }
-      }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Open RCA summarizer",
+          "url": "/d/rca-summarizer?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     }
   ]
 }

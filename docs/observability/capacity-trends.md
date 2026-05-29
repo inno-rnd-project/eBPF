@@ -8,7 +8,7 @@
 
 - 1단계 패턴 식별: heatmap 패널에서 매주 반복되는 요일과 시간대 패턴 (예: 매주 월요일 오전 9시 GPU spike) 을 색상 농도로 확인
 - 2단계 이상 감지: z-score 패널에서 30일 baseline 대비 `|z| > 3` 임계 (정규분포 99.7% 신뢰구간 outside) 를 자동 highlight 해 normal shift 벗어난 시점을 식별
-- 3단계 원인 추적: heatmap 또는 z-score 패널의 drill-down link (#87 표준) 로 해당 시간대로 필터된 `netobs-overview` 또는 `gpuobs-overview` 진입해 noisy neighbor 또는 root cause 추적
+- 3단계 원인 추적: heatmap과 overlay 패널의 drill-down link (#87 표준 URL 패턴) 로 `netobs-overview` 또는 `gpuobs-overview` 또는 `correlation-overview` 진입해 noisy neighbor 식별. z-score 패널은 추가로 `rca-summarizer` 역방향 link로 RCA 요약 진입 경로도 제공. 본 row 의 패널은 cluster scope 라 시간 범위만 전파되고 node나 pod 단위 필터는 target dashboard 에서 재선택
 
 ## 패널 구성
 
@@ -34,8 +34,8 @@
 z-score는 `(current - 30일 baseline 평균) / 30일 baseline stddev`로 산출되며 baseline 대비 현재 값의 표준편차 거리를 의미한다.
 
 - `|z| <= 1`: 정상 범위 (68% 신뢰구간 inside)
-- `|z| <= 3`: 약한 이상 신호 (95% 신뢰구간 inside)
-- `|z| > 3`: 강한 이상 신호 (99.7% 신뢰구간 outside, normal shift)
+- `1 < |z| <= 3`: 약한 이상 신호 (95% 신뢰구간과 99.7% 신뢰구간 사이)
+- `|z| > 3`: 강한 이상 신호 (99.7% 신뢰구간 outside, 3-sigma rule, normal shift)
 - `|z| > 5`: 극단적 이상 (capacity 즉시 재검토 권장)
 
 z-score는 `clamp(-5, 5)`로 시각화 안정성을 위해 산출 범위가 제한된다.
