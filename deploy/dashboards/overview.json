@@ -57,11 +57,23 @@
   "annotations": {
     "list": [
       {
-        "name": "alerts",
+        "name": "alerts-critical",
         "datasource": "${datasource}",
         "enable": true,
+        "hide": false,
         "iconColor": "red",
-        "expr": "ALERTS{alertstate=\"firing\"}",
+        "expr": "ALERTS{alertstate=\"firing\",severity=\"critical\"}",
+        "tagKeys": "severity,component,alertname",
+        "titleFormat": "{{alertname}}",
+        "textFormat": "severity={{severity}} component={{component}}"
+      },
+      {
+        "name": "alerts-warning",
+        "datasource": "${datasource}",
+        "enable": true,
+        "hide": false,
+        "iconColor": "orange",
+        "expr": "ALERTS{alertstate=\"firing\",severity=\"warning\"}",
         "tagKeys": "severity,component,alertname",
         "titleFormat": "{{alertname}}",
         "textFormat": "severity={{severity}} component={{component}}"
