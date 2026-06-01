@@ -1,0 +1,651 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "contact": {}
+    },
+    "paths": {
+        "/api/v1/drops": {
+            "get": {
+                "description": "drop_reason 별 5-tuple 분포 조회. namespace 와 reason 필터 후 pagination 적용",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "netobs"
+                ],
+                "summary": "List packet drop events",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "drop reason 필터",
+                        "name": "drop_reason",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "drop category 필터",
+                        "name": "drop_category",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "src Pod 의 namespace 필터",
+                        "name": "src_namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "src Pod 의 이름 필터",
+                        "name": "src_pod",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 item 최대 개수 (기본 100, 최대 1000)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 시작 offset (기본 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.DropListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_netobs_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/flows": {
+            "get": {
+                "description": "5-tuple 기준 flow bytes 와 rate 조회. namespace/pod/protocol/direction 필터 후 pagination 적용",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "netobs"
+                ],
+                "summary": "List Pod-to-Pod network flows",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "src Pod 의 namespace 필터",
+                        "name": "src_namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "src Pod 의 이름 필터",
+                        "name": "src_pod",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "dst Pod 의 namespace 필터",
+                        "name": "dst_namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "dst Pod 의 이름 필터",
+                        "name": "dst_pod",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "프로토콜 필터 (tcp/udp)",
+                        "name": "protocol",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "방향 필터 (egress/ingress)",
+                        "name": "direction",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 item 최대 개수 (기본 100, 최대 1000)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 시작 offset (기본 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.FlowListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_netobs_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/gpu": {
+            "get": {
+                "description": "device scope 또는 pod scope 의 GPU utilization 과 memory 와 temperature 와 power 통합 조회",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "gpuobs"
+                ],
+                "summary": "List GPU resource usage",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "scope (device 또는 pod, 기본 device)",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "node 필터",
+                        "name": "node",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "gpu_uuid 필터",
+                        "name": "gpu_uuid",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Pod 의 namespace 필터 (scope=pod 일 때만 유효)",
+                        "name": "src_namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Pod 의 이름 필터 (scope=pod 일 때만 유효)",
+                        "name": "src_pod",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 item 최대 개수 (기본 100, 최대 1000)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 시작 offset (기본 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.GPUListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_gpuobs_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/noisy-neighbor": {
+            "get": {
+                "description": "victim/suspect 와 dimension 과 rank 필터 후 pagination 적용한 noisy neighbor 시리즈 반환",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "correlation"
+                ],
+                "summary": "List noisy neighbor top-N",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "victim Pod 의 namespace 필터",
+                        "name": "victim_namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "victim Pod 의 이름 필터",
+                        "name": "victim_pod",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "suspect Pod 의 namespace 필터",
+                        "name": "suspect_namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "suspect Pod 의 이름 필터",
+                        "name": "suspect_pod",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "리소스 차원 필터 (cpu/memory/network/gpu)",
+                        "name": "dimension",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "max rank (기본 무제한)",
+                        "name": "rank_max",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 item 최대 개수 (기본 100, 최대 1000)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 시작 offset (기본 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.NoisyNeighborListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "api.DropEntry": {
+            "type": "object",
+            "properties": {
+                "drop_category": {
+                    "type": "string"
+                },
+                "drop_reason": {
+                    "type": "string"
+                },
+                "dst_ip": {
+                    "type": "string"
+                },
+                "dst_port": {
+                    "type": "integer"
+                },
+                "event_count": {
+                    "type": "integer"
+                },
+                "events_per_sec": {
+                    "type": "number"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "protocol": {
+                    "type": "string"
+                },
+                "src_ip": {
+                    "type": "string"
+                },
+                "src_namespace": {
+                    "type": "string"
+                },
+                "src_pod": {
+                    "type": "string"
+                },
+                "src_port": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.DropListResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.DropEntry"
+                    }
+                },
+                "page": {
+                    "$ref": "#/definitions/internal_netobs_api.PageInfo"
+                }
+            }
+        },
+        "api.FlowEntry": {
+            "type": "object",
+            "properties": {
+                "bytes_per_sec": {
+                    "type": "number"
+                },
+                "bytes_total": {
+                    "type": "integer"
+                },
+                "direction": {
+                    "type": "string"
+                },
+                "dst_ip": {
+                    "type": "string"
+                },
+                "dst_namespace": {
+                    "type": "string"
+                },
+                "dst_pod": {
+                    "type": "string"
+                },
+                "dst_port": {
+                    "type": "integer"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "protocol": {
+                    "type": "string"
+                },
+                "src_ip": {
+                    "type": "string"
+                },
+                "src_namespace": {
+                    "type": "string"
+                },
+                "src_pod": {
+                    "type": "string"
+                },
+                "src_port": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.FlowListResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.FlowEntry"
+                    }
+                },
+                "page": {
+                    "$ref": "#/definitions/internal_netobs_api.PageInfo"
+                }
+            }
+        },
+        "api.GPUEntry": {
+            "type": "object",
+            "properties": {
+                "gpu_index": {
+                    "type": "string"
+                },
+                "gpu_model": {
+                    "type": "string"
+                },
+                "gpu_uuid": {
+                    "type": "string"
+                },
+                "memory_total_bytes": {
+                    "type": "integer"
+                },
+                "memory_used_bytes": {
+                    "type": "integer"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "power_limit_watts": {
+                    "type": "number"
+                },
+                "power_usage_watts": {
+                    "type": "number"
+                },
+                "scope": {
+                    "type": "string"
+                },
+                "src_namespace": {
+                    "type": "string"
+                },
+                "src_pod": {
+                    "type": "string"
+                },
+                "temperature_celsius": {
+                    "type": "number"
+                },
+                "utilization_percent": {
+                    "type": "number"
+                }
+            }
+        },
+        "api.GPUListResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.GPUEntry"
+                    }
+                },
+                "page": {
+                    "$ref": "#/definitions/internal_gpuobs_api.PageInfo"
+                }
+            }
+        },
+        "internal_correlation_api.ErrorDetail": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.ErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/internal_correlation_api.ErrorDetail"
+                }
+            }
+        },
+        "internal_correlation_api.NoisyNeighborListResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/netobs_internal_correlation.NoisyNeighbor"
+                    }
+                },
+                "page": {
+                    "$ref": "#/definitions/netobs_internal_apicommon.Page"
+                }
+            }
+        },
+        "internal_gpuobs_api.ErrorDetail": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_gpuobs_api.ErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/internal_gpuobs_api.ErrorDetail"
+                }
+            }
+        },
+        "internal_gpuobs_api.PageInfo": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer"
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_netobs_api.ErrorDetail": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_netobs_api.ErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/internal_netobs_api.ErrorDetail"
+                }
+            }
+        },
+        "internal_netobs_api.PageInfo": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer"
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "netobs_internal_apicommon.Page": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer"
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "netobs_internal_correlation.NoisyNeighbor": {
+            "type": "object",
+            "properties": {
+                "dimension": {
+                    "$ref": "#/definitions/netobs_internal_correlation.ResourceDimension"
+                },
+                "granger_ok": {
+                    "type": "boolean"
+                },
+                "lag_steps": {
+                    "type": "integer"
+                },
+                "p_value": {
+                    "description": "#69 Granger causality 결과. PValue 는 src 가 dst 를 Granger-cause 하는지의 통계적 유의성.\nGrangerOK=false 면 표본 부족 또는 행렬 singular 로 산정이 자연 skip 되었다.",
+                    "type": "number"
+                },
+                "rank": {
+                    "description": "Rank 는 (victim, dimension) 그룹 내 max_abs_value 내림차순 1-based 순위다. 1 이 가장 강한 상관.",
+                    "type": "integer"
+                },
+                "sample_count": {
+                    "type": "integer"
+                },
+                "score": {
+                    "type": "number"
+                },
+                "suspect": {
+                    "$ref": "#/definitions/netobs_internal_correlation.PodIdentity"
+                },
+                "suspect_metric": {
+                    "type": "string"
+                },
+                "victim": {
+                    "$ref": "#/definitions/netobs_internal_correlation.PodIdentity"
+                },
+                "victim_metric": {
+                    "type": "string"
+                }
+            }
+        },
+        "netobs_internal_correlation.PodIdentity": {
+            "type": "object",
+            "properties": {
+                "namespace": {
+                    "type": "string"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "pod_uid": {
+                    "type": "string"
+                }
+            }
+        },
+        "netobs_internal_correlation.ResourceDimension": {
+            "type": "string",
+            "enum": [
+                "cpu",
+                "memory",
+                "network",
+                "gpu",
+                ""
+            ],
+            "x-enum-varnames": [
+                "DimensionCPU",
+                "DimensionMemory",
+                "DimensionNetwork",
+                "DimensionGPU",
+                "DimensionUnknown"
+            ]
+        }
+    }
+}

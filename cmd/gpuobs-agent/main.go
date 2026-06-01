@@ -11,7 +11,10 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	httpSwagger "github.com/swaggo/http-swagger/v2"
 
+	gpuobsapi "netobs/internal/gpuobs/api"
+	gpuobsdocs "netobs/internal/gpuobs/api/docs"
 	"netobs/internal/gpuobs/collector"
 	"netobs/internal/gpuobs/config"
 	"netobs/internal/gpuobs/cuda"
@@ -66,9 +69,23 @@ func main() {
 		return true, ""
 	}
 
+	mux := server.NewMux("gpuobs-agent", reg, ready)
+
+	// #100 REST API layer 도입. /api/v1/gpu 와 swagger UI 부착. 실 source 연결은 follow-up
+	// 이슈로 위임 되어 있어 nil source 시 graceful empty response.
+	gpuobsapi.NewHandler(nil).Register(mux)
+	mux.Handle("/api/v1/swagger/", httpSwagger.Handler(
+		httpSwagger.URL("/api/v1/swagger.json"),
+		httpSwagger.InstanceName("gpuobs"),
+	))
+	mux.HandleFunc("/api/v1/swagger.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(gpuobsdocs.SwaggerInfogpuobs.ReadDoc()))
+	})
+
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: server.NewHandler("gpuobs-agent", reg, ready),
+		Handler: mux,
 	}
 
 	// HTTP 서버. ListenAndServe는 Shutdown 전까지 블록되는 것이 정상 동작이며,

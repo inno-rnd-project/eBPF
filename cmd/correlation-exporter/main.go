@@ -24,8 +24,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	httpSwagger "github.com/swaggo/http-swagger/v2"
 
 	"netobs/internal/correlation"
+	"netobs/internal/correlation/api"
+	correlationdocs "netobs/internal/correlation/api/docs"
 	"netobs/internal/correlation/exporter"
 )
 
@@ -188,6 +191,16 @@ func main() {
 		if err := json.NewEncoder(w).Encode(snap); err != nil {
 			log.Printf("snapshot encode: %v", err)
 		}
+	})
+
+	// #100 REST API layer 도입. /api/v1/noisy-neighbor 와 swagger UI 부착. handler 는 collector
+	// 의 Snapshot() 을 in-memory read 로만 사용 하므로 scrape hot path 와 분리되고 추가 부담 없음.
+	api.NewHandler(collector).Register(mux)
+	correlationdocs.SwaggerInfocorrelation.BasePath = "/"
+	mux.Handle("/api/v1/swagger/", httpSwagger.Handler(httpSwagger.URL("/api/v1/swagger.json"), httpSwagger.InstanceName("correlation")))
+	mux.HandleFunc("/api/v1/swagger.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(correlationdocs.SwaggerInfocorrelation.ReadDoc()))
 	})
 
 	srv := &http.Server{
