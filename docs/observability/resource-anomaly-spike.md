@@ -1,6 +1,6 @@
 # resource-anomaly-spike 운영자 가이드
 
-이슈 #89의 5분 z-score 기반 자원 이상 징후 자동 highlight에 대한 운영자 가이드다. `observability-overview` dashboard의 신규 row `Resource anomaly spike`에 4 도메인(GPU utilization과 network drop rate와 CPU throttle과 memory pressure)의 5분 z-score를 timeseries 패널 4개로 시각화해 7일 baseline 대비 즉시 outlier를 자동 highlight한다. #88의 1시간 z-score(`Capacity trends` row)가 장기 capacity planning 용도라면 본 row는 즉시 RCA spike 감지가 의도다.
+이슈 #89의 5분 z-score 기반 자원 이상 징후 자동 highlight에 대한 운영자 가이드다. `observability-overview` dashboard의 신규 row `Resource anomaly spike`에 4 도메인(GPU utilization과 network drop rate와 CPU throttle과 memory pressure)의 5분 z-score를 timeseries 패널 4개로 시각화해 직전 7일 baseline 대비 즉시 outlier를 자동 highlight한다. #88의 1시간 z-score(`Capacity trends` row)가 장기 capacity planning 용도라면 본 row는 즉시 RCA spike 감지가 의도다.
 
 ## 사용 시나리오
 
@@ -23,7 +23,7 @@
 
 ## z-score 임계의 운영적 의미
 
-z-score는 `(current 5분 평균 - 7일 baseline 평균) / 7일 baseline stddev`로 산출되며 baseline 대비 현재 값의 표준편차 거리를 의미한다.
+z-score는 `(current 5분 평균 - 직전 7일 baseline 평균) / clamp_min(직전 7일 baseline stddev, floor)`로 산출되며 baseline 대비 현재 값의 표준편차 거리를 의미한다. 평탄한 baseline 케이스(stddev=0) 의 spike 감지 불가 risk 차단 위해 도메인별 floor(GPU util=1, network drop=0.1, CPU throttle=0.01, memory pressure=0.01) 로 stddev 최소값을 보장한다.
 
 - `|z| <= 1`: 정상 범위(68% 신뢰구간 inside)
 - `1 < |z| <= 2`: 약한 변동(green 표시 유지)
@@ -38,7 +38,7 @@ z-score는 `clamp(-5, 5)`로 시각화 안정성을 위해 산출 범위가 제�
 | 측면 | `Capacity trends` row (#88) | `Resource anomaly spike` row (#89) |
 |---|---|---|
 | 윈도우 | 1시간 평균 | 5분 평균 |
-| baseline | 30일(`[30d] offset 30d`) | 7일(`[7d] offset 7d`) |
+| baseline | 30일(`[30d] offset 30d`) | 7일(`[7d] offset 5m`) |
 | 의도 | 장기 capacity planning | 즉시 RCA spike 감지 |
 | alert sustained | 30분 | 5분 |
 | alert severity | warning | warning |
@@ -73,15 +73,15 @@ dev cluster의 `loadgens.injector.netobs.io` CRD(`internal/injector/loadgen/load
 - `KindGPU` 워크로드 적용 시 `GPUUtilSpikeDetected` 발화 확인
 - `KindMemory` 는 OOM 위험이 있어 자동 verify.sh 대신 manual 검증으로 분리. 합성 부하 시 `MemoryPressureSpikeDetected` 발화 가능
 
-본 검증은 7일 baseline 누적 이후에만 의미 있다. 신규 배포 직후에는 z-score 시리즈가 stddev 가드로 미 emit 되어 alert도 자연 통과한다.
+본 검증은 직전 7일 baseline 누적 이후에 가장 안정적이다. baseline 데이터가 일부만 누적된 케이스 에서도 clamp_min floor 적용으로 z-score 산정 자체는 가능하지만 baseline의 신뢰도가 낮아 false positive 위험이 있다.
 
 ## 4주 미만 운영 cluster의 graceful degradation
 
-prometheus retention 60일(`deploy/monitoring/prometheus-retention-patch.yaml`) 적용 직후에는 7일 baseline 산정에 필요한 데이터가 부족해 z-score 시리즈가 비어 있다.
+prometheus retention 60일(`deploy/monitoring/prometheus-retention-patch.yaml`) 적용 직후에는 직전 7일 baseline 산정에 필요한 데이터가 부족해 z-score 결과의 신뢰도가 낮다.
 
-- z-score record는 baseline window의 `(stddev > 0)` 가드로 시리즈 미 emit
-- alert(`|z| > 3`) 도 record 부재로 자연 통과(false positive 차단)
-- retention 60일 적용 후 7일차에 z-score 정상 활성화
+- baseline 데이터가 전혀 없는 신규 배포 직후 케이스: `avg_over_time` 자체가 vector 미 emit 이라 z-score 도 자연 미 emit
+- baseline 일부 누적 (1일치 등) 케이스: clamp_min floor 가 stddev 평탄 risk 차단 으로 z-score 산정 가능. 단 baseline 표준 분포 가 충분히 형성 되지 않아 false positive 위험 있음
+- retention 60일 적용 후 7일차 부터 z-score 신뢰도 안정화. 그 전까지 dashboard 의 alert annotation 결과 는 참고용
 
 ## 후속 도메인 추가 시 체크리스트
 
