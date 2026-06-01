@@ -336,5 +336,31 @@
         }
       ]
     }
-  ]
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "alerts-critical",
+        "datasource": "${datasource}",
+        "enable": true,
+        "hide": false,
+        "iconColor": "red",
+        "expr": "ALERTS{alertstate=\"firing\",severity=\"critical\",component=\"injector\"}",
+        "tagKeys": "severity,component,alertname",
+        "titleFormat": "{{alertname}}",
+        "textFormat": "severity={{severity}} component={{component}}"
+      },
+      {
+        "name": "alerts-warning",
+        "datasource": "${datasource}",
+        "enable": true,
+        "hide": false,
+        "iconColor": "orange",
+        "expr": "ALERTS{alertstate=\"firing\",severity=\"warning\",component=\"injector\"}",
+        "tagKeys": "severity,component,alertname",
+        "titleFormat": "{{alertname}}",
+        "textFormat": "severity={{severity}} component={{component}}"
+      }
+    ]
+  }
 }
