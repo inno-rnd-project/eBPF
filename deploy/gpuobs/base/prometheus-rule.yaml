@@ -1015,6 +1015,52 @@ spec:
             summary: "{{ $labels.job }} informer stale {{ $value | humanizeDuration }} on {{ $labels.instance }}"
             description: "{{ $labels.job }} on {{ $labels.instance }} has not received any kube watch event for {{ $value | humanizeDuration }}. Check API server reachability, NetworkPolicy, and the agent ServiceAccount RBAC (pods/services/nodes watch verbs)."
 
+        # #88 capacity-trends z-score anomaly alert 4종. 본 alert 군은 capacity planning 의 선행
+        # 신호 (즉시 대응 불요 의 warning severity) 라 throttle 류 critical alert 와 component
+        # 라벨로 분리한다 (gpuobs-capacity, netobs-capacity, cpu-capacity, memory-capacity). |z| > 3
+        # 은 정규분포의 99.7% 신뢰구간 outside 라 normal shift 벗어난 usage pattern 을 의미하고,
+        # 30 분 sustained 조건으로 일시적 spike 의 alert flapping 을 차단한다. baseline (30일 offset
+        # 30일) 의 stddev 가 0 인 평탄 구간 은 record 자체가 미 emit 되어 alert 도 자연 통과한다.
+        - alert: GPUUtilAnomalyDetected
+          expr: abs(cluster:gpu_util_zscore:1h) > 3
+          for: 30m
+          labels:
+            severity: warning
+            component: gpuobs-capacity
+          annotations:
+            summary: "GPU utilization capacity anomaly (z={{ $value }})"
+            description: "Cluster GPU utilization 의 z-score 가 30일 baseline 대비 |z|={{ $value }} 로 30 분 sustained 됐다. 99.7% 신뢰구간 outside (3-sigma rule) 의 normal shift 신호다. capacity-trends heatmap 패널에서 시간대 패턴을 확인하고 필요 시 GPU 자원 재할당 또는 워크로드 schedule 조정을 검토하라."
+
+        - alert: NetworkUtilAnomalyDetected
+          expr: abs(cluster:network_zscore:1h) > 3
+          for: 30m
+          labels:
+            severity: warning
+            component: netobs-capacity
+          annotations:
+            summary: "Network throughput capacity anomaly (z={{ $value }})"
+            description: "Cluster network throughput score 의 z-score 가 30일 baseline 대비 |z|={{ $value }} 로 30 분 sustained 됐다. capacity-trends overlay 패널에서 시간대 분포를 확인하고 필요 시 NIC bandwidth 또는 Pod replica 재설정을 검토하라."
+
+        - alert: CPUThrottleAnomalyDetected
+          expr: abs(cluster:cpu_throttle_zscore:1h) > 3
+          for: 30m
+          labels:
+            severity: warning
+            component: cpu-capacity
+          annotations:
+            summary: "CPU throttle capacity anomaly (z={{ $value }})"
+            description: "Cluster CPU CFS throttle ratio 의 z-score 가 30일 baseline 대비 |z|={{ $value }} 로 30 분 sustained 됐다. capacity-trends heatmap 패널에서 시간대 패턴을 확인하고 필요 시 CPU limit 상향 또는 워크로드 재배치를 검토하라."
+
+        - alert: MemoryPressureAnomalyDetected
+          expr: abs(cluster:memory_pressure_zscore:1h) > 3
+          for: 30m
+          labels:
+            severity: warning
+            component: memory-capacity
+          annotations:
+            summary: "Memory pressure capacity anomaly (z={{ $value }})"
+            description: "Cluster memory working_set / limit ratio 의 z-score 가 30일 baseline 대비 |z|={{ $value }} 로 30 분 sustained 됐다. OOM 임박 위험 으로 memory limit 상향 또는 워크로드 재배치를 검토하라."
+
     # netobs-gpuobs.cross-correlation.recording 그룹은 #86 의 GPU-network cross-correlation 통합
     # 패널이 직접 참조하는 사전 집계 시계열을 둔다. 패널은 단일 timeseries 에 4 시계열 (GPU
     # utilization, GPU memory used ratio, network throughput, network p99 latency) 과 correlation
@@ -1076,4 +1122,99 @@ spec:
               sum by(le, node, src_namespace, src_pod, src_pod_uid) (
                 rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])
               )
+            )
+
+    # netobs-gpuobs.capacity-trends.recording 그룹은 #88 의 capacity-trends 패널이 직접 참조하는
+    # 1시간 윈도우 사전 집계와 z-score 시계열을 둔다. 패널은 4 도메인 (GPU utilization, network
+    # throughput, CPU throttle, memory pressure) 의 4주 heatmap (요일 x 시간대) 과 multi-series
+    # overlay 그리고 30일 baseline 대비 z-score 를 같은 row 에 정렬한다. PromQL 단에서 day_of_week
+    # 와 hour_of_day 를 라벨로 부착하는 trick 은 label_replace 의 src_label 제약 으로 불가하므로
+    # raw 1시간 aggregate 만 emit 하고 Grafana heatmap panel 의 calculate=true 옵션과 timezone
+    # Asia/Seoul 설정으로 X축 (hour-of-day) 과 Y축 (day-of-week) 변환을 dashboard 단에서 처리한다.
+    # 본 group 의 4 avg record 는 30s 평가 cycle 이지만 expr 자체가 1시간 윈도우 평균이라 evaluation
+    # 직후 즉시 채워지고 30일 / 60일 retention 정합은 Commit 1 의 60일 retention 상향에 의존한다.
+    # z-score 4종 은 (stddev > 0) 가드 와 clamp(-5, 5) 로 NaN 과 +Inf 시각화 잡음을 차단한다.
+    - name: netobs-gpuobs.capacity-trends.recording
+      interval: 1m
+      rules:
+        # cluster:gpu_util_1h_avg
+        # cluster 단위 GPU utilization 의 1시간 평균. 4주 heatmap 과 multi-series overlay 의 base
+        # 시계열로 사용된다. cluster scope 라 노드 차이를 drop 하는 max by() 로 cluster 전체 worst-case 의 부하
+        # 추세 를 단일 시리즈로 노출 한다.
+        - record: cluster:gpu_util_1h_avg
+          expr: max by() (avg_over_time(gpuobs_device_utilization_percent[1h]))
+
+        # cluster:network_1h_avg
+        # cluster 단위 network throughput score 의 1시간 평균 (0-1 percentunit). 기존
+        # pod:network_throughput_score:5m 의 1시간 윈도우 확장 형태. heatmap 표시를 위해 cluster
+        # max 채택.
+        - record: cluster:network_1h_avg
+          expr: max by() (avg_over_time(pod:network_throughput_score:5m[1h]))
+
+        # cluster:cpu_throttle_1h_avg
+        # cluster 단위 CPU CFS throttle 비율의 1시간 평균. capacity planning 의 4 도메인 통합 시각
+        # 화 를 위해 GPU / network 와 동일 패턴 적용. 본 record 가 0.3 이상 sustained 면 cluster 전체
+        # CPU limit 재조정 신호.
+        - record: cluster:cpu_throttle_1h_avg
+          expr: max by() (avg_over_time(pod:cpu_throttle_score:5m[1h]))
+
+        # cluster:memory_pressure_1h_avg
+        # cluster 단위 memory working_set / limit 비율의 1시간 평균. 0.9 이상 sustained 면 OOM 임박
+        # 신호. capacity planning 의 4 도메인 중 마지막 도메인 으로 동일 패턴 적용.
+        - record: cluster:memory_pressure_1h_avg
+          expr: max by() (avg_over_time(pod:memory_pressure_score:5m[1h]))
+
+        # cluster:gpu_util_zscore:1h
+        # 30일 baseline (avg + stddev) 대비 current 1시간 평균 의 z-score. baseline window 가 평탄
+        # 한 케이스 (stddev=0) 는 (stddev > 0) 가드 로 시리즈 미-emit 처리 해 NaN 방지하고, +Inf
+        # 시각화 잡음 차단 을 위해 clamp(-5, 5) 로 산출 범위 제한 한다. |z| > 3 임계 는 99.7%
+        # 신뢰구간 outside (3-sigma rule) 라 capacity-trends alert (Commit 4) 의 발화 조건 이다.
+        - record: cluster:gpu_util_zscore:1h
+          expr: |
+            clamp(
+              (
+                cluster:gpu_util_1h_avg
+                - avg_over_time(cluster:gpu_util_1h_avg[30d] offset 30d)
+              )
+              / (stddev_over_time(cluster:gpu_util_1h_avg[30d] offset 30d) > 0),
+              -5, 5
+            )
+
+        # cluster:network_zscore:1h
+        # network throughput score 의 z-score. 동일 패턴.
+        - record: cluster:network_zscore:1h
+          expr: |
+            clamp(
+              (
+                cluster:network_1h_avg
+                - avg_over_time(cluster:network_1h_avg[30d] offset 30d)
+              )
+              / (stddev_over_time(cluster:network_1h_avg[30d] offset 30d) > 0),
+              -5, 5
+            )
+
+        # cluster:cpu_throttle_zscore:1h
+        # CPU throttle 의 z-score. 동일 패턴.
+        - record: cluster:cpu_throttle_zscore:1h
+          expr: |
+            clamp(
+              (
+                cluster:cpu_throttle_1h_avg
+                - avg_over_time(cluster:cpu_throttle_1h_avg[30d] offset 30d)
+              )
+              / (stddev_over_time(cluster:cpu_throttle_1h_avg[30d] offset 30d) > 0),
+              -5, 5
+            )
+
+        # cluster:memory_pressure_zscore:1h
+        # memory pressure 의 z-score. 동일 패턴.
+        - record: cluster:memory_pressure_zscore:1h
+          expr: |
+            clamp(
+              (
+                cluster:memory_pressure_1h_avg
+                - avg_over_time(cluster:memory_pressure_1h_avg[30d] offset 30d)
+              )
+              / (stddev_over_time(cluster:memory_pressure_1h_avg[30d] offset 30d) > 0),
+              -5, 5
             )

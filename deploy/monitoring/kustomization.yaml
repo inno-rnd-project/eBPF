@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# 이슈 #88 의 capacity-trends 패널 데이터 토대 확보 용 prometheus retention 60일 상향 patch.
+# kube-prometheus-stack operator 가 spec.retention 변경 시 자동 으로 storage flag
+# (--storage.tsdb.retention.time=60d) 를 prometheus pod 에 재적용 한다. 본 patch 는 monitoring
+# stack 의 declarative 정의가 아닌 application observability 영역의 retention 요구사항을 cluster
+# 에 반영 하는 helper 라 monitoring namespace 의 operator-managed CR 에 strategic merge 적용 한다.
+namespace: monitoring
+
+resources:
+  - prometheus-retention-patch.yaml

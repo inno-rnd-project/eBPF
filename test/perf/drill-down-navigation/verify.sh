@@ -9,7 +9,7 @@ set -euo pipefail
 NAMESPACE="${DRILLNAV_NAMESPACE:-ebpf-project}"
 
 declare -A EXPECTED_LINKS=(
-  [overview-dashboard]=45
+  [overview-dashboard]=85
   [netobs-dashboard]=19
   [gpuobs-dashboard]=21
   [correlation-dashboard]=2
