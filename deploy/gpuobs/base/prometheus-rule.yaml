@@ -1061,6 +1061,53 @@ spec:
             summary: "Memory pressure capacity anomaly (z={{ $value }})"
             description: "Cluster memory working_set / limit ratio 의 z-score 가 30일 baseline 대비 |z|={{ $value }} 로 30 분 sustained 됐다. OOM 임박 위험 으로 memory limit 상향 또는 워크로드 재배치를 검토하라."
 
+        # #89 resource-anomaly-spike z-score spike alert 4종. 본 alert 군은 #88 의 capacity-trends
+        # alert (장기 capacity planning, 30분 sustained) 와 다른 즉시 RCA spike 감지 (5분 sustained)
+        # 의도라 component 라벨을 *-anomaly 로 분리한다 (gpuobs-anomaly, netobs-anomaly, cpu-anomaly,
+        # memory-anomaly). baseline window 7일 의 stddev 가 평탄한 케이스는 z-score record 자체가
+        # 미 emit 되어 alert 도 자연 통과한다. |z| > 3 은 정규분포 의 99.7% 신뢰구간 outside (3-sigma
+        # rule) 라 즉시 대응 필요 신호이지만 severity 는 warning 유지로 throttle 류 critical alert
+        # 와 운영 채널 분리한다.
+        - alert: GPUUtilSpikeDetected
+          expr: abs(cluster:gpu_util_zscore:5m) > 3
+          for: 5m
+          labels:
+            severity: warning
+            component: gpuobs-anomaly
+          annotations:
+            summary: "GPU utilization spike (z={{ $value }})"
+            description: "Cluster GPU utilization 의 5분 z-score 가 7일 baseline 대비 |z|={{ $value }} 로 5분 sustained 됐다. 99.7% 신뢰구간 outside (3-sigma rule) 의 즉시 RCA spike 신호다. observability-overview 의 Resource anomaly spike row 에서 시점 확인 후 drill-down 으로 GPU 워크로드 의 root cause 추적 또는 워크로드 재배치를 검토 하라."
+
+        - alert: NetworkDropSpikeDetected
+          expr: abs(cluster:network_drop_zscore:5m) > 3
+          for: 5m
+          labels:
+            severity: warning
+            component: netobs-anomaly
+          annotations:
+            summary: "Network drop spike (z={{ $value }})"
+            description: "Cluster network drop event rate 의 5분 z-score 가 7일 baseline 대비 |z|={{ $value }} 로 5분 sustained 됐다. link quality 이상 또는 NIC saturation 의 즉시 RCA spike 신호다. netobs-overview 의 drop rate 패널에서 drop_category 별 분포 확인 후 drill-down 으로 root cause 추적 하라."
+
+        - alert: CPUThrottleSpikeDetected
+          expr: abs(cluster:cpu_throttle_zscore:5m) > 3
+          for: 5m
+          labels:
+            severity: warning
+            component: cpu-anomaly
+          annotations:
+            summary: "CPU throttle spike (z={{ $value }})"
+            description: "Cluster CPU CFS throttle ratio 의 5분 z-score 가 7일 baseline 대비 |z|={{ $value }} 로 5분 sustained 됐다. 즉시 RCA spike 신호 로 CPU limit 상향 또는 워크로드 재배치를 검토 하라."
+
+        - alert: MemoryPressureSpikeDetected
+          expr: abs(cluster:memory_pressure_zscore:5m) > 3
+          for: 5m
+          labels:
+            severity: warning
+            component: memory-anomaly
+          annotations:
+            summary: "Memory pressure spike (z={{ $value }})"
+            description: "Cluster memory working_set / limit ratio 의 5분 z-score 가 7일 baseline 대비 |z|={{ $value }} 로 5분 sustained 됐다. OOM 임박 즉시 RCA spike 신호 로 memory limit 상향 또는 워크로드 재배치를 검토 하라."
+
     # netobs-gpuobs.cross-correlation.recording 그룹은 #86 의 GPU-network cross-correlation 통합
     # 패널이 직접 참조하는 사전 집계 시계열을 둔다. 패널은 단일 timeseries 에 4 시계열 (GPU
     # utilization, GPU memory used ratio, network throughput, network p99 latency) 과 correlation
