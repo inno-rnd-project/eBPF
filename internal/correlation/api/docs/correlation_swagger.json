@@ -1,0 +1,204 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "contact": {}
+    },
+    "paths": {
+        "/api/v1/noisy-neighbor": {
+            "get": {
+                "description": "victim/suspect 와 dimension 과 rank 필터 후 pagination 적용한 noisy neighbor 시리즈 반환",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "correlation"
+                ],
+                "summary": "List noisy neighbor top-N",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "victim Pod 의 namespace 필터",
+                        "name": "victim_namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "victim Pod 의 이름 필터",
+                        "name": "victim_pod",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "suspect Pod 의 namespace 필터",
+                        "name": "suspect_namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "suspect Pod 의 이름 필터",
+                        "name": "suspect_pod",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "리소스 차원 필터 (cpu/memory/network/gpu)",
+                        "name": "dimension",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "max rank (기본 무제한)",
+                        "name": "rank_max",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 item 최대 개수 (기본 100, 최대 1000)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 시작 offset (기본 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.NoisyNeighborListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "api.ErrorDetail": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.ErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/api.ErrorDetail"
+                }
+            }
+        },
+        "api.NoisyNeighborListResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/netobs_internal_correlation.NoisyNeighbor"
+                    }
+                },
+                "page": {
+                    "$ref": "#/definitions/netobs_internal_apicommon.Page"
+                }
+            }
+        },
+        "netobs_internal_apicommon.Page": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer"
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "netobs_internal_correlation.NoisyNeighbor": {
+            "type": "object",
+            "properties": {
+                "dimension": {
+                    "$ref": "#/definitions/netobs_internal_correlation.ResourceDimension"
+                },
+                "granger_ok": {
+                    "type": "boolean"
+                },
+                "lag_steps": {
+                    "type": "integer"
+                },
+                "p_value": {
+                    "description": "#69 Granger causality 결과. PValue 는 src 가 dst 를 Granger-cause 하는지의 통계적 유의성.\nGrangerOK=false 면 표본 부족 또는 행렬 singular 로 산정이 자연 skip 되었다.",
+                    "type": "number"
+                },
+                "rank": {
+                    "description": "Rank 는 (victim, dimension) 그룹 내 max_abs_value 내림차순 1-based 순위다. 1 이 가장 강한 상관.",
+                    "type": "integer"
+                },
+                "sample_count": {
+                    "type": "integer"
+                },
+                "score": {
+                    "type": "number"
+                },
+                "suspect": {
+                    "$ref": "#/definitions/netobs_internal_correlation.PodIdentity"
+                },
+                "suspect_metric": {
+                    "type": "string"
+                },
+                "victim": {
+                    "$ref": "#/definitions/netobs_internal_correlation.PodIdentity"
+                },
+                "victim_metric": {
+                    "type": "string"
+                }
+            }
+        },
+        "netobs_internal_correlation.PodIdentity": {
+            "type": "object",
+            "properties": {
+                "namespace": {
+                    "type": "string"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "pod_uid": {
+                    "type": "string"
+                }
+            }
+        },
+        "netobs_internal_correlation.ResourceDimension": {
+            "type": "string",
+            "enum": [
+                "cpu",
+                "memory",
+                "network",
+                "gpu",
+                ""
+            ],
+            "x-enum-varnames": [
+                "DimensionCPU",
+                "DimensionMemory",
+                "DimensionNetwork",
+                "DimensionGPU",
+                "DimensionUnknown"
+            ]
+        }
+    }
+}
