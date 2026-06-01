@@ -1,0 +1,59 @@
+# 이슈 #100 의 자체 dashboard 용 REST API layer 의 통합 Swagger UI 진입점. swaggerapi/swagger-ui
+# 공식 image 가 URLS 환경 변수 로 dropdown 형 multi-spec 표시를 native 지원 한다. 4 agent 의
+# /api/v1/swagger.json 을 등록 해 운영자 가 한 곳 에서 endpoint 를 탐색 가능 하게 한다. agent 별
+# 개별 swagger UI (/api/v1/swagger/index.html) 도 그대로 유지 되므로 본 통합 Pod 는 보조 진입점.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: swagger-ui
+  namespace: ebpf-project
+  labels:
+    app.kubernetes.io/name: swagger-ui
+    app.kubernetes.io/component: api-docs
+    app.kubernetes.io/part-of: ebpf-project
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: swagger-ui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: swagger-ui
+        app.kubernetes.io/component: api-docs
+        app.kubernetes.io/part-of: ebpf-project
+    spec:
+      containers:
+        - name: swagger-ui
+          image: swaggerapi/swagger-ui:v5.18.2
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            # URLS 는 multi-spec dropdown 의 source URL 목록 이다. 각 agent 의 Service 가 cluster
+            # DNS 로 접근 가능 하고 agent 가 /api/v1/swagger.json 을 노출 한다. swagger-ui 가 본
+            # URLS 를 parse 해 상단 dropdown 으로 표시.
+            - name: URLS
+              value: >-
+                [{"url":"http://correlation-exporter.ebpf-project.svc.cluster.local:9830/api/v1/swagger.json","name":"correlation"},{"url":"http://netobs-agent.ebpf-project.svc.cluster.local:9810/api/v1/swagger.json","name":"netobs"},{"url":"http://gpuobs-agent.ebpf-project.svc.cluster.local:9820/api/v1/swagger.json","name":"gpuobs"}]
+            - name: URLS_PRIMARY_NAME
+              value: "correlation"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
