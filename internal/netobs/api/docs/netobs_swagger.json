@@ -1,0 +1,296 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "contact": {}
+    },
+    "paths": {
+        "/api/v1/drops": {
+            "get": {
+                "description": "drop_reason 별 5-tuple 분포 조회. namespace 와 reason 필터 후 pagination 적용",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "netobs"
+                ],
+                "summary": "List packet drop events",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "drop reason 필터",
+                        "name": "drop_reason",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "drop category 필터",
+                        "name": "drop_category",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "src Pod 의 namespace 필터",
+                        "name": "src_namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "src Pod 의 이름 필터",
+                        "name": "src_pod",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 item 최대 개수 (기본 100, 최대 1000)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 시작 offset (기본 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.DropListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/flows": {
+            "get": {
+                "description": "5-tuple 기준 flow bytes 와 rate 조회. namespace/pod/protocol/direction 필터 후 pagination 적용",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "netobs"
+                ],
+                "summary": "List Pod-to-Pod network flows",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "src Pod 의 namespace 필터",
+                        "name": "src_namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "src Pod 의 이름 필터",
+                        "name": "src_pod",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "dst Pod 의 namespace 필터",
+                        "name": "dst_namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "dst Pod 의 이름 필터",
+                        "name": "dst_pod",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "프로토콜 필터 (tcp/udp)",
+                        "name": "protocol",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "방향 필터 (egress/ingress)",
+                        "name": "direction",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 item 최대 개수 (기본 100, 최대 1000)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 시작 offset (기본 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.FlowListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "api.DropEntry": {
+            "type": "object",
+            "properties": {
+                "drop_category": {
+                    "type": "string"
+                },
+                "drop_reason": {
+                    "type": "string"
+                },
+                "dst_ip": {
+                    "type": "string"
+                },
+                "dst_port": {
+                    "type": "integer"
+                },
+                "event_count": {
+                    "type": "integer"
+                },
+                "events_per_sec": {
+                    "type": "number"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "protocol": {
+                    "type": "string"
+                },
+                "src_ip": {
+                    "type": "string"
+                },
+                "src_namespace": {
+                    "type": "string"
+                },
+                "src_pod": {
+                    "type": "string"
+                },
+                "src_port": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.DropListResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.DropEntry"
+                    }
+                },
+                "page": {
+                    "$ref": "#/definitions/api.PageInfo"
+                }
+            }
+        },
+        "api.ErrorDetail": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.ErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/api.ErrorDetail"
+                }
+            }
+        },
+        "api.FlowEntry": {
+            "type": "object",
+            "properties": {
+                "bytes_per_sec": {
+                    "type": "number"
+                },
+                "bytes_total": {
+                    "type": "integer"
+                },
+                "direction": {
+                    "type": "string"
+                },
+                "dst_ip": {
+                    "type": "string"
+                },
+                "dst_namespace": {
+                    "type": "string"
+                },
+                "dst_pod": {
+                    "type": "string"
+                },
+                "dst_port": {
+                    "type": "integer"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "protocol": {
+                    "type": "string"
+                },
+                "src_ip": {
+                    "type": "string"
+                },
+                "src_namespace": {
+                    "type": "string"
+                },
+                "src_pod": {
+                    "type": "string"
+                },
+                "src_port": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.FlowListResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.FlowEntry"
+                    }
+                },
+                "page": {
+                    "$ref": "#/definitions/api.PageInfo"
+                }
+            }
+        },
+        "api.PageInfo": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer"
+                },
+                "offset": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        }
+    }
+}
