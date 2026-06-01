@@ -99,3 +99,8 @@ coverage/
 # --------------------------
 *.pid
 *.sock
+/gpuobs-agent
+/netobs-agent
+/correlation-exporter
+/rca-summarizer
+/workload-injector
