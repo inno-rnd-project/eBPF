@@ -12,7 +12,7 @@
 - Grafana API 의 auth 의존성을 배제하고 sidecar 의 source-of-truth 인 ConfigMap 자체를 inspect 해 panel.links 정합성을 검증
 - 각 dashboard 별 link 총 개수 가 매핑 표와 일치 + 모든 link URL 에 `${__url_time_range}` 부착 여부 가드
 - 검증 항목 2종:
-  - 1차: link 총 개수 == 기대값 (`overview=85`, `netobs=19`, `gpuobs=21`, `correlation=2`, `gpu-network-correlation=3`, `injector=12`, `rca=0`)
+  - 1차: link 총 개수 == 기대값 (`overview=101`, `netobs=19`, `gpuobs=21`, `correlation=2`, `gpu-network-correlation=3`, `injector=12`, `rca=0`)
   - 2차: 모든 link URL 에 `${__url_time_range}` macro 부착
 
 ## 실행

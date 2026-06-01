@@ -41,10 +41,10 @@ Grafana API의 auth 의존성을 회피하기 위해 sidecar의 source-of-truth�
 | dashboard | component 필터 |
 |---|---|
 | `overview-dashboard` | 없음 (전체) |
-| `netobs-dashboard` | `component=~"netobs\|netobs-capacity\|observability"` |
-| `gpuobs-dashboard` | `component=~"gpuobs\|gpuobs-capacity"` |
+| `netobs-dashboard` | `component=~"netobs\|netobs-capacity\|netobs-anomaly\|observability"` |
+| `gpuobs-dashboard` | `component=~"gpuobs\|gpuobs-capacity\|gpuobs-anomaly"` |
 | `correlation-dashboard` | `component="correlation"` |
-| `gpu-network-correlation-dashboard` | `component=~"netobs\|gpuobs\|netobs-capacity\|gpuobs-capacity"` |
+| `gpu-network-correlation-dashboard` | `component=~"netobs\|gpuobs\|netobs-capacity\|gpuobs-capacity\|netobs-anomaly\|gpuobs-anomaly"` |
 | `injector-dashboard` | `component="injector"` |
 | `rca-dashboard` | 없음 (전체, RCA 진입점 특례) |
 

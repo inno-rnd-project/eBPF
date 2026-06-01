@@ -208,7 +208,7 @@
         "enable": true,
         "hide": false,
         "iconColor": "red",
-        "expr": "ALERTS{alertstate=\"firing\",severity=\"critical\",component=~\"netobs|gpuobs|netobs-capacity|gpuobs-capacity\"}",
+        "expr": "ALERTS{alertstate=\"firing\",severity=\"critical\",component=~\"netobs|gpuobs|netobs-capacity|gpuobs-capacity|netobs-anomaly|gpuobs-anomaly\"}",
         "tagKeys": "severity,component,alertname",
         "titleFormat": "{{alertname}}",
         "textFormat": "severity={{severity}} component={{component}}"
@@ -219,7 +219,7 @@
         "enable": true,
         "hide": false,
         "iconColor": "orange",
-        "expr": "ALERTS{alertstate=\"firing\",severity=\"warning\",component=~\"netobs|gpuobs|netobs-capacity|gpuobs-capacity\"}",
+        "expr": "ALERTS{alertstate=\"firing\",severity=\"warning\",component=~\"netobs|gpuobs|netobs-capacity|gpuobs-capacity|netobs-anomaly|gpuobs-anomaly\"}",
         "tagKeys": "severity,component,alertname",
         "titleFormat": "{{alertname}}",
         "textFormat": "severity={{severity}} component={{component}}"
