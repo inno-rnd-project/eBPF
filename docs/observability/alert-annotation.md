@@ -59,7 +59,7 @@ annotation 자체의 url 진입은 Grafana 12.x 표준에서 미지원이라 다
 - alert label의 `component` 라벨이 신규 도메인에 일치하는지 확인 (필요 시 PrometheusRule 추가 시 component 라벨 부착)
 - 본 가이드의 dashboard별 alert scope 매핑 표에 1행 추가
 - 신규 dashboard JSON의 `annotations.list`에 alerts-critical과 alerts-warning 2 rule 부착 (component 필터는 신규 도메인 매핑 적용)
-- `test/perf/alert-annotation/verify.sh`의 EXPECTED_ANNOTATIONS 갱신
+- `test/perf/alert-annotation/verify.sh`의 `EXPECTED_ANNOTATION_COUNT`와 `EXPECTED_COMPONENT_FILTER` 매핑 갱신
 - dev cluster apply 후 sidecar pickup 확인
 
 ## 비목표

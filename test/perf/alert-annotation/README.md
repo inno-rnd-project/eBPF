@@ -36,7 +36,7 @@ Grafana API의 auth 의존성을 회피하기 위해 sidecar의 source-of-truth�
 
 ## component 필터 매핑 표
 
-본 verify.sh의 `EXPECTED_COMPONENT_FILTER` 와 일치해야 한다. 신규 dashboard 추가 시 본 표와 verify.sh의 매핑을 동시 갱신한다.
+본 verify.sh의 `EXPECTED_COMPONENT_FILTER` 와 일치해야 한다. 신규 dashboard 추가 시 본 표와 verify.sh의 `EXPECTED_ANNOTATION_COUNT` 그리고 `EXPECTED_COMPONENT_FILTER` 두 매핑을 동시 갱신한다.
 
 | dashboard | component 필터 |
 |---|---|
@@ -53,4 +53,4 @@ Grafana API의 auth 의존성을 회피하기 위해 sidecar의 source-of-truth�
 - `[fail] {cm}: annotation 개수=...` 으로 떨어지면 dashboard JSON의 `annotations.list`가 2 rule (alerts-critical + alerts-warning) 부착 여부 확인. source 파일 (`deploy/dashboards/{name}.json`) 수정 후 `kubectl apply -k deploy/dashboards/` 재배포
 - `[fail] {cm}: alertstate="firing" 부착=...` 으로 떨어지면 annotation의 `expr`에 `alertstate="firing"` 누락 확인. pending 제외 표준 적용 필수
 - `[fail] {cm}: alerts-critical (red)` 또는 `alerts-warning (orange)` mismatch는 severity별 iconColor 매핑 표준 (`docs/observability/alert-annotation.md` 참조) 확인
-- `[fail] {cm}: component 필터 ... 매칭=...` 으로 떨어지면 본 README의 매핑 표와 dashboard의 annotation expr 동시 점검. 의도적 변경이면 본 README와 verify.sh의 `EXPECTED_COMPONENT_FILTER` 동시 갱신
+- `[fail] {cm}: component 필터 ... 매칭=...` 으로 떨어지면 본 README의 매핑 표와 dashboard의 annotation expr 동시 점검. 의도적 변경이면 본 README와 verify.sh의 `EXPECTED_COMPONENT_FILTER` 동시 갱신. annotation 개수 변경이 동반되면 `EXPECTED_ANNOTATION_COUNT`도 함께 갱신
