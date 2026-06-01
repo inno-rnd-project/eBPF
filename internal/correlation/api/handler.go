@@ -104,7 +104,12 @@ func (h *Handler) ListNoisyNeighbors(w http.ResponseWriter, r *http.Request) {
 	suspectNS := strings.TrimSpace(q.Get("suspect_namespace"))
 	suspectPod := strings.TrimSpace(q.Get("suspect_pod"))
 
-	all := h.source.Snapshot()
+	// netobs / gpuobs handler 와 동일 패턴 으로 nil source 시 graceful empty response 보장. handler
+	// 가 collector 미주입 상태 (예: agent 의 reconcile cycle 시작 전) 에 호출 되어도 panic 회피.
+	var all []correlation.NoisyNeighbor
+	if h.source != nil {
+		all = h.source.Snapshot()
+	}
 	filtered := make([]correlation.NoisyNeighbor, 0, len(all))
 	for _, n := range all {
 		if dimension != "" && !strings.EqualFold(string(n.Dimension), dimension) {

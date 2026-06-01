@@ -149,29 +149,37 @@ check-prometheus-rules:
 deps:
 	go mod tidy
 
-# swag-init 은 #100 의 4 agent 에 부착된 swaggo 주석 으로부터 각 agent 의 swagger.json 을 생성
-# 한다. internal/<agent>/api/docs/ 하위에 산출물이 떨어 진다. 호출 측은 빌드 전에 본 타겟을
-# 한 번 실행 해 OpenAPI 스펙 을 갱신 한다. swag CLI 가 GOPATH/bin 에 설치 되어 있어야 한다
+# swag-init 은 #100 의 3 agent (correlation-exporter 와 netobs-agent 와 gpuobs-agent) 에 부착된
+# swaggo 주석 으로부터 각 agent 의 swagger.json 과 swagger.yaml 을 생성 한다.
+# internal/<agent>/api/docs/ 하위에 산출물 (go / json / yaml 3종) 이 떨어 진다. 호출 측은 빌드
+# 전에 본 타겟 을 한 번 실행 해 OpenAPI 스펙 을 갱신 한다. --outputTypes 로 json 과 yaml 동시
+# 생성을 강제 해 둘 사이의 drift 를 차단 한다. swag CLI 가 GOPATH/bin 에 설치 되어 있어야 한다
 # (go install github.com/swaggo/swag/cmd/swag@latest).
 SWAG ?= $(shell go env GOPATH)/bin/swag
 swag-init:
 	@if [ ! -x "$(SWAG)" ]; then echo "swag CLI 가 없습니다. go install github.com/swaggo/swag/cmd/swag@latest 를 실행하세요."; exit 1; fi
-	$(SWAG) init -g cmd/correlation-exporter/main.go --parseDependency --output internal/correlation/api/docs --instanceName correlation
-	$(SWAG) init -g cmd/netobs-agent/main.go --parseDependency --output internal/netobs/api/docs --instanceName netobs
-	$(SWAG) init -g cmd/gpuobs-agent/main.go --parseDependency --output internal/gpuobs/api/docs --instanceName gpuobs
+	# correlation 은 PodIdentity 같은 cross-package 타입 까지 OpenAPI schema 에 포함 시키려고
+	# parseDependency 와 repo 루트 scope 채택. netobs 와 gpuobs 는 cross-agent dependency parsing
+	# 충돌 회피 를 위해 agent 별 -d scope 제한 후 parseDependency 끔. agent 별 swaggo 주석 의
+	# 응답 타입 이 본인 패키지 또는 apicommon 알리어스 만 참조 하도록 commit 2-4 에서 정합 처리됨.
+	$(SWAG) init -g cmd/correlation-exporter/main.go --parseDependency --outputTypes go,json,yaml --output internal/correlation/api/docs --instanceName correlation -d $(CURDIR)
+	$(SWAG) init -g main.go --parseDependency=false --outputTypes go,json,yaml --output internal/netobs/api/docs --instanceName netobs -d cmd/netobs-agent,internal/netobs/api
+	$(SWAG) init -g main.go --parseDependency=false --outputTypes go,json,yaml --output internal/gpuobs/api/docs --instanceName gpuobs -d cmd/gpuobs-agent,internal/gpuobs/api
 
-# swag-merge 는 4 agent 의 개별 swagger.json 을 yq 로 merge 해 docs/api/openapi.yaml 단일 spec
-# 으로 통합 한다. 자체 dashboard 의 로컬 import 용 fallback 산출물 이며 cluster 의 swagger-ui Pod
-# 는 각 agent 의 /api/v1/swagger.json 을 dropdown 으로 직접 참조하기 때문에 본 통합본 의 필요성
-# 은 보조 적이다.
+# swag-merge 는 3 agent 의 개별 swagger.json (swag 가 생성하는 Swagger 2.0 형식) 을 python 으로
+# 병합해 docs/api/openapi.yaml 단일 spec 으로 통합 한다. swag 산출물 의 spec version 을 유지 해
+# definitions 키 를 그대로 보존한다. 자체 dashboard 의 로컬 import 용 fallback 산출물 이며 cluster
+# 의 swagger-ui Pod 는 각 agent 의 /api/v1/swagger.json 을 dropdown 으로 직접 참조하기 때문에
+# 본 통합본 의 필요성 은 보조 적이다. PyYAML 의존성 사전 체크 로 actionable 에러 메시지 제공.
 swag-merge:
 	@mkdir -p docs/api
 	@if [ ! -f internal/correlation/api/docs/correlation_swagger.json ]; then echo "swag-init 을 먼저 실행 하세요"; exit 1; fi
-	@python3 -c "import json, yaml, sys, glob; \
+	@python3 -c "import yaml" 2>/dev/null || (echo "PyYAML 이 필요합니다. pip3 install pyyaml 을 실행 하세요"; exit 1)
+	@python3 -c "import json, yaml, glob; \
 specs = [json.load(open(f)) for f in sorted(glob.glob('internal/*/api/docs/*_swagger.json'))]; \
-merged = {'openapi': '3.0.0', 'info': {'title': 'netobs unified API', 'version': '$(VERSION)'}, 'paths': {}, 'components': {'schemas': {}}}; \
+merged = {'swagger': '2.0', 'info': {'title': 'netobs unified API', 'version': '$(VERSION)'}, 'paths': {}, 'definitions': {}}; \
 [merged['paths'].update(s.get('paths', {})) for s in specs]; \
-[merged['components']['schemas'].update(s.get('definitions', {})) for s in specs]; \
+[merged['definitions'].update(s.get('definitions', {})) for s in specs]; \
 yaml.safe_dump(merged, open('docs/api/openapi.yaml', 'w'), allow_unicode=True, sort_keys=False)"
 	@echo "docs/api/openapi.yaml 생성 완료"
 

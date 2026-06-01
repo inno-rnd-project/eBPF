@@ -1,7 +1,9 @@
 # 이슈 #100 의 자체 dashboard 용 REST API layer 의 통합 Swagger UI 진입점. swaggerapi/swagger-ui
-# 공식 image 가 URLS 환경 변수 로 dropdown 형 multi-spec 표시를 native 지원 한다. 4 agent 의
-# /api/v1/swagger.json 을 등록 해 운영자 가 한 곳 에서 endpoint 를 탐색 가능 하게 한다. agent 별
-# 개별 swagger UI (/api/v1/swagger/index.html) 도 그대로 유지 되므로 본 통합 Pod 는 보조 진입점.
+# 공식 image 가 URLS 환경 변수 로 dropdown 형 multi-spec 표시를 native 지원 한다. 3 agent
+# (correlation-exporter 와 netobs-agent 와 gpuobs-agent) 의 /api/v1/swagger.json 을 등록 해 운영자
+# 가 한 곳 에서 endpoint 를 탐색 가능 하게 한다. agent 별 개별 swagger UI (/api/v1/swagger/index.html)
+# 도 그대로 유지 되므로 본 통합 Pod 는 보조 진입점. rca-summarizer 는 /rca endpoint 만 제공 하므로
+# 본 URLS 에 포함 하지 않는다.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -1,17 +1,129 @@
 definitions:
-  api.ErrorDetail:
+  api.DropEntry:
+    properties:
+      drop_category:
+        type: string
+      drop_reason:
+        type: string
+      dst_ip:
+        type: string
+      dst_port:
+        type: integer
+      event_count:
+        type: integer
+      events_per_sec:
+        type: number
+      node:
+        type: string
+      protocol:
+        type: string
+      src_ip:
+        type: string
+      src_namespace:
+        type: string
+      src_pod:
+        type: string
+      src_port:
+        type: integer
+    type: object
+  api.DropListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/api.DropEntry'
+        type: array
+      page:
+        $ref: '#/definitions/internal_netobs_api.PageInfo'
+    type: object
+  api.FlowEntry:
+    properties:
+      bytes_per_sec:
+        type: number
+      bytes_total:
+        type: integer
+      direction:
+        type: string
+      dst_ip:
+        type: string
+      dst_namespace:
+        type: string
+      dst_pod:
+        type: string
+      dst_port:
+        type: integer
+      node:
+        type: string
+      protocol:
+        type: string
+      src_ip:
+        type: string
+      src_namespace:
+        type: string
+      src_pod:
+        type: string
+      src_port:
+        type: integer
+    type: object
+  api.FlowListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/api.FlowEntry'
+        type: array
+      page:
+        $ref: '#/definitions/internal_netobs_api.PageInfo'
+    type: object
+  api.GPUEntry:
+    properties:
+      gpu_index:
+        type: string
+      gpu_model:
+        type: string
+      gpu_uuid:
+        type: string
+      memory_total_bytes:
+        type: integer
+      memory_used_bytes:
+        type: integer
+      node:
+        type: string
+      power_limit_watts:
+        type: number
+      power_usage_watts:
+        type: number
+      scope:
+        type: string
+      src_namespace:
+        type: string
+      src_pod:
+        type: string
+      temperature_celsius:
+        type: number
+      utilization_percent:
+        type: number
+    type: object
+  api.GPUListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/api.GPUEntry'
+        type: array
+      page:
+        $ref: '#/definitions/internal_gpuobs_api.PageInfo'
+    type: object
+  internal_correlation_api.ErrorDetail:
     properties:
       code:
         type: string
       message:
         type: string
     type: object
-  api.ErrorResponse:
+  internal_correlation_api.ErrorResponse:
     properties:
       error:
-        $ref: '#/definitions/api.ErrorDetail'
+        $ref: '#/definitions/internal_correlation_api.ErrorDetail'
     type: object
-  api.NoisyNeighborListResponse:
+  internal_correlation_api.NoisyNeighborListResponse:
     properties:
       items:
         items:
@@ -19,6 +131,48 @@ definitions:
         type: array
       page:
         $ref: '#/definitions/netobs_internal_apicommon.Page'
+    type: object
+  internal_gpuobs_api.ErrorDetail:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+    type: object
+  internal_gpuobs_api.ErrorResponse:
+    properties:
+      error:
+        $ref: '#/definitions/internal_gpuobs_api.ErrorDetail'
+    type: object
+  internal_gpuobs_api.PageInfo:
+    properties:
+      limit:
+        type: integer
+      offset:
+        type: integer
+      total:
+        type: integer
+    type: object
+  internal_netobs_api.ErrorDetail:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+    type: object
+  internal_netobs_api.ErrorResponse:
+    properties:
+      error:
+        $ref: '#/definitions/internal_netobs_api.ErrorDetail'
+    type: object
+  internal_netobs_api.PageInfo:
+    properties:
+      limit:
+        type: integer
+      offset:
+        type: integer
+      total:
+        type: integer
     type: object
   netobs_internal_apicommon.Page:
     properties:
@@ -85,6 +239,147 @@ definitions:
 info:
   contact: {}
 paths:
+  /api/v1/drops:
+    get:
+      description: drop_reason 별 5-tuple 분포 조회. namespace 와 reason 필터 후 pagination
+        적용
+      parameters:
+      - description: drop reason 필터
+        in: query
+        name: drop_reason
+        type: string
+      - description: drop category 필터
+        in: query
+        name: drop_category
+        type: string
+      - description: src Pod 의 namespace 필터
+        in: query
+        name: src_namespace
+        type: string
+      - description: src Pod 의 이름 필터
+        in: query
+        name: src_pod
+        type: string
+      - description: 응답 item 최대 개수 (기본 100, 최대 1000)
+        in: query
+        name: limit
+        type: integer
+      - description: 응답 시작 offset (기본 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.DropListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_netobs_api.ErrorResponse'
+      summary: List packet drop events
+      tags:
+      - netobs
+  /api/v1/flows:
+    get:
+      description: 5-tuple 기준 flow bytes 와 rate 조회. namespace/pod/protocol/direction
+        필터 후 pagination 적용
+      parameters:
+      - description: src Pod 의 namespace 필터
+        in: query
+        name: src_namespace
+        type: string
+      - description: src Pod 의 이름 필터
+        in: query
+        name: src_pod
+        type: string
+      - description: dst Pod 의 namespace 필터
+        in: query
+        name: dst_namespace
+        type: string
+      - description: dst Pod 의 이름 필터
+        in: query
+        name: dst_pod
+        type: string
+      - description: 프로토콜 필터 (tcp/udp)
+        in: query
+        name: protocol
+        type: string
+      - description: 방향 필터 (egress/ingress)
+        in: query
+        name: direction
+        type: string
+      - description: 응답 item 최대 개수 (기본 100, 최대 1000)
+        in: query
+        name: limit
+        type: integer
+      - description: 응답 시작 offset (기본 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.FlowListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_netobs_api.ErrorResponse'
+      summary: List Pod-to-Pod network flows
+      tags:
+      - netobs
+  /api/v1/gpu:
+    get:
+      description: device scope 또는 pod scope 의 GPU utilization 과 memory 와 temperature
+        와 power 통합 조회
+      parameters:
+      - description: scope (device 또는 pod, 기본 device)
+        in: query
+        name: scope
+        type: string
+      - description: node 필터
+        in: query
+        name: node
+        type: string
+      - description: gpu_uuid 필터
+        in: query
+        name: gpu_uuid
+        type: string
+      - description: Pod 의 namespace 필터 (scope=pod 일 때만 유효)
+        in: query
+        name: src_namespace
+        type: string
+      - description: Pod 의 이름 필터 (scope=pod 일 때만 유효)
+        in: query
+        name: src_pod
+        type: string
+      - description: 응답 item 최대 개수 (기본 100, 최대 1000)
+        in: query
+        name: limit
+        type: integer
+      - description: 응답 시작 offset (기본 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.GPUListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_gpuobs_api.ErrorResponse'
+      summary: List GPU resource usage
+      tags:
+      - gpuobs
   /api/v1/noisy-neighbor:
     get:
       description: victim/suspect 와 dimension 과 rank 필터 후 pagination 적용한 noisy neighbor
@@ -128,11 +423,11 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/api.NoisyNeighborListResponse'
+            $ref: '#/definitions/internal_correlation_api.NoisyNeighborListResponse'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/api.ErrorResponse'
+            $ref: '#/definitions/internal_correlation_api.ErrorResponse'
       summary: List noisy neighbor top-N
       tags:
       - correlation

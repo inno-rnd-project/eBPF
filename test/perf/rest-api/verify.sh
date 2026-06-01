@@ -1,19 +1,13 @@
 #!/usr/bin/env bash
-# rest-api/verify.sh 는 이슈 #100 의 REST API layer 회귀 가드 다. 4 agent 의 신규 endpoint 와
+# rest-api/verify.sh 는 이슈 #100 의 REST API layer 회귀 가드 다. 3 agent (correlation-exporter 와
+# netobs-agent 와 gpuobs-agent) 의 신규 endpoint 4종 (noisy-neighbor / flows / drops / gpu) 과
 # swagger UI 와 통합 swagger-ui Pod 가 dev cluster 에서 정상 emit 되는지 확인한다. 본 스크립트
 # 는 dev cluster 전용 이며 prod 에서 실행 하지 않는다.
 set -euo pipefail
 
 NAMESPACE="${API_NAMESPACE:-ebpf-project}"
 
-declare -A ENDPOINTS=(
-  [correlation-exporter:9830]=/api/v1/noisy-neighbor
-  [netobs-agent:9810]=/api/v1/flows
-  [netobs-agent:9810]=/api/v1/drops
-  [gpuobs-agent:9820]=/api/v1/gpu
-)
-
-echo "[setup] 4 agent 의 REST endpoint 와 swagger UI 회귀 가드"
+echo "[setup] 3 agent 의 REST endpoint 4종 과 swagger UI 회귀 가드"
 echo "[setup] namespace=${NAMESPACE}"
 
 fail=0
@@ -53,7 +47,7 @@ probe_endpoint netobs-agent 9810 /api/v1/flows || fail=1
 probe_endpoint netobs-agent 9810 /api/v1/drops || fail=1
 probe_endpoint gpuobs-agent 9820 /api/v1/gpu || fail=1
 
-# swagger.json 가드 (4 agent)
+# swagger.json 가드 (3 agent: correlation-exporter 와 netobs-agent 와 gpuobs-agent)
 echo "[setup] swagger.json 응답 가드"
 probe_endpoint correlation-exporter 9830 /api/v1/swagger.json || fail=1
 probe_endpoint netobs-agent 9810 /api/v1/swagger.json || fail=1

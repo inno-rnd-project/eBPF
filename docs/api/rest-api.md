@@ -26,7 +26,7 @@
 
 ### 통합 진입점 (운영자 권장)
 
-`deploy/swagger-ui/` 의 Pod가 4 agent 의 `/api/v1/swagger.json` spec을 dropdown으로 묶는다. 운영자가 한 브라우저 창에서 4 agent의 모든 endpoint를 탐색 가능하다.
+`deploy/swagger-ui/` 의 Pod가 3 agent (correlation-exporter와 netobs-agent와 gpuobs-agent) 의 `/api/v1/swagger.json` spec을 dropdown으로 묶는다. 운영자가 한 브라우저 창에서 3 agent의 모든 endpoint를 탐색 가능하다. rca-summarizer는 `/rca` endpoint만 제공하므로 본 dropdown에 포함하지 않는다.
 
 ```sh
 kubectl apply -k deploy/swagger-ui/

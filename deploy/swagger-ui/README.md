@@ -1,6 +1,6 @@
 # deploy/swagger-ui
 
-이슈 #100 의 자체 dashboard용 REST API layer 의 통합 Swagger UI 진입점이다. `swaggerapi/swagger-ui` 공식 image의 `URLS` 환경 변수로 4 agent (correlation-exporter와 netobs-agent와 gpuobs-agent) 의 `/api/v1/swagger.json` spec을 dropdown으로 묶어 운영자가 한 곳에서 endpoint를 탐색 가능하게 한다.
+이슈 #100 의 자체 dashboard용 REST API layer 의 통합 Swagger UI 진입점이다. `swaggerapi/swagger-ui` 공식 image의 `URLS` 환경 변수로 3 agent (correlation-exporter와 netobs-agent와 gpuobs-agent) 의 `/api/v1/swagger.json` spec을 dropdown으로 묶어 운영자가 한 곳에서 endpoint를 탐색 가능하게 한다. rca-summarizer는 `/rca` endpoint만 제공하므로 본 dropdown에 포함하지 않는다.
 
 ## 적용
 

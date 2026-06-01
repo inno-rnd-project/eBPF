@@ -4,8 +4,8 @@ kind: Kustomization
 # 이슈 #100 의 자체 dashboard 용 REST API layer 의 통합 Swagger UI 진입점. swaggerapi/swagger-ui
 # Pod 와 ClusterIP Service 만 묶는 helper 패키지 다. 호출 측은 다음 으로 적용 한다.
 #   kubectl apply -k deploy/swagger-ui/
-# 적용 후 운영자 는 cluster 내부 또는 port-forward 로 swagger-ui Service:8080 에 접속 해 4 agent
-# 의 API spec 을 dropdown 으로 탐색 한다.
+# 적용 후 운영자 는 cluster 내부 또는 port-forward 로 swagger-ui Service:8080 에 접속 해 3 agent
+# (correlation-exporter 와 netobs-agent 와 gpuobs-agent) 의 API spec 을 dropdown 으로 탐색 한다.
 namespace: ebpf-project
 
 resources:
