@@ -1,12 +1,20 @@
 {
   "title": "GPU x network cross-correlation",
   "uid": "gpu-network-correlation",
-  "tags": ["correlation", "gpuobs", "netobs", "cross-domain"],
+  "tags": [
+    "correlation",
+    "gpuobs",
+    "netobs",
+    "cross-domain"
+  ],
   "schemaVersion": 38,
   "version": 1,
   "editable": true,
   "graphTooltip": 1,
-  "time": { "from": "now-1h", "to": "now" },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "refresh": "30s",
   "timezone": "browser",
   "templating": {
@@ -64,10 +72,26 @@
       "title": "GPU x network cross-correlation ($node, $src_namespace/$src_pod)",
       "description": "GPU device 시계열 (node, gpu_uuid scope) 과 network Pod 시계열 (node, src_namespace, src_pod scope) 을 같은 timeline 에 정렬한다. dev cluster spike 결과 RTX 3090 NVML 이 Pod scope GPU utilization 을 노출하지 않아 GPU 도메인은 device scope 로 강등 적용되었다. 두 도메인의 Pod 인스턴스 단위 정합은 본 패널 범위 밖이며 같은 timeline 위에서 GPU 유휴와 network pressure 의 상관 관계를 시각적으로 비교하는 것이 의도다. overlay 의 correlation_noisy_neighbor_score 는 victim_pod=$src_pod 매칭으로 GPU / network dimension 의 noisy neighbor 신호를 보조 시리즈로 보여준다.",
       "datasource": "${datasource}",
-      "gridPos": { "h": 16, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 16,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "options": {
-        "tooltip": { "mode": "multi", "sort": "desc" },
-        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "lastNotNull"] }
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        }
       },
       "fieldConfig": {
         "defaults": {
@@ -84,19 +108,43 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byFrameRefID", "options": "C" },
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "C"
+            },
             "properties": [
-              { "id": "unit", "value": "bps" },
-              { "id": "custom.axisPlacement", "value": "right" },
-              { "id": "max", "value": null }
+              {
+                "id": "unit",
+                "value": "bps"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "max",
+                "value": null
+              }
             ]
           },
           {
-            "matcher": { "id": "byFrameRefID", "options": "D" },
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "D"
+            },
             "properties": [
-              { "id": "unit", "value": "s" },
-              { "id": "custom.axisPlacement", "value": "right" },
-              { "id": "max", "value": null }
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "max",
+                "value": null
+              }
             ]
           }
         ]
@@ -151,5 +199,31 @@
         }
       ]
     }
-  ]
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "alerts-critical",
+        "datasource": "${datasource}",
+        "enable": true,
+        "hide": false,
+        "iconColor": "red",
+        "expr": "ALERTS{alertstate=\"firing\",severity=\"critical\",component=~\"netobs|gpuobs|netobs-capacity|gpuobs-capacity\"}",
+        "tagKeys": "severity,component,alertname",
+        "titleFormat": "{{alertname}}",
+        "textFormat": "severity={{severity}} component={{component}}"
+      },
+      {
+        "name": "alerts-warning",
+        "datasource": "${datasource}",
+        "enable": true,
+        "hide": false,
+        "iconColor": "orange",
+        "expr": "ALERTS{alertstate=\"firing\",severity=\"warning\",component=~\"netobs|gpuobs|netobs-capacity|gpuobs-capacity\"}",
+        "tagKeys": "severity,component,alertname",
+        "titleFormat": "{{alertname}}",
+        "textFormat": "severity={{severity}} component={{component}}"
+      }
+    ]
+  }
 }
