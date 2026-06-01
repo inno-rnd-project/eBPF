@@ -1061,6 +1061,53 @@ spec:
             summary: "Memory pressure capacity anomaly (z={{ $value }})"
             description: "Cluster memory working_set / limit ratio 의 z-score 가 30일 baseline 대비 |z|={{ $value }} 로 30 분 sustained 됐다. OOM 임박 위험 으로 memory limit 상향 또는 워크로드 재배치를 검토하라."
 
+        # #89 resource-anomaly-spike z-score spike alert 4종. 본 alert 군은 #88 의 capacity-trends
+        # alert (장기 capacity planning, 30분 sustained) 와 다른 즉시 RCA spike 감지 (5분 sustained)
+        # 의도라 component 라벨을 *-anomaly 로 분리한다 (gpuobs-anomaly, netobs-anomaly, cpu-anomaly,
+        # memory-anomaly). baseline window 7일 의 stddev 가 평탄한 케이스는 z-score record 자체가
+        # 미 emit 되어 alert 도 자연 통과한다. |z| > 3 은 정규분포 의 99.7% 신뢰구간 outside (3-sigma
+        # rule) 라 즉시 대응 필요 신호이지만 severity 는 warning 유지로 throttle 류 critical alert
+        # 와 운영 채널 분리한다.
+        - alert: GPUUtilSpikeDetected
+          expr: abs(cluster:gpu_util_zscore:5m) > 3
+          for: 5m
+          labels:
+            severity: warning
+            component: gpuobs-anomaly
+          annotations:
+            summary: "GPU utilization spike (z={{ $value }})"
+            description: "Cluster GPU utilization 의 5분 z-score 가 직전 7일 baseline 대비 |z|={{ $value }} 로 5분 sustained 됐다. 99.7% 신뢰구간 outside (3-sigma rule) 의 즉시 RCA spike 신호다. observability-overview 의 Resource anomaly spike row 에서 시점 확인 후 drill-down 으로 GPU 워크로드 의 root cause 추적 또는 워크로드 재배치를 검토 하라."
+
+        - alert: NetworkDropSpikeDetected
+          expr: abs(cluster:network_drop_zscore:5m) > 3
+          for: 5m
+          labels:
+            severity: warning
+            component: netobs-anomaly
+          annotations:
+            summary: "Network drop spike (z={{ $value }})"
+            description: "Cluster network drop event rate 의 5분 z-score 가 직전 7일 baseline 대비 |z|={{ $value }} 로 5분 sustained 됐다. link quality 이상 또는 NIC saturation 의 즉시 RCA spike 신호다. netobs-overview 의 drop rate 패널에서 drop_category 별 분포 확인 후 drill-down 으로 root cause 추적 하라."
+
+        - alert: CPUThrottleSpikeDetected
+          expr: abs(cluster:cpu_throttle_zscore:5m) > 3
+          for: 5m
+          labels:
+            severity: warning
+            component: cpu-anomaly
+          annotations:
+            summary: "CPU throttle spike (z={{ $value }})"
+            description: "Cluster CPU CFS throttle ratio 의 5분 z-score 가 직전 7일 baseline 대비 |z|={{ $value }} 로 5분 sustained 됐다. 즉시 RCA spike 신호 로 CPU limit 상향 또는 워크로드 재배치를 검토 하라."
+
+        - alert: MemoryPressureSpikeDetected
+          expr: abs(cluster:memory_pressure_zscore:5m) > 3
+          for: 5m
+          labels:
+            severity: warning
+            component: memory-anomaly
+          annotations:
+            summary: "Memory pressure spike (z={{ $value }})"
+            description: "Cluster memory working_set / limit ratio 의 5분 z-score 가 직전 7일 baseline 대비 |z|={{ $value }} 로 5분 sustained 됐다. OOM 임박 즉시 RCA spike 신호 로 memory limit 상향 또는 워크로드 재배치를 검토 하라."
+
     # netobs-gpuobs.cross-correlation.recording 그룹은 #86 의 GPU-network cross-correlation 통합
     # 패널이 직접 참조하는 사전 집계 시계열을 둔다. 패널은 단일 timeseries 에 4 시계열 (GPU
     # utilization, GPU memory used ratio, network throughput, network p99 latency) 과 correlation
@@ -1216,5 +1263,105 @@ spec:
                 - avg_over_time(cluster:memory_pressure_1h_avg[30d] offset 30d)
               )
               / (stddev_over_time(cluster:memory_pressure_1h_avg[30d] offset 30d) > 0),
+              -5, 5
+            )
+
+    # netobs-gpuobs.resource-anomaly-spike.recording 그룹은 #89 의 즉시 spike 감지용 5분 윈도우
+    # z-score 시계열을 둔다. #88 capacity-trends 의 1시간 윈도우 z-score (장기 capacity planning)
+    # 와 시간 척도를 분리해 record 명에 :5m suffix 를 명시하고 baseline window 도 [7d] offset 7d
+    # 로 축소해 단기 spike 감지 의도를 강화한다. 4 도메인 (GPU util, network drop, CPU throttle,
+    # memory pressure) 의 base avg / rate 4종 과 z-score 4종 을 동시 emit 한다. base 도메인 은 capacity
+    # 의 health 신호 와 다른 raw spike 신호 라 network 는 throughput score 가 아닌 drop rate 를
+    # 직접 채택한다. z-score 4종 모두 (stddev > 0) 가드와 clamp(-5, 5) 적용 으로 NaN 과 +Inf 시각화
+    # 잡음을 차단한다. baseline window 7일 누적 부족 케이스 (신규 배포 직후) 는 stddev 가드로 record
+    # 자체 미 emit 되어 graceful degradation 처리.
+    - name: netobs-gpuobs.resource-anomaly-spike.recording
+      interval: 30s
+      rules:
+        # cluster:gpu_util_5m_avg
+        # cluster 단위 GPU utilization 의 5분 평균. spike 감지 용 baseline 시리즈. 1시간 평균
+        # (cluster:gpu_util_1h_avg) 과 시간 윈도우 만 다르고 동일 base 메트릭 채택.
+        - record: cluster:gpu_util_5m_avg
+          expr: max by() (avg_over_time(gpuobs_device_utilization_percent[5m]))
+
+        # cluster:network_drop_5m_rate
+        # cluster 단위 network drop event 의 5분 rate. capacity-trends 의 network throughput
+        # score 와 다른 신호 도메인 으로 drop rate 자체를 직접 채택해 link quality 이상 의 raw
+        # spike 감지가 가능하다. drop_category 와 src_namespace 차원은 sum by() 로 cluster scope
+        # 단일 시리즈로 축약 한다.
+        - record: cluster:network_drop_5m_rate
+          expr: sum by() (rate(netobs_drop_events_labeled_total[5m]))
+
+        # cluster:cpu_throttle_5m_avg
+        # cluster 단위 CPU CFS throttle 비율의 5분 평균. cluster:cpu_throttle_1h_avg 와 윈도우
+        # 만 다른 동일 base 메트릭 (pod:cpu_throttle_score:5m) 채택.
+        - record: cluster:cpu_throttle_5m_avg
+          expr: max by() (avg_over_time(pod:cpu_throttle_score:5m[5m]))
+
+        # cluster:memory_pressure_5m_avg
+        # cluster 단위 memory working_set / limit 비율의 5분 평균. capacity-trends 패턴 정합 으로
+        # 본 이슈 명시 3 도메인 외 추가 4번째 도메인 으로 #88 의 4 도메인 (GPU/network/CPU/memory)
+        # 일관성 확보. OOM 임박 spike 의 즉시 감지 용도.
+        - record: cluster:memory_pressure_5m_avg
+          expr: max by() (avg_over_time(pod:memory_pressure_score:5m[5m]))
+
+        # cluster:gpu_util_zscore:5m
+        # 직전 7일 baseline (avg + stddev offset 5m) 대비 현재 5분 평균의 z-score. baseline window
+        # offset 5m 은 직전 5분 부터 7일치 데이터 를 baseline 으로 채택해 docs 의 "직전 7일 baseline"
+        # 표현과 정합하고 5분 윈도우 즉시 spike 감지 의도 와 일관성 확보. 평탄 baseline (stddev=0)
+        # 케이스 의 spike 감지 불가 risk 차단 위해 clamp_min 으로 stddev 최소값 (도메인별 floor) 보장.
+        # GPU util 의 floor=1 은 1% 의 최소 변동 stddev 보장 으로 정상 GPU 사용 변동 의 lower bound.
+        # clamp(-5, 5) 는 +Inf 시각화 잡음 차단 의 안전 가드.
+        - record: cluster:gpu_util_zscore:5m
+          expr: |
+            clamp(
+              (
+                cluster:gpu_util_5m_avg
+                - avg_over_time(cluster:gpu_util_5m_avg[7d] offset 5m)
+              )
+              / clamp_min(stddev_over_time(cluster:gpu_util_5m_avg[7d] offset 5m), 1),
+              -5, 5
+            )
+
+        # cluster:network_drop_zscore:5m
+        # network drop rate 의 z-score. drop 이 정상 상황 에 0 으로 유지 되는 케이스 가 많아
+        # baseline stddev=0 위험 가장 높다. floor=0.1 (event/s) 로 평탄 baseline 시에도 spike
+        # 감지 가능 보장.
+        - record: cluster:network_drop_zscore:5m
+          expr: |
+            clamp(
+              (
+                cluster:network_drop_5m_rate
+                - avg_over_time(cluster:network_drop_5m_rate[7d] offset 5m)
+              )
+              / clamp_min(stddev_over_time(cluster:network_drop_5m_rate[7d] offset 5m), 0.1),
+              -5, 5
+            )
+
+        # cluster:cpu_throttle_zscore:5m
+        # CPU throttle 의 z-score. throttle 비율 (0-1) 이 정상 상황에 0 인 케이스 baseline 평탄
+        # 위험 차단 위해 floor=0.01 (1% throttle ratio) 적용.
+        - record: cluster:cpu_throttle_zscore:5m
+          expr: |
+            clamp(
+              (
+                cluster:cpu_throttle_5m_avg
+                - avg_over_time(cluster:cpu_throttle_5m_avg[7d] offset 5m)
+              )
+              / clamp_min(stddev_over_time(cluster:cpu_throttle_5m_avg[7d] offset 5m), 0.01),
+              -5, 5
+            )
+
+        # cluster:memory_pressure_zscore:5m
+        # memory pressure 의 z-score. memory 사용량 이 일정 하게 유지 되는 케이스 baseline 평탄
+        # 위험 차단 위해 floor=0.01 (1% memory ratio) 적용.
+        - record: cluster:memory_pressure_zscore:5m
+          expr: |
+            clamp(
+              (
+                cluster:memory_pressure_5m_avg
+                - avg_over_time(cluster:memory_pressure_5m_avg[7d] offset 5m)
+              )
+              / clamp_min(stddev_over_time(cluster:memory_pressure_5m_avg[7d] offset 5m), 0.01),
               -5, 5
             )

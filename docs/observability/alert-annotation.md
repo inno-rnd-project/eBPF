@@ -26,10 +26,10 @@
 | dashboard | component 필터 | 의도 |
 |---|---|---|
 | `observability-overview` | 없음 (전체) | cluster 전체 진입점이라 모든 도메인 alert 표시 |
-| `netobs-overview` | `component=~"netobs\|netobs-capacity\|observability"` | network 도메인 alert와 observability 인프라 alert 표시 |
-| `gpuobs-overview` | `component=~"gpuobs\|gpuobs-capacity"` | GPU 도메인 alert와 capacity anomaly 표시 |
+| `netobs-overview` | `component=~"netobs\|netobs-capacity\|netobs-anomaly\|observability"` | network 도메인 alert와 observability 인프라 alert와 #89의 즉시 spike anomaly 표시 |
+| `gpuobs-overview` | `component=~"gpuobs\|gpuobs-capacity\|gpuobs-anomaly"` | GPU 도메인 alert와 capacity anomaly 그리고 #89의 즉시 spike anomaly 표시 |
 | `correlation-overview` | `component="correlation"` | correlation 분석 도메인 alert만 표시 |
-| `gpu-network-correlation` | `component=~"netobs\|gpuobs\|netobs-capacity\|gpuobs-capacity"` | 두 도메인 cross-scope alert 표시 |
+| `gpu-network-correlation` | `component=~"netobs\|gpuobs\|netobs-capacity\|gpuobs-capacity\|netobs-anomaly\|gpuobs-anomaly"` | 두 도메인 cross-scope alert와 양 도메인의 anomaly spike 표시 |
 | `workload-injector` | `component="injector"` | 부하 주입 도메인 alert만 표시 |
 | `rca-summarizer` | 없음 (전체) | alert-driven summary의 RCA 진입점이라 전체 alert 시간선 표시 |
 

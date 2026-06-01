@@ -23,10 +23,10 @@ declare -A EXPECTED_ANNOTATION_COUNT=(
 
 declare -A EXPECTED_COMPONENT_FILTER=(
   [overview-dashboard]=""
-  [netobs-dashboard]='component=~"netobs|netobs-capacity|observability"'
-  [gpuobs-dashboard]='component=~"gpuobs|gpuobs-capacity"'
+  [netobs-dashboard]='component=~"netobs|netobs-capacity|netobs-anomaly|observability"'
+  [gpuobs-dashboard]='component=~"gpuobs|gpuobs-capacity|gpuobs-anomaly"'
   [correlation-dashboard]='component="correlation"'
-  [gpu-network-correlation-dashboard]='component=~"netobs|gpuobs|netobs-capacity|gpuobs-capacity"'
+  [gpu-network-correlation-dashboard]='component=~"netobs|gpuobs|netobs-capacity|gpuobs-capacity|netobs-anomaly|gpuobs-anomaly"'
   [injector-dashboard]='component="injector"'
   [rca-dashboard]=""
 )

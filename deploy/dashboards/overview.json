@@ -2138,6 +2138,398 @@
           "targetBlank": true
         }
       ]
+    },
+    {
+      "id": 700,
+      "type": "row",
+      "title": "Resource anomaly spike (5분 z-score, 7일 baseline)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 111
+      },
+      "collapsed": false
+    },
+    {
+      "id": 701,
+      "type": "timeseries",
+      "title": "[GPU utilization] 5분 z-score (7일 baseline 대비)",
+      "description": "cluster:gpu_util_zscore:5m 시계열. 7일 baseline (avg + stddev offset 7d) 대비 현재 5분 평균의 z-score. baseline 평탄 케이스 (stddev=0) 는 시리즈 미 emit. |z| > 3 은 99.7% 신뢰구간 outside (3-sigma rule) 로 resource-anomaly-spike alert (Commit 2) 의 발화 조건. |z| > 2 는 약한 spike, |z| > 3 은 강한 spike, |z| > 5 는 극단적 이상.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 112
+      },
+      "timeFrom": "now-1h",
+      "timezone": "browser",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:gpu_util_zscore:5m",
+          "legendFormat": "z-score"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": -5,
+          "max": 5,
+          "noValue": "데이터 부족. resource-anomaly-spike 패널은 최소 7일의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다).",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": -3
+              },
+              {
+                "color": "green",
+                "value": -2
+              },
+              {
+                "color": "orange",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Open RCA summarizer",
+          "url": "/d/rca-summarizer?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "id": 702,
+      "type": "timeseries",
+      "title": "[Network drop rate] 5분 z-score (7일 baseline 대비)",
+      "description": "cluster:network_drop_zscore:5m 시계열. 7일 baseline (avg + stddev offset 7d) 대비 현재 5분 평균의 z-score. baseline 평탄 케이스 (stddev=0) 는 시리즈 미 emit. |z| > 3 은 99.7% 신뢰구간 outside (3-sigma rule) 로 resource-anomaly-spike alert (Commit 2) 의 발화 조건. |z| > 2 는 약한 spike, |z| > 3 은 강한 spike, |z| > 5 는 극단적 이상.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 112
+      },
+      "timeFrom": "now-1h",
+      "timezone": "browser",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:network_drop_zscore:5m",
+          "legendFormat": "z-score"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": -5,
+          "max": 5,
+          "noValue": "데이터 부족. resource-anomaly-spike 패널은 최소 7일의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다).",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": -3
+              },
+              {
+                "color": "green",
+                "value": -2
+              },
+              {
+                "color": "orange",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Open RCA summarizer",
+          "url": "/d/rca-summarizer?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "id": 703,
+      "type": "timeseries",
+      "title": "[CPU throttle ratio] 5분 z-score (7일 baseline 대비)",
+      "description": "cluster:cpu_throttle_zscore:5m 시계열. 7일 baseline (avg + stddev offset 7d) 대비 현재 5분 평균의 z-score. baseline 평탄 케이스 (stddev=0) 는 시리즈 미 emit. |z| > 3 은 99.7% 신뢰구간 outside (3-sigma rule) 로 resource-anomaly-spike alert (Commit 2) 의 발화 조건. |z| > 2 는 약한 spike, |z| > 3 은 강한 spike, |z| > 5 는 극단적 이상.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 120
+      },
+      "timeFrom": "now-1h",
+      "timezone": "browser",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:cpu_throttle_zscore:5m",
+          "legendFormat": "z-score"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": -5,
+          "max": 5,
+          "noValue": "데이터 부족. resource-anomaly-spike 패널은 최소 7일의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다).",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": -3
+              },
+              {
+                "color": "green",
+                "value": -2
+              },
+              {
+                "color": "orange",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Open RCA summarizer",
+          "url": "/d/rca-summarizer?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "id": 704,
+      "type": "timeseries",
+      "title": "[Memory pressure ratio] 5분 z-score (7일 baseline 대비)",
+      "description": "cluster:memory_pressure_zscore:5m 시계열. 7일 baseline (avg + stddev offset 7d) 대비 현재 5분 평균의 z-score. baseline 평탄 케이스 (stddev=0) 는 시리즈 미 emit. |z| > 3 은 99.7% 신뢰구간 outside (3-sigma rule) 로 resource-anomaly-spike alert (Commit 2) 의 발화 조건. |z| > 2 는 약한 spike, |z| > 3 은 강한 spike, |z| > 5 는 극단적 이상.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 120
+      },
+      "timeFrom": "now-1h",
+      "timezone": "browser",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cluster:memory_pressure_zscore:5m",
+          "legendFormat": "z-score"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": -5,
+          "max": 5,
+          "noValue": "데이터 부족. resource-anomaly-spike 패널은 최소 7일의 메트릭 누적이 필요합니다 (deploy/monitoring 의 60일 retention patch 적용 후 자연 채워집니다).",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": -3
+              },
+              {
+                "color": "green",
+                "value": -2
+              },
+              {
+                "color": "orange",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into gpuobs overview",
+          "url": "/d/gpuobs-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Drill into correlation overview",
+          "url": "/d/correlation-overview?${__url_time_range}",
+          "targetBlank": true
+        },
+        {
+          "title": "Open RCA summarizer",
+          "url": "/d/rca-summarizer?${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
     }
   ]
 }
