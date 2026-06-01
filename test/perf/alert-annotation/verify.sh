@@ -51,76 +51,61 @@ for cm in "${!EXPECTED_ANNOTATION_COUNT[@]}"; do
   expected_filter="${EXPECTED_COMPONENT_FILTER[$cm]}"
   fname="${SOURCE_FILE[$cm]}"
 
-  # ConfigMap 의 dashboard JSON 을 inspect 해 annotation 정의 검증. python 으로 dict access 후
-  # severity / iconColor / alertstate / component 필터 패턴 일치 여부 가드. set -euo pipefail
-  # 환경 에서 kubectl 실패 시 파이프라인 전체 종료 회피 위해 fallback echo 부착.
-  result=$(kubectl get cm -n "${NAMESPACE}" "${cm}" -o json 2>/dev/null | python3 -c "
-import json, sys
+  # ConfigMap 의 dashboard JSON 을 inspect 해 annotation 정의 검증. python 측이 환경 변수
+  # (EXPECTED_COUNT, EXPECTED_FILTER, SOURCE_FILE) 로 spec 을 받아 5 가드 (개수, firing 부착,
+  # critical=red, warning=orange, component 필터) 전부를 수행 하고 결과를 단일 라인 (PASS 또는
+  # FAIL <이유>) 으로만 반환 한다. bash 측은 PASS 여부 만 분기 해 awk 의 hardcoded 인덱스 의존을
+  # 제거 하고 가드 항목 추가 시 python 만 변경 하도록 책임 단일화 한다. set -euo pipefail 환경
+  # 에서 kubectl 실패 시 파이프라인 전체 종료 회피 위해 fallback echo 부착.
+  result=$(kubectl get cm -n "${NAMESPACE}" "${cm}" -o json 2>/dev/null \
+    | EXPECTED_COUNT="${expected_count}" EXPECTED_FILTER="${expected_filter}" SOURCE_FILE="${fname}" \
+      python3 -c '
+import json, os, sys
 try:
     cm_doc = json.load(sys.stdin)
 except Exception:
-    print('FAIL invalid json or empty input')
-    sys.exit(2)
-data = cm_doc.get('data') or {}
-content = data.get('${fname}') or ''
+    print("FAIL invalid json or empty input")
+    sys.exit(1)
+data = cm_doc.get("data") or {}
+fname = os.environ["SOURCE_FILE"]
+content = data.get(fname) or ""
 if not content:
-    print('FAIL empty configmap or missing file')
-    sys.exit(2)
+    print(f"FAIL empty configmap or missing file ({fname})")
+    sys.exit(1)
 try:
     d = json.loads(content)
 except Exception:
-    print('FAIL invalid nested json')
-    sys.exit(2)
-annots = (d.get('annotations') or {}).get('list') or []
+    print("FAIL invalid nested json")
+    sys.exit(1)
+annots = (d.get("annotations") or {}).get("list") or []
+expected_count = int(os.environ.get("EXPECTED_COUNT", "2"))
+expected_filter = os.environ.get("EXPECTED_FILTER", "")
 count = len(annots)
-# alertstate=\"firing\" 부착 가드
-firing_count = sum(1 for a in annots if 'alertstate=\"firing\"' in a.get('expr', ''))
-# severity 별 iconColor 매핑 가드
-critical_red = sum(1 for a in annots if a.get('name') == 'alerts-critical' and a.get('iconColor') == 'red' and 'severity=\"critical\"' in a.get('expr', ''))
-warning_orange = sum(1 for a in annots if a.get('name') == 'alerts-warning' and a.get('iconColor') == 'orange' and 'severity=\"warning\"' in a.get('expr', ''))
-# component 필터 가드
-expected_filter = '''${expected_filter}'''
+if count != expected_count:
+    print(f"FAIL annotation 개수={count} (기대 {expected_count})")
+    sys.exit(1)
+firing_count = sum(1 for a in annots if "alertstate=\"firing\"" in a.get("expr", ""))
+if firing_count != expected_count:
+    print(f"FAIL alertstate=\"firing\" 부착={firing_count} (기대 {expected_count})")
+    sys.exit(1)
+critical_red = sum(1 for a in annots if a.get("name") == "alerts-critical" and a.get("iconColor") == "red" and "severity=\"critical\"" in a.get("expr", ""))
+if critical_red != 1:
+    print(f"FAIL alerts-critical (red) 부착={critical_red} (기대 1)")
+    sys.exit(1)
+warning_orange = sum(1 for a in annots if a.get("name") == "alerts-warning" and a.get("iconColor") == "orange" and "severity=\"warning\"" in a.get("expr", ""))
+if warning_orange != 1:
+    print(f"FAIL alerts-warning (orange) 부착={warning_orange} (기대 1)")
+    sys.exit(1)
 if expected_filter:
-    filter_match = sum(1 for a in annots if expected_filter in a.get('expr', ''))
-else:
-    filter_match = 'skip'
-print(f'count={count} firing={firing_count} critical_red={critical_red} warning_orange={warning_orange} filter_match={filter_match}')
-" 2>&1 || echo "FAIL configmap not found or kubectl error")
+    filter_match = sum(1 for a in annots if expected_filter in a.get("expr", ""))
+    if filter_match != expected_count:
+        print(f"FAIL component 필터 {expected_filter} 매칭={filter_match} (기대 {expected_count})")
+        sys.exit(1)
+print("PASS")
+' 2>&1 || echo "FAIL configmap not found or kubectl error")
 
-  if [[ "${result}" == FAIL* ]]; then
+  if [[ "${result}" != "PASS" ]]; then
     echo "[fail] ${cm}: ${result}"
-    fail=1
-    continue
-  fi
-
-  count=$(echo "${result}" | awk -F= '/^count/ {print $2}' | awk '{print $1}')
-  firing=$(echo "${result}" | awk -F= '/firing/ {print $3}' | awk '{print $1}')
-  critical_red=$(echo "${result}" | awk -F= '/critical_red/ {print $4}' | awk '{print $1}')
-  warning_orange=$(echo "${result}" | awk -F= '/warning_orange/ {print $5}' | awk '{print $1}')
-  filter_match=$(echo "${result}" | awk -F= '/filter_match/ {print $NF}')
-
-  if [[ "${count}" != "${expected_count}" ]]; then
-    echo "[fail] ${cm}: annotation 개수=${count} (기대 ${expected_count})"
-    fail=1
-    continue
-  fi
-  if [[ "${firing}" != "${expected_count}" ]]; then
-    echo "[fail] ${cm}: alertstate=\"firing\" 부착=${firing} (기대 ${expected_count})"
-    fail=1
-    continue
-  fi
-  if [[ "${critical_red}" != "1" ]]; then
-    echo "[fail] ${cm}: alerts-critical (red) 부착=${critical_red} (기대 1)"
-    fail=1
-    continue
-  fi
-  if [[ "${warning_orange}" != "1" ]]; then
-    echo "[fail] ${cm}: alerts-warning (orange) 부착=${warning_orange} (기대 1)"
-    fail=1
-    continue
-  fi
-  if [[ -n "${expected_filter}" && "${filter_match}" != "2" ]]; then
-    echo "[fail] ${cm}: component 필터 ${expected_filter} 매칭=${filter_match} (기대 2)"
     fail=1
     continue
   fi
