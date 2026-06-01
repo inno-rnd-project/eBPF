@@ -1,18 +1,29 @@
 {
   "title": "rca-summarizer",
   "uid": "rca-summarizer",
-  "tags": ["observability", "rca", "alertmanager"],
+  "tags": [
+    "observability",
+    "rca",
+    "alertmanager"
+  ],
   "schemaVersion": 38,
   "version": 1,
   "refresh": "30s",
-  "time": { "from": "now-1h", "to": "now" },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "templating": {
     "list": [
       {
         "name": "datasource",
         "type": "datasource",
         "query": "prometheus",
-        "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" }
+        "current": {
+          "selected": false,
+          "text": "Prometheus",
+          "value": "Prometheus"
+        }
       }
     ]
   },
@@ -22,16 +33,34 @@
       "type": "row",
       "title": "Recent RCA summaries",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
     },
     {
       "id": 2,
       "type": "table",
       "title": "Latest RCA summary per alert (alert당 1 시리즈)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 1 },
-      "options": { "showHeader": true },
-      "fieldConfig": { "defaults": { "custom": { "align": "left" } } },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left"
+          }
+        }
+      },
       "targets": [
         {
           "expr": "max by(alert_name, dominant_dimension, top_suspect, primary_drop_flow) (rca_summary_last_summary_info)",
@@ -41,7 +70,23 @@
         }
       ],
       "transformations": [
-        { "id": "organize", "options": { "excludeByName": { "Time": true, "Value": true, "__name__": true, "job": true, "instance": true, "endpoint": true, "service": true, "namespace": true, "container": true, "pod": true } } }
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "endpoint": true,
+              "service": true,
+              "namespace": true,
+              "container": true,
+              "pod": true
+            }
+          }
+        }
       ]
     },
     {
@@ -49,16 +94,38 @@
       "type": "row",
       "title": "Webhook activity",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      }
     },
     {
       "id": 4,
       "type": "timeseries",
       "title": "RCA emit rate by alert (events/s)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 12 },
-      "fieldConfig": { "defaults": { "unit": "ops" } },
-      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right" } },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 12
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        }
+      },
       "targets": [
         {
           "expr": "sum by (alert_name) (rate(rca_summary_emitted_total[5m]))",
@@ -72,9 +139,41 @@
       "type": "stat",
       "title": "rca-summarizer up",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 },
-      "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "down", "color": "red" }, "1": { "text": "up", "color": "green" } } }] } },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 12
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "down",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "up",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
       "targets": [
         {
           "expr": "max by(job) (up{job=\"rca-summarizer\"})",
@@ -88,16 +187,39 @@
       "type": "row",
       "title": "Cumulative emit",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      }
     },
     {
       "id": 7,
       "type": "stat",
       "title": "Total RCA summaries emitted per alert (since restart)",
       "datasource": "${datasource}",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 21 },
-      "fieldConfig": { "defaults": { "unit": "short" } },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
       "targets": [
         {
           "expr": "max by(alert_name) (rca_summary_emitted_total)",
@@ -106,5 +228,31 @@
         }
       ]
     }
-  ]
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "alerts-critical",
+        "datasource": "${datasource}",
+        "enable": true,
+        "hide": false,
+        "iconColor": "red",
+        "expr": "ALERTS{alertstate=\"firing\",severity=\"critical\"}",
+        "tagKeys": "severity,component,alertname",
+        "titleFormat": "{{alertname}}",
+        "textFormat": "severity={{severity}} component={{component}}"
+      },
+      {
+        "name": "alerts-warning",
+        "datasource": "${datasource}",
+        "enable": true,
+        "hide": false,
+        "iconColor": "orange",
+        "expr": "ALERTS{alertstate=\"firing\",severity=\"warning\"}",
+        "tagKeys": "severity,component,alertname",
+        "titleFormat": "{{alertname}}",
+        "textFormat": "severity={{severity}} component={{component}}"
+      }
+    ]
+  }
 }
