@@ -30,12 +30,14 @@ spec:
             - containerPort: 8080
               name: http
           env:
-            # URLS 는 multi-spec dropdown 의 source URL 목록 이다. 각 agent 의 Service 가 cluster
-            # DNS 로 접근 가능 하고 agent 가 /api/v1/swagger.json 을 노출 한다. swagger-ui 가 본
-            # URLS 를 parse 해 상단 dropdown 으로 표시.
+            # URLS 는 multi-spec dropdown 의 source URL 목록이다. 동일 namespace 의 Service 숏네임
+            # 으로 접근해 namespace 하드코딩을 회피한다. 본 swagger-ui Pod 가 ebpf-project 외 다른
+            # namespace 로 배포되면 deployment 자체 가 함께 그 namespace 의 agent Service 를 가리키게
+            # 된다. port-forward 통한 로컬 브라우저 접근 시 dropdown 에서 spec 로드 가 실패 하는데
+            # 이는 cluster DNS 미해석 한계 라 별도 ingress 또는 cluster 내부 접근 권장 (README 참조).
             - name: URLS
               value: >-
-                [{"url":"http://correlation-exporter.ebpf-project.svc.cluster.local:9830/api/v1/swagger.json","name":"correlation"},{"url":"http://netobs-agent.ebpf-project.svc.cluster.local:9810/api/v1/swagger.json","name":"netobs"},{"url":"http://gpuobs-agent.ebpf-project.svc.cluster.local:9820/api/v1/swagger.json","name":"gpuobs"}]
+                [{"url":"http://correlation-exporter:9830/api/v1/swagger.json","name":"correlation"},{"url":"http://netobs-agent:9810/api/v1/swagger.json","name":"netobs"},{"url":"http://gpuobs-agent:9820/api/v1/swagger.json","name":"gpuobs"}]
             - name: URLS_PRIMARY_NAME
               value: "correlation"
           resources:

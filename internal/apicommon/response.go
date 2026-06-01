@@ -48,23 +48,38 @@ type ErrorDetail struct {
 	Message string `json:"message"`
 }
 
-// WriteJSON은 200 OK 응답에 JSON body를 기록한다. encode 실패는 로그만 남기고 client는 partial
-// 응답을 받는다 (이미 헤더 전송 후 라 복구 불가).
+// WriteJSON은 200 OK 응답에 JSON body를 기록한다. Marshal 을 먼저 수행해 직렬화 실패 시 200 OK
+// 와 손상된 body 가 함께 전송되는 위험을 차단하고, 실패 시 500 Internal Server Error 를 명시적
+// 으로 반환한다. 직렬화 성공 시 한 번에 Content-Type 과 status 그리고 body 를 일관 전송한다.
 func WriteJSON(w http.ResponseWriter, body any) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		log.Printf("apicommon: json marshal error: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"code":"internal_error","message":"failed to serialize response"}}`))
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(body); err != nil {
-		log.Printf("apicommon: json encode error: %v", err)
-	}
+	_, _ = w.Write(data)
 }
 
-// WriteError는 status 코드와 표준 ErrorBody를 응답한다. code 는 enum, message 는 운영자 메시지.
+// WriteError는 status 코드와 표준 ErrorBody 를 응답한다. code 는 enum, message 는 운영자 메시지.
+// Marshal 실패 시 500 으로 fallback 해 client 가 일관 에러 응답을 받는다.
 func WriteError(w http.ResponseWriter, status int, code, message string) {
+	body := ErrorBody{Error: ErrorDetail{Code: code, Message: message}}
+	data, err := json.Marshal(body)
+	if err != nil {
+		log.Printf("apicommon: json marshal error: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"code":"internal_error","message":"failed to serialize error response"}}`))
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(ErrorBody{Error: ErrorDetail{Code: code, Message: message}}); err != nil {
-		log.Printf("apicommon: json encode error: %v", err)
-	}
+	_, _ = w.Write(data)
 }
 
 // ParsePagination은 쿼리 파라미터에서 limit과 offset을 파싱한다. limit 음수와 0은 default로

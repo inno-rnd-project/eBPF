@@ -5,7 +5,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -140,8 +139,6 @@ func (h *Handler) ListNoisyNeighbors(w http.ResponseWriter, r *http.Request) {
 			Total:  len(filtered),
 		},
 	}
-	// apicommon.WriteJSON 은 generic any 라 typed marshal 직접 호출 후 raw 응답을 보장한다.
-	_ = json.NewEncoder(w).Encode // suppress unused (apicommon.WriteJSON 호출 시 자동 사용)
 	apicommon.WriteJSON(w, resp)
 }
 
