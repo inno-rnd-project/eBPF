@@ -149,6 +149,32 @@ check-prometheus-rules:
 deps:
 	go mod tidy
 
+# swag-init 은 #100 의 4 agent 에 부착된 swaggo 주석 으로부터 각 agent 의 swagger.json 을 생성
+# 한다. internal/<agent>/api/docs/ 하위에 산출물이 떨어 진다. 호출 측은 빌드 전에 본 타겟을
+# 한 번 실행 해 OpenAPI 스펙 을 갱신 한다. swag CLI 가 GOPATH/bin 에 설치 되어 있어야 한다
+# (go install github.com/swaggo/swag/cmd/swag@latest).
+SWAG ?= $(shell go env GOPATH)/bin/swag
+swag-init:
+	@if [ ! -x "$(SWAG)" ]; then echo "swag CLI 가 없습니다. go install github.com/swaggo/swag/cmd/swag@latest 를 실행하세요."; exit 1; fi
+	$(SWAG) init -g cmd/correlation-exporter/main.go --parseDependency --output internal/correlation/api/docs --instanceName correlation
+	$(SWAG) init -g cmd/netobs-agent/main.go --parseDependency --output internal/netobs/api/docs --instanceName netobs
+	$(SWAG) init -g cmd/gpuobs-agent/main.go --parseDependency --output internal/gpuobs/api/docs --instanceName gpuobs
+
+# swag-merge 는 4 agent 의 개별 swagger.json 을 yq 로 merge 해 docs/api/openapi.yaml 단일 spec
+# 으로 통합 한다. 자체 dashboard 의 로컬 import 용 fallback 산출물 이며 cluster 의 swagger-ui Pod
+# 는 각 agent 의 /api/v1/swagger.json 을 dropdown 으로 직접 참조하기 때문에 본 통합본 의 필요성
+# 은 보조 적이다.
+swag-merge:
+	@mkdir -p docs/api
+	@if [ ! -f internal/correlation/api/docs/correlation_swagger.json ]; then echo "swag-init 을 먼저 실행 하세요"; exit 1; fi
+	@python3 -c "import json, yaml, sys, glob; \
+specs = [json.load(open(f)) for f in sorted(glob.glob('internal/*/api/docs/*_swagger.json'))]; \
+merged = {'openapi': '3.0.0', 'info': {'title': 'netobs unified API', 'version': '$(VERSION)'}, 'paths': {}, 'components': {'schemas': {}}}; \
+[merged['paths'].update(s.get('paths', {})) for s in specs]; \
+[merged['components']['schemas'].update(s.get('definitions', {})) for s in specs]; \
+yaml.safe_dump(merged, open('docs/api/openapi.yaml', 'w'), allow_unicode=True, sort_keys=False)"
+	@echo "docs/api/openapi.yaml 생성 완료"
+
 generate:
 	@if [ -z "$(BPFTOOL)" ]; then echo "bpftool not found"; exit 1; fi
 	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > ./bpf/vmlinux.h && \
