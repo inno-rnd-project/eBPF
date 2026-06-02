@@ -430,6 +430,105 @@ spec:
             (cluster:gpu_idle_dominant_cause:5m * 0 + 1)
             or (gpu_idle_cause_weight:5m * 0)
 
+        # pod:gpu_idle_cause_score:5m{victim_namespace,victim_pod,cause}
+        # #101 victim 단위 cause weight 산정 의 입력 helper. 기존 cluster 단위 cause score 5 종을
+        # victim Pod 라벨 (victim_namespace 와 victim_pod) 로 정합 한다. 4 cause (cpu_throttle 와
+        # memory_pressure 와 host_compute_stall 와 network_pressure) 는 이미 pod 단위 emit 중인 base
+        # score 를 label_replace 로 src_namespace → victim_namespace, src_pod → victim_pod 로 alias
+        # 한 뒤 (victim_namespace, victim_pod) 로 sum 해 잔여 라벨을 정리 한다. pcie_saturation 은
+        # node 단위 단일 시리즈 (node:gpu_pcie_saturation_score:5m) 라 kube_pod_info 의 (node,
+        # namespace, pod) 매핑 으로 GPU 노드 의 모든 Pod 에 PCIe score 를 broadcast 한다. PCIe 압박
+        # 의 Pod 단위 attribution 은 불가능 하므로 노드 전체 Pod 에 동일 score 를 부여 한 뒤 dashboard
+        # 와 alert 에서 운영자 가 victim 의 dimension 라벨 과 함께 해석 한다. dev cluster 에서 CUDA
+        # workload 가 없는 경우 host_compute_stall base 시리즈 가 비어 자연 skip 되어 본 helper 도
+        # 해당 cause 시리즈 가 emit 되지 않는다.
+        - record: pod:gpu_idle_cause_score:5m
+          labels:
+            cause: pcie_saturation
+          expr: |
+            sum by(victim_namespace, victim_pod) (
+              node:gpu_pcie_saturation_score:5m
+              * on(node) group_right()
+              (
+                label_replace(label_replace(
+                  sum by(node, namespace, pod) (kube_pod_info),
+                  "victim_namespace", "$1", "namespace", "(.+)"),
+                  "victim_pod", "$1", "pod", "(.+)")
+                * 0 + 1
+              )
+            )
+
+        - record: pod:gpu_idle_cause_score:5m
+          labels:
+            cause: cpu_throttle
+          expr: |
+            sum by(victim_namespace, victim_pod) (
+              label_replace(label_replace(
+                pod:cpu_throttle_score:5m,
+                "victim_namespace", "$1", "src_namespace", "(.+)"),
+                "victim_pod", "$1", "src_pod", "(.+)")
+            )
+
+        - record: pod:gpu_idle_cause_score:5m
+          labels:
+            cause: memory_pressure
+          expr: |
+            sum by(victim_namespace, victim_pod) (
+              label_replace(label_replace(
+                pod:memory_pressure_score:5m,
+                "victim_namespace", "$1", "src_namespace", "(.+)"),
+                "victim_pod", "$1", "src_pod", "(.+)")
+            )
+
+        - record: pod:gpu_idle_cause_score:5m
+          labels:
+            cause: network_pressure
+          expr: |
+            sum by(victim_namespace, victim_pod) (
+              label_replace(label_replace(
+                pod:network_throughput_score:5m,
+                "victim_namespace", "$1", "src_namespace", "(.+)"),
+                "victim_pod", "$1", "src_pod", "(.+)")
+            )
+
+        - record: pod:gpu_idle_cause_score:5m
+          labels:
+            cause: host_compute_stall
+          expr: |
+            sum by(victim_namespace, victim_pod) (
+              label_replace(label_replace(
+                pod:host_compute_stall_score:5m,
+                "victim_namespace", "$1", "src_namespace", "(.+)"),
+                "victim_pod", "$1", "src_pod", "(.+)")
+            )
+
+        # pod:gpu_idle_cause_sum:5m
+        # 5 cause base score 의 victim 단위 합. 정규화 분모 로 쓰인다. 일부 cause base 가 비어 있는
+        # victim 은 그 cause 항 만 자연 skip 되며 sum 은 존재 하는 cause 의 합 으로 산출 된다. cluster
+        # 단위 gpu_idle_cause_sum:5m 와 달리 vector(0) fallback 을 두지 않는 이유는 sum by(victim_*)
+        # 가 라벨 매칭 으로 동작 해 vector(0) 의 무라벨 항 이 정상 victim 시리즈 와 합쳐지지 않기
+        # 때문이다.
+        - record: pod:gpu_idle_cause_sum:5m
+          expr: sum by(victim_namespace, victim_pod) (pod:gpu_idle_cause_score:5m)
+
+        # pod:gpu_idle_cause_weight:5m{victim_namespace,victim_pod,cause}
+        # victim Pod 단위 5 cause 정규화 가중치. cluster 단위 gpu_idle_cause_weight:5m 와 동일 산정
+        # 식 (cause score / 5 cause 합) 을 victim 라벨 차원 으로 적용 한다. on(victim_namespace,
+        # victim_pod) group_left() 로 cause 라벨 을 LHS 에서 그대로 보존 한다. (pod:gpu_idle_cause_
+        # sum:5m > 0) 필터 로 분모 0 인 victim 은 시리즈 자체 가 emit 되지 않아 NaN 잡음 을 차단 한다.
+        # cluster 단위 weight 와 동일 하게 어느 노드 라도 GPU idle > 0.5 인 시간대 에만 emit 되도록
+        # idle 게이팅 을 둔다. 본 weight 는 correlation_noisy_neighbor_score{victim_namespace,
+        # victim_pod} 와 (victim_namespace, victim_pod) 라벨 join 으로 매칭 되어 dashboard 와 alert
+        # 가 victim 단위 dominant cause 식별 에 사용 한다.
+        - record: pod:gpu_idle_cause_weight:5m
+          expr: |
+            (
+              pod:gpu_idle_cause_score:5m
+              / on(victim_namespace, victim_pod) group_left()
+              (pod:gpu_idle_cause_sum:5m > 0)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
     # netobs-gpuobs.thermal-correlation.recording 그룹은 #68 의 RTX consumer GPU thermal / power /
     # clock 상관 분석 layer 의 recording rule 을 모은다. 본 그룹의 helper 5종 (temp / throttle 의 avg
     # 와 stddev, 그리고 temp x throttle 의 avg) 은 Pearson 정의식 r = (avg(xy) - avg(x)avg(y)) /
