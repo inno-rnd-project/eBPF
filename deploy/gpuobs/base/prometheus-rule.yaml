@@ -563,6 +563,24 @@ spec:
             (victim:gpu_idle_dominant_cause:5m * 0 + 1)
             or (pod:gpu_idle_cause_weight:5m * 0)
 
+        # gpu_idle_cause_weight_top3:5m{cause}
+        # #101 secondary cause 가시화 의 cluster 단위 top3 시리즈. cluster:gpu_idle_dominant_cause:
+        # 5m 가 top1 cause 1 종 만 노출 해 운영자 가 2 위 와 3 위 cause 와 의 격차 또는 동률 여부 를
+        # 확인 불가 한 한계 를 보완 한다. dashboard 의 stacked time-series panel 에서 top3 cause 만
+        # 색상 강조 후 나머지 2 cause 는 회색 처리 로 secondary 비교 와 cardinality 가시성 을 동시
+        # 확보 한다. weight 시리즈 가 idle 게이팅 으로 emit 되지 않는 시간대 는 본 record 도 자연
+        # emit 되지 않는다.
+        - record: gpu_idle_cause_weight_top3:5m
+          expr: topk(3, gpu_idle_cause_weight:5m)
+
+        # pod:gpu_idle_cause_weight_top3:5m{victim_namespace,victim_pod,cause}
+        # #101 victim 단위 top3 cause 시리즈. cluster 단위 top3 와 동일 의도 를 victim 차원 으로
+        # 적용 한다. dashboard 의 victim selection drill-down 시 해당 victim 의 5 cause 중 top3 만
+        # 강조 해 secondary 와 tertiary cause 비교 가 가능 하다. topk by(victim_namespace, victim_pod)
+        # 로 victim 별 독립적 으로 top3 선정 한다.
+        - record: pod:gpu_idle_cause_weight_top3:5m
+          expr: topk by(victim_namespace, victim_pod) (3, pod:gpu_idle_cause_weight:5m)
+
     # netobs-gpuobs.thermal-correlation.recording 그룹은 #68 의 RTX consumer GPU thermal / power /
     # clock 상관 분석 layer 의 recording rule 을 모은다. 본 그룹의 helper 5종 (temp / throttle 의 avg
     # 와 stddev, 그리고 temp x throttle 의 avg) 은 Pearson 정의식 r = (avg(xy) - avg(x)avg(y)) /
