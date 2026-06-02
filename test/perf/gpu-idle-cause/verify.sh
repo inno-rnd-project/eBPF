@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # gpu-idle-cause/verify.sh 는 이슈 #101 의 victim 단위 GPU idle cause weight 보강 회귀 가드 다.
-# dev cluster 의 prometheus 에서 신규 recording rule 6 종 (pod:gpu_idle_cause_score:5m,
+# dev cluster 의 prometheus 에서 신규 recording rule 7 종 (pod:gpu_idle_cause_score:5m,
 # pod:gpu_idle_cause_sum:5m, pod:gpu_idle_cause_weight:5m, victim:gpu_idle_dominant_cause:5m,
 # victim:gpu_idle_dominant_cause_indicator:5m, gpu_idle_cause_weight_top3:5m,
 # pod:gpu_idle_cause_weight_top3:5m) 이 동시에 non-empty 시리즈로 emit 되는지 확인 한다.

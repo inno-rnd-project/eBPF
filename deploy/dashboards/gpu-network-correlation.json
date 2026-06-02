@@ -322,14 +322,14 @@
       "links": [
         {
           "title": "Dominant cause 운영 가이드",
-          "url": "https://github.com/inno-rnd-project/netobs/blob/main/docs/observability/gpu-idle-dominant-cause.md",
+          "url": "https://github.com/inno-rnd-project/eBPF/blob/main/docs/observability/gpu-idle-dominant-cause.md",
           "targetBlank": true
         }
       ],
       "targets": [
         {
           "refId": "A",
-          "expr": "pod:gpu_idle_cause_weight:5m{victim_namespace=~\"$src_namespace\",victim_pod=~\"$src_pod\"}",
+          "expr": "pod:gpu_idle_cause_weight:5m{node=\"$node\",victim_namespace=~\"$src_namespace\",victim_pod=~\"$src_pod\"}",
           "legendFormat": "{{cause}} ({{victim_namespace}}/{{victim_pod}})",
           "datasource": "${datasource}"
         }
@@ -374,7 +374,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "victim:gpu_idle_dominant_cause_indicator:5m{victim_namespace=~\"$src_namespace\",victim_pod=~\"$src_pod\"}",
+          "expr": "victim:gpu_idle_dominant_cause_indicator:5m{node=\"$node\",victim_namespace=~\"$src_namespace\",victim_pod=~\"$src_pod\"}",
           "legendFormat": "{{cause}} ({{victim_namespace}}/{{victim_pod}})",
           "datasource": "${datasource}"
         }

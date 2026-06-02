@@ -136,7 +136,7 @@ victim 차원 (#101). `V` 는 cluster 의 활성 Pod 수.
 - `victim:gpu_idle_dominant_cause_indicator:5m`. cause 5 종 x V (cause indicator)
 - `pod:gpu_idle_cause_weight_top3:5m`. cause 3 종 x V
 
-cluster 차원 총 20 시리즈 상한. victim 차원 총 약 `19 * V` 시리즈 상한 (V = 활성 Pod 수). GPU 유휴 상태가 아닌 시간대는 idle 게이팅으로 일부 시리즈가 emit 되지 않아 실 운영에서는 더 적다. dev 클러스터의 V ≈ 50 기준 victim 차원 약 1000 시리즈 수준.
+cluster 차원 총 20 시리즈 상한. victim 차원 총 약 `20 * V` 시리즈 상한 (V = 활성 Pod 수, 5V + V + 5V + V + 5V + 3V). GPU 유휴 상태가 아닌 시간대는 idle 게이팅으로 일부 시리즈가 emit 되지 않아 실 운영에서는 더 적다. dev 클러스터의 V ≈ 50 기준 victim 차원 약 1000 시리즈 수준.
 
 ## 알려진 한계
 
