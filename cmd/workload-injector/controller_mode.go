@@ -2,13 +2,13 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"os"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -16,6 +16,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	injectorv1alpha1 "netobs/api/v1alpha1"
+	injectorcontroller "netobs/internal/injector/controller"
 )
 
 // controllerScheme 은 manager 에 등록되는 scheme 이다. core API 와 #102 의 LoadScenario CRD 가
@@ -118,10 +119,31 @@ func runControllerMode() int {
 		return 1
 	}
 
-	// LoadScenario reconciler 등록 placeholder. 실제 Reconcile 로직 (schedule 산정 / safety gate /
-	// loadgen 호출 / spike alert 검증 / finalizer cleanup) 은 c4 commit 에서 추가 된다.
-	log.Printf("controller: LoadScenario reconciler registration pending (c4)")
-	_ = fmt.Sprintf("watch_namespace=%s prometheus_url=%s", cfg.WatchNamespace, cfg.PrometheusURL)
+	// LoadScenario reconciler 등록. K8sClient 는 internal/injector/safety 와 internal/injector/loadgen
+	// 이 kubernetes.Interface 를 직접 요구 하므로 controller-runtime client 와 별도로 client-go
+	// kubernetes.Clientset 을 manager rest config 로 부터 생성 해 reconciler 에 주입 한다.
+	k8sClient, err := kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		log.Printf("controller: kubernetes clientset: %v", err)
+		return 1
+	}
+	holder, _ := os.Hostname()
+	if holder == "" {
+		holder = "workload-injector-controller"
+	}
+	reconciler := &injectorcontroller.LoadScenarioReconciler{
+		K8sClient:         k8sClient,
+		AllowClusterLabel: cfg.AllowClusterLabel,
+		LockNamespace:     cfg.LeaderElectionNS,
+		LockHolder:        holder,
+		// SpikeAsserter 는 c5 commit 에서 prometheus query 구현체 가 주입 된다. 본 commit 에서는
+		// nil 로 두어 spec.spikeAlertAssertion 이 true 더라도 status 갱신 만 skip 한다.
+		SpikeAsserter: nil,
+	}
+	if err := reconciler.SetupWithManager(mgr); err != nil {
+		log.Printf("controller: reconciler SetupWithManager: %v", err)
+		return 1
+	}
 
 	log.Printf("controller: starting manager (leader_election=%t metrics=%s)", cfg.LeaderElection, cfg.MetricsAddr)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
