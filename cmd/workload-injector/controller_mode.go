@@ -136,9 +136,7 @@ func runControllerMode() int {
 		AllowClusterLabel: cfg.AllowClusterLabel,
 		LockNamespace:     cfg.LeaderElectionNS,
 		LockHolder:        holder,
-		// SpikeAsserter 는 c5 commit 에서 prometheus query 구현체 가 주입 된다. 본 commit 에서는
-		// nil 로 두어 spec.spikeAlertAssertion 이 true 더라도 status 갱신 만 skip 한다.
-		SpikeAsserter: nil,
+		SpikeAsserter:     injectorcontroller.NewPromSpikeAsserter(cfg.PrometheusURL, cfg.SpikeAssertTimeout, cfg.SpikeAssertPollEvery),
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		log.Printf("controller: reconciler SetupWithManager: %v", err)
