@@ -1,19 +1,30 @@
 // Package controller 는 #102 의 LoadScenario reconciler 구현을 담는다. dev cluster 에서 schedule
 // 따라 자동 부하 인가를 트리거하며 CLI mode 와 동일한 safety gate 4 종 (CheckDuration /
 // CheckIntensity / CheckClusterLabel / AcquireLock) 과 loadgen 패키지를 재사용 한다.
+//
+// 비동기 state machine 설계.
+//
+// Reconcile 은 blocking wait 없이 짧게 끝나며 다음 transition 까지 RequeueAfter 로 wait. 본 설계 는
+// controller worker 가 부하 인가 시간 (최대 30 분) 동안 점유 되어 다른 LoadScenario reconcile 이
+// starvation 되는 것 과 deletion / suspend 요청 의 반응성 저하 를 차단 한다.
+//
+//	Idle  ── schedule due ──▶  Running  ── duration 경과 ──▶  AwaitingSpikeAlert (spec.spikeAlertAssertion=true)
+//	  ▲                                                                │
+//	  └──────────────  poll window 만료 (5 분) 또는 spike hit  ◀────────┘
+//
+//	Idle  ── schedule due, spec.spikeAlertAssertion=false ──▶  Running  ── duration 경과 ──▶  Idle (success)
 package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/robfig/cron/v3"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,9 +40,20 @@ import (
 // lease 해제와 stress Pod 가비지 수거가 보장된 뒤에만 finalizer 가 제거된다.
 const FinalizerName = "loadscenario.injector.netobs.io/finalizer"
 
-// SpikeAlertAsserter 는 c5 commit 에서 채워질 spike alert 자동 검증 흐름 의 의존성 추상화 이다.
-// c4 단계 에서는 nil 인터페이스 로 두어 spec.spikeAlertAssertion 이 true 이더라도 status 갱신을
-// skip 한다. c5 가 prometheus query 구현체 를 주입 해 활성화 된다.
+// SpikePollWindow 는 AwaitingSpikeAlert phase 의 polling 만료 시간 이다. 본 시간 안에 spike alert
+// hit 가 1 회 라도 발생 하면 SpikeAlertObserved=True 로 기록 되고 Idle 로 전환 한다.
+const SpikePollWindow = 5 * time.Minute
+
+// SpikePollInterval 은 AwaitingSpikeAlert phase 의 reconcile 재호출 간격 이다. 매 호출 시 단일
+// query 가 수행 되어 reconcile worker 의 blocking 시간 이 짧게 유지 된다.
+const SpikePollInterval = 30 * time.Second
+
+// errSkipForbidLockHeld 는 concurrencyPolicy=Forbid 의 lock 충돌 시 success 가 아닌 skip 결과로
+// 분류 하기 위한 sentinel error 다. Reconcile 본체 에서 errors.Is 로 검사 한다.
+var errSkipForbidLockHeld = errors.New("forbid policy: lock held by another injection")
+
+// SpikeAlertAsserter 는 spike alert 자동 검증 흐름 의 의존성 추상화 이다. PromSpikeAsserter 가
+// 본 인터페이스 의 구현체 로 controller 에 주입 된다.
 type SpikeAlertAsserter interface {
 	Observe(ctx context.Context, sinceRunEnd time.Time) ([]string, error)
 }
@@ -40,7 +62,6 @@ type SpikeAlertAsserter interface {
 type LoadScenarioReconciler struct {
 	client.Client
 	K8sClient         kubernetes.Interface
-	Scheme            *runtimeSchemeStub
 	AllowClusterLabel string
 	LockNamespace     string
 	LockHolder        string
@@ -48,10 +69,6 @@ type LoadScenarioReconciler struct {
 	CronParser        cron.Parser
 	Now               func() time.Time
 }
-
-// runtimeSchemeStub 은 controller-runtime 의 runtime.Scheme alias 다. controller-runtime 의
-// import path 를 본 패키지 호출 측 에 노출 하지 않기 위해 local alias 로 둔다.
-type runtimeSchemeStub = struct{ _ int }
 
 // defaultCronParser 는 standard cron 5 필드 (minute / hour / dom / month / dow) 와 descriptor
 // (@every, @daily 등) 를 지원한다.
@@ -69,7 +86,8 @@ func (r *LoadScenarioReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// Reconcile 은 LoadScenario 1 개에 대한 단일 reconcile 루프다.
+// Reconcile 은 비동기 state machine 의 단일 transition 을 처리 한다. blocking wait 없이 짧게 종료
+// 하며 다음 transition 까지 RequeueAfter 로 controller-runtime workqueue 가 wait 한다.
 func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("loadscenario", req.NamespacedName)
 	defer func() { ReconcileTimestamp.Set(float64(time.Now().Unix())) }()
@@ -95,28 +113,68 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// prod cluster 차단 gate. CheckClusterLabel 가 매칭 Node 가 0 개 이면 fail-fast.
+	// prod cluster 차단 gate.
 	if err := safety.CheckClusterLabel(ctx, r.K8sClient, r.AllowClusterLabel); err != nil {
 		logger.Info("cluster label gate refused", "error", err.Error())
 		setCondition(&ls, "Ready", metav1.ConditionFalse, "ClusterLabelGate", err.Error())
-		_ = r.Status().Update(ctx, &ls)
+		if updateErr := r.Status().Update(ctx, &ls); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 	}
 
-	// spec.suspend 가 true 이면 skip.
-	if ls.Spec.Suspend {
-		setCondition(&ls, "Suspended", metav1.ConditionTrue, "SpecSuspend", "spec.suspend=true")
-		_ = r.Status().Update(ctx, &ls)
+	// suspend 검사. spec.suspend 또는 maxFailures 초과 시 skip. controller 는 spec 을 mutation 하지
+	// 않으며 maxFailures 초과 상태 는 status condition 으로만 표현 한다.
+	if r.isSuspended(&ls) {
+		reason := "SpecSuspend"
+		msg := "spec.suspend=true"
+		if !ls.Spec.Suspend {
+			reason = "MaxFailuresExceeded"
+			msg = fmt.Sprintf("consecutiveFailures=%d >= maxFailures=%d", ls.Status.ConsecutiveFailures, ls.Spec.MaxFailures)
+		}
+		setCondition(&ls, "Suspended", metav1.ConditionTrue, reason, msg)
+		if updateErr := r.Status().Update(ctx, &ls); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 
-	// schedule parse + next run time 산정.
+	// schedule parse.
 	schedule, err := r.CronParser.Parse(ls.Spec.Schedule)
 	if err != nil {
 		setCondition(&ls, "Ready", metav1.ConditionFalse, "InvalidSchedule", err.Error())
-		_ = r.Status().Update(ctx, &ls)
+		if updateErr := r.Status().Update(ctx, &ls); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
 		return ctrl.Result{}, nil
 	}
+
+	// state machine 분기.
+	switch ls.Status.RunState {
+	case injectorv1alpha1.RunStateRunning:
+		return r.handleRunning(ctx, &ls, schedule)
+	case injectorv1alpha1.RunStateAwaitingSpikeAlert:
+		return r.handleAwaitingSpikeAlert(ctx, &ls, schedule)
+	default:
+		return r.handleIdle(ctx, &ls, schedule)
+	}
+}
+
+// isSuspended 는 spec.suspend 또는 maxFailures 초과 상태를 판정 한다. 자동 suspend 는 status 변동
+// 만으로 표현 하며 spec 을 mutation 하지 않아 GitOps drift 를 회피 한다.
+func (r *LoadScenarioReconciler) isSuspended(ls *injectorv1alpha1.LoadScenario) bool {
+	if ls.Spec.Suspend {
+		return true
+	}
+	if ls.Spec.MaxFailures > 0 && ls.Status.ConsecutiveFailures >= ls.Spec.MaxFailures {
+		return true
+	}
+	return false
+}
+
+// handleIdle 은 Idle phase 의 transition 이다. schedule 따른 다음 run 시각 을 산정 해 due 면 부하
+// 인가 를 start, 아니면 wait.
+func (r *LoadScenarioReconciler) handleIdle(ctx context.Context, ls *injectorv1alpha1.LoadScenario, schedule cron.Schedule) (ctrl.Result, error) {
 	now := r.Now()
 	var lastSchedule time.Time
 	if ls.Status.LastScheduleTime != nil {
@@ -129,45 +187,167 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{RequeueAfter: nextRun.Sub(now)}, nil
 	}
 
-	// 동시 injection 정책 처리 + safety gate + lock acquire + load 실행.
-	ActiveCount.Inc()
-	runErr := r.runScenario(ctx, &ls, now)
-	ActiveCount.Dec()
-	if runErr != nil {
-		logger.Error(runErr, "run scenario failed")
-		ls.Status.ConsecutiveFailures++
-		if ls.Spec.MaxFailures > 0 && ls.Status.ConsecutiveFailures >= ls.Spec.MaxFailures {
-			ls.Spec.Suspend = true
-			_ = r.Update(ctx, &ls)
-			setCondition(&ls, "Suspended", metav1.ConditionTrue, "MaxFailuresExceeded",
-				fmt.Sprintf("consecutiveFailures=%d >= maxFailures=%d", ls.Status.ConsecutiveFailures, ls.Spec.MaxFailures))
+	startErr := r.startRun(ctx, ls, now)
+	if startErr != nil {
+		if errors.Is(startErr, errSkipForbidLockHeld) {
+			// Forbid 정책 의 lock 충돌 은 skip 결과 로 분류. ConsecutiveFailures 미증가, LastSuccessfulRunTime
+			// 미갱신. metrics result=skip.
+			RecordReconcileResult(ls.Namespace, ls.Name, "skip", float64(time.Now().Unix()))
+			if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			next := schedule.Next(r.Now()).Sub(r.Now())
+			if next <= 0 {
+				next = time.Minute
+			}
+			return ctrl.Result{RequeueAfter: next}, nil
 		}
-		setCondition(&ls, "Scheduled", metav1.ConditionFalse, "RunFailed", runErr.Error())
-		_ = r.Status().Update(ctx, &ls)
+		// run start 실패 (safety gate / loadgen Start 등). 실패 카운트 +1.
+		ls.Status.ConsecutiveFailures++
+		setCondition(ls, "Scheduled", metav1.ConditionFalse, "RunStartFailed", startErr.Error())
+		if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
 		RecordReconcileResult(ls.Namespace, ls.Name, "error", float64(time.Now().Unix()))
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 
-	// 정상 종료.
-	ls.Status.ConsecutiveFailures = 0
-	successTime := metav1.NewTime(r.Now())
-	ls.Status.LastSuccessfulRunTime = &successTime
-	setCondition(&ls, "Ready", metav1.ConditionTrue, "ReconcileOK", "controller is reconciling scenario")
-	setCondition(&ls, "Scheduled", metav1.ConditionTrue, "RunSucceeded", "run completed within duration")
-	if err := r.Status().Update(ctx, &ls); err != nil {
-		return ctrl.Result{}, err
+	// stress Pod 가 spawn 되었음. RunState=Running 으로 전환 후 duration 만큼 wait.
+	scheduleTime := metav1.NewTime(now)
+	ls.Status.LastScheduleTime = &scheduleTime
+	ls.Status.RunStartTime = &scheduleTime
+	ls.Status.RunState = injectorv1alpha1.RunStateRunning
+	setCondition(ls, "Ready", metav1.ConditionTrue, "ReconcileOK", "controller is reconciling scenario")
+	setCondition(ls, "Scheduled", metav1.ConditionTrue, "RunStarted", "stress Pod spawned, awaiting duration")
+	ActiveCount.Inc()
+	if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
+		// status update 실패 시에도 controller-runtime 의 재시도 흐름에 위임. ActiveCount 는 다음
+		// reconcile 의 cleanup 단계 에서 자연 정합 된다.
+		return ctrl.Result{}, updateErr
 	}
-	RecordReconcileResult(ls.Namespace, ls.Name, "success", float64(time.Now().Unix()))
-	nextAfter := schedule.Next(r.Now()).Sub(r.Now())
-	if nextAfter <= 0 {
-		nextAfter = time.Minute
-	}
-	return ctrl.Result{RequeueAfter: nextAfter}, nil
+	return ctrl.Result{RequeueAfter: ls.Spec.Duration.Duration + 5*time.Second}, nil
 }
 
-// runScenario 는 safety gate 와 lock acquire 와 load 실행 의 blocking 흐름이다. concurrencyPolicy
-// 에 따라 lock 충돌 처리 가 분기 한다.
-func (r *LoadScenarioReconciler) runScenario(ctx context.Context, ls *injectorv1alpha1.LoadScenario, startTime time.Time) error {
+// handleRunning 은 Running phase 의 transition 이다. duration 경과 시 stress Pod cleanup + lock
+// release 후 AwaitingSpikeAlert (spec.spikeAlertAssertion=true) 또는 Idle (false) 로 전환.
+func (r *LoadScenarioReconciler) handleRunning(ctx context.Context, ls *injectorv1alpha1.LoadScenario, schedule cron.Schedule) (ctrl.Result, error) {
+	if ls.Status.RunStartTime == nil {
+		// 비정상 상태. Idle 로 강제 전환 후 다음 reconcile 에서 schedule 재산정.
+		ls.Status.RunState = injectorv1alpha1.RunStateIdle
+		if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+	runEnd := ls.Status.RunStartTime.Time.Add(ls.Spec.Duration.Duration)
+	now := r.Now()
+	if now.Before(runEnd) {
+		return ctrl.Result{RequeueAfter: runEnd.Sub(now)}, nil
+	}
+
+	// run 종료. stress Pod cleanup + lock release.
+	if err := r.cleanupStressPods(ctx, ls); err != nil {
+		setCondition(ls, "Scheduled", metav1.ConditionFalse, "CleanupFailed", err.Error())
+		if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+	}
+	if err := r.forceReleaseLease(ctx, ls); err != nil && !apierrors.IsNotFound(err) {
+		setCondition(ls, "Scheduled", metav1.ConditionFalse, "LeaseReleaseFailed", err.Error())
+		if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+	}
+	ActiveCount.Dec()
+
+	if ls.Spec.SpikeAlertAssertion && r.SpikeAsserter != nil {
+		// AwaitingSpikeAlert phase 진입. RunStartTime 을 polling 시작 시각 으로 재해석 한다.
+		pollStart := metav1.NewTime(now)
+		ls.Status.RunStartTime = &pollStart
+		ls.Status.RunState = injectorv1alpha1.RunStateAwaitingSpikeAlert
+		setCondition(ls, "SpikeAlertObserved", metav1.ConditionUnknown, "Polling", "spike alert polling window started")
+		if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{RequeueAfter: SpikePollInterval}, nil
+	}
+
+	// spike polling 비활성. 즉시 Idle 전환 + success 기록.
+	return r.markRunSuccess(ctx, ls, schedule, now)
+}
+
+// handleAwaitingSpikeAlert 은 AwaitingSpikeAlert phase 의 transition 이다. 매 호출 시 단일 query 로
+// firing 시리즈 확인. hit 이면 즉시 Idle 전환, hit 없고 window 만료 시 Idle 전환 (SpikeAlertObserved=False).
+func (r *LoadScenarioReconciler) handleAwaitingSpikeAlert(ctx context.Context, ls *injectorv1alpha1.LoadScenario, schedule cron.Schedule) (ctrl.Result, error) {
+	now := r.Now()
+	if ls.Status.RunStartTime == nil {
+		ls.Status.RunState = injectorv1alpha1.RunStateIdle
+		if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+	pollStart := ls.Status.RunStartTime.Time
+	pollDeadline := pollStart.Add(SpikePollWindow)
+
+	// 매 호출 시 단일 query. PromSpikeAsserter.Observe 가 단일 query 만 수행 하도록 짧은 timeout
+	// 으로 재사용 한다 (sinceRunEnd 인자 는 polling window 만료 검사 에 사용 되지 않으므로 임의값).
+	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	// PromSpikeAsserter.Observe 의 PollWindow 와 PollEvery 가 짧게 설정 되면 단일 query 후 즉시
+	// 반환 된다. NewPromSpikeAsserter 가 long polling 으로 설정 된 경우를 회피 하기 위해 ad-hoc
+	// shortPollAsserter 가 적합 하지만 본 commit 에서는 기존 인터페이스 를 유지 하고 single-shot
+	// 의미 를 PollWindow=0 으로 처리 한다.
+	alerts, err := r.SpikeAsserter.Observe(queryCtx, pollStart)
+	if err != nil {
+		setCondition(ls, "SpikeAlertObserved", metav1.ConditionUnknown, "SpikeAssertError", err.Error())
+		if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		if now.After(pollDeadline) {
+			return r.markRunSuccess(ctx, ls, schedule, now)
+		}
+		return ctrl.Result{RequeueAfter: SpikePollInterval}, nil
+	}
+	if len(alerts) > 0 {
+		ls.Status.LastObservedSpikeAlerts = alerts
+		setCondition(ls, "SpikeAlertObserved", metav1.ConditionTrue, "SpikeAlertFiring", fmt.Sprintf("observed alerts=%v", alerts))
+		return r.markRunSuccess(ctx, ls, schedule, now)
+	}
+	if now.After(pollDeadline) {
+		setCondition(ls, "SpikeAlertObserved", metav1.ConditionFalse, "NoSpikeAlertFiring", "polling window expired with no firing alert")
+		return r.markRunSuccess(ctx, ls, schedule, now)
+	}
+	return ctrl.Result{RequeueAfter: SpikePollInterval}, nil
+}
+
+// markRunSuccess 는 run 성공 종료 시 status 갱신 흐름 이다. Idle 로 전환, LastSuccessfulRunTime 갱신,
+// ConsecutiveFailures 리셋, success metric 기록.
+func (r *LoadScenarioReconciler) markRunSuccess(ctx context.Context, ls *injectorv1alpha1.LoadScenario, schedule cron.Schedule, now time.Time) (ctrl.Result, error) {
+	successTime := metav1.NewTime(now)
+	ls.Status.LastSuccessfulRunTime = &successTime
+	ls.Status.RunState = injectorv1alpha1.RunStateIdle
+	ls.Status.RunStartTime = nil
+	ls.Status.ConsecutiveFailures = 0
+	setCondition(ls, "Scheduled", metav1.ConditionTrue, "RunSucceeded", "run completed within duration")
+	setCondition(ls, "Ready", metav1.ConditionTrue, "ReconcileOK", "controller is reconciling scenario")
+	if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
+		return ctrl.Result{}, updateErr
+	}
+	RecordReconcileResult(ls.Namespace, ls.Name, "success", float64(time.Now().Unix()))
+	next := schedule.Next(r.Now()).Sub(r.Now())
+	if next <= 0 {
+		next = time.Minute
+	}
+	return ctrl.Result{RequeueAfter: next}, nil
+}
+
+// startRun 은 부하 인가 의 trigger 단계다. safety gate, concurrencyPolicy 분기, lock acquire,
+// target Pod fetch, loadgen Start 까지 비차단 으로 수행 한다. Forbid 정책 의 lock 충돌 은
+// errSkipForbidLockHeld sentinel 로 분류 되어 Reconcile 본체 에서 skip 결과 로 처리 된다.
+func (r *LoadScenarioReconciler) startRun(ctx context.Context, ls *injectorv1alpha1.LoadScenario, startTime time.Time) error {
 	kind := loadgen.Kind(ls.Spec.Kind)
 	if err := safety.CheckDuration(ls.Spec.Duration.Duration); err != nil {
 		return fmt.Errorf("safety CheckDuration: %w", err)
@@ -176,34 +356,30 @@ func (r *LoadScenarioReconciler) runScenario(ctx context.Context, ls *injectorv1
 		return fmt.Errorf("safety CheckIntensity: %w", err)
 	}
 
-	// concurrencyPolicy = Replace 의 경우 진행 중 lease 를 강제 해제 한 뒤 시도.
+	// concurrencyPolicy = Replace 의 경우 진행 중 lease 를 강제 해제 한 뒤 시도. lease 가 없으면
+	// (NotFound) 정상 진행 한다 (첫 Replace 호출 시점 등).
 	if ls.Spec.ConcurrencyPolicy == injectorv1alpha1.ConcurrencyReplace {
-		if err := r.forceReleaseLease(ctx, ls); err != nil {
+		if err := r.forceReleaseLease(ctx, ls); err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("replace lease: %w", err)
 		}
 	}
 
-	release, err := safety.AcquireLock(ctx, r.K8sClient, r.LockNamespace,
+	if _, err := safety.AcquireLock(ctx, r.K8sClient, r.LockNamespace,
 		ls.Spec.TargetRef.Namespace, ls.Spec.TargetRef.Name, r.LockHolder,
-		ls.Spec.Duration.Duration*2)
-	if err != nil {
-		// concurrencyPolicy = Forbid 의 경우 lock 충돌 은 정상 skip 으로 분류.
+		ls.Spec.Duration.Duration*2); err != nil {
 		if ls.Spec.ConcurrencyPolicy == injectorv1alpha1.ConcurrencyForbid {
 			scheduleTime := metav1.NewTime(startTime)
 			ls.Status.LastScheduleTime = &scheduleTime
 			setCondition(ls, "Scheduled", metav1.ConditionFalse, "ForbidLockHeld", err.Error())
-			return nil
+			return errSkipForbidLockHeld
 		}
 		return fmt.Errorf("acquire lock: %w", err)
 	}
-	defer release()
-
-	scheduleTime := metav1.NewTime(startTime)
-	ls.Status.LastScheduleTime = &scheduleTime
+	// AcquireLock 의 release func 는 본 시점 에 호출 하지 않는다. lease TTL=duration*2 만료 또는
+	// Running phase 종료 시점 의 forceReleaseLease 호출 로 정리 된다 (비동기 흐름).
 
 	// target Pod fetch 후 nodeName 추출. cpu / memory / gpu loadgen 이 stress Pod 를 동일 node 에
-	// 강제 배치 하기 위해 Params.TargetNode 가 비어 있으면 안 된다. CLI mode 의 verifyTargetPod 와
-	// 동일 단계 다.
+	// 강제 배치 하기 위해 Params.TargetNode 가 비어 있으면 안 된다.
 	targetPod, err := r.K8sClient.CoreV1().Pods(ls.Spec.TargetRef.Namespace).Get(ctx, ls.Spec.TargetRef.Name, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("get target pod %s/%s: %w", ls.Spec.TargetRef.Namespace, ls.Spec.TargetRef.Name, err)
@@ -229,36 +405,12 @@ func (r *LoadScenarioReconciler) runScenario(ctx context.Context, ls *injectorv1
 		},
 	}
 	if err := gen.Start(ctx, params); err != nil {
+		// stress Pod start 실패 시 lock 해제. 다음 run 의 lock 충돌 회피.
+		_ = r.forceReleaseLease(ctx, ls)
 		return fmt.Errorf("loadgen Start: %w", err)
 	}
-	defer func() { _ = gen.Stop(context.Background()) }()
-
-	// blocking duration wait. controller worker stall 우려 가 있어 운영 가이드 에 max 30 분 명시.
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(ls.Spec.Duration.Duration):
-	}
-
-	// spike alert 자동 검증 흐름은 c5 commit 에서 SpikeAsserter 가 주입 되면 활성화.
-	if ls.Spec.SpikeAlertAssertion && r.SpikeAsserter != nil {
-		alerts, observeErr := r.SpikeAsserter.Observe(ctx, startTime.Add(ls.Spec.Duration.Duration))
-		if observeErr != nil {
-			setCondition(ls, "SpikeAlertObserved", metav1.ConditionUnknown, "SpikeAssertError", observeErr.Error())
-		} else {
-			ls.Status.LastObservedSpikeAlerts = alerts
-			status := metav1.ConditionFalse
-			reason := "NoSpikeAlertFiring"
-			msg := "no spike alert observed in window"
-			if len(alerts) > 0 {
-				status = metav1.ConditionTrue
-				reason = "SpikeAlertFiring"
-				msg = fmt.Sprintf("observed alerts=%v", alerts)
-			}
-			setCondition(ls, "SpikeAlertObserved", status, reason, msg)
-		}
-	}
-
+	// gen.Stop 은 본 함수 에서 호출 하지 않는다. Running phase 종료 시점 의 cleanupStressPods 가
+	// 라벨 매칭 으로 stress Pod 를 정리 한다.
 	return nil
 }
 
@@ -268,13 +420,9 @@ func (r *LoadScenarioReconciler) handleDeletion(ctx context.Context, ls *injecto
 	if !controllerutil.ContainsFinalizer(ls, FinalizerName) {
 		return ctrl.Result{}, nil
 	}
-	if err := r.forceReleaseLease(ctx, ls); err != nil {
-		// lease 가 없으면 정상으로 간주.
-		if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
-		}
+	if err := r.forceReleaseLease(ctx, ls); err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
 	}
-	// stress Pod 가비지 수거 - loadscenario.name 라벨 매칭 Pod 삭제.
 	if err := r.cleanupStressPods(ctx, ls); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -297,14 +445,19 @@ func (r *LoadScenarioReconciler) cleanupStressPods(ctx context.Context, ls *inje
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, p := range pods.Items {
-		_ = r.K8sClient.CoreV1().Pods(ls.Namespace).Delete(ctx, p.Name, metav1.DeleteOptions{})
+		if delErr := r.K8sClient.CoreV1().Pods(ls.Namespace).Delete(ctx, p.Name, metav1.DeleteOptions{}); delErr != nil && !apierrors.IsNotFound(delErr) {
+			errs = append(errs, fmt.Errorf("delete stress pod %s/%s: %w", ls.Namespace, p.Name, delErr))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 	return nil
 }
 
-// setCondition 은 metav1.Condition 표준 helper 다. 같은 type 의 condition 이 이미 있으면 갱신,
-// 없으면 추가.
+// setCondition 은 metav1.Condition 표준 helper 다.
 func setCondition(ls *injectorv1alpha1.LoadScenario, condType string, status metav1.ConditionStatus, reason, msg string) {
 	meta.SetStatusCondition(&ls.Status.Conditions, metav1.Condition{
 		Type:               condType,
@@ -314,8 +467,3 @@ func setCondition(ls *injectorv1alpha1.LoadScenario, condType string, status met
 		LastTransitionTime: metav1.NewTime(time.Now()),
 	})
 }
-
-// 빈 import guards - 본 파일이 corev1 / types 를 직접 import 하지 않더라도 future commit (c5/c6)
-// 에서 자주 추가 되므로 lint warning 회피 용 placeholder 가 필요 한 경우 본 위치 에 사용.
-var _ = corev1.PodSpec{}
-var _ types.NamespacedName

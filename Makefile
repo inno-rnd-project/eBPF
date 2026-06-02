@@ -158,7 +158,8 @@ deps:
 SWAG ?= $(shell go env GOPATH)/bin/swag
 
 # controller-gen 은 #102 의 LoadScenario CRD 신설에 사용한다. kubebuilder marker 가 붙은
-# api/v1alpha1/*.go 로부터 CRD YAML (deploy/injector/base/crd.yaml) 과 DeepCopy 메서드
+# api/v1alpha1/*.go 로부터 CRD YAML (deploy/injector/base/<group>_<plural>.yaml, controller-gen
+# 표준 컨벤션 으로 예: injector.netobs.io_loadscenarios.yaml) 과 DeepCopy 메서드
 # (api/v1alpha1/zz_generated_deepcopy.go) 를 자동 생성한다. controller-runtime v0.19.x 와
 # 호환되는 v0.16.x 계열 로 pin 해 marker 처리 동작이 흔들리지 않게 한다. controller-gen 은
 # GOPATH/bin 에 설치 되어 있어야 한다 (go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)).
@@ -174,8 +175,9 @@ controller-gen-install:
 	@"$(CONTROLLER_GEN)" --version
 
 # manifests 는 api/v1alpha1/ 의 kubebuilder marker 로부터 CRD YAML 을 생성 해
-# deploy/injector/base/crd.yaml 에 떨어 뜨린다. crd:crdVersions=v1 와 trivialVersions=true 옵션 으로
-# v1 CRD 단일 버전 만 출력 한다. api/v1alpha1/ 디렉토리 가 없으면 controller-gen 은 silent 통과 한다.
+# deploy/injector/base/<group>_<plural>.yaml (controller-gen 표준 컨벤션) 에 떨어 뜨린다.
+# crd:crdVersions=v1 옵션 으로 v1 CRD 단일 버전 만 출력 한다. api/v1alpha1/ 디렉토리 가 없으면
+# controller-gen 은 silent 통과 한다.
 manifests: controller-gen-install
 	@if [ -d "api/v1alpha1" ]; then \
 		"$(CONTROLLER_GEN)" \

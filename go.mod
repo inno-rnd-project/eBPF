@@ -7,6 +7,7 @@ require (
 	github.com/cilium/ebpf v0.17.1
 	github.com/prometheus/client_golang v1.20.5
 	github.com/prometheus/common v0.55.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/swaggo/http-swagger/v2 v2.0.2
 	github.com/swaggo/swag v1.16.6
 	gonum.org/v1/gonum v0.17.0
@@ -57,7 +58,6 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
-	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/swaggo/files/v2 v2.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect

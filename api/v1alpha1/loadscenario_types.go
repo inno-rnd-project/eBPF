@@ -75,8 +75,9 @@ type LoadScenarioSpec struct {
 	ConcurrencyPolicy ConcurrencyPolicy `json:"concurrencyPolicy,omitempty"`
 
 	// SpikeAlertAssertion 이 true 이면 controller 가 부하 종료 후 5 분 polling window 동안
-	// z-score spike alert (CPUThrottleSpike / MemoryPressureSpike / NetworkDropSpike /
-	// GPUUtilizationSpike) 발화 여부 를 Prometheus query 로 확인 해 status 에 기록 한다.
+	// z-score spike alert (CPUThrottleSpikeDetected / MemoryPressureSpikeDetected /
+	// NetworkDropSpikeDetected / GPUUtilSpikeDetected) 발화 여부 를 Prometheus query 로 확인 해
+	// status 에 기록 한다.
 	// +kubebuilder:default=false
 	// +optional
 	SpikeAlertAssertion bool `json:"spikeAlertAssertion,omitempty"`
@@ -96,8 +97,35 @@ type LoadScenarioSpec struct {
 	Suspend bool `json:"suspend,omitempty"`
 }
 
+// LoadScenarioRunState 는 reconciler lifecycle state machine 의 상태값 이다.
+// +kubebuilder:validation:Enum=Idle;Running;AwaitingSpikeAlert
+type LoadScenarioRunState string
+
+const (
+	// RunStateIdle 은 현재 진행 중 인 부하 run 이 없는 상태다. 다음 schedule 시각 까지 wait 한다.
+	RunStateIdle LoadScenarioRunState = "Idle"
+	// RunStateRunning 은 stress Pod 가 spawn 되어 부하 가 인가 중 인 상태다. spec.duration 경과 후
+	// reconciler 가 cleanup 단계 로 전환 한다.
+	RunStateRunning LoadScenarioRunState = "Running"
+	// RunStateAwaitingSpikeAlert 는 부하 종료 후 spike alert 자동 검증 polling 단계 의 상태다.
+	// spec.spikeAlertAssertion 이 true 일 때만 진입 하며 polling window (기본 5 분) 경과 후 Idle 로
+	// 전환 한다. polling 자체 는 매 reconcile 호출 시 1 회 단일 query 로 처리 되어 reconcile worker
+	// 의 blocking 시간 을 짧게 유지 한다.
+	RunStateAwaitingSpikeAlert LoadScenarioRunState = "AwaitingSpikeAlert"
+)
+
 // LoadScenarioStatus 는 controller 가 reconcile 결과 를 기록 하는 영역이다.
 type LoadScenarioStatus struct {
+	// RunState 는 reconciler lifecycle state machine 상태 이다. 비동기 reconcile 흐름 에서 stress
+	// Pod 생성 / 종료 시점 분리 의 신호 로 사용 한다. 비어 있으면 Idle 로 간주.
+	// +optional
+	RunState LoadScenarioRunState `json:"runState,omitempty"`
+
+	// RunStartTime 은 현재 진행 중 인 run 의 시작 시각 이다. RunState=Running 시점 에 set 되며
+	// time.Now() >= RunStartTime + spec.duration 일 때 reconciler 가 cleanup 단계로 전환 한다.
+	// +optional
+	RunStartTime *metav1.Time `json:"runStartTime,omitempty"`
+
 	// LastScheduleTime 은 controller 가 마지막 으로 run 을 트리거 한 시각 이다.
 	// +optional
 	LastScheduleTime *metav1.Time `json:"lastScheduleTime,omitempty"`

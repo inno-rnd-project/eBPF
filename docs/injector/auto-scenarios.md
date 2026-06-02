@@ -107,7 +107,7 @@ spec:
 
 ### lock conflict (`condition.Scheduled = False` with `ForbidLockHeld` reason)
 
-`concurrencyPolicy = Forbid` 인 LoadScenario 가 다음 run 을 트리거 하려 했을 때 다른 진행 중 injection 의 lock 이 잡혀 있는 상태. ConfigMap `injector-lock-<targetNamespace>-<targetPod>` 의 `injector.lease/expires` annotation 으로 만료 시각 확인. 정상 lifecycle 에서는 lease TTL (duration*2) 만료 시 자연 해제 된다.
+`concurrencyPolicy = Forbid` 인 LoadScenario 가 다음 run 을 트리거 하려 했을 때 다른 진행 중 injection 의 lock 이 잡혀 있는 상태. ConfigMap `workload-injector-lock-<targetNamespace>-<targetPod>` (safety.LockName 컨벤션) 의 `injector.lease/expires` annotation 으로 만료 시각 확인. 정상 lifecycle 에서는 lease TTL (duration*2) 만료 시 자연 해제 된다.
 
 ### spike alert 미발화 (`condition.SpikeAlertObserved = False`)
 

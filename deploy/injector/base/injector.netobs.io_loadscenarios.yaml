@@ -104,8 +104,9 @@ spec:
                 default: false
                 description: |-
                   SpikeAlertAssertion 이 true 이면 controller 가 부하 종료 후 5 분 polling window 동안
-                  z-score spike alert (CPUThrottleSpike / MemoryPressureSpike / NetworkDropSpike /
-                  GPUUtilizationSpike) 발화 여부 를 Prometheus query 로 확인 해 status 에 기록 한다.
+                  z-score spike alert (CPUThrottleSpikeDetected / MemoryPressureSpikeDetected /
+                  NetworkDropSpikeDetected / GPUUtilSpikeDetected) 발화 여부 를 Prometheus query 로 확인 해
+                  status 에 기록 한다.
                 type: boolean
               suspend:
                 default: false
@@ -223,6 +224,21 @@ spec:
               lastSuccessfulRunTime:
                 description: LastSuccessfulRunTime 은 마지막 으로 정상 종료 된 run 의 시각 이다.
                 format: date-time
+                type: string
+              runStartTime:
+                description: |-
+                  RunStartTime 은 현재 진행 중 인 run 의 시작 시각 이다. RunState=Running 시점 에 set 되며
+                  time.Now() >= RunStartTime + spec.duration 일 때 reconciler 가 cleanup 단계로 전환 한다.
+                format: date-time
+                type: string
+              runState:
+                description: |-
+                  RunState 는 reconciler lifecycle state machine 상태 이다. 비동기 reconcile 흐름 에서 stress
+                  Pod 생성 / 종료 시점 분리 의 신호 로 사용 한다. 비어 있으면 Idle 로 간주.
+                enum:
+                - Idle
+                - Running
+                - AwaitingSpikeAlert
                 type: string
             type: object
         type: object

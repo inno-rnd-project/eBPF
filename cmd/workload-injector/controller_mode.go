@@ -4,7 +4,6 @@ import (
 	"flag"
 	"log"
 	"os"
-	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -29,36 +28,28 @@ func init() {
 }
 
 // controllerConfig 는 controller mode 의 runtime 입력이다. CLI mode 의 config 와 일부 환경 변수를
-// 공유 하지만 controller 전용 필드 (LeaderElection / Metrics port / WatchNamespace) 가 추가된다.
+// 공유 하지만 controller 전용 필드 가 추가 된다.
 type controllerConfig struct {
-	MetricsAddr            string
-	HealthAddr             string
-	LeaderElection         bool
-	LeaderElectionID       string
-	LeaderElectionNS       string
-	WatchNamespace         string
-	PrometheusURL          string
-	AllowClusterLabel      string
-	SpikeAssertTimeout     time.Duration
-	SpikeAssertPollEvery   time.Duration
-	ReconcileBackoffWindow time.Duration
+	MetricsAddr       string
+	HealthAddr        string
+	LeaderElection    bool
+	LeaderElectionID  string
+	LeaderElectionNS  string
+	PrometheusURL     string
+	AllowClusterLabel string
 }
 
 // loadControllerConfig 는 controller mode 전용 flag/env 를 파싱한다. CLI mode 의 loadConfig 와
 // 분리 해 controller 전용 옵션 만 정의 한다.
 func loadControllerConfig() *controllerConfig {
 	c := &controllerConfig{
-		MetricsAddr:            envOr("CONTROLLER_METRICS_ADDR", ":9841"),
-		HealthAddr:             envOr("CONTROLLER_HEALTH_ADDR", ":9842"),
-		LeaderElection:         envOr("CONTROLLER_LEADER_ELECTION", "true") == "true",
-		LeaderElectionID:       envOr("CONTROLLER_LEADER_ELECTION_ID", "loadscenario.injector.netobs.io"),
-		LeaderElectionNS:       envOr("CONTROLLER_LEADER_ELECTION_NAMESPACE", "ebpf-project"),
-		WatchNamespace:         envOr("CONTROLLER_WATCH_NAMESPACE", ""),
-		PrometheusURL:          envOr("PROMETHEUS_URL", "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"),
-		AllowClusterLabel:      envOr("INJECTOR_ALLOW_CLUSTER_LABEL", "environment=dev"),
-		SpikeAssertTimeout:     envDuration("SPIKE_ASSERT_TIMEOUT", 5*time.Minute),
-		SpikeAssertPollEvery:   envDuration("SPIKE_ASSERT_POLL_EVERY", 30*time.Second),
-		ReconcileBackoffWindow: envDuration("RECONCILE_BACKOFF", 30*time.Second),
+		MetricsAddr:       envOr("CONTROLLER_METRICS_ADDR", ":9841"),
+		HealthAddr:        envOr("CONTROLLER_HEALTH_ADDR", ":9842"),
+		LeaderElection:    envOr("CONTROLLER_LEADER_ELECTION", "true") == "true",
+		LeaderElectionID:  envOr("CONTROLLER_LEADER_ELECTION_ID", "loadscenario.injector.netobs.io"),
+		LeaderElectionNS:  envOr("CONTROLLER_LEADER_ELECTION_NAMESPACE", "ebpf-project"),
+		PrometheusURL:     envOr("PROMETHEUS_URL", "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"),
+		AllowClusterLabel: envOr("INJECTOR_ALLOW_CLUSTER_LABEL", "environment=dev"),
 	}
 
 	fs := flag.NewFlagSet("workload-injector-controller", flag.ContinueOnError)
@@ -71,12 +62,8 @@ func loadControllerConfig() *controllerConfig {
 	fs.BoolVar(&c.LeaderElection, "controller-leader-election", c.LeaderElection, "enable leader election (single active controller)")
 	fs.StringVar(&c.LeaderElectionID, "controller-leader-election-id", c.LeaderElectionID, "leader election lease name")
 	fs.StringVar(&c.LeaderElectionNS, "controller-leader-election-namespace", c.LeaderElectionNS, "leader election lease namespace")
-	fs.StringVar(&c.WatchNamespace, "controller-watch-namespace", c.WatchNamespace, "namespace to watch for LoadScenario (empty = all namespaces)")
 	fs.StringVar(&c.PrometheusURL, "prometheus-url", c.PrometheusURL, "Prometheus base URL (spike alert assertion)")
 	fs.StringVar(&c.AllowClusterLabel, "allow-cluster-label", c.AllowClusterLabel, "required node label for cluster safety gate")
-	fs.DurationVar(&c.SpikeAssertTimeout, "spike-assert-timeout", c.SpikeAssertTimeout, "spike alert polling window after run end")
-	fs.DurationVar(&c.SpikeAssertPollEvery, "spike-assert-poll-every", c.SpikeAssertPollEvery, "spike alert polling interval")
-	fs.DurationVar(&c.ReconcileBackoffWindow, "reconcile-backoff", c.ReconcileBackoffWindow, "default reconcile re-queue backoff")
 
 	if err := fs.Parse(os.Args[1:]); err != nil && err != flag.ErrHelp {
 		log.Printf("controller flag parse: %v", err)
@@ -136,7 +123,7 @@ func runControllerMode() int {
 		AllowClusterLabel: cfg.AllowClusterLabel,
 		LockNamespace:     cfg.LeaderElectionNS,
 		LockHolder:        holder,
-		SpikeAsserter:     injectorcontroller.NewPromSpikeAsserter(cfg.PrometheusURL, cfg.SpikeAssertTimeout, cfg.SpikeAssertPollEvery),
+		SpikeAsserter:     injectorcontroller.NewPromSpikeAsserter(cfg.PrometheusURL),
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		log.Printf("controller: reconciler SetupWithManager: %v", err)

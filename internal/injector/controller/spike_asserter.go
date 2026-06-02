@@ -10,15 +10,14 @@ import (
 	"time"
 )
 
-// PromSpikeAsserter 는 controller 의 SpikeAlertAsserter 구현체 다. LoadScenario 종료 후 polling
-// window 동안 prometheus 의 ALERTS{alertstate="firing"} 시리즈 에서 z-score spike alert 발화 여부
-// 를 확인 해 hit 한 alertname 목록 을 반환 한다. spike alert 이름 4 종 은 #89 의 actual rule 이름
-// (deploy/gpuobs/base/prometheus-rule.yaml 의 resource-anomaly-spike 그룹) 과 정합 한다.
+// PromSpikeAsserter 는 controller 의 SpikeAlertAsserter 구현체 다. prometheus 의 ALERTS 시리즈 를
+// 1 회 query 해 firing 상태 의 spike alert (alertname 4 종 OR 매칭) 의 distinct 셋 을 반환 한다.
+// polling loop 와 timeout 관리 는 reconciler 의 state machine 이 책임 지고 본 asserter 는 단일
+// query 만 수행 한다. 본 분리 로 reconcile worker 의 blocking 시간 이 단일 HTTP query 의 timeout
+// 안 으로 제한 된다.
 type PromSpikeAsserter struct {
 	BaseURL      string
 	HTTPClient   *http.Client
-	PollWindow   time.Duration
-	PollEvery    time.Duration
 	AlertPattern string
 }
 
@@ -31,48 +30,21 @@ var SpikeAlertNames = []string{
 	"MemoryPressureSpikeDetected",
 }
 
-// DefaultSpikeAlertPattern 은 ALERTS 메트릭 alertname 라벨 정규식 매칭 패턴 이다. PromQL label
-// matcher 의 alternation 형태 (|) 로 본 4 종 OR 매칭.
+// DefaultSpikeAlertPattern 은 ALERTS 메트릭 alertname 라벨 정규식 매칭 패턴 이다.
 var DefaultSpikeAlertPattern = strings.Join(SpikeAlertNames, "|")
 
-// NewPromSpikeAsserter 는 prometheus base URL 과 polling 파라미터 로 asserter 를 생성 한다.
-func NewPromSpikeAsserter(baseURL string, pollWindow, pollEvery time.Duration) *PromSpikeAsserter {
+// NewPromSpikeAsserter 는 prometheus base URL 로 asserter 를 생성 한다.
+func NewPromSpikeAsserter(baseURL string) *PromSpikeAsserter {
 	return &PromSpikeAsserter{
 		BaseURL:      strings.TrimRight(baseURL, "/"),
 		HTTPClient:   &http.Client{Timeout: 10 * time.Second},
-		PollWindow:   pollWindow,
-		PollEvery:    pollEvery,
 		AlertPattern: DefaultSpikeAlertPattern,
 	}
 }
 
-// Observe 는 sinceRunEnd 시각 이후 PollWindow 동안 PollEvery 간격 으로 prometheus 의 ALERTS 시리즈
-// 를 polling 한다. firing alertname 1 개 이상 발견 시 즉시 반환. window 만료 까지 hit 가 없으면
-// 빈 slice 반환 (error 가 아닌 정상 종료).
+// Observe 는 SpikeAlertAsserter 인터페이스 의 single-shot 구현체 다. sinceRunEnd 인자 는 인터페이스
+// 호환 을 위해 받지만 본 구현 에서 사용 되지 않는다 (polling window 관리 는 reconciler 가 담당).
 func (a *PromSpikeAsserter) Observe(ctx context.Context, sinceRunEnd time.Time) ([]string, error) {
-	deadline := sinceRunEnd.Add(a.PollWindow)
-	for {
-		alerts, err := a.queryFiring(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if len(alerts) > 0 {
-			return alerts, nil
-		}
-		if time.Now().After(deadline) {
-			return nil, nil
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(a.PollEvery):
-		}
-	}
-}
-
-// queryFiring 은 prometheus query API 를 호출 해 ALERTS{alertstate="firing",alertname=~pattern}
-// 결과 의 alertname 라벨 distinct 집합 을 반환 한다.
-func (a *PromSpikeAsserter) queryFiring(ctx context.Context) ([]string, error) {
 	q := fmt.Sprintf(`ALERTS{alertstate="firing",alertname=~"%s"}`, a.AlertPattern)
 	u := fmt.Sprintf("%s/api/v1/query?query=%s", a.BaseURL, url.QueryEscape(q))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)

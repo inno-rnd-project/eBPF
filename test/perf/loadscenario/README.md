@@ -15,7 +15,7 @@
 - 2차 가드: `workload-injector-controller` Deployment Ready 확인 (`kubectl rollout status` timeout 5 분)
 - 3차 가드: 짧은 schedule (`@every 1m`) 의 LoadScenario CR 적용 후 `status.lastScheduleTime` 갱신 까지 polling 대기 (timeout 5 분)
 - 4차 가드: `status.lastSuccessfulRunTime` 갱신 확인 (duration `30s` + warmup, timeout 5 분)
-- 5차 가드 (warn only): `condition.SpikeAlertObserved = True` 또는 `status.lastObservedSpikeAlerts` 의 alertname 1 개 이상 hit 확인. dev cluster baseline stddev 따라 미발화 가능성 있어 warn 으로 만 처리
+- spike alert 자동 검증 은 본 시나리오 의 LoadScenario 가 `spec.spikeAlertAssertion=false` 채택 으로 skip. dev cluster baseline stddev 의 환경 의존성 과 polling window (5 분) 가 verify timeout 과 정합 하지 않아 본 가드 에서 분리. spike alert 자동 검증 단독 시나리오 는 별도 follow-up 으로 위임
 
 ## 실행
 
@@ -27,7 +27,7 @@
 
 ## 종료 코드
 
-- 0: 1-4차 가드 통과 (5차 가드는 warn 처리, 종료 코드 영향 없음)
+- 0: 1-4차 가드 통과
 - 1: CRD 미등록, controller Deployment ready 실패, target Pod 부재, 또는 5 분 polling 안에 status 갱신 실패
 
 ## 환경 변수

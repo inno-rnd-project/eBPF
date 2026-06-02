@@ -10,9 +10,8 @@ import (
 	"time"
 )
 
-// TestPromSpikeAsserter_HitImmediately 는 첫 query 에서 firing alert 가 hit 하면 즉시 반환 하는
-// 동작 을 검증 한다.
-func TestPromSpikeAsserter_HitImmediately(t *testing.T) {
+// TestPromSpikeAsserter_HitOnce 는 단일 query 에서 firing alert 가 반환 되는 동작 을 검증 한다.
+func TestPromSpikeAsserter_HitOnce(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"success","data":{"result":[
 			{"metric":{"alertname":"CPUThrottleSpikeDetected"}},
@@ -21,7 +20,7 @@ func TestPromSpikeAsserter_HitImmediately(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := NewPromSpikeAsserter(srv.URL, 200*time.Millisecond, 50*time.Millisecond)
+	a := NewPromSpikeAsserter(srv.URL)
 	got, err := a.Observe(context.Background(), time.Now())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -33,15 +32,15 @@ func TestPromSpikeAsserter_HitImmediately(t *testing.T) {
 	}
 }
 
-// TestPromSpikeAsserter_TimeoutNoHit 는 polling window 만료 까지 firing alert 가 없으면 빈 slice
-// 와 nil error 를 반환 하는 정상 종료 동작 을 검증 한다.
-func TestPromSpikeAsserter_TimeoutNoHit(t *testing.T) {
+// TestPromSpikeAsserter_NoHit 는 firing alert 가 없을 때 빈 slice 와 nil error 가 반환 되는 동작 을
+// 검증 한다.
+func TestPromSpikeAsserter_NoHit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"success","data":{"result":[]}}`))
 	}))
 	defer srv.Close()
 
-	a := NewPromSpikeAsserter(srv.URL, 100*time.Millisecond, 30*time.Millisecond)
+	a := NewPromSpikeAsserter(srv.URL)
 	got, err := a.Observe(context.Background(), time.Now())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -62,7 +61,7 @@ func TestPromSpikeAsserter_DedupAlertname(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := NewPromSpikeAsserter(srv.URL, 50*time.Millisecond, 10*time.Millisecond)
+	a := NewPromSpikeAsserter(srv.URL)
 	got, err := a.Observe(context.Background(), time.Now())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
