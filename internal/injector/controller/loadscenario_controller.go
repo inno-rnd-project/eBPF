@@ -72,6 +72,7 @@ func (r *LoadScenarioReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // Reconcile 은 LoadScenario 1 개에 대한 단일 reconcile 루프다.
 func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("loadscenario", req.NamespacedName)
+	defer func() { ReconcileTimestamp.Set(float64(time.Now().Unix())) }()
 
 	var ls injectorv1alpha1.LoadScenario
 	if err := r.Get(ctx, req.NamespacedName, &ls); err != nil {
@@ -129,8 +130,11 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// 동시 injection 정책 처리 + safety gate + lock acquire + load 실행.
-	if err := r.runScenario(ctx, &ls, now); err != nil {
-		logger.Error(err, "run scenario failed")
+	ActiveCount.Inc()
+	runErr := r.runScenario(ctx, &ls, now)
+	ActiveCount.Dec()
+	if runErr != nil {
+		logger.Error(runErr, "run scenario failed")
 		ls.Status.ConsecutiveFailures++
 		if ls.Spec.MaxFailures > 0 && ls.Status.ConsecutiveFailures >= ls.Spec.MaxFailures {
 			ls.Spec.Suspend = true
@@ -138,8 +142,9 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			setCondition(&ls, "Suspended", metav1.ConditionTrue, "MaxFailuresExceeded",
 				fmt.Sprintf("consecutiveFailures=%d >= maxFailures=%d", ls.Status.ConsecutiveFailures, ls.Spec.MaxFailures))
 		}
-		setCondition(&ls, "Scheduled", metav1.ConditionFalse, "RunFailed", err.Error())
+		setCondition(&ls, "Scheduled", metav1.ConditionFalse, "RunFailed", runErr.Error())
 		_ = r.Status().Update(ctx, &ls)
+		RecordReconcileResult(ls.Namespace, ls.Name, "error", float64(time.Now().Unix()))
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 
@@ -152,6 +157,7 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.Status().Update(ctx, &ls); err != nil {
 		return ctrl.Result{}, err
 	}
+	RecordReconcileResult(ls.Namespace, ls.Name, "success", float64(time.Now().Unix()))
 	nextAfter := schedule.Next(r.Now()).Sub(r.Now())
 	if nextAfter <= 0 {
 		nextAfter = time.Minute

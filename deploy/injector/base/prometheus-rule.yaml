@@ -63,3 +63,37 @@ spec:
             summary: "injector stuck (target={{ $labels.target_namespace }}/{{ $labels.target_pod }} kind={{ $labels.kind }})"
             description: "workload-injector 의 active=1 시계열이 35 분 이상 지속되었다. binary 의 DurationLimit (30 분) 을 초과한 상태라 정상 lifecycle 이 아니다. Job 의 Pod 상태와 spawn 한 stress Pod 의 잔존 여부를 점검한다."
             runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/injector/README.md#injectorstuck"
+
+        # LoadScenarioReconcilerStalled
+        # #102 의 controller mode 가 마지막 reconcile 시점 으로부터 5 분 초과 시 발화. controller worker
+        # stall (blocking 부하 인가 가 LoadScenario.spec.duration 의 max 30 분 안에 끝나지 못하는 케이스),
+        # leader election lease 분실, manager goroutine 죽음 등 이 검출 된다. controller 가 dev cluster
+        # 전용 이라 본 alert 도 dev cluster 의 controller 배포 상태 에서만 의미 가 있다.
+        - alert: LoadScenarioReconcilerStalled
+          expr: |
+            time() - max(loadscenario_reconcile_timestamp_seconds) > 300
+          for: 1m
+          labels:
+            severity: critical
+            component: injector
+          annotations:
+            summary: "loadscenario controller stalled (last reconcile > 5m ago)"
+            description: "workload-injector 의 controller mode 가 5 분 이상 reconcile 호출 없이 멈춰 있다. leader election lease, manager goroutine, blocking injection duration 을 점검 한다."
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/docs/injector/auto-scenarios.md#loadscenarioreconcilerstalled"
+
+        # LoadScenarioConsecutiveFailures
+        # #102 의 특정 LoadScenario 가 maxFailures 초과 로 자동 suspend 된 상태 를 warning 으로 노출.
+        # last_run_status{result="error"} == 1 이고 spec.suspend 가 true 인 시리즈 가 1 시간 지속 시
+        # 발화. 운영자 가 LoadScenario 의 부하 정의 또는 target 상태 를 점검 후 spec.suspend=false 로
+        # 재개 결정 한다.
+        - alert: LoadScenarioConsecutiveFailures
+          expr: |
+            loadscenario_last_run_status{result="error"} == 1
+          for: 1h
+          labels:
+            severity: warning
+            component: injector
+          annotations:
+            summary: "loadscenario {{ $labels.namespace }}/{{ $labels.loadscenario }} consecutive failures"
+            description: "LoadScenario {{ $labels.namespace }}/{{ $labels.loadscenario }} 의 마지막 run 이 error 결과 로 1 시간 이상 지속 되었다. maxFailures 초과 로 자동 suspend 된 상태 일 가능성 이 높다. 운영자 검토 후 spec.suspend=false 로 재개 한다."
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/docs/injector/auto-scenarios.md#loadscenarioconsecutivefailures"
