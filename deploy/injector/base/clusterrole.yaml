@@ -18,3 +18,21 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "create", "update", "delete"]
+  # #102 controller mode 의 LoadScenario CRD reconcile 권한.
+  - apiGroups: ["injector.netobs.io"]
+    resources: ["loadscenarios"]
+    verbs: ["get", "list", "watch", "update", "patch", "delete"]
+  - apiGroups: ["injector.netobs.io"]
+    resources: ["loadscenarios/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["injector.netobs.io"]
+    resources: ["loadscenarios/finalizers"]
+    verbs: ["update"]
+  # #102 controller mode 의 leader election lease.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # #102 controller mode 의 leader election event emit.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]

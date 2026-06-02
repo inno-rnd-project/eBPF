@@ -16,3 +16,5 @@ resources:
   - prometheus-rule.yaml
   # #102 의 LoadScenario CRD. controller-gen 자동 생성 (<group>_<plural>.yaml 컨벤션).
   - injector.netobs.io_loadscenarios.yaml
+  # #102 의 controller mode Deployment. workload-injector binary 를 -mode=controller 로 기동.
+  - deployment.yaml

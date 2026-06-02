@@ -26,3 +26,30 @@ spec:
       # Job lifecycle 이 짧아 (보통 5 분 ~ 30 분) 15s scrape 로 빠르게 시계열을 수집한다.
       interval: 15s
       scrapeTimeout: 10s
+---
+# #102 controller mode 전용 PodMonitor. controller Pod 의 :9841/metrics endpoint 를 scrape 한다.
+# load-injector 와 controller 가 component 라벨 로 분리 되므로 본 PodMonitor 의 selector 가 정확히
+# controller 만 매칭 한다.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: workload-injector-controller
+  namespace: ebpf-project
+  labels:
+    release: kube-prometheus-stack
+    app.kubernetes.io/name: workload-injector
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: ebpf-project
+spec:
+  namespaceSelector:
+    matchNames:
+      - ebpf-project
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: workload-injector
+      app.kubernetes.io/component: controller
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
