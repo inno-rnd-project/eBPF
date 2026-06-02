@@ -198,6 +198,187 @@
           "datasource": "${datasource}"
         }
       ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "GPU idle cause weight per victim ($src_namespace/$src_pod)",
+      "description": "#101 victim 단위 GPU idle 5 cause 가중치 분포. pod:gpu_idle_cause_weight:5m 5 cause (pcie_saturation 와 cpu_throttle 와 memory_pressure 와 network_pressure 와 host_compute_stall) 를 victim 별 stacked time-series 로 표시한다. 각 cause 는 고정 색상으로 운영자가 secondary 와 tertiary cause 까지 한눈에 비교 가능하다. 시리즈 의 stacked 높이 합이 1.0 에 가까우면 idle 게이팅 활성 시간대 이며 비어 있으면 GPU 가 idle 이 아니거나 cause 합이 0 인 상태다. dimension 4 종 과 cause 5 종 매핑 은 docs/observability/gpu-idle-dominant-cause.md 의 매핑 표 참조.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 70,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*pcie_saturation.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*cpu_throttle.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*memory_pressure.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*network_pressure.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*host_compute_stall.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "links": [
+        {
+          "title": "Dominant cause 운영 가이드",
+          "url": "https://github.com/inno-rnd-project/eBPF/blob/main/docs/observability/gpu-idle-dominant-cause.md",
+          "targetBlank": true
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "pod:gpu_idle_cause_weight:5m{node=\"$node\",victim_namespace=~\"$src_namespace\",victim_pod=~\"$src_pod\"}",
+          "legendFormat": "{{cause}} ({{victim_namespace}}/{{victim_pod}})",
+          "datasource": "${datasource}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Dominant cause indicator timeline ($src_namespace/$src_pod)",
+      "description": "#101 victim 단위 dominant cause indicator 시계열. victim:gpu_idle_dominant_cause_indicator:5m 가 cause 별 0/1 로 emit 되어 1 인 cause 가 해당 시점의 dominant 다. 시간축 상 dominant cause 가 swap 되는 시점이 운영자에게 cause flapping (GPUIdleDominantCauseSwitch alert) 또는 ambiguous (GPUIdleDominantCauseAmbiguous alert) 신호로 보인다. stepBefore 라인으로 cause indicator 의 discrete state 전이를 시각화한다.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 1.1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "lineInterpolation": "stepBefore"
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "victim:gpu_idle_dominant_cause_indicator:5m{node=\"$node\",victim_namespace=~\"$src_namespace\",victim_pod=~\"$src_pod\"}",
+          "legendFormat": "{{cause}} ({{victim_namespace}}/{{victim_pod}})",
+          "datasource": "${datasource}"
+        }
+      ]
     }
   ],
   "annotations": {

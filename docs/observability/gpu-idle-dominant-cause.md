@@ -1,15 +1,29 @@
 # GPU 유휴 dominant cause 가중치 ranking 운영 가이드
 
-`gpu_idle_cause_weight:5m`, `cluster:gpu_idle_dominant_cause:5m`, `GPUIdleDominantCauseSwitch` 3 종으로 GPU 유휴 상태의 dominant cause 를 정량 식별하는 운영 워크플로다. 본 도구는 #66 에서 도입되었으며 `GPUIdleWith*` 5 종 alert 가 동시 firing 할 때 운영자가 manual 판단하던 dominant cause 식별을 rule 기반으로 자동화한다.
+`gpu_idle_cause_weight:5m`, `cluster:gpu_idle_dominant_cause:5m`, `GPUIdleDominantCauseSwitch` 3 종으로 GPU 유휴 상태의 dominant cause 를 정량 식별하는 운영 워크플로다. 본 도구는 #66 에서 도입되었으며 `GPUIdleWith*` 5 종 alert 가 동시 firing 할 때 운영자가 manual 판단하던 dominant cause 식별을 rule 기반으로 자동화한다. #101 에서 victim Pod 단위 cause attribution, secondary cause top3 비교, ambiguous dominant 감지 alert 가 추가되어 cluster 단위 dominant 단일 시리즈 외에 victim 별 dominant cause 와 secondary cause 까지 한 가이드 안에서 진단 가능하다.
 
 ## 메트릭과 alert 카탈로그
+
+cluster 차원 (#66 도입).
 
 - `cluster:gpu_pcie_saturation_score:5m`, `cluster:pod_cpu_throttle_score:5m`, `cluster:pod_memory_pressure_score:5m`, `cluster:pod_network_pressure_score:5m`, `cluster:pod_host_compute_stall_score:5m`. 5 cause base score 의 cluster max rollup
 - `gpu_idle_cause_sum:5m`. 5 cause base score 의 합 (정규화 분모)
 - `gpu_idle_cause_weight:5m{cause}`. 5 cause 정규화 가중치. cluster 의 어느 노드라도 `node:gpu_idle:5m > 0.5` 일 때만 emit
 - `cluster:gpu_idle_dominant_cause:5m{cause}`. weight 최대값을 가진 cause 1 종을 단일 시리즈로 노출. 동률 시 cause enum 사전순 가장 앞 라벨이 채택
 - `gpu_idle_dominant_cause_indicator:5m{cause}`. cause 별 0/1 indicator. `GPUIdleDominantCauseSwitch` alert 가 changes() 합산에 사용
+- `gpu_idle_cause_weight_top3:5m{cause}`. cluster 단위 top3 cause 시리즈. secondary 와 tertiary cause 비교용 dashboard panel 입력
 - `GPUIdleDominantCauseSwitch` alert. 10 분 안에 2 회 이상 swap 시 발화 (changes 합산 임계 4)
+- `GPUIdleDominantCauseAmbiguous` alert. top1 과 top2 weight 격차 < 0.1 이면서 magnitude (top1) > 0.3 일 때 5 분 지속 시 발화
+
+victim 차원 (#101 도입).
+
+- `pod:gpu_idle_cause_score:5m{victim_namespace,victim_pod,cause}`. 5 cause base score 의 victim 단위 정합 helper. PCIe 는 `kube_pod_info` 매핑으로 GPU 노드 Pod 에 broadcast, 4 cause 는 기존 pod 단위 score 를 label_replace 로 victim 라벨 alias
+- `pod:gpu_idle_cause_sum:5m{victim_namespace,victim_pod}`. victim 별 5 cause base score 합 (정규화 분모)
+- `pod:gpu_idle_cause_weight:5m{victim_namespace,victim_pod,cause}`. victim 별 정규화 가중치. cluster 차원 weight 와 동일 idle 게이팅
+- `victim:gpu_idle_dominant_cause:5m{victim_namespace,victim_pod,cause}`. victim 별 dominant cause 단일 시리즈 (topk by victim + tie-breaker)
+- `victim:gpu_idle_dominant_cause_indicator:5m{victim_namespace,victim_pod,cause}`. victim 별 cause 0/1 indicator
+- `pod:gpu_idle_cause_weight_top3:5m{victim_namespace,victim_pod,cause}`. victim 별 top3 cause 시리즈
+- `VictimGPUIdleDominantCauseAmbiguous` alert. victim 별 ambiguous 감지. cluster alert 와 동일 격차 / magnitude 게이팅 을 victim 차원으로 적용
 
 ## cause 라벨 enum
 
@@ -20,6 +34,19 @@
 - `cpu_throttle` (`GPUIdleWithCPUThrottle`)
 - `memory_pressure` (`GPUIdleWithMemoryPressure`)
 - `host_compute_stall` (`GPUIdleWithHostComputeStall`)
+
+## dimension 4 종과 cause 5 종 매핑
+
+`internal/correlation/dominant.go` 의 `ComputeDominantDimension` 은 noisy neighbor 차원을 4 dimension (`cpu` 와 `gpu` 와 `memory` 와 `network`) 으로 산정하고, `gpu_idle_cause_weight:5m` 의 cause 는 5 종이다. 두 체계는 다음 매핑 표 로 정합된다. dimension `gpu` victim 발견 시 cause weight 5 종 중 어느 두 cause 를 우선 보아야 하는지 본 표 로 결정한다.
+
+| dimension | 매핑 cause | 설명 |
+|---|---|---|
+| `cpu` | `cpu_throttle` | cAdvisor CFS throttle 비율 base |
+| `memory` | `memory_pressure` | 컨테이너 working_set 대비 limit 비율 base |
+| `network` | `network_pressure` | Pod 단위 throughput saturation base (retrans 는 OR 보조 신호) |
+| `gpu` | `pcie_saturation` 과 `host_compute_stall` | GPU 의 device 측 (PCIe link) 압박과 host 측 (CUDA launch / device memory) 압박 양쪽 흡수 |
+
+dimension `gpu` victim 운영 시 weight 가장 큰 두 cause 가 보통 `pcie_saturation` 또는 `host_compute_stall` 이다. `gpu_idle_cause_weight_top3:5m` 또는 `pod:gpu_idle_cause_weight_top3:5m` 시계열로 secondary cause 와의 격차를 확인 후 어느 device 측 / host 측 압박이 우세한지 식별한다.
 
 ## 진단 워크플로
 
@@ -51,6 +78,22 @@
 
 5. `GPUIdleDominantCauseSwitch` 발화 시 cause 식별 자체가 불안정한 워크로드를 의심한다. `gpu_idle_dominant_cause_indicator:5m` 시계열에서 어느 두 cause 가 cycling 하는지 확인 후 두 cause 의 base score 추세를 비교
 
+## victim 단위 워크플로 (#101)
+
+cluster 단위 단일 dominant cause 가 식별되더라도 multi-tenant 환경에서는 victim Pod 별로 dominant cause 가 다를 수 있다. dimension `gpu` victim 발견 시 다음 흐름으로 victim 단위 진단을 수행한다.
+
+1. `correlation_noisy_neighbor_score{resource_dimension="gpu"}` 의 victim 라벨 (`victim_namespace`, `victim_pod`) 을 확인. 본 victim 이 GPU dimension 압박을 받는 후보다
+2. `gpu-network-correlation` dashboard 의 `$src_namespace` 와 `$src_pod` variable 을 본 victim 으로 설정. panel 2 (cause weight stacked) 와 panel 3 (dominant cause indicator timeline) 이 victim 단위 cause 분포를 노출
+3. victim 단위 dominant cause 직접 query 로 단일 cause string 식별
+
+   ```sh
+   kubectl exec -n monitoring $PROM_POD -c prometheus -- \
+     wget -qO- 'http://localhost:9090/api/v1/query?query=victim:gpu_idle_dominant_cause:5m{victim_namespace="<ns>",victim_pod="<pod>"}' | jq
+   ```
+
+4. secondary cause 와의 격차 확인. `pod:gpu_idle_cause_weight_top3:5m{victim_namespace="<ns>",victim_pod="<pod>"}` 3 cause 시리즈 비교. top1 과 top2 격차가 작으면 (< 0.1) cause 식별이 동률 ambiguous 상태이므로 manual 진단 으로 전환
+5. `VictimGPUIdleDominantCauseAmbiguous` alert 발화 시 victim 단위 cause weight 가 동률 ambiguous 임을 의미. 본 alert 는 cause 식별 자동 rule 의 신뢰도 저하 신호 이며 즉시 대응 의무는 없으나 운영자가 본 alert 발화 victim 에 대해서는 dashboard panel 의 stacked cause weight 를 직접 확인 한 뒤 dominant cause 라벨에 의존하지 말고 운영 판단 필요
+
 ## 검증 시나리오
 
 dev cluster 에서 `workload-injector` 의 cpu kind 합성 부하로 dominant cause 가 `cpu_throttle` 로 식별되는지 회귀 가드한다. `workload-injector` 는 Job 매니페스트로 한 번 spawn 되는 binary 이며 `test/injector-examples/cpu.yaml` 의 샘플 Job 을 그대로 사용한다. 샘플의 image 태그는 historical 값으로 박혀 있어 본 검증 전에 현재 cluster 의 build / load 정책에 맞춰 (`workload-injector:$(cat VERSION)` 또는 registry path) 조정해야 한다.
@@ -75,13 +118,25 @@ kubectl exec -n monitoring $PROM_POD -c prometheus -- \
 
 scrape 시점 시리즈 수 상한.
 
+cluster 차원 (#66).
+
 - `cluster:gpu_*_score:5m` 5 종. 각 1 시리즈 (cluster scalar). 총 5 시리즈
 - `gpu_idle_cause_sum:5m`. 1 시리즈
 - `gpu_idle_cause_weight:5m`. cause 라벨 5 종 x 1 시리즈 = 5 시리즈
 - `cluster:gpu_idle_dominant_cause:5m`. 1 시리즈 (topk(1))
 - `gpu_idle_dominant_cause_indicator:5m`. cause 라벨 5 종 x 1 시리즈 = 5 시리즈
+- `gpu_idle_cause_weight_top3:5m`. cause 라벨 3 종 x 1 시리즈 = 3 시리즈
 
-총 17 시리즈 상한. GPU 유휴 상태가 아닌 시간대는 idle 게이팅으로 일부 시리즈가 emit 되지 않아 실 운영에서는 더 적다.
+victim 차원 (#101). `V` 는 cluster 의 활성 Pod 수.
+
+- `pod:gpu_idle_cause_score:5m`. cause 5 종 x V (PCIe 는 GPU 노드 Pod 만)
+- `pod:gpu_idle_cause_sum:5m`. V 시리즈
+- `pod:gpu_idle_cause_weight:5m`. cause 5 종 x V (idle 게이팅으로 일부 skip)
+- `victim:gpu_idle_dominant_cause:5m`. V 시리즈 (victim 별 dominant cause 1 종)
+- `victim:gpu_idle_dominant_cause_indicator:5m`. cause 5 종 x V (cause indicator)
+- `pod:gpu_idle_cause_weight_top3:5m`. cause 3 종 x V
+
+cluster 차원 총 20 시리즈 상한. victim 차원 총 약 `20 * V` 시리즈 상한 (V = 활성 Pod 수, 5V + V + 5V + V + 5V + 3V). GPU 유휴 상태가 아닌 시간대는 idle 게이팅으로 일부 시리즈가 emit 되지 않아 실 운영에서는 더 적다. dev 클러스터의 V ≈ 50 기준 victim 차원 약 1000 시리즈 수준.
 
 ## 알려진 한계
 
