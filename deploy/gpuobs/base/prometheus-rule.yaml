@@ -529,6 +529,40 @@ spec:
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
 
+        # victim:gpu_idle_dominant_cause:5m{victim_namespace,victim_pod,cause}
+        # #101 victim 단위 dominant cause 단일 시리즈. cluster:gpu_idle_dominant_cause:5m 와 동일
+        # topk + tie-breaker 패턴 을 victim 차원 으로 적용 한다. victim 별 5 cause weight 중 최대값
+        # cause 1 종 만 노출 해 dashboard 와 alert 에서 victim 단위 단일 cause string 으로 join 가능
+        # 하다. 정확한 동률 케이스 에서 cause enum 사전순 가장 앞 라벨 이 채택 되도록 1e-6 단위 의
+        # deterministic offset 을 cause 별로 가산해 tie-breaker 로 둔다. cluster 단위 rule 과 달리
+        # pod:gpu_idle_cause_weight:5m 가 (victim_namespace, victim_pod, cause) 라벨 셋 을 가지므로
+        # offset 의 vector 매칭 에 group_left() 가 필요 하다. weight 시리즈 가 idle 게이팅 으로 emit
+        # 되지 않는 시간대 는 본 record 도 자연 emit 되지 않는다.
+        - record: victim:gpu_idle_dominant_cause:5m
+          expr: |
+            topk by(victim_namespace, victim_pod) (1,
+              pod:gpu_idle_cause_weight:5m
+              + on(cause) group_left() (
+                label_replace(vector(5e-6), "cause", "cpu_throttle", "", "")
+                or label_replace(vector(4e-6), "cause", "host_compute_stall", "", "")
+                or label_replace(vector(3e-6), "cause", "memory_pressure", "", "")
+                or label_replace(vector(2e-6), "cause", "network_pressure", "", "")
+                or label_replace(vector(1e-6), "cause", "pcie_saturation", "", "")
+              )
+            )
+
+        # victim:gpu_idle_dominant_cause_indicator:5m{victim_namespace,victim_pod,cause}
+        # GPUIdleDominantCauseSwitch 와 동일 패턴 의 victim 단위 cause 별 0/1 indicator. victim 의
+        # dominant cause 는 1, dominant 가 아닌 cause 4 종 은 0 으로 emit 되어 changes() 가 victim 별
+        # cause swap 빈도 를 안정적으로 카운트 가능 하다. dominant cause 1 종 시리즈 에 * 0 + 1 로
+        # 라벨 보존한 1 을 만들고 or 로 나머지 cause weight 4 종 에 0 을 fill 한다. idle 게이팅 이
+        # 꺼진 시간대 는 양쪽 시리즈 모두 없어 본 indicator 도 자연 emit 되지 않는다. victim 단위
+        # ambiguous alert 와 dashboard 의 dominant cause 색상 mapping 에 활용 된다.
+        - record: victim:gpu_idle_dominant_cause_indicator:5m
+          expr: |
+            (victim:gpu_idle_dominant_cause:5m * 0 + 1)
+            or (pod:gpu_idle_cause_weight:5m * 0)
+
     # netobs-gpuobs.thermal-correlation.recording 그룹은 #68 의 RTX consumer GPU thermal / power /
     # clock 상관 분석 layer 의 recording rule 을 모은다. 본 그룹의 helper 5종 (temp / throttle 의 avg
     # 와 stddev, 그리고 temp x throttle 의 avg) 은 Pearson 정의식 r = (avg(xy) - avg(x)avg(y)) /
