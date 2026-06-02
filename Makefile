@@ -182,7 +182,7 @@ manifests: controller-gen-install
 			crd:crdVersions=v1 \
 			paths="./api/v1alpha1/..." \
 			output:crd:artifacts:config=deploy/injector/base; \
-		echo "manifests generated: deploy/injector/base/crd.yaml"; \
+		echo "manifests generated under deploy/injector/base/ (<group>_<plural>.yaml convention)"; \
 	else \
 		echo "[skip] api/v1alpha1/ not present; manifests no-op"; \
 	fi

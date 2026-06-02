@@ -14,3 +14,5 @@ resources:
   - service.yaml
   - podmonitor.yaml
   - prometheus-rule.yaml
+  # #102 의 LoadScenario CRD. controller-gen 자동 생성 (<group>_<plural>.yaml 컨벤션).
+  - injector.netobs.io_loadscenarios.yaml
