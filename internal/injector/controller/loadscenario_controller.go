@@ -201,6 +201,17 @@ func (r *LoadScenarioReconciler) runScenario(ctx context.Context, ls *injectorv1
 	scheduleTime := metav1.NewTime(startTime)
 	ls.Status.LastScheduleTime = &scheduleTime
 
+	// target Pod fetch 후 nodeName 추출. cpu / memory / gpu loadgen 이 stress Pod 를 동일 node 에
+	// 강제 배치 하기 위해 Params.TargetNode 가 비어 있으면 안 된다. CLI mode 의 verifyTargetPod 와
+	// 동일 단계 다.
+	targetPod, err := r.K8sClient.CoreV1().Pods(ls.Spec.TargetRef.Namespace).Get(ctx, ls.Spec.TargetRef.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get target pod %s/%s: %w", ls.Spec.TargetRef.Namespace, ls.Spec.TargetRef.Name, err)
+	}
+	if targetPod.Spec.NodeName == "" {
+		return fmt.Errorf("target pod %s/%s has no nodeName (Pod not yet scheduled?)", ls.Spec.TargetRef.Namespace, ls.Spec.TargetRef.Name)
+	}
+
 	gen, err := loadgen.New(kind, r.K8sClient)
 	if err != nil {
 		return fmt.Errorf("loadgen New: %w", err)
@@ -208,6 +219,7 @@ func (r *LoadScenarioReconciler) runScenario(ctx context.Context, ls *injectorv1
 	params := loadgen.Params{
 		TargetNamespace: ls.Spec.TargetRef.Namespace,
 		TargetPod:       ls.Spec.TargetRef.Name,
+		TargetNode:      targetPod.Spec.NodeName,
 		SpawnNamespace:  ls.Namespace,
 		Duration:        ls.Spec.Duration.Duration,
 		Intensity:       ls.Spec.Intensity,
