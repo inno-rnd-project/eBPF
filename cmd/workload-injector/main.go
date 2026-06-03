@@ -47,6 +47,14 @@ func main() {
 }
 
 func runMain() int {
+	// #102 controller mode 분기. CLI mode 와 controller mode 가 동일 binary 안에서 -mode 플래그로
+	// 라우팅된다. 본 분기는 loadConfig 의 flag 파싱 전에 일찍 처리해 CLI 전용 flag (target-pod 필수
+	// 검증 등) 의 fatal exit 가 controller mode 진입을 막지 않게 한다.
+	mode := parseModeFlag(os.Args[1:])
+	if mode == "controller" {
+		return runControllerMode()
+	}
+
 	cfg := loadConfig()
 
 	client, err := newK8sClient(cfg.Kubeconfig)
@@ -165,6 +173,9 @@ func loadConfig() *config {
 	c.MaxVictims = envInt("MAX_VICTIMS", 20)
 
 	fs := flag.NewFlagSet("workload-injector", flag.ContinueOnError)
+	// -mode 는 parseModeFlag 가 이미 처리 했지만 flag.Parse 가 unknown flag 로 reject 하지 않도록
+	// 본 flagset 에 dummy 로 등록 한다. 값은 본 함수 흐름 에 사용 되지 않는다.
+	fs.String("mode", "cli", "execution mode (cli|controller); routing handled in main")
 	fs.StringVar(&c.Kind, "kind", c.Kind, "load kind: cpu | memory | network | gpu")
 	fs.StringVar(&c.TargetNamespace, "target-namespace", c.TargetNamespace, "target Pod namespace (env TARGET_NAMESPACE)")
 	fs.StringVar(&c.TargetPod, "target-pod", c.TargetPod, "target Pod name")

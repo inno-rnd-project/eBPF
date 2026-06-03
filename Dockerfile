@@ -22,6 +22,9 @@ COPY cmd ./cmd
 COPY internal ./internal
 COPY bpf ./bpf
 COPY configs ./configs
+# #102 의 LoadScenario CRD 타입 패키지. cmd/workload-injector 가 controller mode 에서 본 패키지를
+# import 한다.
+COPY api ./api
 
 RUN CGO_ENABLED=${CGO_ENABLED} GOOS=linux GOARCH=${TARGETARCH} \
     go build -o /out/${TARGET_AGENT} ./cmd/${TARGET_AGENT}

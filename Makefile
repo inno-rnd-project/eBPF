@@ -156,6 +156,52 @@ deps:
 # 생성을 강제 해 둘 사이의 drift 를 차단 한다. swag CLI 가 GOPATH/bin 에 설치 되어 있어야 한다
 # (go install github.com/swaggo/swag/cmd/swag@latest).
 SWAG ?= $(shell go env GOPATH)/bin/swag
+
+# controller-gen 은 #102 의 LoadScenario CRD 신설에 사용한다. kubebuilder marker 가 붙은
+# api/v1alpha1/*.go 로부터 CRD YAML (deploy/injector/base/<group>_<plural>.yaml, controller-gen
+# 표준 컨벤션 으로 예: injector.netobs.io_loadscenarios.yaml) 과 DeepCopy 메서드
+# (api/v1alpha1/zz_generated_deepcopy.go) 를 자동 생성한다. controller-runtime v0.19.x 와
+# 호환되는 v0.16.x 계열 로 pin 해 marker 처리 동작이 흔들리지 않게 한다. controller-gen 은
+# GOPATH/bin 에 설치 되어 있어야 한다 (go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)).
+CONTROLLER_GEN_VERSION ?= v0.16.5
+CONTROLLER_GEN ?= $(shell go env GOPATH)/bin/controller-gen
+
+# controller-gen 바이너리 설치 보장 타깃. CI 와 로컬 dev 양쪽 에서 동일 흐름 으로 호출 가능 하다.
+controller-gen-install:
+	@if ! [ -x "$(CONTROLLER_GEN)" ] || ! "$(CONTROLLER_GEN)" --version 2>/dev/null | grep -q "$(CONTROLLER_GEN_VERSION)"; then \
+		echo "installing controller-gen $(CONTROLLER_GEN_VERSION)"; \
+		go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION); \
+	fi
+	@"$(CONTROLLER_GEN)" --version
+
+# manifests 는 api/v1alpha1/ 의 kubebuilder marker 로부터 CRD YAML 을 생성 해
+# deploy/injector/base/<group>_<plural>.yaml (controller-gen 표준 컨벤션) 에 떨어 뜨린다.
+# crd:crdVersions=v1 옵션 으로 v1 CRD 단일 버전 만 출력 한다. api/v1alpha1/ 디렉토리 가 없으면
+# controller-gen 은 silent 통과 한다.
+manifests: controller-gen-install
+	@if [ -d "api/v1alpha1" ]; then \
+		"$(CONTROLLER_GEN)" \
+			crd:crdVersions=v1 \
+			paths="./api/v1alpha1/..." \
+			output:crd:artifacts:config=deploy/injector/base; \
+		echo "manifests generated under deploy/injector/base/ (<group>_<plural>.yaml convention)"; \
+	else \
+		echo "[skip] api/v1alpha1/ not present; manifests no-op"; \
+	fi
+
+# generate-crd 는 api/v1alpha1/ 의 kubebuilder marker 로부터 DeepCopy 메서드 (Go 객체 복사) 를
+# api/v1alpha1/zz_generated_deepcopy.go 로 생성 한다. controller-runtime 의 client.Object 인터페이스
+# 구현 에 필요 하다. 본 산출물 은 PR 에 함께 commit 되어야 한다 (gitignore 대상 아님).
+generate-crd: controller-gen-install
+	@if [ -d "api/v1alpha1" ]; then \
+		"$(CONTROLLER_GEN)" \
+			object:headerFile="hack/boilerplate.go.txt" \
+			paths="./api/v1alpha1/..."; \
+		echo "deepcopy generated: api/v1alpha1/zz_generated_deepcopy.go"; \
+	else \
+		echo "[skip] api/v1alpha1/ not present; generate-crd no-op"; \
+	fi
+
 swag-init:
 	@if [ ! -x "$(SWAG)" ]; then echo "swag CLI 가 없습니다. go install github.com/swaggo/swag/cmd/swag@latest 를 실행하세요."; exit 1; fi
 	# correlation 은 PodIdentity 같은 cross-package 타입 까지 OpenAPI schema 에 포함 시키려고
