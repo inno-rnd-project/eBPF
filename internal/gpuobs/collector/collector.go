@@ -37,6 +37,8 @@ type Collector struct {
 	// 운영 코드는 New에서 metrics.RecordPodSnapshot을 기본값으로 받고, 단위 테스트에서는
 	// spy 함수로 교체해 호출 인자(snapshot)를 검증한다.
 	recordSnapshot func(node string, samples []metrics.PodGPUSample)
+	// recordMigSnapshot 은 #104 MIG 활성 시리즈 발행 test seam. 운영 기본값 metrics.RecordPodMigSnapshot.
+	recordMigSnapshot func(node string, samples []metrics.PodMigGPUSample)
 }
 
 // New는 NVML 핸들과 Config, 그리고 선택적 PodResolver를 받아 Collector를 구성한다.
@@ -46,10 +48,11 @@ type Collector struct {
 // /proc/<pid>/cgroup 읽기 비용을 발생시키지 않는다.
 func New(nv nvml.NVML, cfg config.Config, resolver PodResolver) *Collector {
 	return &Collector{
-		nvml:           nv,
-		cfg:            cfg,
-		resolver:       resolver,
-		recordSnapshot: metrics.RecordPodSnapshot,
+		nvml:              nv,
+		cfg:               cfg,
+		resolver:          resolver,
+		recordSnapshot:    metrics.RecordPodSnapshot,
+		recordMigSnapshot: metrics.RecordPodMigSnapshot,
 	}
 }
 
@@ -122,6 +125,15 @@ type podGPUKey struct {
 	gpuIndex uint
 }
 
+// podMigKey 는 #104 MIG 활성 환경의 (Pod, MIG instance) 단위 합산 키다. parent gpuUUID 와 instance
+// 식별자 (migUUID, gpuInstanceID) 조합 으로 동일 device 내 instance 간 분리 보장.
+type podMigKey struct {
+	podUID         string
+	gpuUUID        string
+	migUUID        string
+	gpuInstanceID  uint32
+}
+
 // pollOnce는 DeviceSet.Snapshot 으로 현재 알려진 device 핸들을 받아 각 device 마다 Snapshot 과
 // RunningProcesses 를 읽고, per-pod 분량은 (podUID, gpu) 키로 합산한 뒤 한 번에
 // metrics.RecordPodSnapshot 으로 전달한다.
@@ -134,8 +146,10 @@ func (c *Collector) pollOnce() {
 	perPodEnabled := c.resolver != nil && c.cfg.PodMetricsEnabled
 
 	var aggregated map[podGPUKey]*metrics.PodGPUSample
+	var aggregatedMig map[podMigKey]*metrics.PodMigGPUSample
 	if perPodEnabled {
 		aggregated = make(map[podGPUKey]*metrics.PodGPUSample)
+		aggregatedMig = make(map[podMigKey]*metrics.PodMigGPUSample)
 	}
 
 	// #104 MPS daemon active 여부 는 노드 단위 신호 라 device loop 진입 전 1회 detect.
@@ -197,6 +211,13 @@ func (c *Collector) pollOnce() {
 				SmUtilPct:    smUtil,
 			}
 		}
+
+		// #104 MIG 활성 경로. parent device 의 MigMode 가 Enabled 일 때만 instance enumerate 후
+		// instance 별 process util 산정. RTX 3090 같은 MIG 미지원 device 에서는 본 분기 미진입 (graceful
+		// degradation). instance enumerate / per-instance util 실패는 비치명 적 으로 흡수.
+		if snap.Device.MigMode == types.MigModeEnabled {
+			c.collectMigInstances(dev, snap.Device, aggregatedMig)
+		}
 	}
 
 	// per-pod 토글이 켜진 경로에서만 RecordPodSnapshot을 호출한다.
@@ -207,6 +228,80 @@ func (c *Collector) pollOnce() {
 			samples = append(samples, *v)
 		}
 		c.recordSnapshot(c.cfg.NodeName, samples)
+
+		// #104 MIG 활성 시리즈 도 동일 cleanup invariant 유지 위해 항상 호출. RTX 3090 같은 MIG 미지원
+		// device 만 있는 노드 에서는 aggregatedMig 가 항상 empty 라 cleanup 외 부수 효과 zero.
+		migSamples := make([]metrics.PodMigGPUSample, 0, len(aggregatedMig))
+		for _, v := range aggregatedMig {
+			migSamples = append(migSamples, *v)
+		}
+		c.recordMigSnapshot(c.cfg.NodeName, migSamples)
+	}
+}
+
+// collectMigInstances 는 #104 MIG 활성 device 의 instance 별 process util 을 수집해 aggregated 맵 에
+// 누적 한다. enumerate / per-instance 호출 실패는 비치명적 으로 흡수 (다른 instance 폴링 차단 하지 않음).
+// instance 핸들 은 Close 호출 보장 (NVML 자체 는 instance handle 명시 release API 가 없지만, 본 패키지의
+// deviceImpl wrapping 구조 일관성 유지 와 향후 NVML 변경 대비 목적).
+func (c *Collector) collectMigInstances(parent nvml.Device, parentDev types.GPUDevice, aggregated map[podMigKey]*metrics.PodMigGPUSample) {
+	count, err := parent.MaxMigDeviceCount()
+	if err != nil {
+		log.Printf("gpuobs: mig max device count: %v", err)
+		return
+	}
+	for i := 0; i < count; i++ {
+		instance, err := parent.MigDevice(i)
+		if err != nil {
+			log.Printf("gpuobs: mig device idx=%d: %v", i, err)
+			continue
+		}
+		if instance == nil {
+			// 빈 슬롯 (instance 미생성 또는 disabled).
+			continue
+		}
+		c.collectMigInstance(instance, parentDev, aggregated)
+		if err := instance.Close(); err != nil {
+			log.Printf("gpuobs: mig instance close idx=%d: %v", i, err)
+		}
+	}
+}
+
+// collectMigInstance 는 단일 MIG instance 의 process util 을 PID 단위 ResolvePID 후 (podUID, instance) 키
+// 로 합산 한다. instance Info 호출 실패는 비치명적 으로 흡수.
+func (c *Collector) collectMigInstance(instance nvml.Device, parentDev types.GPUDevice, aggregated map[podMigKey]*metrics.PodMigGPUSample) {
+	info, err := instance.Info()
+	if err != nil {
+		log.Printf("gpuobs: mig instance info: %v", err)
+		return
+	}
+	giID, _ := instance.GpuInstanceId()
+	utils, err := instance.ProcessUtilization()
+	if err != nil {
+		log.Printf("gpuobs: mig instance process util: %v", err)
+		return
+	}
+	for _, u := range utils {
+		id := c.resolver.ResolvePID(u.PID)
+		if !id.IsPod() {
+			continue
+		}
+		key := podMigKey{
+			podUID:        id.PodUID,
+			gpuUUID:       parentDev.UUID,
+			migUUID:       info.UUID,
+			gpuInstanceID: giID,
+		}
+		if v, ok := aggregated[key]; ok {
+			v.SmUtilPct = capUtilPct(uint32(v.SmUtilPct) + u.SmUtilPct)
+			continue
+		}
+		aggregated[key] = &metrics.PodMigGPUSample{
+			ID:            id,
+			Device:        parentDev,
+			MigUUID:       info.UUID,
+			GpuInstanceID: giID,
+			SmUtilPct:     u.SmUtilPct,
+		}
 	}
 }
 

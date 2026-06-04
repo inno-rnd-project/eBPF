@@ -795,3 +795,158 @@ func TestPollOnce_ProcessUtilCalledPerDevice(t *testing.T) {
 		t.Errorf("ProcessUtilization calls=%d want 1 (per device per poll)", calls)
 	}
 }
+
+// fakeMigInstance 는 #104 MIG instance 핸들의 테스트용 stub. parent fakeDevice 가 enumerate 결과 로
+// 반환한다. Info / ProcessUtilization / GpuInstanceId 만 의미 있는 동작 을 제공 하고 나머지 는 zero.
+type fakeMigInstance struct {
+	uuid        string
+	giID        uint32
+	utils       []types.GPUProcessUtil
+	closeCalled bool
+}
+
+func (m *fakeMigInstance) Info() (types.GPUDevice, error) {
+	return types.GPUDevice{UUID: m.uuid, MigMode: types.MigModeEnabled}, nil
+}
+func (m *fakeMigInstance) Snapshot() (types.GPUSnapshot, error) { return types.GPUSnapshot{}, nil }
+func (m *fakeMigInstance) RunningProcesses() ([]types.GPUProcess, error) {
+	return nil, nil
+}
+func (m *fakeMigInstance) ProcessUtilization() ([]types.GPUProcessUtil, error) {
+	return m.utils, nil
+}
+func (m *fakeMigInstance) MigMode() (types.MigMode, error)    { return types.MigModeEnabled, nil }
+func (m *fakeMigInstance) MaxMigDeviceCount() (int, error)    { return 0, nil }
+func (m *fakeMigInstance) MigDevice(int) (nvml.Device, error) { return nil, nil }
+func (m *fakeMigInstance) IsMigDevice() (bool, error)         { return true, nil }
+func (m *fakeMigInstance) GpuInstanceId() (uint32, error)     { return m.giID, nil }
+func (m *fakeMigInstance) ComputeInstanceId() (uint32, error) { return 0, nil }
+func (m *fakeMigInstance) Close() error                       { m.closeCalled = true; return nil }
+
+// migFakeDevice 는 MIG enabled parent device 의 테스트용 stub. instance enumerate 분기 검증 전용.
+type migFakeDevice struct {
+	*fakeDevice
+	migInstances []*fakeMigInstance
+}
+
+func (d *migFakeDevice) MaxMigDeviceCount() (int, error) { return len(d.migInstances), nil }
+func (d *migFakeDevice) MigDevice(i int) (nvml.Device, error) {
+	if i < 0 || i >= len(d.migInstances) {
+		return nil, nil
+	}
+	return d.migInstances[i], nil
+}
+
+// migSnapshotSpy 는 recordMigSnapshot test seam 의 호출 인자 캡처.
+type migSnapshotSpy struct {
+	mu    sync.Mutex
+	calls [][]metrics.PodMigGPUSample
+}
+
+func (s *migSnapshotSpy) record(_ string, samples []metrics.PodMigGPUSample) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]metrics.PodMigGPUSample, len(samples))
+	copy(cp, samples)
+	s.calls = append(s.calls, cp)
+}
+
+func (s *migSnapshotSpy) lastSamples() []metrics.PodMigGPUSample {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.calls) == 0 {
+		return nil
+	}
+	return s.calls[len(s.calls)-1]
+}
+
+// TestPollOnce_MigPathSkipsWhenDeviceDisabled 는 MIG 미지원 device 에서 instance enumerate / mig sample
+// 발행 이 일어나지 않음 을 검증 (RTX 3090 같은 dev cluster 경로). recordMigSnapshot 은 cleanup invariant
+// 유지 위해 매 poll 호출 되지만 samples 는 항상 empty.
+func TestPollOnce_MigPathSkipsWhenDeviceDisabled(t *testing.T) {
+	dev := &fakeDevice{
+		info: types.GPUDevice{Index: 0, UUID: "GPU-0", MigMode: types.MigModeUnsupported},
+		snapshot: types.GPUSnapshot{
+			Device: types.GPUDevice{Index: 0, UUID: "GPU-0", MigMode: types.MigModeUnsupported},
+		},
+	}
+	spy := &migSnapshotSpy{}
+	resolver := &fakeResolver{}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
+	c, _ := newCollectorWithDevs(t, cfg, resolver, dev)
+	c.recordMigSnapshot = spy.record
+
+	c.pollOnce()
+
+	if len(spy.calls) != 1 {
+		t.Fatalf("recordMigSnapshot calls=%d want 1 (cleanup invariant)", len(spy.calls))
+	}
+	if got := spy.lastSamples(); len(got) != 0 {
+		t.Errorf("mig samples=%d want 0 (MIG unsupported)", len(got))
+	}
+}
+
+// TestPollOnce_MigPathEnumeratesInstances 는 MIG enabled device 에서 instance enumerate 후 instance 별
+// util 이 (podUID, mig_uuid, gi_id) 키로 합산 되어 발행 되는지 검증. 두 instance, 각 instance 에 단일 Pod
+// process 가 있을 때 두 시리즈 가 emit 되어야.
+func TestPollOnce_MigPathEnumeratesInstances(t *testing.T) {
+	inst0 := &fakeMigInstance{
+		uuid: "MIG-0",
+		giID: 1,
+		utils: []types.GPUProcessUtil{
+			{PID: 100, SmUtilPct: 30},
+		},
+	}
+	inst1 := &fakeMigInstance{
+		uuid: "MIG-1",
+		giID: 2,
+		utils: []types.GPUProcessUtil{
+			{PID: 200, SmUtilPct: 50},
+		},
+	}
+	parent := &migFakeDevice{
+		fakeDevice: &fakeDevice{
+			info: types.GPUDevice{Index: 0, UUID: "GPU-parent", MigMode: types.MigModeEnabled},
+			snapshot: types.GPUSnapshot{
+				Device: types.GPUDevice{Index: 0, UUID: "GPU-parent", MigMode: types.MigModeEnabled},
+			},
+		},
+		migInstances: []*fakeMigInstance{inst0, inst1},
+	}
+	resolver := &fakeResolver{byPID: map[uint32]kube.PodIdentity{
+		100: {IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "p1", PodUID: "uid-1"},
+		200: {IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "p2", PodUID: "uid-2"},
+	}}
+	spy := &migSnapshotSpy{}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
+
+	// migFakeDevice 가 nvml.Device 인터페이스 만족 하도록 wrap 한 fakeNVML 시드.
+	fake := &fakeNVML{count: 1, devices: map[uint]*fakeDevice{0: parent.fakeDevice}}
+	c := New(fake, cfg, resolver)
+	c.devSet = nvml.NewDeviceSet(&migFakeNVML{parent: parent})
+	if err := c.devSet.Sync(); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	c.recordMigSnapshot = spy.record
+
+	c.pollOnce()
+
+	samples := spy.lastSamples()
+	if len(samples) != 2 {
+		t.Fatalf("mig samples=%d want 2 (2 instances, 2 pods)", len(samples))
+	}
+	// 두 instance handle 모두 Close 호출 되어야 (lifecycle 검증).
+	if !inst0.closeCalled || !inst1.closeCalled {
+		t.Errorf("instance Close not called: inst0=%v inst1=%v", inst0.closeCalled, inst1.closeCalled)
+	}
+}
+
+// migFakeNVML 은 migFakeDevice 를 nvml.NVML.Device 결과로 반환하는 NVML wrapper.
+type migFakeNVML struct {
+	parent *migFakeDevice
+}
+
+func (n *migFakeNVML) DeviceCount() (uint, error)            { return 1, nil }
+func (n *migFakeNVML) Device(_ uint) (nvml.Device, error)    { return n.parent, nil }
+func (n *migFakeNVML) DeviceUUID(_ uint) (string, error)     { return n.parent.info.UUID, nil }
+func (n *migFakeNVML) Shutdown() error                       { return nil }
