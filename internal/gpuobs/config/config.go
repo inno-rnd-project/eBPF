@@ -47,6 +47,13 @@ type Config struct {
 	// baseline 이하로 떨어진 비율을 0-1 score로 정규화한다. default 10 hz는 inference workload
 	// 기준이며 batch training 등은 더 낮을 수 있어 운영자가 env / flag로 override 한다.
 	CudaLaunchBaselinePerSec float64
+
+	// PodUtilAllowNamespaces 는 #104 의 gpuobs_pod_utilization_percent 메트릭이 emit 되는 src namespace
+	// 화이트리스트다. 빈 슬라이스가 기본값이며 그때는 전체 클러스터 발행, 명시 시 해당 namespace 의 Pod
+	// 만 emit. 본 통제는 신규 util 메트릭에만 적용 되며 기존 PodMetricsEnabled flag 와 별개로 동작하므로
+	// pod-metrics 가 활성 이고 본 allow-list 만 일부 namespace 로 좁혀 카디널리티 폭증 방어 가능 하다.
+	// netobs 의 NETOBS_FLOW_ALLOW_NAMESPACES 와 동일 parseNamespaceList 패턴 재사용.
+	PodUtilAllowNamespaces []string
 }
 
 // Parse는 env와 CLI flag를 읽어 Config를 구성해 반환한다.
@@ -90,6 +97,7 @@ func Parse() (Config, error) {
 		CudaUprobeLibcudartPath:    getenvDefault("GPUOBS_CUDA_LIBCUDART_PATH", ""),
 		CudaUprobeDeviceMapRefresh: cudaDeviceMapRefresh,
 		CudaLaunchBaselinePerSec:   cudaLaunchBaseline,
+		PodUtilAllowNamespaces:     parseNamespaceList(getenvDefault("GPUOBS_POD_UTIL_ALLOW_NAMESPACES", "")),
 	}
 
 	fs := flag.NewFlagSet("gpuobs-agent", flag.ContinueOnError)
@@ -104,6 +112,8 @@ func Parse() (Config, error) {
 	fs.StringVar(&cfg.CudaUprobeLibcudartPath, "cuda-libcudart-path", cfg.CudaUprobeLibcudartPath, "absolute path to host libcudart.so reachable from inside the container; empty disables cudart attach")
 	fs.DurationVar(&cfg.CudaUprobeDeviceMapRefresh, "cuda-devicemap-refresh", cfg.CudaUprobeDeviceMapRefresh, "interval between NVML RunningProcesses sweeps that rebuild the PID→GPU map and clean up stale cuda series")
 	fs.Float64Var(&cfg.CudaLaunchBaselinePerSec, "cuda-launch-baseline", cfg.CudaLaunchBaselinePerSec, "expected CUDA kernel launch rate (Hz) used as denominator of pod:host_compute_stall_score:5m correlation rule (default 10)")
+	var podUtilAllow string
+	fs.StringVar(&podUtilAllow, "pod-util-allow-namespaces", "", "comma-separated namespace allow-list for gpuobs_pod_utilization_percent emission; empty means all namespaces. Independent of -pod-metrics gate (which controls pod_memory series)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// -h/-help 요청은 flag 패키지가 usage를 출력한 뒤 ErrHelp를 반환한다.
 		// 사용자 의도된 정상 경로이므로 exit 0으로 종료한다.
@@ -111,6 +121,12 @@ func Parse() (Config, error) {
 			os.Exit(0)
 		}
 		return Config{}, err
+	}
+
+	// -pod-util-allow-namespaces flag 가 명시 되면 env 값을 덮어쓴다. env < flag 우선순위 약속 유지.
+	// 본 flag 가 미지정 이면 env 파싱 결과 (parseNamespaceList) 가 그대로 유지된다.
+	if podUtilAllow != "" {
+		cfg.PodUtilAllowNamespaces = parseNamespaceList(podUtilAllow)
 	}
 
 	if strings.TrimSpace(cfg.ListenAddr) == "" {
@@ -177,6 +193,33 @@ func getenvFloat(key string, def float64) (float64, error) {
 		return def, fmt.Errorf("invalid float for %s: %q", key, v)
 	}
 	return f, nil
+}
+
+// parseNamespaceList 는 #104 의 GPUOBS_POD_UTIL_ALLOW_NAMESPACES env 와 동명 flag 입력을 namespace
+// 슬라이스로 파싱한다. 콤마 구분, 공백 트림, 중복 제거. 빈 입력은 nil 반환 (전체 클러스터 발행 의미).
+// netobs 의 parseNamespaceList 와 동일 시맨틱이며 후속 신규 카디널리티 통제 옵션에도 재사용 가능 하다.
+func parseNamespaceList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	tokens := strings.Split(raw, ",")
+	seen := make(map[string]struct{}, len(tokens))
+	out := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		ns := strings.TrimSpace(tok)
+		if ns == "" {
+			continue
+		}
+		if _, ok := seen[ns]; ok {
+			continue
+		}
+		seen[ns] = struct{}{}
+		out = append(out, ns)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // getenvDuration은 key env를 duration으로 파싱해 반환한다.

@@ -17,7 +17,9 @@ func resetPodMetricsState(t *testing.T) {
 	podMemoryUsed.Reset()
 	podUtilization.Reset()
 	podMetricsEnabled = true
+	podUtilAllowNamespaces = nil
 	lastPodSampleKeys = make(map[string]struct{})
+	lastPodUtilKeys = make(map[string]struct{})
 }
 
 // resetDeviceMetricsState는 패키지 레벨 device gauge/counter와 모든 delta 추적기를 초기화한다.
@@ -1251,5 +1253,70 @@ func TestRecordPodSnapshot_UtilDiffCleanupRemovesStaleSeries(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(podUtilization.WithLabelValues("n", "ml", "a", "uid-a", "GPU-1", "0")); got != 45 {
 		t.Errorf("util a=%v want 45", got)
+	}
+}
+
+// TestPodUtilAllowList_AllowAllWhenEmpty 는 allow-list 미설정 시 모든 namespace 의 util 시리즈 가 발행 되는지
+// 검증 (기본 escape hatch off 동작).
+func TestPodUtilAllowList_AllowAllWhenEmpty(t *testing.T) {
+	resetPodMetricsState(t)
+	SetPodUtilAllowNamespaces(nil)
+
+	RecordPodSnapshot("n", []PodGPUSample{
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "a", PodUID: "uid-a"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 40},
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "infra", PodName: "b", PodUID: "uid-b"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 60},
+	})
+	if got := testutil.CollectAndCount(podUtilization); got != 2 {
+		t.Errorf("util series=%d want 2 (allow-all)", got)
+	}
+}
+
+// TestPodUtilAllowList_FiltersToSpecifiedNamespace 는 명시 allow-list 가 미매칭 namespace 의 util 시리즈
+// 발행 을 차단 하는지 검증. podMemoryUsed 는 영향 받지 않는다.
+func TestPodUtilAllowList_FiltersToSpecifiedNamespace(t *testing.T) {
+	resetPodMetricsState(t)
+	SetPodUtilAllowNamespaces([]string{"ml"})
+
+	RecordPodSnapshot("n", []PodGPUSample{
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "a", PodUID: "uid-a"}, Device: types.GPUDevice{UUID: "GPU-1"}, MemUsedBytes: 100, SmUtilPct: 40},
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "infra", PodName: "b", PodUID: "uid-b"}, Device: types.GPUDevice{UUID: "GPU-1"}, MemUsedBytes: 200, SmUtilPct: 60},
+	})
+
+	if got := testutil.CollectAndCount(podUtilization); got != 1 {
+		t.Errorf("util series=%d want 1 (only ml allowed)", got)
+	}
+	if got := testutil.ToFloat64(podUtilization.WithLabelValues("n", "ml", "a", "uid-a", "GPU-1", "0")); got != 40 {
+		t.Errorf("ml util=%v want 40", got)
+	}
+
+	// podMemoryUsed 는 allow-list 와 무관하게 두 시리즈 모두 발행 (기존 발행 정책 유지).
+	if got := testutil.CollectAndCount(podMemoryUsed); got != 2 {
+		t.Errorf("memory series=%d want 2 (unaffected by allow-list)", got)
+	}
+}
+
+// TestPodUtilAllowList_TogglingCleansUpStaleUtilSeries 는 allow-list 변경 시 직전 poll 에 있던 util
+// 시리즈 가 자연 cleanup 되는지 검증 (lastPodUtilKeys diff 동작).
+func TestPodUtilAllowList_TogglingCleansUpStaleUtilSeries(t *testing.T) {
+	resetPodMetricsState(t)
+
+	// 1차: allow-list 미설정 (모두 발행).
+	SetPodUtilAllowNamespaces(nil)
+	RecordPodSnapshot("n", []PodGPUSample{
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "a", PodUID: "uid-a"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 40},
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "infra", PodName: "b", PodUID: "uid-b"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 60},
+	})
+	if got := testutil.CollectAndCount(podUtilization); got != 2 {
+		t.Fatalf("before tighten=%d want 2", got)
+	}
+
+	// 2차: allow-list 를 ml 로 좁히고 동일 samples 다시 발행. infra 시리즈 는 cleanup 되어야.
+	SetPodUtilAllowNamespaces([]string{"ml"})
+	RecordPodSnapshot("n", []PodGPUSample{
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "a", PodUID: "uid-a"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 40},
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "infra", PodName: "b", PodUID: "uid-b"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 60},
+	})
+	if got := testutil.CollectAndCount(podUtilization); got != 1 {
+		t.Errorf("after tighten=%d want 1 (infra cleanup)", got)
 	}
 }

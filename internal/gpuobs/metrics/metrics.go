@@ -149,6 +149,35 @@ func SetPodMetricsEnabled(v bool) {
 	podMetricsEnabled = v
 }
 
+// podUtilAllowNamespaces 는 #104 의 gpuobs_pod_utilization_percent 발행 namespace allow-list 이다. nil
+// 또는 빈 셋 이면 전체 namespace 발행, 명시 시 매칭 namespace 만 발행. SetPodUtilAllowNamespaces 가
+// startup 단계 에서 1 회 갱신하고 이후 RecordPodSnapshot 매 호출 에서 읽기 전용 으로 참조된다.
+var podUtilAllowNamespaces map[string]struct{}
+
+// SetPodUtilAllowNamespaces 는 #104 카디널리티 통제 셋업 진입점 이다. 반드시 RecordPodSnapshot 호출 전
+// (main startup) 에 1 회만 호출 한다. 빈 슬라이스 / nil 은 전체 namespace 발행 (escape hatch off) 의미.
+func SetPodUtilAllowNamespaces(ns []string) {
+	if len(ns) == 0 {
+		podUtilAllowNamespaces = nil
+		return
+	}
+	out := make(map[string]struct{}, len(ns))
+	for _, n := range ns {
+		out[n] = struct{}{}
+	}
+	podUtilAllowNamespaces = out
+}
+
+// podUtilAllowed 는 RecordPodSnapshot 매 sample 의 emit 분기 helper. allow-list 미설정 (전체 발행) 또는
+// 명시 셋 에 포함 된 namespace 면 true. 본 helper 는 hot path 라 map lookup 1 회 비용 만 발생.
+func podUtilAllowed(namespace string) bool {
+	if podUtilAllowNamespaces == nil {
+		return true
+	}
+	_, ok := podUtilAllowNamespaces[namespace]
+	return ok
+}
+
 // PodGPUSample은 한 (Pod, GPU device) 조합의 메모리 관측치다.
 // collector가 NVML RunningProcesses 결과를 (podUID, gpu) 키로 합산한 뒤 한 번에 RecordPodSnapshot으로 전달한다.
 type PodGPUSample struct {
@@ -162,12 +191,15 @@ type PodGPUSample struct {
 	SmUtilPct uint32
 }
 
-// lastPodSampleKeys는 직전 RecordPodSnapshot 호출에서 기록된 라벨 키 셋이다.
+// lastPodSampleKeys는 직전 RecordPodSnapshot 호출에서 기록된 라벨 키 셋이다 (podMemoryUsed 기준).
 // diff-based cleanup에 쓰여, 이번 호출에 등장하지 않은 키는 DeleteLabelValues로 series에서 제거된다.
 // 호출자는 단일 goroutine(collector pollOnce)이지만, 본 변수가 패키지 전역이고 RecordPodSnapshot이
 // public 함수라 향후 호출 패턴 변경에 대비해 lastPodSampleKeysMu로 보호한다.
+// #104 podUtilization 은 namespace allow-list 통제 결과로 발행 키 셋 이 podMemoryUsed 와 다를 수 있어
+// lastPodUtilKeys 로 별도 추적 한다. 두 셋 모두 동일 mutex 로 보호.
 var (
 	lastPodSampleKeys   = make(map[string]struct{})
+	lastPodUtilKeys     = make(map[string]struct{})
 	lastPodSampleKeysMu sync.Mutex
 )
 
@@ -955,6 +987,7 @@ func recordPcieReplayDelta(node, uuid, idx, model string, current uint32) {
 // 전역이라 향후 호출 패턴 변경에 대비해 lastPodSampleKeysMu로 보호한다.
 func RecordPodSnapshot(node string, samples []PodGPUSample) {
 	currentKeys := make(map[string]struct{}, len(samples))
+	currentUtilKeys := make(map[string]struct{}, len(samples))
 
 	if podMetricsEnabled {
 		for _, s := range samples {
@@ -970,25 +1003,35 @@ func RecordPodSnapshot(node string, samples []PodGPUSample) {
 				s.Device.UUID,
 				idx,
 			}
+			key := strings.Join(labels, podLabelSeparator)
 			podMemoryUsed.WithLabelValues(labels...).Set(float64(s.MemUsedBytes))
-			// #104 SM utilization 메트릭 동시 발행. allow-list 적용 후 별도 통제 옵션은 다음 commit 에서.
-			podUtilization.WithLabelValues(labels...).Set(float64(s.SmUtilPct))
-			currentKeys[strings.Join(labels, podLabelSeparator)] = struct{}{}
+			currentKeys[key] = struct{}{}
+			// #104 podUtilization 은 namespace allow-list 통제 적용 후 발행. allow-list 미설정 이면 모든
+			// namespace, 명시 시 매칭 namespace 만. 키 셋 도 별도 추적 해 cleanup 정합 유지.
+			if podUtilAllowed(s.ID.NamespaceLabel()) {
+				podUtilization.WithLabelValues(labels...).Set(float64(s.SmUtilPct))
+				currentUtilKeys[key] = struct{}{}
+			}
 		}
 	}
 
 	// 직전 poll에는 있었지만 이번에는 없는 라벨 series 제거 (Pod 종료 / 프로세스 종료 / toggle off 모두 흡수).
-	// #104 podUtilization 도 podMemoryUsed 와 동일 라벨 키 셋 을 공유 하므로 같은 cleanup 키 로 둘 다 정리.
+	// #104 podUtilization 은 allow-list 통제 결과로 키 셋 이 podMemoryUsed 와 다를 수 있어 lastPodUtilKeys
+	// 로 별도 추적 한다.
 	lastPodSampleKeysMu.Lock()
 	defer lastPodSampleKeysMu.Unlock()
 	for key := range lastPodSampleKeys {
 		if _, ok := currentKeys[key]; !ok {
-			parts := strings.Split(key, podLabelSeparator)
-			podMemoryUsed.DeleteLabelValues(parts...)
-			podUtilization.DeleteLabelValues(parts...)
+			podMemoryUsed.DeleteLabelValues(strings.Split(key, podLabelSeparator)...)
+		}
+	}
+	for key := range lastPodUtilKeys {
+		if _, ok := currentUtilKeys[key]; !ok {
+			podUtilization.DeleteLabelValues(strings.Split(key, podLabelSeparator)...)
 		}
 	}
 	lastPodSampleKeys = currentKeys
+	lastPodUtilKeys = currentUtilKeys
 }
 
 // podName과 podUID는 빈 필드일 때 "unknown"으로 폴백해 라벨 카디널리티가 빈 문자열로 늘어나는 것을 막는다.
