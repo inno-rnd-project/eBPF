@@ -160,6 +160,16 @@ func (d *fakeDevice) Close() error {
 	return nil
 }
 
+// #104 MIG / process-util 인터페이스 stub. 본 테스트는 기존 Snapshot / RunningProcesses 경로만
+// 검증하므로 zero return 으로 충분하다. 후속 commit 의 process util / MIG 경로 검증은 별도 fake 에서.
+func (d *fakeDevice) ProcessUtilization(uint64) ([]types.GPUProcessUtil, error) { return nil, nil }
+func (d *fakeDevice) MigMode() (types.MigMode, error)                           { return types.MigModeUnsupported, nil }
+func (d *fakeDevice) MaxMigDeviceCount() (int, error)                           { return 0, nil }
+func (d *fakeDevice) MigDevice(int) (nvml.Device, error)                        { return nil, nil }
+func (d *fakeDevice) IsMigDevice() (bool, error)                                { return false, nil }
+func (d *fakeDevice) GpuInstanceId() (uint32, error)                            { return 0, nil }
+func (d *fakeDevice) ComputeInstanceId() (uint32, error)                        { return 0, nil }
+
 func (d *fakeDevice) closeCallCount() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
