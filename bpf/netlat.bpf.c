@@ -753,6 +753,24 @@ int BPF_KPROBE(handle_tcp_v4_do_rcv, struct sock *sk, struct sk_buff *skb)
     return 0;
 }
 
+/* #103 IPv6 TCP receive path entry. tcp_v4_rcv 와 동일 패턴 의 stub 으로 두며 RCV_L3 stage 의 event
+ * emit 은 본 hook 에서 수행 하지 않는다 (cgroup 미식별 시점). tcp_v6_do_rcv 에서 sock 기반 demux
+ * stage 가 emit_rcv_event 로 처리 된다. */
+SEC("kprobe/tcp_v6_rcv")
+int BPF_KPROBE(handle_tcp_v6_rcv)
+{
+    return 0;
+}
+
+/* #103 IPv6 TCP demux. tcp_v4_do_rcv 와 동일 시그니처. emit_rcv_event 가 family 분기 로 IPv6
+ * 흐름 도 자연 capture 한다. */
+SEC("kprobe/tcp_v6_do_rcv")
+int BPF_KPROBE(handle_tcp_v6_do_rcv, struct sock *sk, struct sk_buff *skb)
+{
+    emit_rcv_event(sk, skb, NETOBS_STAGE_RCV_DEMUX);
+    return 0;
+}
+
 SEC("kprobe/tcp_rcv_established")
 int BPF_KPROBE(handle_tcp_rcv_established, struct sock *sk, struct sk_buff *skb)
 {

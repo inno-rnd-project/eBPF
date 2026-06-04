@@ -121,6 +121,8 @@ type NetObsProgramSpecs struct {
 	HandleTcpTransmitSkbRet *ebpf.ProgramSpec `ebpf:"handle_tcp_transmit_skb_ret"`
 	HandleTcpV4DoRcv        *ebpf.ProgramSpec `ebpf:"handle_tcp_v4_do_rcv"`
 	HandleTcpV4Rcv          *ebpf.ProgramSpec `ebpf:"handle_tcp_v4_rcv"`
+	HandleTcpV6DoRcv        *ebpf.ProgramSpec `ebpf:"handle_tcp_v6_do_rcv"`
+	HandleTcpV6Rcv          *ebpf.ProgramSpec `ebpf:"handle_tcp_v6_rcv"`
 	HandleTcpWriteXmit      *ebpf.ProgramSpec `ebpf:"handle_tcp_write_xmit"`
 	HandleTcpWriteXmitRet   *ebpf.ProgramSpec `ebpf:"handle_tcp_write_xmit_ret"`
 	HandleVethXmit          *ebpf.ProgramSpec `ebpf:"handle_veth_xmit"`
@@ -208,6 +210,8 @@ type NetObsPrograms struct {
 	HandleTcpTransmitSkbRet *ebpf.Program `ebpf:"handle_tcp_transmit_skb_ret"`
 	HandleTcpV4DoRcv        *ebpf.Program `ebpf:"handle_tcp_v4_do_rcv"`
 	HandleTcpV4Rcv          *ebpf.Program `ebpf:"handle_tcp_v4_rcv"`
+	HandleTcpV6DoRcv        *ebpf.Program `ebpf:"handle_tcp_v6_do_rcv"`
+	HandleTcpV6Rcv          *ebpf.Program `ebpf:"handle_tcp_v6_rcv"`
 	HandleTcpWriteXmit      *ebpf.Program `ebpf:"handle_tcp_write_xmit"`
 	HandleTcpWriteXmitRet   *ebpf.Program `ebpf:"handle_tcp_write_xmit_ret"`
 	HandleVethXmit          *ebpf.Program `ebpf:"handle_veth_xmit"`
@@ -227,6 +231,8 @@ func (p *NetObsPrograms) Close() error {
 		p.HandleTcpTransmitSkbRet,
 		p.HandleTcpV4DoRcv,
 		p.HandleTcpV4Rcv,
+		p.HandleTcpV6DoRcv,
+		p.HandleTcpV6Rcv,
 		p.HandleTcpWriteXmit,
 		p.HandleTcpWriteXmitRet,
 		p.HandleVethXmit,

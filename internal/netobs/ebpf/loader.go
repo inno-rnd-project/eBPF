@@ -17,10 +17,11 @@ import (
 	"netobs/internal/netobs/types"
 )
 
-// trackedSymbols 는 netlat BPF 가 attach 시도할 kprobe / kretprobe 심볼 15 종이다. required 2 종 +
-// optional 13 종으로 구성되며 슬라이스 순서는 Run 의 attach 루프 순서와 정합한다. gpuobs 의
+// trackedSymbols 는 netlat BPF 가 attach 시도할 kprobe / kretprobe 심볼 17 종이다. required 2 종 +
+// optional 15 종으로 구성되며 슬라이스 순서는 Run 의 attach 루프 순서와 정합한다. gpuobs 의
 // trackedSymbols (cuda loader.go:29) 와 동일하게 metrics.SetBpfProgramLoaded 의 라벨 cardinality
 // 를 폐쇄적으로 잡아 attach 단계 이전에도 모든 심볼이 0 으로 선등록되도록 한다.
+// #103 IPv6 TCP receive path 2 종 (tcp_v6_rcv, tcp_v6_do_rcv) 추가.
 var trackedSymbols = []string{
 	"tcp_sendmsg",
 	"tcp_sendmsg_ret",
@@ -37,6 +38,8 @@ var trackedSymbols = []string{
 	"tcp_cleanup_rbuf",
 	"tcp_v4_rcv",
 	"tcp_v4_do_rcv",
+	"tcp_v6_rcv",
+	"tcp_v6_do_rcv",
 	"tcp_rcv_established",
 	"tcp_recvmsg",
 }
@@ -199,6 +202,12 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 	attachOptionalKprobe("tcp_v4_do_rcv", objs.HandleTcpV4DoRcv, &links)
 	attachOptionalKprobe("tcp_rcv_established", objs.HandleTcpRcvEstablished, &links)
 	attachOptionalKprobe("tcp_recvmsg", objs.HandleTcpRecvmsg, &links)
+
+	// #103 IPv6 TCP receive path attach. tcp_v6_rcv 는 stub (cgroup 미식별), tcp_v6_do_rcv 는 sock
+	// 기반 demux event 를 emit 한다. tcp_rcv_established 와 tcp_recvmsg 는 family 무관 단일 함수 라
+	// 이미 IPv4 attach 가 IPv6 흐름 도 함께 capture 한다 (c2 의 emit_rcv_event 가 family 분기 처리).
+	attachOptionalKprobe("tcp_v6_rcv", objs.HandleTcpV6Rcv, &links)
+	attachOptionalKprobe("tcp_v6_do_rcv", objs.HandleTcpV6DoRcv, &links)
 
 	rd, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
