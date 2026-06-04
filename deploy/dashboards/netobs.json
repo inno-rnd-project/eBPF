@@ -563,6 +563,135 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 200,
+      "type": "timeseries",
+      "title": "Network flow bytes by ip_version (IPv4/IPv6 stacked, requires NETOBS_FLOW_ALLOW_NAMESPACES)",
+      "description": "#103 IPv6/UDP 트래픽 추적 확장. netobs_flow_bytes_total 의 ip_version 라벨로 IPv4/IPv6 분포를 stacked time-series로 노출한다. flow_bytes는 NETOBS_FLOW_ALLOW_NAMESPACES 환경 변수가 설정된 namespace 의 5-tuple flow 만 emit 한다. ip_version=4 (IPv4) blue, ip_version=6 (IPv6) red 색상으로 한눈에 분포 비교 가능.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 50
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (ip_version) (rate(netobs_flow_bytes_total{node=~\"$node\",src_namespace=~\"$src_namespace\"}[5m]))",
+          "legendFormat": "ip_version={{ip_version}}",
+          "datasource": "${datasource}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 70,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*ip_version=4.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*ip_version=6.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 201,
+      "type": "timeseries",
+      "title": "Drop events by ip_version (5m rate)",
+      "description": "#103 netobs_drop_events_flow_total 의 ip_version 라벨로 IPv4/IPv6 drop event 분포 노출. flow_total 은 NETOBS_DROP_FLOW_ALLOW_NAMESPACES 환경 변수 가 설정 된 namespace 만 emit.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 58
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (ip_version, drop_category) (rate(netobs_drop_events_flow_total{node=~\"$node\",src_namespace=~\"$src_namespace\"}[5m]))",
+          "legendFormat": "ip_version={{ip_version}} category={{drop_category}}",
+          "datasource": "${datasource}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 30,
+            "showPoints": "never"
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        }
+      }
     }
   ],
   "annotations": {
