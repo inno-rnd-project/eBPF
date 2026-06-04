@@ -17,11 +17,11 @@ import (
 	"netobs/internal/netobs/types"
 )
 
-// trackedSymbols 는 netlat BPF 가 attach 시도할 kprobe / kretprobe 심볼 17 종이다. required 2 종 +
-// optional 15 종으로 구성되며 슬라이스 순서는 Run 의 attach 루프 순서와 정합한다. gpuobs 의
+// trackedSymbols 는 netlat BPF 가 attach 시도할 kprobe / kretprobe 심볼 21 종이다. required 2 종 +
+// optional 19 종으로 구성되며 슬라이스 순서는 Run 의 attach 루프 순서와 정합한다. gpuobs 의
 // trackedSymbols (cuda loader.go:29) 와 동일하게 metrics.SetBpfProgramLoaded 의 라벨 cardinality
 // 를 폐쇄적으로 잡아 attach 단계 이전에도 모든 심볼이 0 으로 선등록되도록 한다.
-// #103 IPv6 TCP receive path 2 종 (tcp_v6_rcv, tcp_v6_do_rcv) 추가.
+// #103 IPv6 TCP receive path 2 종 (tcp_v6_rcv, tcp_v6_do_rcv) 과 UDP TX/RX probe 4 종 추가.
 var trackedSymbols = []string{
 	"tcp_sendmsg",
 	"tcp_sendmsg_ret",
@@ -42,6 +42,11 @@ var trackedSymbols = []string{
 	"tcp_v6_do_rcv",
 	"tcp_rcv_established",
 	"tcp_recvmsg",
+	// #103 UDP TX/RX probe 4 종. connected UDP 만 추적 (sk_state==TCP_ESTABLISHED).
+	"udp_sendmsg",
+	"udp_recvmsg",
+	"udpv6_sendmsg",
+	"udpv6_recvmsg",
 }
 
 func ipToU32(ipStr string) (uint32, error) {
@@ -208,6 +213,13 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 	// 이미 IPv4 attach 가 IPv6 흐름 도 함께 capture 한다 (c2 의 emit_rcv_event 가 family 분기 처리).
 	attachOptionalKprobe("tcp_v6_rcv", objs.HandleTcpV6Rcv, &links)
 	attachOptionalKprobe("tcp_v6_do_rcv", objs.HandleTcpV6DoRcv, &links)
+
+	// #103 UDP TX/RX 4 hook attach. connected UDP 만 추적 (handle_udp_msg 의 sk_state 가드). IPv4 /
+	// IPv6 양쪽 family 처리.
+	attachOptionalKprobe("udp_sendmsg", objs.HandleUdpSendmsg, &links)
+	attachOptionalKprobe("udp_recvmsg", objs.HandleUdpRecvmsg, &links)
+	attachOptionalKprobe("udpv6_sendmsg", objs.HandleUdpv6Sendmsg, &links)
+	attachOptionalKprobe("udpv6_recvmsg", objs.HandleUdpv6Recvmsg, &links)
 
 	rd, err := ringbuf.NewReader(objs.Events)
 	if err != nil {

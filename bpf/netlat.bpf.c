@@ -771,6 +771,84 @@ int BPF_KPROBE(handle_tcp_v6_do_rcv, struct sock *sk, struct sk_buff *skb)
     return 0;
 }
 
+/* #103 UDP 트래픽 추적 helper. udp_sendmsg / udpv6_sendmsg / udp_recvmsg / udpv6_recvmsg 4 hook 의
+ * 공통 흐름 을 추출 한다. connected UDP 만 지원 (sk_state == TCP_ESTABLISHED, value 1). unconnected
+ * UDP 의 5-tuple 은 msghdr->msg_name 파싱 이 필요 해 BPF complexity 증가 위험 으로 본 PR 범위 외
+ * (follow-up 이슈). entry-only 누적 으로 TX 는 size 인자 정확, RX 는 user buffer size 라 partial recv
+ * 시 과대 계상 가능 (docs/netobs/protocol-coverage.md 의 limitation 절 참조).
+ */
+static __always_inline void handle_udp_msg(struct sock *sk, size_t size, __u8 direction)
+{
+    __u64 cgroup_id;
+    __u16 family_raw;
+    __u8 family;
+    __u8 saddr[NETOBS_ADDR_LEN] = {0};
+    __u8 daddr[NETOBS_ADDR_LEN] = {0};
+    __u16 sport, dport;
+    __u8 sk_state;
+
+    if (!sk || size == 0)
+        return;
+
+    /* connected UDP 만. TCP_ESTABLISHED == 1. unconnected UDP 는 sk_state == TCP_CLOSE (7) 라 skip. */
+    sk_state = BPF_CORE_READ(sk, __sk_common.skc_state);
+    if (sk_state != 1)
+        return;
+
+    cgroup_id = bpf_get_current_cgroup_id();
+    if (!cgroup_id)
+        return;
+
+    family_raw = BPF_CORE_READ(sk, __sk_common.skc_family);
+    if (family_raw == NETOBS_AF_INET) {
+        __u32 v4_src = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+        __u32 v4_dst = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+        __builtin_memcpy(saddr, &v4_src, 4);
+        __builtin_memcpy(daddr, &v4_dst, 4);
+        family = NETOBS_AF_INET;
+    } else if (family_raw == NETOBS_AF_INET6) {
+        BPF_CORE_READ_INTO(saddr, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+        BPF_CORE_READ_INTO(daddr, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+        family = NETOBS_AF_INET6;
+    } else {
+        return;
+    }
+    sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+    dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+
+    inc_pod_bytes(cgroup_id, direction, NETOBS_LAYER_L4, (__u64)size, 0);
+    inc_flow_bytes(cgroup_id, family, saddr, daddr, sport, dport,
+                   17 /* IPPROTO_UDP */, direction, (__u64)size);
+}
+
+SEC("kprobe/udp_sendmsg")
+int BPF_KPROBE(handle_udp_sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
+{
+    handle_udp_msg(sk, size, NETOBS_DIR_EGRESS);
+    return 0;
+}
+
+SEC("kprobe/udp_recvmsg")
+int BPF_KPROBE(handle_udp_recvmsg, struct sock *sk, struct msghdr *msg, size_t size)
+{
+    handle_udp_msg(sk, size, NETOBS_DIR_INGRESS);
+    return 0;
+}
+
+SEC("kprobe/udpv6_sendmsg")
+int BPF_KPROBE(handle_udpv6_sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
+{
+    handle_udp_msg(sk, size, NETOBS_DIR_EGRESS);
+    return 0;
+}
+
+SEC("kprobe/udpv6_recvmsg")
+int BPF_KPROBE(handle_udpv6_recvmsg, struct sock *sk, struct msghdr *msg, size_t size)
+{
+    handle_udp_msg(sk, size, NETOBS_DIR_INGRESS);
+    return 0;
+}
+
 SEC("kprobe/tcp_rcv_established")
 int BPF_KPROBE(handle_tcp_rcv_established, struct sock *sk, struct sk_buff *skb)
 {

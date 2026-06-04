@@ -125,6 +125,10 @@ type NetObsProgramSpecs struct {
 	HandleTcpV6Rcv          *ebpf.ProgramSpec `ebpf:"handle_tcp_v6_rcv"`
 	HandleTcpWriteXmit      *ebpf.ProgramSpec `ebpf:"handle_tcp_write_xmit"`
 	HandleTcpWriteXmitRet   *ebpf.ProgramSpec `ebpf:"handle_tcp_write_xmit_ret"`
+	HandleUdpRecvmsg        *ebpf.ProgramSpec `ebpf:"handle_udp_recvmsg"`
+	HandleUdpSendmsg        *ebpf.ProgramSpec `ebpf:"handle_udp_sendmsg"`
+	HandleUdpv6Recvmsg      *ebpf.ProgramSpec `ebpf:"handle_udpv6_recvmsg"`
+	HandleUdpv6Sendmsg      *ebpf.ProgramSpec `ebpf:"handle_udpv6_sendmsg"`
 	HandleVethXmit          *ebpf.ProgramSpec `ebpf:"handle_veth_xmit"`
 }
 
@@ -214,6 +218,10 @@ type NetObsPrograms struct {
 	HandleTcpV6Rcv          *ebpf.Program `ebpf:"handle_tcp_v6_rcv"`
 	HandleTcpWriteXmit      *ebpf.Program `ebpf:"handle_tcp_write_xmit"`
 	HandleTcpWriteXmitRet   *ebpf.Program `ebpf:"handle_tcp_write_xmit_ret"`
+	HandleUdpRecvmsg        *ebpf.Program `ebpf:"handle_udp_recvmsg"`
+	HandleUdpSendmsg        *ebpf.Program `ebpf:"handle_udp_sendmsg"`
+	HandleUdpv6Recvmsg      *ebpf.Program `ebpf:"handle_udpv6_recvmsg"`
+	HandleUdpv6Sendmsg      *ebpf.Program `ebpf:"handle_udpv6_sendmsg"`
 	HandleVethXmit          *ebpf.Program `ebpf:"handle_veth_xmit"`
 }
 
@@ -235,6 +243,10 @@ func (p *NetObsPrograms) Close() error {
 		p.HandleTcpV6Rcv,
 		p.HandleTcpWriteXmit,
 		p.HandleTcpWriteXmitRet,
+		p.HandleUdpRecvmsg,
+		p.HandleUdpSendmsg,
+		p.HandleUdpv6Recvmsg,
+		p.HandleUdpv6Sendmsg,
 		p.HandleVethXmit,
 	)
 }
