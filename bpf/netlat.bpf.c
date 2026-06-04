@@ -268,6 +268,28 @@ static __always_inline void inc_ringbuf_dropped(void)
  * #103 IPv6 확장. saddr / daddr 인자 가 [16]byte 통합 슬롯 으로 변경 되었다. IPv4 호출자 는 첫
  * 4 byte 만 채우고 나머지 12 byte 를 0 으로 두면 IPv6 와 동일 한 key layout 으로 누적 가능 하다.
  */
+/* #103 IPv6 비-routable 주소 필터. link-local (fe80::/10) 과 multicast (ff00::/8) 와 loopback (::1)
+ * 을 BPF 단 에서 zero-cost skip. cluster 자체 트래픽 (CoreDNS link-local 등) 이 flow_bytes 의 cardinality
+ * 를 폭증 시키지 않도록 차단 한다. IPv4 의 동등 필터 는 별도 follow-up 으로 위임. */
+static __always_inline int ipv6_is_filtered(const __u8 *addr)
+{
+    /* link-local fe80::/10: 첫 byte 0xfe, 둘째 byte 상위 2 bit 가 10 (mask 0xc0 = 0x80). */
+    if (addr[0] == 0xfe && (addr[1] & 0xc0) == 0x80)
+        return 1;
+    /* multicast ff00::/8: 첫 byte 0xff. */
+    if (addr[0] == 0xff)
+        return 1;
+    /* loopback ::1: 첫 15 byte 가 0 이고 16 byte 가 1. */
+    int i;
+    for (i = 0; i < 15; i++) {
+        if (addr[i] != 0)
+            return 0;
+    }
+    if (addr[15] == 0x01)
+        return 1;
+    return 0;
+}
+
 static __always_inline void inc_flow_bytes(__u64 cgroup_id, __u8 family,
                                            const __u8 *saddr, const __u8 *daddr,
                                            __u16 sport, __u16 dport,
@@ -282,6 +304,11 @@ static __always_inline void inc_flow_bytes(__u64 cgroup_id, __u8 family,
         return;
     if (family != NETOBS_AF_INET && family != NETOBS_AF_INET6)
         return;
+    /* #103 IPv6 link-local / multicast / loopback 자동 skip. */
+    if (family == NETOBS_AF_INET6) {
+        if (ipv6_is_filtered(saddr) || ipv6_is_filtered(daddr))
+            return;
+    }
 
     __builtin_memset(&key, 0, sizeof(key));
     key.cgroup_id = cgroup_id;
