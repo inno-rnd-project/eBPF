@@ -118,7 +118,7 @@ func (d *fakeDeviceSetDevice) Snapshot() (types.GPUSnapshot, error) {
 	return types.GPUSnapshot{Device: info}, nil
 }
 func (d *fakeDeviceSetDevice) RunningProcesses() ([]types.GPUProcess, error) { return nil, nil }
-func (d *fakeDeviceSetDevice) ProcessUtilization(uint64) ([]types.GPUProcessUtil, error) {
+func (d *fakeDeviceSetDevice) ProcessUtilization() ([]types.GPUProcessUtil, error) {
 	return nil, nil
 }
 func (d *fakeDeviceSetDevice) MigMode() (types.MigMode, error)    { return types.MigModeUnsupported, nil }
@@ -447,7 +447,7 @@ func (d *fakeRaceDevice) Snapshot() (types.GPUSnapshot, error) {
 	return types.GPUSnapshot{Device: types.GPUDevice{UUID: d.uuid}}, nil
 }
 func (d *fakeRaceDevice) RunningProcesses() ([]types.GPUProcess, error) { return nil, nil }
-func (d *fakeRaceDevice) ProcessUtilization(uint64) ([]types.GPUProcessUtil, error) {
+func (d *fakeRaceDevice) ProcessUtilization() ([]types.GPUProcessUtil, error) {
 	return nil, nil
 }
 func (d *fakeRaceDevice) MigMode() (types.MigMode, error)    { return types.MigModeUnsupported, nil }

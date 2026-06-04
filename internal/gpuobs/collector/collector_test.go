@@ -126,15 +126,17 @@ func (f *fakeNVML) shutdownCallCount() int {
 }
 
 type fakeDevice struct {
-	mu           sync.Mutex
-	info         types.GPUDevice
-	snapshot     types.GPUSnapshot
-	snapshotErr  error
-	snapCalls    int
-	processes    []types.GPUProcess
-	processesErr error
-	procCalls    int
-	closeCalls   int
+	mu            sync.Mutex
+	info          types.GPUDevice
+	snapshot      types.GPUSnapshot
+	snapshotErr   error
+	snapCalls     int
+	processes     []types.GPUProcess
+	processesErr  error
+	procCalls     int
+	procUtils     []types.GPUProcessUtil
+	procUtilCalls int
+	closeCalls    int
 }
 
 func (d *fakeDevice) Info() (types.GPUDevice, error) { return d.info, nil }
@@ -162,7 +164,13 @@ func (d *fakeDevice) Close() error {
 
 // #104 MIG / process-util 인터페이스 stub. 본 테스트는 기존 Snapshot / RunningProcesses 경로만
 // 검증하므로 zero return 으로 충분하다. 후속 commit 의 process util / MIG 경로 검증은 별도 fake 에서.
-func (d *fakeDevice) ProcessUtilization(uint64) ([]types.GPUProcessUtil, error) { return nil, nil }
+func (d *fakeDevice) ProcessUtilization() ([]types.GPUProcessUtil, error) {
+	d.mu.Lock()
+	d.procUtilCalls++
+	utils := d.procUtils
+	d.mu.Unlock()
+	return utils, nil
+}
 func (d *fakeDevice) MigMode() (types.MigMode, error)                           { return types.MigModeUnsupported, nil }
 func (d *fakeDevice) MaxMigDeviceCount() (int, error)                           { return 0, nil }
 func (d *fakeDevice) MigDevice(int) (nvml.Device, error)                        { return nil, nil }
@@ -618,5 +626,172 @@ func TestPollOnce_RecordsMigModeAndMpsActive(t *testing.T) {
 
 	if dev.snapCallCount() < 1 {
 		t.Fatalf("snapshot 미호출 (expected ≥1)")
+	}
+}
+
+// TestBuildProcessUtilMap_Basic 은 #104 helper 의 기본 변환 흐름 검증.
+func TestBuildProcessUtilMap_Basic(t *testing.T) {
+	utils := []types.GPUProcessUtil{
+		{PID: 100, SmUtilPct: 30},
+		{PID: 200, SmUtilPct: 45},
+	}
+	m := buildProcessUtilMap(utils)
+	if got := m[100]; got != 30 {
+		t.Errorf("pid 100 util=%d want 30", got)
+	}
+	if got := m[200]; got != 45 {
+		t.Errorf("pid 200 util=%d want 45", got)
+	}
+	if got := m[999]; got != 0 {
+		t.Errorf("missing pid lookup=%d want 0 (zero default)", got)
+	}
+}
+
+// TestBuildProcessUtilMap_NilEmpty 는 nil / 빈 입력이 panic 없이 빈 map 으로 흡수되는지 검증한다.
+func TestBuildProcessUtilMap_NilEmpty(t *testing.T) {
+	if got := len(buildProcessUtilMap(nil)); got != 0 {
+		t.Errorf("nil len=%d want 0", got)
+	}
+	if got := len(buildProcessUtilMap([]types.GPUProcessUtil{})); got != 0 {
+		t.Errorf("empty len=%d want 0", got)
+	}
+}
+
+// TestBuildProcessUtilMap_DuplicatePIDMaxWins 는 동일 PID 에 다회 sample 시 max 값이 채택되는지 검증.
+// NVML 의 sampling jitter 보정 의미.
+func TestBuildProcessUtilMap_DuplicatePIDMaxWins(t *testing.T) {
+	utils := []types.GPUProcessUtil{
+		{PID: 100, SmUtilPct: 30},
+		{PID: 100, SmUtilPct: 70},
+		{PID: 100, SmUtilPct: 50},
+	}
+	m := buildProcessUtilMap(utils)
+	if got := m[100]; got != 70 {
+		t.Errorf("dup pid max=%d want 70", got)
+	}
+}
+
+// TestCapUtilPct 는 #104 의 multi-PID 합산 cap 검증.
+func TestCapUtilPct(t *testing.T) {
+	cases := []struct {
+		in, want uint32
+	}{
+		{0, 0},
+		{50, 50},
+		{100, 100},
+		{101, 100},
+		{500, 100},
+	}
+	for _, tc := range cases {
+		if got := capUtilPct(tc.in); got != tc.want {
+			t.Errorf("capUtilPct(%d)=%d want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestPollOnce_AggregatesSmUtilPerPod 는 #104 의 multi-PID 합산 흐름 검증. 한 Pod 의 두 PID 가
+// 동일 device 에서 각각 SM util 30 / 25 sample 일 때 합산 결과가 55 로 PodGPUSample.SmUtilPct 에
+// 정확히 채워지는지 확인한다.
+func TestPollOnce_AggregatesSmUtilPerPod(t *testing.T) {
+	dev := &fakeDevice{
+		info: types.GPUDevice{Index: 0, UUID: "GPU-0"},
+		snapshot: types.GPUSnapshot{
+			Device: types.GPUDevice{Index: 0, UUID: "GPU-0"},
+		},
+		processes: []types.GPUProcess{
+			{DeviceIndex: 0, PID: 100, MemoryUsedBytes: 1024},
+			{DeviceIndex: 0, PID: 200, MemoryUsedBytes: 2048},
+		},
+		procUtils: []types.GPUProcessUtil{
+			{PID: 100, SmUtilPct: 30},
+			{PID: 200, SmUtilPct: 25},
+		},
+	}
+	resolver := &fakeResolver{byPID: map[uint32]kube.PodIdentity{
+		100: {IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "p1", PodUID: "uid-1"},
+		200: {IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "p1", PodUID: "uid-1"},
+	}}
+	spy := &snapshotSpy{}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
+	c, _ := newCollectorWithDevs(t, cfg, resolver, dev)
+	c.recordSnapshot = spy.record
+
+	c.pollOnce()
+
+	if got := spy.callCount(); got != 1 {
+		t.Fatalf("snapshot calls=%d want 1", got)
+	}
+	samples := spy.lastSamples()
+	if len(samples) != 1 {
+		t.Fatalf("samples len=%d want 1 (one pod)", len(samples))
+	}
+	if got := samples[0].SmUtilPct; got != 55 {
+		t.Errorf("aggregated SmUtilPct=%d want 55 (30+25)", got)
+	}
+	if got := samples[0].MemUsedBytes; got != 3072 {
+		t.Errorf("aggregated MemUsedBytes=%d want 3072", got)
+	}
+}
+
+// TestPollOnce_SmUtilCappedAt100 은 multi-PID 합산이 100 을 초과할 때 cap 가 정확히 100 으로 절단
+// 되는지 검증한다 (NVML sampling jitter 보정).
+func TestPollOnce_SmUtilCappedAt100(t *testing.T) {
+	dev := &fakeDevice{
+		info: types.GPUDevice{Index: 0, UUID: "GPU-0"},
+		snapshot: types.GPUSnapshot{
+			Device: types.GPUDevice{Index: 0, UUID: "GPU-0"},
+		},
+		processes: []types.GPUProcess{
+			{DeviceIndex: 0, PID: 100, MemoryUsedBytes: 1},
+			{DeviceIndex: 0, PID: 200, MemoryUsedBytes: 1},
+			{DeviceIndex: 0, PID: 300, MemoryUsedBytes: 1},
+		},
+		procUtils: []types.GPUProcessUtil{
+			{PID: 100, SmUtilPct: 60},
+			{PID: 200, SmUtilPct: 70},
+			{PID: 300, SmUtilPct: 50},
+		},
+	}
+	resolver := &fakeResolver{byPID: map[uint32]kube.PodIdentity{
+		100: {IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "p1", PodUID: "uid-1"},
+		200: {IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "p1", PodUID: "uid-1"},
+		300: {IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "p1", PodUID: "uid-1"},
+	}}
+	spy := &snapshotSpy{}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
+	c, _ := newCollectorWithDevs(t, cfg, resolver, dev)
+	c.recordSnapshot = spy.record
+
+	c.pollOnce()
+
+	samples := spy.lastSamples()
+	if len(samples) != 1 {
+		t.Fatalf("samples len=%d want 1", len(samples))
+	}
+	if got := samples[0].SmUtilPct; got != 100 {
+		t.Errorf("capped SmUtilPct=%d want 100", got)
+	}
+}
+
+// TestPollOnce_ProcessUtilCalledPerDevice 는 device 마다 ProcessUtilization 가 1회 호출 되는지 검증해
+// NVML 호출 빈도 회귀를 차단한다.
+func TestPollOnce_ProcessUtilCalledPerDevice(t *testing.T) {
+	dev := &fakeDevice{
+		info: types.GPUDevice{Index: 0, UUID: "GPU-0"},
+		snapshot: types.GPUSnapshot{
+			Device: types.GPUDevice{Index: 0, UUID: "GPU-0"},
+		},
+	}
+	resolver := &fakeResolver{byPID: nil}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
+	c, _ := newCollectorWithDevs(t, cfg, resolver, dev)
+
+	c.pollOnce()
+
+	dev.mu.Lock()
+	calls := dev.procUtilCalls
+	dev.mu.Unlock()
+	if calls != 1 {
+		t.Errorf("ProcessUtilization calls=%d want 1 (per device per poll)", calls)
 	}
 }

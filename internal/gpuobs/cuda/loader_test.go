@@ -294,7 +294,7 @@ func (f *fakeNvmlDevice) RunningProcesses() ([]types.GPUProcess, error) {
 	}
 	return out, nil
 }
-func (f *fakeNvmlDevice) ProcessUtilization(uint64) ([]types.GPUProcessUtil, error) {
+func (f *fakeNvmlDevice) ProcessUtilization() ([]types.GPUProcessUtil, error) {
 	return nil, nil
 }
 func (f *fakeNvmlDevice) MigMode() (types.MigMode, error)    { return types.MigModeUnsupported, nil }

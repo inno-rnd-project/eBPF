@@ -132,7 +132,7 @@ func (d *toggleFakeNvmlDevice) Snapshot() (types.GPUSnapshot, error) { return d.
 func (d *toggleFakeNvmlDevice) RunningProcesses() ([]types.GPUProcess, error) {
 	return nil, nil
 }
-func (d *toggleFakeNvmlDevice) ProcessUtilization(uint64) ([]types.GPUProcessUtil, error) {
+func (d *toggleFakeNvmlDevice) ProcessUtilization() ([]types.GPUProcessUtil, error) {
 	return nil, nil
 }
 func (d *toggleFakeNvmlDevice) MigMode() (types.MigMode, error)    { return types.MigModeUnsupported, nil }

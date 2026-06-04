@@ -65,8 +65,9 @@ type Device interface {
 	RunningProcesses() ([]types.GPUProcess, error)
 	// ProcessUtilization 은 직전 호출 이후의 per-process util sample 을 반환한다. NVML
 	// DeviceGetProcessUtilization 의 NOT_FOUND (sample 없음) 와 NOT_SUPPORTED 는 빈 슬라이스로 정상 흡수한다.
-	// 호출자는 반환 sample 의 max(TimeStamp) 를 다음 호출의 lastSeenTs 로 전달해 sample 중복을 회피한다.
-	ProcessUtilization(lastSeenTs uint64) ([]types.GPUProcessUtil, error)
+	// lastSeenTimestamp lifecycle 은 device 가 atomic 으로 내부 관리하므로 호출자는 파라미터 없이 매 poll
+	// 호출만 하면 된다 (반환 sample 의 max(TimeStamp) 로 내부 슬롯 자동 갱신).
+	ProcessUtilization() ([]types.GPUProcessUtil, error)
 	// MigMode 는 device 의 MIG 활성 상태를 반환한다. NOT_SUPPORTED 응답은 MigModeUnsupported 로 정규화된다.
 	MigMode() (types.MigMode, error)
 	// MaxMigDeviceCount 는 MIG enabled device 의 최대 인스턴스 슬롯 수를 반환한다. MIG disabled / unsupported
@@ -238,6 +239,11 @@ type deviceImpl struct {
 	// initTemperatureThresholds가 1회 fetch 후 보관하고 fillTemperatureThresholds는 매 poll 캐시를 그대로 snapshot에 복사한다.
 	// 키는 reason 라벨 문자열이며 값은 Celsius. 미지원 threshold는 키 자체가 부재한다.
 	temperatureThresholds map[string]uint32
+
+	// processUtilLastSeenTs 는 #104 ProcessUtilization 의 lastSeenTimestamp lifecycle 슬롯이다. NVML
+	// DeviceGetProcessUtilization 이 직전 호출 ts 이후 sample 만 반환하므로 매 호출 결과의 max(TimeStamp)
+	// 를 atomic 갱신해 다음 호출에 전달한다. 0 (첫 호출) 이면 NVML 이 모든 가용 sample 을 반환한다.
+	processUtilLastSeenTs atomic.Uint64
 }
 
 // violationReasons는 GetViolationStatus를 호출할 PerfPolicyType 8종이다. 각 reason은 NVML이
@@ -1039,8 +1045,9 @@ func (d *deviceImpl) RunningProcesses() ([]types.GPUProcess, error) {
 // ProcessUtilization 은 #104 도입의 per-process util sample 수집 진입점이다. NVML
 // DeviceGetProcessUtilization 의 NOT_FOUND (직전 호출 이후 sample 없음) 와 NOT_SUPPORTED 는 빈 슬라이스
 // 정상 흡수로 처리해 collector 가 분기 없이 결과를 합산할 수 있다. NOT_SUPPORTED 는 unsupported 셋에
-// 캐싱되어 다음 poll 부터 NVML 호출 자체를 건너뛴다.
-func (d *deviceImpl) ProcessUtilization(lastSeenTs uint64) ([]types.GPUProcessUtil, error) {
+// 캐싱되어 다음 poll 부터 NVML 호출 자체를 건너뛴다. lastSeenTimestamp lifecycle 은 본 메서드 내부에서
+// atomic 슬롯으로 관리해 호출자는 매 poll 호출만 하면 sample 중복 없이 자동 누적된다.
+func (d *deviceImpl) ProcessUtilization() ([]types.GPUProcessUtil, error) {
 	if d.isUnsupported("process_util") {
 		return nil, nil
 	}
@@ -1048,10 +1055,11 @@ func (d *deviceImpl) ProcessUtilization(lastSeenTs uint64) ([]types.GPUProcessUt
 	start := time.Now()
 	defer func() { observeNvmlCall("ProcessUtilization", start, &nvmlRet) }()
 
-	samples, ret := d.handle.GetProcessUtilization(lastSeenTs)
+	lastSeen := d.processUtilLastSeenTs.Load()
+	samples, ret := d.handle.GetProcessUtilization(lastSeen)
 	nvmlRet = ret
 	if ret == gonvml.ERROR_NOT_FOUND {
-		// 직전 호출 이후 sample 이 비어 있는 정상 케이스. 빈 결과를 그대로 반환.
+		// 직전 호출 이후 sample 이 비어 있는 정상 케이스. ts 슬롯 갱신 없이 빈 결과 반환.
 		return nil, nil
 	}
 	if ret == gonvml.ERROR_NOT_SUPPORTED {
@@ -1062,6 +1070,7 @@ func (d *deviceImpl) ProcessUtilization(lastSeenTs uint64) ([]types.GPUProcessUt
 		return nil, err
 	}
 	out := make([]types.GPUProcessUtil, 0, len(samples))
+	var maxTs uint64
 	for _, s := range samples {
 		out = append(out, types.GPUProcessUtil{
 			PID:        s.Pid,
@@ -1071,6 +1080,15 @@ func (d *deviceImpl) ProcessUtilization(lastSeenTs uint64) ([]types.GPUProcessUt
 			EncUtilPct: s.EncUtil,
 			DecUtilPct: s.DecUtil,
 		})
+		if s.TimeStamp > maxTs {
+			maxTs = s.TimeStamp
+		}
+	}
+	if maxTs > lastSeen {
+		// CompareAndSwap 가 아닌 단순 Store 로 충분하다. Snapshot 과 동일하게 본 메서드는 collector
+		// pollOnce 의 단일 goroutine 에서만 호출되며, 동시 호출 발생 시에도 더 큰 ts 가 손실되어 sample
+		// 일부 중복 정도 (정합성 결함 없음) 만 발생한다.
+		d.processUtilLastSeenTs.Store(maxTs)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PID < out[j].PID })
 	return out, nil

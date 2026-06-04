@@ -155,6 +155,11 @@ type PodGPUSample struct {
 	ID           kube.PodIdentity
 	Device       types.GPUDevice
 	MemUsedBytes uint64
+	// SmUtilPct 는 #104 도입의 per-pod SM utilization 합산값 (0-100, cap=100) 이다. collector 가 NVML
+	// DeviceGetProcessUtilization 결과를 PID 단위로 합산해 본 필드에 채운다. 본 commit (Commit 3) 은 본
+	// 필드의 수집 흐름만 도입하고, 본 값을 prometheus 메트릭으로 노출하는 RecordPodSnapshot 갱신은 다음
+	// commit (Commit 4 의 gpuobs_pod_utilization_percent 신설) 에서 들어온다.
+	SmUtilPct uint32
 }
 
 // lastPodSampleKeys는 직전 RecordPodSnapshot 호출에서 기록된 라벨 키 셋이다.

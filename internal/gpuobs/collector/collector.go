@@ -12,6 +12,7 @@ import (
 	"netobs/internal/gpuobs/metrics"
 	"netobs/internal/gpuobs/mps"
 	"netobs/internal/gpuobs/nvml"
+	"netobs/internal/gpuobs/types"
 	"netobs/internal/kube"
 )
 
@@ -163,6 +164,15 @@ func (c *Collector) pollOnce() {
 			log.Printf("gpuobs: running processes: %v", err)
 			continue
 		}
+		// #104 per-process SM util 수집. NVML 이 RunningProcesses (메모리 사용량) 와 ProcessUtilization
+		// (SM util) 을 별도 호출로 노출 하므로 device 마다 두 호출 결과를 PID 기준 inner join 한다.
+		// ProcessUtilization 실패는 비치명적 으로 흡수 한다 (메모리 메트릭은 계속 발행 되며 util 만 0 으로 강등).
+		utils, err := dev.ProcessUtilization()
+		if err != nil {
+			log.Printf("gpuobs: process utilization: %v", err)
+			utils = nil
+		}
+		utilByPID := buildProcessUtilMap(utils)
 		for _, p := range procs {
 			id := c.resolver.ResolvePID(p.PID)
 			if !id.IsPod() {
@@ -174,14 +184,17 @@ func (c *Collector) pollOnce() {
 				gpuUUID:  snap.Device.UUID,
 				gpuIndex: snap.Device.Index,
 			}
+			smUtil := utilByPID[p.PID]
 			if v, ok := aggregated[key]; ok {
 				v.MemUsedBytes += p.MemoryUsedBytes
+				v.SmUtilPct = capUtilPct(uint32(v.SmUtilPct) + smUtil)
 				continue
 			}
 			aggregated[key] = &metrics.PodGPUSample{
 				ID:           id,
 				Device:       snap.Device,
 				MemUsedBytes: p.MemoryUsedBytes,
+				SmUtilPct:    smUtil,
 			}
 		}
 	}
@@ -202,4 +215,30 @@ func signalReady(onReady func()) {
 	if onReady != nil {
 		onReady()
 	}
+}
+
+// buildProcessUtilMap 은 #104 ProcessUtilization 결과 슬라이스를 PID 기준 lookup map 으로 변환한다.
+// NVML 이 짧은 sampling window 안에 같은 PID 의 sample 을 다회 반환할 수 있어 동일 PID 값은 max 채택
+// (sampling jitter 보정) 한다. nil / empty 입력 은 빈 map 을 반환해 호출자 분기를 단순화한다.
+func buildProcessUtilMap(utils []types.GPUProcessUtil) map[uint32]uint32 {
+	if len(utils) == 0 {
+		return map[uint32]uint32{}
+	}
+	out := make(map[uint32]uint32, len(utils))
+	for _, u := range utils {
+		if u.SmUtilPct > out[u.PID] {
+			out[u.PID] = u.SmUtilPct
+		}
+	}
+	return out
+}
+
+// capUtilPct 는 동일 GPU 의 multi-PID workload 합산 결과가 100 을 초과하지 않도록 cap 한다. NVML
+// per-process SM util 은 process 단위 cost share 라 동일 GPU 의 모든 process 합이 100 을 초과하지
+// 않아야 하지만, sampling jitter 와 multi-context 경합으로 일시 초과가 발생할 수 있어 안전 cap.
+func capUtilPct(v uint32) uint32 {
+	if v > 100 {
+		return 100
+	}
+	return v
 }
