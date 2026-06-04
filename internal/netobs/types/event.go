@@ -33,8 +33,11 @@ type Event struct {
 	CgroupID     uint64
 	SocketCookie uint64
 
-	Saddr     uint32
-	Daddr     uint32
+	// Saddr / Daddr 은 #103 IPv6 확장 으로 [16]byte 통합 슬롯 으로 변경 되었다. IPv4 는 첫 4 byte 만
+	// 사용 하며 나머지 12 byte 는 0 으로 초기화 된다. IPToString helper 가 Family 필드 기준 으로
+	// IPv4 / IPv6 표현 으로 변환 한다.
+	Saddr     [16]byte
+	Daddr     [16]byte
 	Pid       uint32
 	Tid       uint32
 	Ret       uint32
@@ -48,11 +51,12 @@ type Event struct {
 	Dport uint16
 	Comm  [16]byte
 	Stage uint8
-	// Protocol 은 IP protocol number (IPPROTO_TCP=6, IPPROTO_UDP=17) 다. #64 에서 BPF 측 netobs_event
-	// 의 기존 pad[0] 슬롯에 들어가 본 필드 추가만으로는 struct size 가 변하지 않았다 (#65 의 TCP 상태
-	// 필드로 struct 전체는 별도로 확장됨).
+	// Protocol 은 IP protocol number (IPPROTO_TCP=6, IPPROTO_UDP=17) 다.
 	Protocol uint8
-	Pad      [2]byte
+	// Family 는 #103 IPv6 확장 으로 추가 된 NETOBS_AF_INET (2) 또는 NETOBS_AF_INET6 (10) 식별자 다.
+	// userspace 가 ip_version 라벨 산정 (2 → "4", 10 → "6") 에 사용 한다.
+	Family uint8
+	Pad    uint8
 
 	// #65 TCP 상태 메트릭. rcv_* stage 의 emit 에서만 채워지며 그 외 stage 는 0. SrttUs 는 kernel
 	// 의 << 3 scale 을 BPF 단에서 >> 3 한 실제 µs 단위라 추가 변환이 필요 없다. 본 3 필드 추가로
@@ -177,4 +181,32 @@ func U32ToIPv4(v uint32) string {
 	var b [4]byte
 	binary.NativeEndian.PutUint32(b[:], v)
 	return net.IPv4(b[0], b[1], b[2], b[3]).String()
+}
+
+// IPVersion 은 #103 IPv6 확장 의 ip_version 라벨 값 (4 또는 6) 을 반환 한다. family 가 IPv4 /
+// IPv6 외 값 이면 빈 문자열 반환. ip_version 라벨 산정 의 단일 진입점.
+func IPVersion(family uint8) string {
+	switch family {
+	case 2: // NETOBS_AF_INET
+		return "4"
+	case 10: // NETOBS_AF_INET6
+		return "6"
+	}
+	return ""
+}
+
+// IPToString 은 #103 IPv6 확장 의 통합 슬롯 ([16]byte) 을 family 기준 으로 IPv4 또는 IPv6 표현
+// 문자열 로 변환 한다. IPv4 는 첫 4 byte 만 사용 (네이티브 엔디언 uint32 로 가정) 하며 IPv6 는 16
+// byte 전체 를 net.IP 로 변환. 알 수 없는 family 는 빈 문자열 반환.
+func IPToString(family uint8, raw [16]byte) string {
+	switch family {
+	case 2: // NETOBS_AF_INET
+		// BPF 측 fill_conn_from_sock 가 skc_rcv_saddr (네이티브 엔디언 uint32) 를 첫 4 byte 에 그대로
+		// memcpy 한다. U32ToIPv4 와 동일 의미 의 NativeEndian 재해석 으로 IPv4 문자열 생성.
+		v := binary.NativeEndian.Uint32(raw[:4])
+		return U32ToIPv4(v)
+	case 10: // NETOBS_AF_INET6
+		return net.IP(raw[:]).String()
+	}
+	return ""
 }

@@ -14,13 +14,14 @@ import (
 
 type NetObsNetobsFlowKey struct {
 	CgroupId  uint64
-	Saddr     uint32
-	Daddr     uint32
+	Saddr     [16]uint8
+	Daddr     [16]uint8
 	Sport     uint16
 	Dport     uint16
 	Protocol  uint8
 	Direction uint8
-	Pad       [2]uint8
+	Family    uint8
+	Pad       uint8
 }
 
 type NetObsNetobsFlowValue struct{ Bytes uint64 }
@@ -41,8 +42,8 @@ type NetObsNetobsStartInfo struct {
 	TsNs          uint64
 	CgroupId      uint64
 	SocketCookie  uint64
-	Saddr         uint32
-	Daddr         uint32
+	Saddr         [16]uint8
+	Daddr         [16]uint8
 	Pid           uint32
 	Tid           uint32
 	Ifindex       uint32
@@ -62,7 +63,7 @@ type NetObsNetobsStartInfo struct {
 	TsTransmitSkb uint64
 	SeenWriteXmit uint8
 	SeenTransmit  uint8
-	IsIpv4        uint8
+	Family        uint8
 	Pad82         [5]uint8
 }
 

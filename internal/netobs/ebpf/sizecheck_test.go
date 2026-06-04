@@ -5,11 +5,12 @@ import (
 	"unsafe"
 )
 
-// TestFlowKeySize 는 #85 의 신규 netobs_flow_key 가 BPF 측 정의와 정합한 24 byte 인지 회귀 가드한다.
-// cgroup_id (8) + saddr (4) + daddr (4) + sport (2) + dport (2) + protocol (1) + direction (1) + pad
-// (2) = 24 byte 이며 8-byte align으로 trailing padding 없이 24로 고정된다.
+// TestFlowKeySize 는 #103 의 IPv6 확장 후 netobs_flow_key 가 BPF 측 정의와 정합한 48 byte 인지
+// 회귀 가드한다. cgroup_id (8) + saddr (16) + daddr (16) + sport (2) + dport (2) + protocol (1) +
+// direction (1) + family (1) + pad (1) = 48 byte 이며 8-byte align 으로 trailing padding 없이
+// 48 로 고정된다. #85 의 IPv4 한정 24 byte 에서 IPv6 통합 으로 24 byte 증가.
 func TestFlowKeySize(t *testing.T) {
-	const want = 24
+	const want = 48
 	got := int(unsafe.Sizeof(NetObsNetobsFlowKey{}))
 	if got != want {
 		t.Errorf("NetObsNetobsFlowKey size=%d want %d", got, want)
@@ -26,14 +27,15 @@ func TestFlowValueSize(t *testing.T) {
 	}
 }
 
-// TestStartInfoSize 는 #85 의 is_ipv4 1 byte 추가 후에도 netobs_start_info 의 struct size 가 변경되지
-// 않는지 회귀 가드한다. 기존 pad82 6 byte 중 1 byte 를 is_ipv4 로 흡수해 layout이 동일하게 유지된다.
-// 본 가드 가 깨지면 BPF C 측 struct 와 Go 측 generated struct 의 layout 불일치 위험이 있으며 LRU_HASH
-// starts map 의 marshal 길이 검증도 함께 실패한다.
+// TestStartInfoSize 는 #103 의 IPv6 확장 후 netobs_start_info 가 BPF 측 정의와 정합한 136 byte 인지
+// 회귀 가드 한다. #85 의 112 byte 에서 saddr / daddr 각각 12 byte 씩 (총 24 byte) 증가 하여 136 byte.
+// is_ipv4 는 family (동일 1 byte) 로 의미 확장 되어 size 영향 없음. 본 가드 가 깨지면 BPF C 측 struct
+// 와 Go 측 generated struct 의 layout 불일치 위험 이 있으며 LRU_HASH starts map 의 marshal 길이 검증
+// 도 함께 실패 한다.
 func TestStartInfoSize(t *testing.T) {
-	const want = 112
+	const want = 136
 	got := int(unsafe.Sizeof(NetObsNetobsStartInfo{}))
 	if got != want {
-		t.Errorf("NetObsNetobsStartInfo size=%d want %d (is_ipv4 추가 후에도 기존 size 유지 회귀 가드)", got, want)
+		t.Errorf("NetObsNetobsStartInfo size=%d want %d (#103 IPv6 확장 후 size 정합)", got, want)
 	}
 }

@@ -200,8 +200,8 @@ func (c *Collector) mergeEntry(agg map[aggKey]*aggValue, key ebpfx.NetObsNetobsF
 		return
 	}
 
-	localIP := types.U32ToIPv4(key.Saddr)
-	remoteIP := types.U32ToIPv4(key.Daddr)
+	localIP := types.IPToString(key.Family, key.Saddr)
+	remoteIP := types.IPToString(key.Family, key.Daddr)
 	localPort := key.Sport
 	remotePort := key.Dport
 	protocol := types.IPProtocolName(key.Protocol)

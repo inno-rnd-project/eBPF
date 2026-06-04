@@ -140,8 +140,6 @@ static __always_inline void fill_conn_from_sock(struct sock *sk, struct netobs_s
 {
     __u16 family;
 
-    s->saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-    s->daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
     s->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
     s->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
     s->socket_cookie = get_socket_cookie(sk);
@@ -149,10 +147,26 @@ static __always_inline void fill_conn_from_sock(struct sock *sk, struct netobs_s
     s->ifindex = BPF_CORE_READ(sk, __sk_common.skc_bound_dev_if);
     s->skb_iif = 0;
 
-    /* #85 IPv4 family flag stash. tcp_sendmsg_ret 에서 sk 가 직접 노출 되지 않 으므로 본 entry 시점
-     * 에서 한 번 읽 어 inc_flow_bytes 의 IPv4 가드 입력 으로 사용 한다. */
+    /* #103 family enum stash. tcp_sendmsg_ret 에서 sk 가 직접 노출 되지 않 으므로 본 entry 시점
+     * 에서 한 번 읽 어 inc_flow_bytes 의 family 가드 입력 으로 사용 한다. NETOBS_AF_INET (2) 또는
+     * NETOBS_AF_INET6 (10) 외 family 는 0 으로 둬 inc_flow_bytes 에서 자연 skip 된다. */
     family = BPF_CORE_READ(sk, __sk_common.skc_family);
-    s->is_ipv4 = (family == NETOBS_AF_INET) ? 1 : 0;
+    s->family = (family == NETOBS_AF_INET || family == NETOBS_AF_INET6) ? (__u8)family : 0;
+
+    /* #103 saddr / daddr 을 family 에 맞춰 채운다. IPv4 는 첫 4 byte 에 skc_rcv_saddr / skc_daddr 를
+     * 두고 나머지 12 byte 는 0 으로 초기화. IPv6 는 skc_v6_rcv_saddr / skc_v6_daddr 16 byte 를 그대로
+     * 복사. __builtin_memset 으로 zero-init 후 BPF_CORE_READ_INTO 로 IPv4/IPv6 분기 fill. */
+    __builtin_memset(s->saddr, 0, NETOBS_ADDR_LEN);
+    __builtin_memset(s->daddr, 0, NETOBS_ADDR_LEN);
+    if (s->family == NETOBS_AF_INET) {
+        __u32 v4_src = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+        __u32 v4_dst = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+        __builtin_memcpy(s->saddr, &v4_src, 4);
+        __builtin_memcpy(s->daddr, &v4_dst, 4);
+    } else if (s->family == NETOBS_AF_INET6) {
+        BPF_CORE_READ_INTO(s->saddr, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+        BPF_CORE_READ_INTO(s->daddr, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+    }
 
     /* #64 drop flow 5-tuple emit 에 protocol 라벨이 필요하다. sk_protocol 은 kernel 의 bitfield 라
      * BPF_CORE_READ_BITFIELD_PROBED 매크로로 안전하게 읽는다. CO-RE 로 kernel 버전 간 layout
@@ -247,12 +261,15 @@ static __always_inline void inc_ringbuf_dropped(void)
 
 /* #85 inc_flow_bytes 는 5-tuple key 로 flow_bytes 맵 에 bytes 를 누적 한다. inc_pod_bytes 와 동일
  * 한 lookup-then-update 패턴 이지만 LRU_HASH (non-percpu) 라 race 안전성 을 위해 __sync_fetch_and_add
- * 를 사용 한다. cgroup_id 가 0 이거나 IPv4 가 아닌 (is_ipv4 != 1) socket 은 모두 자동 skip 해 host
- * 작업 과 비-IPv4 flow 가 본 맵 에 등장 하지 않게 한다. 호출자 는 fill_conn_from_sock 가 채운
- * start_info 또는 sk 에서 직접 읽 은 5-tuple 을 그대로 전달 한다.
+ * 를 사용 한다. cgroup_id 가 0 이거나 family 가 NETOBS_AF_INET / NETOBS_AF_INET6 가 아닌 socket 은
+ * 모두 자동 skip 해 host 작업 과 비-IP flow 가 본 맵 에 등장 하지 않게 한다. 호출자 는
+ * fill_conn_from_sock 가 채운 start_info 또는 sk 에서 직접 읽 은 5-tuple 을 그대로 전달 한다.
+ *
+ * #103 IPv6 확장. saddr / daddr 인자 가 [16]byte 통합 슬롯 으로 변경 되었다. IPv4 호출자 는 첫
+ * 4 byte 만 채우고 나머지 12 byte 를 0 으로 두면 IPv6 와 동일 한 key layout 으로 누적 가능 하다.
  */
-static __always_inline void inc_flow_bytes(__u64 cgroup_id, __u8 is_ipv4,
-                                           __u32 saddr, __u32 daddr,
+static __always_inline void inc_flow_bytes(__u64 cgroup_id, __u8 family,
+                                           const __u8 *saddr, const __u8 *daddr,
                                            __u16 sport, __u16 dport,
                                            __u8 protocol, __u8 direction,
                                            __u64 bytes_delta)
@@ -261,17 +278,20 @@ static __always_inline void inc_flow_bytes(__u64 cgroup_id, __u8 is_ipv4,
     struct netobs_flow_value *val;
     struct netobs_flow_value init;
 
-    if (!cgroup_id || !is_ipv4 || bytes_delta == 0)
+    if (!cgroup_id || bytes_delta == 0)
+        return;
+    if (family != NETOBS_AF_INET && family != NETOBS_AF_INET6)
         return;
 
     __builtin_memset(&key, 0, sizeof(key));
     key.cgroup_id = cgroup_id;
-    key.saddr     = saddr;
-    key.daddr     = daddr;
+    __builtin_memcpy(key.saddr, saddr, NETOBS_ADDR_LEN);
+    __builtin_memcpy(key.daddr, daddr, NETOBS_ADDR_LEN);
     key.sport     = sport;
     key.dport     = dport;
     key.protocol  = protocol;
     key.direction = direction;
+    key.family    = family;
 
     val = bpf_map_lookup_elem(&flow_bytes, &key);
     if (val) {
@@ -311,8 +331,8 @@ static __always_inline void emit_event(const struct netobs_start_info *s,
     e->ts_ns         = bpf_ktime_get_ns();
     e->cgroup_id     = s->cgroup_id;
     e->socket_cookie = s->socket_cookie;
-    e->saddr         = s->saddr;
-    e->daddr         = s->daddr;
+    __builtin_memcpy(e->saddr, s->saddr, NETOBS_ADDR_LEN);
+    __builtin_memcpy(e->daddr, s->daddr, NETOBS_ADDR_LEN);
     e->pid           = s->pid;
     e->tid           = s->tid;
     e->ret           = ret;
@@ -327,8 +347,8 @@ static __always_inline void emit_event(const struct netobs_start_info *s,
 
     e->stage         = stage;
     e->protocol      = s->protocol;
-    e->pad[0]        = 0;
-    e->pad[1]        = 0;
+    e->family        = s->family;
+    e->pad           = 0;
 
     e->snd_cwnd      = s->snd_cwnd;
     e->srtt_us       = s->srtt_us;
@@ -355,8 +375,14 @@ int BPF_KPROBE(handle_tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t s
     s.tid       = (__u32)pid_tgid;
 
     fill_conn_from_sock(sk, &s);
-    if (!match_target(s.daddr))
-        return 0;
+    /* match_target 은 IPv4 전용 테스트 변수다. IPv4 인 경우 첫 4 byte 를 __u32 로 추출 해 매칭 하고
+     * IPv6 는 match_target 미적용 (모두 통과). target_daddr 가 0 이면 어떤 family 든 통과. */
+    if (s.family == NETOBS_AF_INET) {
+        __u32 v4_dst;
+        __builtin_memcpy(&v4_dst, s.daddr, 4);
+        if (!match_target(v4_dst))
+            return 0;
+    }
 
     /* L4 egress 바이트 누적은 kretprobe로 이동했다. entry의 size 인자는 사용자가 send에 넘긴 요청량
      * (헤더 제외)이라 ret로 실제 전송 바이트를 받아 누적해야 partial send/실패(-errno)에서 과대계상이
@@ -391,9 +417,9 @@ int BPF_KRETPROBE(handle_tcp_sendmsg_ret, int ret)
      * inc_pod_bytes 주석 참고. */
     if (ret > 0) {
         inc_pod_bytes(s->cgroup_id, NETOBS_DIR_EGRESS, NETOBS_LAYER_L4, (__u64)ret, 0);
-        /* #85 5-tuple flow tracker 의 egress 누적. start_info 의 stash 된 5-tuple 과 is_ipv4 가드 를
-         * 그대로 전달 해 IPv4 한정 sendmsg 만 본 맵 에 들어가게 한다. */
-        inc_flow_bytes(s->cgroup_id, s->is_ipv4,
+        /* #85 5-tuple flow tracker 의 egress 누적. start_info 의 stash 된 5-tuple 과 family 가드 를
+         * 그대로 전달 해 IPv4 / IPv6 양쪽 sendmsg 가 본 맵 에 들어가게 한다 (#103). */
+        inc_flow_bytes(s->cgroup_id, s->family,
                        s->saddr, s->daddr, s->sport, s->dport,
                        s->protocol, NETOBS_DIR_EGRESS, (__u64)ret);
     }
@@ -584,8 +610,13 @@ int BPF_KPROBE(handle_tcp_retransmit_skb, struct sock *sk, struct sk_buff *skb, 
     fill_conn_from_sock(sk, &s);
     fill_dev_from_skb(skb, &s);
 
-    if (!match_target(s.daddr))
-        return 0;
+    /* #103 match_target 은 IPv4 전용. IPv6 는 자연 통과. */
+    if (s.family == NETOBS_AF_INET) {
+        __u32 v4_dst;
+        __builtin_memcpy(&v4_dst, s.daddr, 4);
+        if (!match_target(v4_dst))
+            return 0;
+    }
 
     bpf_get_current_comm(&s.comm, sizeof(s.comm));
     emit_event(&s, NETOBS_STAGE_RETRANS, 0, 0, 0, -1);
@@ -606,8 +637,10 @@ SEC("kprobe/tcp_cleanup_rbuf")
 int BPF_KPROBE(handle_tcp_cleanup_rbuf, struct sock *sk, int copied)
 {
     __u64 cgroup_id;
-    __u16 family;
-    __u32 saddr, daddr;
+    __u16 family_raw;
+    __u8  family;
+    __u8  saddr[NETOBS_ADDR_LEN] = {0};
+    __u8  daddr[NETOBS_ADDR_LEN] = {0};
     __u16 sport, dport;
     __u8 protocol;
 
@@ -622,20 +655,30 @@ int BPF_KPROBE(handle_tcp_cleanup_rbuf, struct sock *sk, int copied)
      * 단위와 무관해서 packets_delta=0. inc_pod_bytes 주석 참고. */
     inc_pod_bytes(cgroup_id, NETOBS_DIR_INGRESS, NETOBS_LAYER_L4, (__u64)copied, 0);
 
-    /* #85 5-tuple flow tracker 의 ingress 누적. tcp_cleanup_rbuf 는 sk 를 직접 인자 로 받으므로 IPv4
-     * 가드 와 5-tuple 추출 을 inline 으로 수행 한다. start_info stash 와 무관 한 별도 path 다.
+    /* #85 5-tuple flow tracker 의 ingress 누적. tcp_cleanup_rbuf 는 sk 를 직접 인자 로 받으므로
+     * family 가드 와 5-tuple 추출 을 inline 으로 수행 한다. start_info stash 와 무관 한 별도 path 다.
+     * #103 IPv4 / IPv6 양쪽 지원.
      */
     if (!sk)
         return 0;
-    family = BPF_CORE_READ(sk, __sk_common.skc_family);
-    if (family != NETOBS_AF_INET)
+    family_raw = BPF_CORE_READ(sk, __sk_common.skc_family);
+    if (family_raw == NETOBS_AF_INET) {
+        __u32 v4_src = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+        __u32 v4_dst = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+        __builtin_memcpy(saddr, &v4_src, 4);
+        __builtin_memcpy(daddr, &v4_dst, 4);
+        family = NETOBS_AF_INET;
+    } else if (family_raw == NETOBS_AF_INET6) {
+        BPF_CORE_READ_INTO(saddr, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
+        BPF_CORE_READ_INTO(daddr, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+        family = NETOBS_AF_INET6;
+    } else {
         return 0;
-    saddr    = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-    daddr    = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+    }
     sport    = BPF_CORE_READ(sk, __sk_common.skc_num);
     dport    = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
     protocol = BPF_CORE_READ_BITFIELD_PROBED(sk, sk_protocol);
-    inc_flow_bytes(cgroup_id, /*is_ipv4=*/1,
+    inc_flow_bytes(cgroup_id, family,
                    saddr, daddr, sport, dport, protocol,
                    NETOBS_DIR_INGRESS, (__u64)copied);
     return 0;
@@ -657,7 +700,7 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
         return;
 
     family = BPF_CORE_READ(sk, __sk_common.skc_family);
-    if (family != NETOBS_AF_INET)
+    if (family != NETOBS_AF_INET && family != NETOBS_AF_INET6)
         return;
 
     pid_tgid     = bpf_get_current_pid_tgid();
@@ -669,12 +712,14 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
     fill_conn_from_sock(sk, &s);
     /* fill_conn_from_sock 는 send path 기준으로 saddr=local / daddr=remote 를 채운다. receive
      * path 의 ingress event 는 흐름의 source 가 remote peer 이고 destination 이 local Pod 이므로
-     * 양쪽을 swap 해 downstream 라벨 (src=*, dst=*) 의 의미가 send path 와 일관되게 한다. */
+     * 양쪽을 swap 해 downstream 라벨 (src=*, dst=*) 의 의미가 send path 와 일관되게 한다.
+     * #103 IPv6 확장 으로 [16]byte 통합 슬롯 의 swap 도 동일 패턴 으로 처리. */
     {
-        __u32 tmp_addr = s.saddr;
+        __u8  tmp_addr[NETOBS_ADDR_LEN];
         __u16 tmp_port = s.sport;
-        s.saddr = s.daddr;
-        s.daddr = tmp_addr;
+        __builtin_memcpy(tmp_addr, s.saddr, NETOBS_ADDR_LEN);
+        __builtin_memcpy(s.saddr, s.daddr, NETOBS_ADDR_LEN);
+        __builtin_memcpy(s.daddr, tmp_addr, NETOBS_ADDR_LEN);
         s.sport = s.dport;
         s.dport = tmp_port;
     }
@@ -749,8 +794,13 @@ int BPF_KPROBE(handle_kfree_skb_reason, struct sk_buff *skb, int reason)
     fill_conn_from_sock(sk, &s);
     fill_dev_from_skb(skb, &s);
 
-    if (!match_target(s.daddr))
-        return 0;
+    /* #103 match_target 은 IPv4 전용. IPv6 는 자연 통과. */
+    if (s.family == NETOBS_AF_INET) {
+        __u32 v4_dst;
+        __builtin_memcpy(&v4_dst, s.daddr, 4);
+        if (!match_target(v4_dst))
+            return 0;
+    }
 
     /* #83 drop event 의 kernel stack capture. BPF_F_FAST_STACK_CMP 는 stack id 산정에 frame
      * pointer 비교가 아닌 빠른 hash 기반 비교를 사용해 hot path 비용을 최소화한다. ctx 는 kprobe 의
