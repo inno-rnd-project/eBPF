@@ -51,6 +51,12 @@ const docTemplatenetobs = `{
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "IP version 필터 (4 또는 6, #103 IPv6 확장)",
+                        "name": "ip_version",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "응답 item 최대 개수 (기본 100, 최대 1000)",
                         "name": "limit",
@@ -127,6 +133,12 @@ const docTemplatenetobs = `{
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "IP version 필터 (4 또는 6, #103 IPv6 확장)",
+                        "name": "ip_version",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "응답 item 최대 개수 (기본 100, 최대 1000)",
                         "name": "limit",
@@ -177,6 +189,9 @@ const docTemplatenetobs = `{
                 },
                 "events_per_sec": {
                     "type": "number"
+                },
+                "ip_version": {
+                    "type": "string"
                 },
                 "node": {
                     "type": "string"
@@ -254,6 +269,9 @@ const docTemplatenetobs = `{
                 },
                 "dst_port": {
                     "type": "integer"
+                },
+                "ip_version": {
+                    "type": "string"
                 },
                 "node": {
                     "type": "string"

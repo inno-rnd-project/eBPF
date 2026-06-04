@@ -13,6 +13,8 @@ definitions:
         type: integer
       events_per_sec:
         type: number
+      ip_version:
+        type: string
       node:
         type: string
       protocol:
@@ -63,6 +65,8 @@ definitions:
         type: string
       dst_port:
         type: integer
+      ip_version:
+        type: string
       node:
         type: string
       protocol:
@@ -118,6 +122,10 @@ paths:
         in: query
         name: src_pod
         type: string
+      - description: 'IP version 필터 (4 또는 6, #103 IPv6 확장)'
+        in: query
+        name: ip_version
+        type: string
       - description: 응답 item 최대 개수 (기본 100, 최대 1000)
         in: query
         name: limit
@@ -168,6 +176,10 @@ paths:
       - description: 방향 필터 (egress/ingress)
         in: query
         name: direction
+        type: string
+      - description: 'IP version 필터 (4 또는 6, #103 IPv6 확장)'
+        in: query
+        name: ip_version
         type: string
       - description: 응답 item 최대 개수 (기본 100, 최대 1000)
         in: query
