@@ -112,8 +112,12 @@ func Parse() (Config, error) {
 	fs.StringVar(&cfg.CudaUprobeLibcudartPath, "cuda-libcudart-path", cfg.CudaUprobeLibcudartPath, "absolute path to host libcudart.so reachable from inside the container; empty disables cudart attach")
 	fs.DurationVar(&cfg.CudaUprobeDeviceMapRefresh, "cuda-devicemap-refresh", cfg.CudaUprobeDeviceMapRefresh, "interval between NVML RunningProcesses sweeps that rebuild the PID→GPU map and clean up stale cuda series")
 	fs.Float64Var(&cfg.CudaLaunchBaselinePerSec, "cuda-launch-baseline", cfg.CudaLaunchBaselinePerSec, "expected CUDA kernel launch rate (Hz) used as denominator of pod:host_compute_stall_score:5m correlation rule (default 10)")
-	var podUtilAllow string
-	fs.StringVar(&podUtilAllow, "pod-util-allow-namespaces", "", "comma-separated namespace allow-list for gpuobs_pod_utilization_percent emission; empty means all namespaces. Independent of -pod-metrics gate (which controls pod_memory series)")
+	// -pod-util-allow-namespaces 의 default 를 "unset" sentinel 로 둬, 빈 문자열 명시 (`-pod-util-allow-namespaces=`)
+	// 로도 env 값을 덮어 "전체 namespace 발행" 으로 되돌릴 수 있게 한다. 단순 default="" 패턴 으로는 빈 값과
+	// 미지정 을 구분 못 해 env override 가 불가능 하다.
+	const podUtilAllowUnset = "\x00unset"
+	podUtilAllow := podUtilAllowUnset
+	fs.StringVar(&podUtilAllow, "pod-util-allow-namespaces", podUtilAllowUnset, "comma-separated namespace allow-list for gpuobs_pod_utilization_percent emission; empty value (e.g. -pod-util-allow-namespaces=) explicitly resets to all-namespaces, unset preserves env. Independent of -pod-metrics gate (which controls pod_memory series)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		// -h/-help 요청은 flag 패키지가 usage를 출력한 뒤 ErrHelp를 반환한다.
 		// 사용자 의도된 정상 경로이므로 exit 0으로 종료한다.
@@ -123,9 +127,9 @@ func Parse() (Config, error) {
 		return Config{}, err
 	}
 
-	// -pod-util-allow-namespaces flag 가 명시 되면 env 값을 덮어쓴다. env < flag 우선순위 약속 유지.
-	// 본 flag 가 미지정 이면 env 파싱 결과 (parseNamespaceList) 가 그대로 유지된다.
-	if podUtilAllow != "" {
+	// -pod-util-allow-namespaces flag 가 명시 (빈 값 포함) 되면 env 값을 덮어쓴다. env < flag 우선순위
+	// 약속 유지. sentinel default 와 비교 해 미지정 / 빈 값 / 명시 값 3 분기를 구분 한다.
+	if podUtilAllow != podUtilAllowUnset {
 		cfg.PodUtilAllowNamespaces = parseNamespaceList(podUtilAllow)
 	}
 

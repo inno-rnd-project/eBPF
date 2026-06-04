@@ -241,8 +241,9 @@ func (c *Collector) pollOnce() {
 
 // collectMigInstances 는 #104 MIG 활성 device 의 instance 별 process util 을 수집해 aggregated 맵 에
 // 누적 한다. enumerate / per-instance 호출 실패는 비치명적 으로 흡수 (다른 instance 폴링 차단 하지 않음).
-// instance 핸들 은 Close 호출 보장 (NVML 자체 는 instance handle 명시 release API 가 없지만, 본 패키지의
-// deviceImpl wrapping 구조 일관성 유지 와 향후 NVML 변경 대비 목적).
+// instance handle 의 lifecycle 은 parent deviceImpl 이 캐시 슬롯으로 보유 하므로 본 함수는 Close 호출
+// 책임 이 없다 (parent Close 시 children 일괄 해제). 캐싱 으로 instance 의 processUtilLastSeenTs 와
+// unsupported 캐시 가 lifetime 동안 보존 되어 매 poll sample 중복 / NOT_SUPPORTED 반복 호출이 사라진다.
 func (c *Collector) collectMigInstances(parent nvml.Device, parentDev types.GPUDevice, aggregated map[podMigKey]*metrics.PodMigGPUSample) {
 	count, err := parent.MaxMigDeviceCount()
 	if err != nil {
@@ -260,21 +261,24 @@ func (c *Collector) collectMigInstances(parent nvml.Device, parentDev types.GPUD
 			continue
 		}
 		c.collectMigInstance(instance, parentDev, aggregated)
-		if err := instance.Close(); err != nil {
-			log.Printf("gpuobs: mig instance close idx=%d: %v", i, err)
-		}
 	}
 }
 
 // collectMigInstance 는 단일 MIG instance 의 process util 을 PID 단위 ResolvePID 후 (podUID, instance) 키
-// 로 합산 한다. instance Info 호출 실패는 비치명적 으로 흡수.
+// 로 합산 한다. instance Info / GpuInstanceId 호출 실패는 비치명적 으로 흡수 하되 식별자 부재 시 다른
+// instance 와 키 충돌 위험 이 있어 해당 instance 수집을 skip 한다.
 func (c *Collector) collectMigInstance(instance nvml.Device, parentDev types.GPUDevice, aggregated map[podMigKey]*metrics.PodMigGPUSample) {
 	info, err := instance.Info()
 	if err != nil {
 		log.Printf("gpuobs: mig instance info: %v", err)
 		return
 	}
-	giID, _ := instance.GpuInstanceId()
+	giID, err := instance.GpuInstanceId()
+	if err != nil {
+		// 식별자 부재 로 다른 instance 와 (podUID, mig_uuid, gi_id) 키 가 충돌 할 위험 회피 위해 skip.
+		log.Printf("gpuobs: mig instance gpu instance id: %v", err)
+		return
+	}
 	utils, err := instance.ProcessUtilization()
 	if err != nil {
 		log.Printf("gpuobs: mig instance process util: %v", err)

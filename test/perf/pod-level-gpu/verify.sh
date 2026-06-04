@@ -40,7 +40,11 @@ except: print(0)" 2>/dev/null || echo "0"
 }
 
 # 1차 가드: MIG mode / MPS active self-health 메트릭 발행 확인.
+# set -u 환경 에서 polling 루프 가 한 번도 실행 되지 않은 (TIMEOUT_SECONDS=0 등) 경우 의 unbound var
+# 실패 방어 위해 mig_count / mps_count 를 루프 진입 전 0 으로 명시 초기화 한다.
 echo "[poll] 1차 가드 self-health 메트릭 (gpuobs_mig_mode + gpuobs_mps_active) 발행 확인"
+mig_count=0
+mps_count=0
 deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
 while (( $(date +%s) < deadline )); do
   mig_count=$(query_count 'gpuobs_mig_mode')

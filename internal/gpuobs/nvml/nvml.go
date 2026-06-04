@@ -244,6 +244,15 @@ type deviceImpl struct {
 	// DeviceGetProcessUtilization 이 직전 호출 ts 이후 sample 만 반환하므로 매 호출 결과의 max(TimeStamp)
 	// 를 atomic 갱신해 다음 호출에 전달한다. 0 (첫 호출) 이면 NVML 이 모든 가용 sample 을 반환한다.
 	processUtilLastSeenTs atomic.Uint64
+
+	// migInstancesCache 는 #104 MIG instance handle 캐시다. MigDevice(i) 첫 호출 시 instance 별
+	// deviceImpl 을 생성해 본 슬롯에 저장하고 이후 호출은 캐싱된 핸들 그대로 반환한다. instance handle
+	// 도 자체 processUtilLastSeenTs 와 unsupported 슬롯을 보유하므로 lifetime 동안 동일 핸들 재사용이
+	// lastSeen sample dedup 와 NOT_SUPPORTED 캐싱 보존의 필수 조건이다.
+	// migInstancesMu 가 캐시 보호. nil 값 슬롯은 "해당 index 가 빈 슬롯" 의미로 보존되어 매 poll 마다
+	// 빈 슬롯 재조회 비용을 차단한다.
+	migInstancesMu    sync.Mutex
+	migInstancesCache map[int]*deviceImpl
 }
 
 // violationReasons는 GetViolationStatus를 호출할 PerfPolicyType 8종이다. 각 reason은 NVML이
@@ -800,6 +809,20 @@ func (d *deviceImpl) Close() error {
 	start := time.Now()
 	defer func() { observeNvmlCall("Close", start, &nvmlRet) }()
 
+	// #104 MIG instance handle 캐시도 함께 해제. 자식 deviceImpl 들도 자체 Close 호출 (각자 GPM
+	// 미할당이라 no-op 이지만 lifecycle 일관성 유지 와 향후 instance level 자원 도입 대비).
+	d.migInstancesMu.Lock()
+	for _, child := range d.migInstancesCache {
+		if child == nil {
+			continue
+		}
+		if err := child.Close(); err != nil {
+			log.Printf("gpuobs: mig instance close idx=%d: %v", d.index, err)
+		}
+	}
+	d.migInstancesCache = nil
+	d.migInstancesMu.Unlock()
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.gpmAllocated {
@@ -1138,8 +1161,23 @@ func (d *deviceImpl) MaxMigDeviceCount() (int, error) {
 // disabled 환경에서는 (nil, nil) 을 반환해 호출자 enumerate loop 가 단순 skip 으로 처리할 수 있다. MIG
 // 인스턴스 deviceImpl 은 parent 의 heavy init (GPM 초기화, 정적 info populate, temp threshold fetch) 을
 // 모두 건너뛰며 instance 만 노출하는 부분 기능 셋 (Info / ProcessUtilization / IsMigDevice / Ids / Close)
-// 만 의미 있게 동작한다.
+// 만 의미 있게 동작한다. instance handle 은 parent lifetime 동안 캐싱되어 동일 index 의 재호출은 같은
+// deviceImpl 을 반환한다 (processUtilLastSeenTs 와 unsupported 캐시 보존을 통한 sample dedup 와 미지원
+// 메서드 호출 비용 절감 의 핵심 invariant).
 func (d *deviceImpl) MigDevice(index int) (Device, error) {
+	d.migInstancesMu.Lock()
+	defer d.migInstancesMu.Unlock()
+	if d.migInstancesCache == nil {
+		d.migInstancesCache = make(map[int]*deviceImpl)
+	}
+	if cached, ok := d.migInstancesCache[index]; ok {
+		// nil 캐시 슬롯은 "이전 호출 결과 빈 슬롯" 의미. instance handle 부재 그대로 반환.
+		if cached == nil {
+			return nil, nil
+		}
+		return cached, nil
+	}
+
 	var nvmlRet gonvml.Return
 	start := time.Now()
 	defer func() { observeNvmlCall("MigDevice", start, &nvmlRet) }()
@@ -1147,12 +1185,17 @@ func (d *deviceImpl) MigDevice(index int) (Device, error) {
 	handle, ret := d.handle.GetMigDeviceHandleByIndex(index)
 	nvmlRet = ret
 	if ret == gonvml.ERROR_NOT_FOUND || ret == gonvml.ERROR_NOT_SUPPORTED || ret == gonvml.ERROR_INVALID_ARGUMENT {
+		d.migInstancesCache[index] = nil
 		return nil, nil
 	}
 	if err := d.wrapErr("mig device handle", ret); err != nil {
 		return nil, err
 	}
-	uuid, _ := handle.GetUUID()
+	uuid, ret := handle.GetUUID()
+	nvmlRet = ret
+	if err := d.wrapErr("mig device uuid", ret); err != nil {
+		return nil, err
+	}
 	mig := &deviceImpl{
 		handle:         handle,
 		index:          d.index,
@@ -1161,6 +1204,7 @@ func (d *deviceImpl) MigDevice(index int) (Device, error) {
 		info:           types.GPUDevice{Index: d.index, UUID: uuid, Model: d.info.Model, MigMode: types.MigModeEnabled},
 	}
 	mig.currentIdx.Store(uint64(d.index))
+	d.migInstancesCache[index] = mig
 	return mig, nil
 }
 

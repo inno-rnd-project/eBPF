@@ -935,10 +935,9 @@ func TestPollOnce_MigPathEnumeratesInstances(t *testing.T) {
 	if len(samples) != 2 {
 		t.Fatalf("mig samples=%d want 2 (2 instances, 2 pods)", len(samples))
 	}
-	// 두 instance handle 모두 Close 호출 되어야 (lifecycle 검증).
-	if !inst0.closeCalled || !inst1.closeCalled {
-		t.Errorf("instance Close not called: inst0=%v inst1=%v", inst0.closeCalled, inst1.closeCalled)
-	}
+	// #104 G1 fix 이후 instance handle 은 parent deviceImpl 의 cache 슬롯이 보유 하고 collector pollOnce
+	// 는 매 poll 마다 Close 를 호출 하지 않는다 (parent Close 가 children 일괄 해제 책임). 본 테스트의
+	// 직전 close 호출 검증 은 nvml 패키지의 deviceImpl 단위 테스트로 이관 되어야 한다 (별도 PR).
 }
 
 // migFakeNVML 은 migFakeDevice 를 nvml.NVML.Device 결과로 반환하는 NVML wrapper.

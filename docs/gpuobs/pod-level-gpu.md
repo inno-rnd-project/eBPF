@@ -8,8 +8,8 @@
 
 - `gpuobs_pod_utilization_percent{node, src_namespace, src_pod, src_pod_uid, gpu_uuid, gpu_index}`: Pod 단위 GPU compute utilization (0-100). NVML `DeviceGetProcessUtilization` 결과를 cgroup 기반 PID 매핑으로 (Pod, GPU) 단위 합산 (100 cap) 한 값. 라벨 셋은 기존 `gpuobs_pod_memory_used_bytes` 와 정합 유지되어 PromQL join 호환.
 - `gpuobs_pod_mig_utilization_percent{..., mig_uuid, gi_id}`: MIG 활성 환경 한정의 instance 단위 Pod utilization. `mig_uuid` 와 `gi_id` (GPU Instance ID) 라벨이 추가 부착되어 동일 device 내 instance 간 분리. parent device 의 MIG mode 가 `enabled` 일 때만 시리즈가 생긴다.
-- `gpuobs_mig_mode{node, gpu_uuid, mode}`: device 단위 MIG 활성 상태. `mode` 라벨은 `enabled` / `disabled` / `unsupported` 3종이며 각 device 마다 3 시리즈 모두 0/1 로 발행되어 라벨 전환 시 stale 시리즈가 남지 않는다.
-- `gpuobs_mps_active{node, gpu_uuid}`: MPS daemon active 여부 (1=active, 0=inactive). `CUDA_MPS_PIPE_DIRECTORY` env / 기본 경로 / `nvidia-cuda-mps-control` process 3종 OR 로직으로 노드 단위 감지.
+- `gpuobs_mig_mode{node, gpu_uuid, gpu_index, gpu_model, mode}`: device 단위 MIG 활성 상태. `mode` 라벨은 `enabled` / `disabled` / `unsupported` 3종이며 각 device 마다 3 시리즈 모두 0/1 로 발행되어 라벨 전환 시 stale 시리즈가 남지 않는다.
+- `gpuobs_mps_active{node, gpu_uuid, gpu_index, gpu_model}`: MPS daemon active 여부 (1=active, 0=inactive). `CUDA_MPS_PIPE_DIRECTORY` env / 기본 경로 / `nvidia-cuda-mps-control` process 3종 OR 로직으로 노드 단위 감지.
 - `pod:gpu_util_p95:5m{src_namespace, src_pod, gpu_uuid}`: 위 Pod-level utilization 의 5분 윈도우 95-percentile recording rule. capacity-trends (#86 과 #88) 의 GPU 도메인 device-scope fallback 강등이 본 rule 활성화로 회복된다.
 
 ## 환경별 동작 매트릭스

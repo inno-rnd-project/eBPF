@@ -97,12 +97,18 @@ func checkProcess() bool {
 }
 
 // applyRoot 는 fsRoot 가 설정 되어 있으면 path 를 그 아래로 매핑 해 반환 한다. 테스트가 임시 디렉토리
-// 를 주입 해 detect 분기 를 격리 검증 가능 하게 하는 hook.
+// 를 주입 해 detect 분기 를 격리 검증 가능 하게 하는 hook. filepath.Join 의 흡수 규칙 으로 절대 경로의
+// 앞에 root 가 prepend 되지 않는 결함을 회피 하기 위해 절대경로의 선행 구분자를 명시 제거 한다.
 func applyRoot(path string) string {
 	if fsRoot == "" {
 		return path
 	}
-	return filepath.Join(fsRoot, path)
+	clean := filepath.Clean(path)
+	if filepath.IsAbs(clean) {
+		// "/proc" → "proc" 로 변환 해 filepath.Join(fsRoot, "proc") 가 fsRoot 아래 로 정상 매핑 되게 한다.
+		clean = clean[1:]
+	}
+	return filepath.Join(fsRoot, clean)
 }
 
 // isAllDigits 는 /proc 의 PID 디렉토리 식별을 위한 helper.
