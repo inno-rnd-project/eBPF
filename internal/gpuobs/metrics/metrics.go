@@ -464,6 +464,19 @@ var (
 		podLabels,
 	)
 
+	// podUtilization 은 #104 의 Pod-level GPU compute utilization (0-100) gauge 다. 라벨 셋 은 podLabels
+	// 6종 그대로 podMemoryUsed 와 정합 유지 하여 PromQL join key 호환성 을 보존한다. collector 가 NVML
+	// DeviceGetProcessUtilization 결과 를 (podUID, gpu) 단위 합산 (100 cap) 한 값 을 SmUtilPct 슬롯 으로
+	// 받아 발행한다. MIG 활성 환경 의 instance level 라벨 (mig_uuid, gi_id) 분리 발행 은 후속 commit 의
+	// MIG 도경 완성 단계 에서 별도 시리즈로 추가된다.
+	podUtilization = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_pod_utilization_percent",
+			Help: "GPU compute utilization (0-100) attributed to a single Pod via NVML per-process SM utilization and cgroup-based PID resolution. Best-effort while gpuobs_cuda_pid_multi_gpu_count is nonzero (see #33). Accuracy drops in MPS time-sliced single-context environments — check gpuobs_mps_active",
+		},
+		podLabels,
+	)
+
 	cudaKernelLaunchesTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gpuobs_cuda_kernel_launches_total",
@@ -609,6 +622,7 @@ func Register(reg prometheus.Registerer) {
 		deviceInfo,
 		deviceFirmwareInfo,
 		podMemoryUsed,
+		podUtilization,
 		cudaKernelLaunchesTotal,
 		cudaH2DBytesTotal,
 		cudaD2HBytesTotal,
@@ -957,16 +971,21 @@ func RecordPodSnapshot(node string, samples []PodGPUSample) {
 				idx,
 			}
 			podMemoryUsed.WithLabelValues(labels...).Set(float64(s.MemUsedBytes))
+			// #104 SM utilization 메트릭 동시 발행. allow-list 적용 후 별도 통제 옵션은 다음 commit 에서.
+			podUtilization.WithLabelValues(labels...).Set(float64(s.SmUtilPct))
 			currentKeys[strings.Join(labels, podLabelSeparator)] = struct{}{}
 		}
 	}
 
 	// 직전 poll에는 있었지만 이번에는 없는 라벨 series 제거 (Pod 종료 / 프로세스 종료 / toggle off 모두 흡수).
+	// #104 podUtilization 도 podMemoryUsed 와 동일 라벨 키 셋 을 공유 하므로 같은 cleanup 키 로 둘 다 정리.
 	lastPodSampleKeysMu.Lock()
 	defer lastPodSampleKeysMu.Unlock()
 	for key := range lastPodSampleKeys {
 		if _, ok := currentKeys[key]; !ok {
-			podMemoryUsed.DeleteLabelValues(strings.Split(key, podLabelSeparator)...)
+			parts := strings.Split(key, podLabelSeparator)
+			podMemoryUsed.DeleteLabelValues(parts...)
+			podUtilization.DeleteLabelValues(parts...)
 		}
 	}
 	lastPodSampleKeys = currentKeys

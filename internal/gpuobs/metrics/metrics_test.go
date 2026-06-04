@@ -15,6 +15,7 @@ import (
 func resetPodMetricsState(t *testing.T) {
 	t.Helper()
 	podMemoryUsed.Reset()
+	podUtilization.Reset()
 	podMetricsEnabled = true
 	lastPodSampleKeys = make(map[string]struct{})
 }
@@ -1202,5 +1203,53 @@ func TestRecordMpsActive_TogglesValue(t *testing.T) {
 	}
 	if got := testutil.CollectAndCount(mpsActive); got != 1 {
 		t.Errorf("series count=%d want 1 (single device)", got)
+	}
+}
+
+// TestRecordPodSnapshot_EmitsUtilizationSeries 는 #104 의 gpuobs_pod_utilization_percent 가 podLabels
+// 6종 그대로 발행 되고, SmUtilPct 값 이 그대로 노출 되는지 검증.
+func TestRecordPodSnapshot_EmitsUtilizationSeries(t *testing.T) {
+	resetPodMetricsState(t)
+
+	samples := []PodGPUSample{
+		{
+			ID:           kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "trainer-0", PodUID: "uid-xyz"},
+			Device:       types.GPUDevice{Index: 1, UUID: "GPU-uuid-1"},
+			MemUsedBytes: 4096,
+			SmUtilPct:    72,
+		},
+	}
+	RecordPodSnapshot("node-a", samples)
+
+	if got := testutil.ToFloat64(podUtilization.WithLabelValues("node-a", "ml", "trainer-0", "uid-xyz", "GPU-uuid-1", "1")); got != 72 {
+		t.Errorf("util=%v want 72", got)
+	}
+	if got := testutil.CollectAndCount(podUtilization); got != 1 {
+		t.Errorf("util series count=%d want 1", got)
+	}
+}
+
+// TestRecordPodSnapshot_UtilDiffCleanupRemovesStaleSeries 는 podUtilization 의 diff cleanup 이
+// podMemoryUsed 와 동일 cleanup 키 셋 으로 동작 하는지 검증. 직전 poll 에 있던 Pod 가 사라지면
+// util 시리즈 도 자동 정리 된다.
+func TestRecordPodSnapshot_UtilDiffCleanupRemovesStaleSeries(t *testing.T) {
+	resetPodMetricsState(t)
+
+	RecordPodSnapshot("n", []PodGPUSample{
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "a", PodUID: "uid-a"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 40},
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "b", PodUID: "uid-b"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 60},
+	})
+	if got := testutil.CollectAndCount(podUtilization); got != 2 {
+		t.Fatalf("util series before cleanup=%d want 2", got)
+	}
+
+	RecordPodSnapshot("n", []PodGPUSample{
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "a", PodUID: "uid-a"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 45},
+	})
+	if got := testutil.CollectAndCount(podUtilization); got != 1 {
+		t.Errorf("util series after cleanup=%d want 1 (b removed)", got)
+	}
+	if got := testutil.ToFloat64(podUtilization.WithLabelValues("n", "ml", "a", "uid-a", "GPU-1", "0")); got != 45 {
+		t.Errorf("util a=%v want 45", got)
 	}
 }
