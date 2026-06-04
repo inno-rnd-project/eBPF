@@ -8,6 +8,15 @@
  * 가독성을 확보한다. */
 #define NETOBS_AF_INET 2
 
+/* #103 IPv6 트래픽 추적 확장 의 family 식별자. linux/socket.h 의 AF_INET6 상수 (10) 와 동일.
+ * fill_conn_from_sock 가 sk_family 검사 후 본 매크로로 분기 하며 inc_flow_bytes 의 가드 도 family
+ * enum 검사 로 IPv4 와 IPv6 양쪽 을 허용 한다. */
+#define NETOBS_AF_INET6 10
+
+/* #103 IPv6 주소 length (byte). v4/v6 통합 표현 시 [16]byte 슬롯 으로 통일 한다. IPv4 는 첫 4 byte
+ * 만 사용 하며 나머지 12 byte 는 0 으로 채워 진다 (BPF 측 __builtin_memset 로 초기화). */
+#define NETOBS_ADDR_LEN 16
+
 enum netobs_event_stage {
     NETOBS_STAGE_SENDMSG_RET    = 1,
     NETOBS_STAGE_TO_VETH        = 2,
@@ -61,17 +70,21 @@ struct netobs_pod_bytes_value {
 /* #85 Pod 간 정상 flow 의 5-tuple RX/TX 추적 map 의 key/value. cgroup_id 와 5-tuple 양쪽을 모두 보관해
  * 동일 connection 의 양 종단 Pod 가 서로 다른 entry 로 누적 되도록 한다. direction 을 key 에 포함해
  * 동일 connection 의 egress 와 ingress 도 별도 entry 로 누적 된다. saddr / daddr 은 network byte
- * order, sport / dport 는 host byte order 로 fill_conn_from_sock 의 변환 규칙과 정합 한다. trailing
- * 8-byte align padding 회피를 위해 #82 의 pad82, #83 의 pad83 와 동일 한 명시 pad 슬롯을 둔다. */
+ * order 로 fill_conn_from_sock 의 변환 규칙과 정합 한다.
+ *
+ * #103 IPv6 와 UDP 추적 확장 으로 saddr / daddr 을 [16]byte 통합 슬롯 (NETOBS_ADDR_LEN) 으로 변경
+ * 했다. IPv4 는 첫 4 byte 만 사용 하며 나머지 12 byte 는 0 으로 초기화 된다. family 필드 가 추가 되어
+ * userspace 가 ip_version 라벨 산정 (NETOBS_AF_INET → "4", NETOBS_AF_INET6 → "6") 에 사용 한다. */
 struct netobs_flow_key {
     __u64 cgroup_id;
-    __u32 saddr;            /* network byte order */
-    __u32 daddr;            /* network byte order */
+    __u8  saddr[NETOBS_ADDR_LEN];   /* network byte order, IPv4 는 첫 4 byte */
+    __u8  daddr[NETOBS_ADDR_LEN];   /* network byte order, IPv4 는 첫 4 byte */
     __u16 sport;            /* host byte order */
     __u16 dport;            /* host byte order */
-    __u8  protocol;         /* IP protocol number (6=TCP) */
+    __u8  protocol;         /* IP protocol number (6=TCP, 17=UDP) */
     __u8  direction;        /* netobs_byte_direction */
-    __u8  pad[2];
+    __u8  family;           /* NETOBS_AF_INET (2) 또는 NETOBS_AF_INET6 (10) */
+    __u8  pad;
 };
 
 struct netobs_flow_value {
@@ -83,8 +96,8 @@ struct netobs_start_info {
     __u64 cgroup_id;
     __u64 socket_cookie;    /* sock->sk_cookie */
 
-    __u32 saddr;            /* network byte order */
-    __u32 daddr;            /* network byte order */
+    __u8  saddr[NETOBS_ADDR_LEN];   /* network byte order, IPv4 는 첫 4 byte */
+    __u8  daddr[NETOBS_ADDR_LEN];   /* network byte order, IPv4 는 첫 4 byte */
     __u32 pid;
     __u32 tid;
 
@@ -100,9 +113,7 @@ struct netobs_start_info {
     __u8  seen_devq;
     __u8  ret_seen;
     __u8  protocol;         /* IP protocol number (IPPROTO_TCP=6, IPPROTO_UDP=17). #64 의 drop flow
-                              5-tuple emit 에 사용. 기존 pad0 슬롯을 reuse 해 본 필드 추가만으로는
-                              struct size 가 변하지 않는다 (#65 의 snd_cwnd / srtt_us / snd_ssthresh
-                              추가로 struct 전체는 별도로 확장됨). */
+                              5-tuple emit 에 사용. */
 
     /* #65 TCP 상태 메트릭. emit_rcv_event 가 fill_tcp_state 로 채우며 다른 caller 는 0 으로 둔다.
      * srtt_us 는 kernel 의 << 3 scale 을 BPF 에서 >> 3 처리해 실제 µs 단위로 저장한다. */
@@ -125,11 +136,11 @@ struct netobs_start_info {
     __u64 ts_transmit_skb;
     __u8  seen_write_xmit;
     __u8  seen_transmit;
-    /* #85 IPv4 family flag. fill_conn_from_sock 에서 sk_family 를 한 번 읽 어 본 슬롯에 stash 한다.
-     * tcp_sendmsg_ret 의 inc_flow_bytes 호출 시 sk 가 직접 인자로 노출 되지 않 으므로 본 flag 로 IPv4
-     * 가드 를 수행 한다. 1 byte 사용 으로 기존 pad82 의 6 byte 중 1 byte 를 흡수 해 struct size 는
-     * 변하지 않는다. */
-    __u8  is_ipv4;
+    /* #103 family enum (NETOBS_AF_INET / NETOBS_AF_INET6). fill_conn_from_sock 에서 sk_family 를
+     * 한 번 읽 어 본 슬롯에 stash 한다. tcp_sendmsg_ret 의 inc_flow_bytes 호출 시 sk 가 직접 인자
+     * 로 노출 되지 않 으므로 본 family enum 으로 IPv4/IPv6 가드 를 수행 한다. 기존 is_ipv4 flag 의
+     * 의미 확장 형태 다. */
+    __u8  family;
     __u8  pad82[5];
 };
 
@@ -138,8 +149,8 @@ struct netobs_event {
     __u64 cgroup_id;
     __u64 socket_cookie;    /* sock->sk_cookie */
 
-    __u32 saddr;            /* network byte order */
-    __u32 daddr;            /* network byte order */
+    __u8  saddr[NETOBS_ADDR_LEN];   /* network byte order, IPv4 는 첫 4 byte */
+    __u8  daddr[NETOBS_ADDR_LEN];   /* network byte order, IPv4 는 첫 4 byte */
     __u32 pid;
     __u32 tid;
     __u32 ret;
@@ -155,11 +166,10 @@ struct netobs_event {
     char  comm[NETOBS_COMM_LEN];
 
     __u8  stage;
-    __u8  protocol;         /* IP protocol number (IPPROTO_TCP=6, IPPROTO_UDP=17). #64 의 drop flow
-                              5-tuple emit 에 사용. 기존 pad[0] 슬롯을 reuse 해 본 필드 추가만으로는
-                              struct size 가 변하지 않는다 (#65 의 TCP 상태 필드로 struct 전체는
-                              별도로 확장됨). */
-    __u8  pad[2];
+    __u8  protocol;         /* IP protocol number (IPPROTO_TCP=6, IPPROTO_UDP=17). */
+    __u8  family;           /* #103 NETOBS_AF_INET / NETOBS_AF_INET6. userspace 가 ip_version 라벨
+                              산정 에 사용. */
+    __u8  pad;
 
     /* #65 TCP 상태 메트릭. rcv_* stage 의 emit 에서만 채워지며 그 외 stage 는 0. srtt_us 는 kernel
      * scale 을 BPF 에서 >> 3 한 실제 µs 단위다. 본 3 필드 추가로 struct size 가 88 byte → 96 byte 로

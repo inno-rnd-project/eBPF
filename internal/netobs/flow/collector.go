@@ -84,6 +84,9 @@ func New(cgroup CgroupResolver, ip IPResolver, guard *metrics.FlowGuard, dstClas
 		"dst_ip", "dst_port",
 		"protocol",
 		"direction",
+		// #103 IPv6 와 UDP 확장. ip_version 라벨 값 은 "4" 또는 "6" (NETOBS_AF_INET / AF_INET6). 기존
+		// PromQL 의 sum by 절 은 본 라벨 을 자연 흡수 해 IPv4 / IPv6 합산 으로 동작.
+		"ip_version",
 	}
 	return &Collector{
 		cgroup:        cgroup,
@@ -156,12 +159,14 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			k.dstIP, formatPort(k.dstPort),
 			k.protocol,
 			k.direction,
+			k.ipVersion,
 		)
 	}
 }
 
-// aggKey 는 emitted label 셋 중 fixed 부분 (5-tuple + direction + protocol) 의 합성 키 다. 동일 키 의
-// 여러 BPF entry 는 bytes 합산 후 단일 시리즈로 emit 된다.
+// aggKey 는 emitted label 셋 중 fixed 부분 (5-tuple + direction + protocol + ip_version) 의 합성 키 다.
+// 동일 키 의 여러 BPF entry 는 bytes 합산 후 단일 시리즈로 emit 된다. #103 IPv6 확장 으로 ipVersion
+// 필드 추가.
 type aggKey struct {
 	srcIP     string
 	srcPort   uint16
@@ -169,6 +174,7 @@ type aggKey struct {
 	dstPort   uint16
 	protocol  string
 	direction string
+	ipVersion string
 	// dedupeUID 는 동일 키 의 multi-cgroup 케이스 에서 local pod UID 까지 같은 entry 만 합치도록 가드
 	// 한다. 다른 PodUID 면 별개 series (라벨 충돌은 없 으나 dedupe 의도 외) 가 된다.
 	dedupeUID string
@@ -200,8 +206,8 @@ func (c *Collector) mergeEntry(agg map[aggKey]*aggValue, key ebpfx.NetObsNetobsF
 		return
 	}
 
-	localIP := types.U32ToIPv4(key.Saddr)
-	remoteIP := types.U32ToIPv4(key.Daddr)
+	localIP := types.IPToString(key.Family, key.Saddr)
+	remoteIP := types.IPToString(key.Family, key.Daddr)
 	localPort := key.Sport
 	remotePort := key.Dport
 	protocol := types.IPProtocolName(key.Protocol)
@@ -248,6 +254,7 @@ func (c *Collector) mergeEntry(agg map[aggKey]*aggValue, key ebpfx.NetObsNetobsF
 		srcIP: srcIP, srcPort: srcPort,
 		dstIP: dstIP, dstPort: dstPort,
 		protocol: protocol, direction: direction,
+		ipVersion: types.IPVersion(key.Family),
 		dedupeUID: localPod.PodUID,
 	}
 	if prev, ok := agg[ak]; ok {

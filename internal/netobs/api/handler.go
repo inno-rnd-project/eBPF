@@ -26,7 +26,8 @@ type DropSource interface {
 }
 
 // FlowEntry 는 5-tuple flow 의 단일 record. 본 PR 에서 OpenAPI schema 노출 만 담당 하고 실
-// source 가 채워질 때 본 타입 으로 marshal 된다.
+// source 가 채워질 때 본 타입 으로 marshal 된다. #103 IPv6 확장 으로 IPVersion 필드 추가 (값 "4"
+// 또는 "6"). SrcIP / DstIP 는 string 타입 이라 IPv4 / IPv6 표현 양쪽 호환.
 type FlowEntry struct {
 	Node          string `json:"node"`
 	SrcNamespace  string `json:"src_namespace"`
@@ -39,11 +40,12 @@ type FlowEntry struct {
 	DstPort       uint16 `json:"dst_port"`
 	Protocol      string `json:"protocol"`
 	Direction     string `json:"direction"`
+	IPVersion     string `json:"ip_version"`
 	BytesTotal    uint64 `json:"bytes_total"`
 	BytesPerSec   float64 `json:"bytes_per_sec"`
 }
 
-// DropEntry 는 drop event 의 단일 record.
+// DropEntry 는 drop event 의 단일 record. #103 IPv6 확장 으로 IPVersion 필드 추가.
 type DropEntry struct {
 	Node          string `json:"node"`
 	SrcNamespace  string `json:"src_namespace"`
@@ -53,6 +55,7 @@ type DropEntry struct {
 	DstIP         string `json:"dst_ip"`
 	DstPort       uint16 `json:"dst_port"`
 	Protocol      string `json:"protocol"`
+	IPVersion     string `json:"ip_version"`
 	DropReason    string `json:"drop_reason"`
 	DropCategory  string `json:"drop_category"`
 	EventCount    uint64 `json:"event_count"`
@@ -129,6 +132,7 @@ type ErrorDetail struct {
 // @Param        dst_pod        query  string  false  "dst Pod 의 이름 필터"
 // @Param        protocol       query  string  false  "프로토콜 필터 (tcp/udp)"
 // @Param        direction      query  string  false  "방향 필터 (egress/ingress)"
+// @Param        ip_version     query  string  false  "IP version 필터 (4 또는 6, #103 IPv6 확장)"
 // @Param        limit          query  int     false  "응답 item 최대 개수 (기본 100, 최대 1000)"
 // @Param        offset         query  int     false  "응답 시작 offset (기본 0)"
 // @Success      200  {object}  FlowListResponse
@@ -142,6 +146,7 @@ func (h *Handler) ListFlows(w http.ResponseWriter, r *http.Request) {
 	dstPod := strings.TrimSpace(q.Get("dst_pod"))
 	protocol := strings.ToLower(strings.TrimSpace(q.Get("protocol")))
 	direction := strings.ToLower(strings.TrimSpace(q.Get("direction")))
+	ipVersion := strings.TrimSpace(q.Get("ip_version"))
 
 	if protocol != "" && protocol != "tcp" && protocol != "udp" {
 		apicommon.WriteError(w, http.StatusBadRequest, "invalid_protocol", "protocol 은 tcp 또는 udp 여야 합니다")
@@ -149,6 +154,10 @@ func (h *Handler) ListFlows(w http.ResponseWriter, r *http.Request) {
 	}
 	if direction != "" && direction != "egress" && direction != "ingress" {
 		apicommon.WriteError(w, http.StatusBadRequest, "invalid_direction", "direction 은 egress 또는 ingress 여야 합니다")
+		return
+	}
+	if ipVersion != "" && ipVersion != "4" && ipVersion != "6" {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_ip_version", "ip_version 은 4 또는 6 이어야 합니다")
 		return
 	}
 
@@ -176,6 +185,9 @@ func (h *Handler) ListFlows(w http.ResponseWriter, r *http.Request) {
 		if direction != "" && !strings.EqualFold(f.Direction, direction) {
 			continue
 		}
+		if ipVersion != "" && f.IPVersion != ipVersion {
+			continue
+		}
 		filtered = append(filtered, f)
 	}
 	limit, offset := apicommon.ParsePagination(r)
@@ -196,6 +208,7 @@ func (h *Handler) ListFlows(w http.ResponseWriter, r *http.Request) {
 // @Param        drop_category  query  string  false  "drop category 필터"
 // @Param        src_namespace  query  string  false  "src Pod 의 namespace 필터"
 // @Param        src_pod        query  string  false  "src Pod 의 이름 필터"
+// @Param        ip_version     query  string  false  "IP version 필터 (4 또는 6, #103 IPv6 확장)"
 // @Param        limit          query  int     false  "응답 item 최대 개수 (기본 100, 최대 1000)"
 // @Param        offset         query  int     false  "응답 시작 offset (기본 0)"
 // @Success      200  {object}  DropListResponse
@@ -207,6 +220,12 @@ func (h *Handler) ListDrops(w http.ResponseWriter, r *http.Request) {
 	category := strings.TrimSpace(q.Get("drop_category"))
 	srcNS := strings.TrimSpace(q.Get("src_namespace"))
 	srcPod := strings.TrimSpace(q.Get("src_pod"))
+	ipVersion := strings.TrimSpace(q.Get("ip_version"))
+
+	if ipVersion != "" && ipVersion != "4" && ipVersion != "6" {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_ip_version", "ip_version 은 4 또는 6 이어야 합니다")
+		return
+	}
 
 	var all []DropEntry
 	if h.drops != nil {
@@ -224,6 +243,9 @@ func (h *Handler) ListDrops(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if srcPod != "" && d.SrcPod != srcPod {
+			continue
+		}
+		if ipVersion != "" && d.IPVersion != ipVersion {
 			continue
 		}
 		filtered = append(filtered, d)

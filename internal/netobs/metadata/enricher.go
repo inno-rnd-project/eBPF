@@ -374,8 +374,8 @@ func deriveTrafficScope(src, dst kube.PodIdentity) string {
 // IP 해석은 주입된 *kube.Resolver에 위임하고, 그 결과에 socket-cookie flow 캐시 hit과
 // cgroup/ifindex runtime hint를 합쳐 양 끝의 식별을 가능한 강하게 만든다.
 func (e *Enricher) Enrich(ev types.Event, mapper *drop.Mapper) types.EnrichedEvent {
-	srcIP := types.U32ToIPv4(ev.Saddr)
-	dstIP := types.U32ToIPv4(ev.Daddr)
+	srcIP := types.IPToString(ev.Family, ev.Saddr)
+	dstIP := types.IPToString(ev.Family, ev.Daddr)
 
 	now := time.Now()
 

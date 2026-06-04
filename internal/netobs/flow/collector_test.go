@@ -1,6 +1,7 @@
 package flow
 
 import (
+	"encoding/binary"
 	"strings"
 	"testing"
 
@@ -135,17 +136,20 @@ func podOf(ns, name, uid, workload string) kube.PodIdentity {
 }
 
 // makeKey 는 BPF map iterate 입력 helper. 인자는 localIP, remoteIP, localPort, remotePort 형태 로
-// BPF 측 raw 5-tuple 의미 와 정합 한다 (saddr=local, daddr=remote).
+// BPF 측 raw 5-tuple 의미 와 정합 한다 (saddr=local, daddr=remote). #103 IPv6 확장 으로 Saddr / Daddr
+// 가 [16]byte 통합 슬롯 이 되었으며 IPv4 는 첫 4 byte 만 사용 한다 (Family=2 / NETOBS_AF_INET).
 func makeKey(cgroupID uint64, localIPInt, remoteIPInt uint32, localPort, remotePort uint16, dir uint8) ebpfx.NetObsNetobsFlowKey {
-	return ebpfx.NetObsNetobsFlowKey{
+	k := ebpfx.NetObsNetobsFlowKey{
 		CgroupId:  cgroupID,
-		Saddr:     localIPInt,
-		Daddr:     remoteIPInt,
 		Sport:     localPort,
 		Dport:     remotePort,
 		Protocol:  6, // TCP
 		Direction: dir,
+		Family:    2, // NETOBS_AF_INET
 	}
+	binary.NativeEndian.PutUint32(k.Saddr[:4], localIPInt)
+	binary.NativeEndian.PutUint32(k.Daddr[:4], remoteIPInt)
+	return k
 }
 
 // ipBytes 는 LE 환경 가정 으로 a.b.c.d 형태 의 IPv4 를 BPF 가 저장 하는 uint32 (network byte order
