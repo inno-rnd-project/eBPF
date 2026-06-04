@@ -10,9 +10,14 @@ import (
 
 	"netobs/internal/gpuobs/config"
 	"netobs/internal/gpuobs/metrics"
+	"netobs/internal/gpuobs/mps"
 	"netobs/internal/gpuobs/nvml"
 	"netobs/internal/kube"
 )
+
+// mpsDetect 는 mps.Detect 의 test seam 이다. 운영 코드는 본 변수의 기본값으로 mps.Detect 를 사용 하고,
+// 단위 테스트는 분기 결정성을 위해 본 변수를 임시 함수로 교체한다.
+var mpsDetect = mps.Detect
 
 // PodResolver는 collector가 PID → PodIdentity 해석을 위해 의존하는 최소 인터페이스다.
 // 운영에서는 *kube.Resolver가 자연스럽게 만족하며, 단위 테스트에서는 fake로 주입한다.
@@ -132,6 +137,9 @@ func (c *Collector) pollOnce() {
 		aggregated = make(map[podGPUKey]*metrics.PodGPUSample)
 	}
 
+	// #104 MPS daemon active 여부 는 노드 단위 신호 라 device loop 진입 전 1회 detect.
+	mpsOn := mpsDetect()
+
 	for _, dev := range c.devSet.Snapshot() {
 		snap, err := dev.Snapshot()
 		if err != nil {
@@ -140,6 +148,11 @@ func (c *Collector) pollOnce() {
 			continue
 		}
 		metrics.Record(c.cfg.NodeName, snap)
+
+		// #104 self-health 메트릭 발행. MigMode 는 nvml init 단계 에서 캐싱 되어 매 poll 비용 zero.
+		// MPS 는 위에서 1회 detect 한 결과 를 device 라벨 4종 으로 동일 값 발행.
+		metrics.RecordMigMode(c.cfg.NodeName, snap.Device)
+		metrics.RecordMpsActive(c.cfg.NodeName, snap.Device, mpsOn)
 
 		if !perPodEnabled {
 			continue

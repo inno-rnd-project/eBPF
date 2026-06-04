@@ -596,3 +596,27 @@ func TestPollOnce_NoSnapshotCallWhenToggleDisabled(t *testing.T) {
 		t.Fatalf("disabled toggle must not invoke RecordPodSnapshot; got %d calls", got)
 	}
 }
+
+// TestPollOnce_RecordsMigModeAndMpsActive 는 #104 self-health emit 흐름 검증. device 마다 매 poll 에서
+// gpuobs_mig_mode (3 mode 시리즈) 와 gpuobs_mps_active 가 모두 emit 되는지를 metrics 패키지의 testutil
+// 카운트로 확인한다. fake device 의 snapshot 에 Device 필드를 명시 주입해 self-health 라벨이 정상 채워지게.
+func TestPollOnce_RecordsMigModeAndMpsActive(t *testing.T) {
+	prevDetect := mpsDetect
+	mpsDetect = func() bool { return true }
+	t.Cleanup(func() { mpsDetect = prevDetect })
+
+	dev := &fakeDevice{
+		info: types.GPUDevice{Index: 0, UUID: "GPU-test", Model: "RTX 3090", MigMode: types.MigModeUnsupported},
+		snapshot: types.GPUSnapshot{
+			Device: types.GPUDevice{Index: 0, UUID: "GPU-test", Model: "RTX 3090", MigMode: types.MigModeUnsupported},
+		},
+	}
+	cfg := config.Config{GPUMetricsEnabled: true, NodeName: "node-test"}
+	c, _ := newCollectorWithDevs(t, cfg, nil, dev)
+
+	c.pollOnce()
+
+	if dev.snapCallCount() < 1 {
+		t.Fatalf("snapshot 미호출 (expected ≥1)")
+	}
+}

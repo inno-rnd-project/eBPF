@@ -153,6 +153,13 @@ func (n *nvmlImpl) Device(index uint) (Device, error) {
 	// 개별 NVML 호출이 미지원이면 해당 필드만 zero value로 남고 나머지는 정상 채워진다.
 	d.populateStaticInfo()
 
+	// #104 MigMode 는 device 수명 동안 사실상 불변 (변경 시 nvidia-smi mig + driver reset 필요) 이라
+	// 정적 info 와 동일하게 1회 fetch + 캐싱한다. NOT_SUPPORTED 는 MigModeUnsupported 로 정규화 되어
+	// consumer GPU 에서도 graceful 흡수된다.
+	if mode, err := d.MigMode(); err == nil {
+		d.info.MigMode = mode
+	}
+
 	// 온도 threshold 값(slowdown/shutdown 등) 도 device 수명 동안 불변이므로 1회 fetch + 캐싱한다.
 	d.initTemperatureThresholds()
 

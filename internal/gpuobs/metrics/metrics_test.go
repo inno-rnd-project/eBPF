@@ -1145,3 +1145,62 @@ func TestSetCudaLaunchBaselinePerSec(t *testing.T) {
 		t.Errorf("series count=%d want 1 (single node)", got)
 	}
 }
+
+// TestRecordMigMode_AllThreeSeriesPerDevice 는 #104 self-health 발행 흐름 검증. 한 device 의 현재
+// MigMode 에 대해 3 mode 시리즈 (enabled / disabled / unsupported) 가 모두 발행되되 일치 mode 만 1, 나머지
+// 2종은 0 으로 둠 으로써 mode 전환 시 stale 라벨이 자연 cleanup 되도록 한다.
+func TestRecordMigMode_AllThreeSeriesPerDevice(t *testing.T) {
+	migMode.Reset()
+
+	dev := types.GPUDevice{Index: 0, UUID: "GPU-A", Model: "RTX 3090", MigMode: types.MigModeUnsupported}
+	RecordMigMode("node-a", dev)
+
+	if got := testutil.CollectAndCount(migMode); got != 3 {
+		t.Errorf("series count=%d want 3 (3 mode values)", got)
+	}
+	if got := testutil.ToFloat64(migMode.WithLabelValues("node-a", "GPU-A", "0", "RTX 3090", "unsupported")); got != 1 {
+		t.Errorf("unsupported=%v want 1", got)
+	}
+	if got := testutil.ToFloat64(migMode.WithLabelValues("node-a", "GPU-A", "0", "RTX 3090", "disabled")); got != 0 {
+		t.Errorf("disabled=%v want 0", got)
+	}
+	if got := testutil.ToFloat64(migMode.WithLabelValues("node-a", "GPU-A", "0", "RTX 3090", "enabled")); got != 0 {
+		t.Errorf("enabled=%v want 0", got)
+	}
+}
+
+// TestRecordMigMode_EnabledFlipsActiveSeries 는 mode 전환 시 active 시리즈가 정확히 한 mode 에만
+// 1 로 노출되는지 검증한다.
+func TestRecordMigMode_EnabledFlipsActiveSeries(t *testing.T) {
+	migMode.Reset()
+
+	dev := types.GPUDevice{Index: 1, UUID: "GPU-B", Model: "H100", MigMode: types.MigModeEnabled}
+	RecordMigMode("node-b", dev)
+
+	if got := testutil.ToFloat64(migMode.WithLabelValues("node-b", "GPU-B", "1", "H100", "enabled")); got != 1 {
+		t.Errorf("enabled=%v want 1", got)
+	}
+	if got := testutil.ToFloat64(migMode.WithLabelValues("node-b", "GPU-B", "1", "H100", "disabled")); got != 0 {
+		t.Errorf("disabled=%v want 0", got)
+	}
+}
+
+// TestRecordMpsActive_TogglesValue 는 detect 결과가 device 라벨 시리즈의 값으로 1 또는 0 으로 발행 되는지
+// 검증한다. 동일 device 의 후속 호출 은 같은 라벨 시리즈를 덮어쓴다.
+func TestRecordMpsActive_TogglesValue(t *testing.T) {
+	mpsActive.Reset()
+
+	dev := types.GPUDevice{Index: 0, UUID: "GPU-X", Model: "A100"}
+	RecordMpsActive("node-z", dev, true)
+	if got := testutil.ToFloat64(mpsActive.WithLabelValues("node-z", "GPU-X", "0", "A100")); got != 1 {
+		t.Errorf("active=true value=%v want 1", got)
+	}
+
+	RecordMpsActive("node-z", dev, false)
+	if got := testutil.ToFloat64(mpsActive.WithLabelValues("node-z", "GPU-X", "0", "A100")); got != 0 {
+		t.Errorf("active=false value=%v want 0", got)
+	}
+	if got := testutil.CollectAndCount(mpsActive); got != 1 {
+		t.Errorf("series count=%d want 1 (single device)", got)
+	}
+}

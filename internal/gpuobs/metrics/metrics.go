@@ -30,6 +30,15 @@ var agentInfo = prometheus.NewGauge(
 // index는 slot, model은 그래프 범주화, node는 클러스터 내 귀속에 쓴다.
 var deviceLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model"}
 
+// migModeLabels 는 #104 의 gpuobs_mig_mode self-health 라벨 세트다. mode 라벨 은 unsupported / disabled
+// / enabled 3종 이며 각 device 마다 3 시리즈 모두 0 또는 1 로 발행 해 운영자 가 단일 query
+// (`gpuobs_mig_mode{mode="enabled"} == 1`) 로 환경별 분기 가시화 가 가능 하다.
+var migModeLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model", "mode"}
+
+// mpsActiveLabels 는 #104 의 gpuobs_mps_active self-health 라벨 세트다. MPS daemon 활성 여부 는 노드
+// 단위 신호 지만 dashboard 정합 (다른 device 메트릭 과 동일 키 join) 을 위해 device 라벨 4종 그대로 노출.
+var mpsActiveLabels = deviceLabels
+
 // deviceClockLabels는 도메인별 clock gauge에 `clock` 라벨을 추가한 변형이다.
 var deviceClockLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model", "clock"}
 
@@ -188,6 +197,26 @@ var (
 			Help: "GPU compute utilization (0-100) sampled from NVML",
 		},
 		deviceLabels,
+	)
+
+	// migMode 는 #104 self-health gauge. 각 device 마다 3 mode (enabled/disabled/unsupported) 시리즈 를
+	// 0/1 로 매 poll 발행 해 환경 변경 시점 까지 label 흐트러짐 없이 단일 query 로 fleet-wide MIG 분포 가시화.
+	migMode = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_mig_mode",
+			Help: "MIG mode of the GPU device (1 if matching the mode label, else 0). mode label one of enabled / disabled / unsupported. Use {mode=\"enabled\"} == 1 to count MIG-active devices fleet-wide",
+		},
+		migModeLabels,
+	)
+
+	// mpsActive 는 #104 self-health gauge. CUDA_MPS_PIPE_DIRECTORY env 와 /var/run/nvidia/mps/control
+	// 소켓 존재 와 nvidia-cuda-mps-control process 3종 OR 로직 으로 detect 한 값 (1 / 0) 을 발행 한다.
+	mpsActive = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_mps_active",
+			Help: "1 if NVIDIA MPS daemon is active on the node, else 0. When 1, per-process SM utilization (gpuobs_pod_utilization_percent) is best-effort because MPS time-slices a single CUDA context across multiple processes which NVML cannot disaggregate",
+		},
+		mpsActiveLabels,
 	)
 
 	deviceMemoryUsed = prometheus.NewGaugeVec(
@@ -543,6 +572,8 @@ func Register(reg prometheus.Registerer) {
 	reg.MustRegister(
 		agentInfo,
 		deviceUtilization,
+		migMode,
+		mpsActive,
 		deviceMemoryUsed,
 		deviceMemoryTotal,
 		deviceTemperature,
@@ -596,6 +627,35 @@ func Register(reg prometheus.Registerer) {
 // 통제된다.
 func SetCudaLaunchBaselinePerSec(node string, baseline float64) {
 	cudaLaunchBaselinePerSec.WithLabelValues(node).Set(baseline)
+}
+
+// migModeValues 는 RecordMigMode 가 매 poll 발행할 mode 라벨 값 3종 enum 이다. types.MigMode.String()
+// 의 반환값 집합과 정확히 일치 해야 활성 mode 시리즈가 1, 비활성 2 시리즈가 0 으로 정확히 정렬된다.
+var migModeValues = [3]string{"enabled", "disabled", "unsupported"}
+
+// RecordMigMode 는 #104 self-health 진입점이다. 한 device 의 현재 MigMode 에 대해 3 라벨 시리즈를
+// 모두 발행하되 일치하는 mode 만 1, 나머지 2종은 0 으로 둬 라벨 전환 시 stale 시리즈가 남지 않게 한다.
+func RecordMigMode(node string, dev types.GPUDevice) {
+	idx := strconv.FormatUint(uint64(dev.Index), 10)
+	current := dev.MigMode.String()
+	for _, m := range migModeValues {
+		v := 0.0
+		if m == current {
+			v = 1.0
+		}
+		migMode.WithLabelValues(node, dev.UUID, idx, dev.Model, m).Set(v)
+	}
+}
+
+// RecordMpsActive 는 #104 self-health 진입점이다. detect 결과 (true=1 / false=0) 를 device 라벨 4종으로
+// 발행한다. MPS 자체 는 노드 단위 신호 이지만 device 라벨 정합 유지 로 dashboard join 이 단순해진다.
+func RecordMpsActive(node string, dev types.GPUDevice, active bool) {
+	idx := strconv.FormatUint(uint64(dev.Index), 10)
+	v := 0.0
+	if active {
+		v = 1.0
+	}
+	mpsActive.WithLabelValues(node, dev.UUID, idx, dev.Model).Set(v)
 }
 
 // Record는 한 device의 현재 스냅샷을 모든 device gauge에 기록한다.
