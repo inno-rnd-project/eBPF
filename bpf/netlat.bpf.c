@@ -164,8 +164,11 @@ static __always_inline void fill_conn_from_sock(struct sock *sk, struct netobs_s
         __builtin_memcpy(s->saddr, &v4_src, 4);
         __builtin_memcpy(s->daddr, &v4_dst, 4);
     } else if (s->family == NETOBS_AF_INET6) {
-        BPF_CORE_READ_INTO(s->saddr, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
-        BPF_CORE_READ_INTO(s->daddr, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+        /* #103 BPF_CORE_READ_INTO 의 ___read 매크로 가 sizeof(*(dst)) 를 쓰므로 __u8 array 인자
+         * (s->saddr) 는 *(__u8*) == 1 byte 만 복사 되는 버그 가 있다. bpf_core_read 를 직접 호출 해
+         * sizeof(s->saddr) == 16 byte 명시 복사. */
+        bpf_core_read(s->saddr, sizeof(s->saddr), &sk->__sk_common.skc_v6_rcv_saddr);
+        bpf_core_read(s->daddr, sizeof(s->daddr), &sk->__sk_common.skc_v6_daddr);
     }
 
     /* #64 drop flow 5-tuple emit 에 protocol 라벨이 필요하다. sk_protocol 은 kernel 의 bitfield 라
@@ -279,9 +282,10 @@ static __always_inline int ipv6_is_filtered(const __u8 *addr)
     /* multicast ff00::/8: 첫 byte 0xff. */
     if (addr[0] == 0xff)
         return 1;
-    /* loopback ::1: 첫 15 byte 가 0 이고 16 byte 가 1. */
-    int i;
-    for (i = 0; i < 15; i++) {
+    /* loopback ::1: 첫 15 byte 가 0 이고 16 byte 가 1. BPF verifier 의 back-edge 분석 부담 회피 와
+     * kernel 별 loop 지원 차이 흡수 를 위해 #pragma unroll 로 명시 언롤. */
+    #pragma unroll
+    for (int i = 0; i < 15; i++) {
         if (addr[i] != 0)
             return 0;
     }
@@ -696,8 +700,10 @@ int BPF_KPROBE(handle_tcp_cleanup_rbuf, struct sock *sk, int copied)
         __builtin_memcpy(daddr, &v4_dst, 4);
         family = NETOBS_AF_INET;
     } else if (family_raw == NETOBS_AF_INET6) {
-        BPF_CORE_READ_INTO(saddr, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
-        BPF_CORE_READ_INTO(daddr, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+        /* #103 BPF_CORE_READ_INTO 의 sizeof(*(dst)) 가 array decay 후 1 byte 라 16 byte 복사 가
+         * 깨지는 버그 회피. bpf_core_read 로 sizeof(saddr) == 16 명시. */
+        bpf_core_read(saddr, sizeof(saddr), &sk->__sk_common.skc_v6_rcv_saddr);
+        bpf_core_read(daddr, sizeof(daddr), &sk->__sk_common.skc_v6_daddr);
         family = NETOBS_AF_INET6;
     } else {
         return 0;
@@ -817,9 +823,10 @@ static __always_inline void handle_udp_msg(struct sock *sk, size_t size, __u8 di
     if (!sk || size == 0)
         return;
 
-    /* connected UDP 만. TCP_ESTABLISHED == 1. unconnected UDP 는 sk_state == TCP_CLOSE (7) 라 skip. */
+    /* connected UDP 만. vmlinux.h 의 TCP_ESTABLISHED enum 사용. unconnected UDP 는 skc_state ==
+     * TCP_CLOSE 라 자연 skip. */
     sk_state = BPF_CORE_READ(sk, __sk_common.skc_state);
-    if (sk_state != 1)
+    if (sk_state != TCP_ESTABLISHED)
         return;
 
     cgroup_id = bpf_get_current_cgroup_id();
@@ -834,8 +841,9 @@ static __always_inline void handle_udp_msg(struct sock *sk, size_t size, __u8 di
         __builtin_memcpy(daddr, &v4_dst, 4);
         family = NETOBS_AF_INET;
     } else if (family_raw == NETOBS_AF_INET6) {
-        BPF_CORE_READ_INTO(saddr, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
-        BPF_CORE_READ_INTO(daddr, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+        /* #103 BPF_CORE_READ_INTO 의 array dst 1 byte 복사 버그 회피. */
+        bpf_core_read(saddr, sizeof(saddr), &sk->__sk_common.skc_v6_rcv_saddr);
+        bpf_core_read(daddr, sizeof(daddr), &sk->__sk_common.skc_v6_daddr);
         family = NETOBS_AF_INET6;
     } else {
         return;

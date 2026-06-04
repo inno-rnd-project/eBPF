@@ -196,15 +196,14 @@ func IPVersion(family uint8) string {
 }
 
 // IPToString 은 #103 IPv6 확장 의 통합 슬롯 ([16]byte) 을 family 기준 으로 IPv4 또는 IPv6 표현
-// 문자열 로 변환 한다. IPv4 는 첫 4 byte 만 사용 (네이티브 엔디언 uint32 로 가정) 하며 IPv6 는 16
-// byte 전체 를 net.IP 로 변환. 알 수 없는 family 는 빈 문자열 반환.
+// 문자열 로 변환 한다. IPv4 는 첫 4 byte 만 사용 하며 IPv6 는 16 byte 전체 를 net.IP 로 변환.
+// 알 수 없는 family 는 빈 문자열 반환. BPF 측 fill_conn_from_sock 가 __builtin_memcpy(saddr,
+// &v4_src, 4) 로 IPv4 주소 를 첫 4 byte 에 그대로 복사 하므로 raw[:4] 는 이미 net.IP 가 요구 하는
+// 4 byte 네트워크 표현 과 일치 한다 (별도 byte 순서 변환 불요).
 func IPToString(family uint8, raw [16]byte) string {
 	switch family {
 	case 2: // NETOBS_AF_INET
-		// BPF 측 fill_conn_from_sock 가 skc_rcv_saddr (네이티브 엔디언 uint32) 를 첫 4 byte 에 그대로
-		// memcpy 한다. U32ToIPv4 와 동일 의미 의 NativeEndian 재해석 으로 IPv4 문자열 생성.
-		v := binary.NativeEndian.Uint32(raw[:4])
-		return U32ToIPv4(v)
+		return net.IP(raw[:4]).String()
 	case 10: // NETOBS_AF_INET6
 		return net.IP(raw[:]).String()
 	}

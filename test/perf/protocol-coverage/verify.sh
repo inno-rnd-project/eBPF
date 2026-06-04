@@ -80,10 +80,11 @@ fi
 echo "[pass] IPv4 TCP 회귀 차단: netobs_pod_bytes_total count=${cnt}"
 
 # 3차 가드 (warn only): ip_version 라벨 의 cardinality 가 0 이 아닌 시리즈 가 있는지. flow_bytes 가
-# allow-list 미설정 으로 비어 있으면 warn 으로 처리.
+# allow-list 미설정 으로 비어 있으면 warn 으로 처리. count() 만 으로는 라벨 미부착 구버전 회귀 를
+# 못 잡 으므로 ip_version=~"4|6" 매칭 query 로 명시 하여 라벨 존재 자체 를 가드 한다.
 echo "[poll] 3차 가드 (warn only) ip_version 라벨 시리즈 존재"
 resp=$(curl -sf --max-time 10 -G "${PROM_URL}/api/v1/query" \
-  --data-urlencode "query=count(netobs_flow_bytes_total)" 2>/dev/null || echo "")
+  --data-urlencode "query=count(netobs_flow_bytes_total{ip_version=~\"4|6\"})" 2>/dev/null || echo "")
 cnt=$(echo "${resp}" | python3 -c "
 import sys, json
 try:
