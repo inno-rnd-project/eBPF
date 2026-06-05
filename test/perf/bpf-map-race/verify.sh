@@ -25,6 +25,15 @@ fi
 PROM_URL="http://${PROM_IP}:${PROM_PORT}"
 echo "[setup] prometheus URL: ${PROM_URL}"
 
+# Prometheus 의 /-/ready 헬스 체크 로 endpoint 도달 가능성 사전 검증. 도달 불가 시 query_value 의
+# `|| echo "0"` 폴백 으로 모든 메트릭 조회 결과 가 "0" 이 되어 monotonic 검증 (0.0 >= 0.0) 이 항상
+# pass 하는 false positive 결함 회피.
+if ! curl -sf --max-time 5 "${PROM_URL}/-/ready" >/dev/null 2>&1; then
+  echo "[fatal] Prometheus 가 ${PROM_URL} 에서 도달 불가. ClusterIP 라 본 스크립트 는 클러스터 내부 에서 실행 필요"
+  exit 1
+fi
+echo "[ok] prometheus /-/ready 응답 확인"
+
 query_value() {
   local q="$1"
   curl -sf --max-time 10 -G "${PROM_URL}/api/v1/query" --data-urlencode "query=${q}" 2>/dev/null \

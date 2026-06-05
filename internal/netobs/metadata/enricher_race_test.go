@@ -3,6 +3,7 @@ package metadata
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"netobs/internal/kube"
 )
@@ -57,8 +58,10 @@ func TestEnricher_RWMutexPromoteIdempotent(t *testing.T) {
 	}
 }
 
-// TestEnricher_ConcurrentMultiOpRace 는 lookupFlow / 기타 read 경로 가 multi-goroutine 동시 진입 시 race
-// detector 위반 없이 흐르는지 검증. flowCurrent 와 flowPrevious 의 일관된 RWMutex 보호 영구 가드.
+// TestEnricher_ConcurrentMultiOpRace 는 lookupFlow read 경로 와 rememberFlow write / rotate 경로 가
+// multi-goroutine 동시 진입 시 race detector 위반 없이 흐르는지 검증. flowCurrent 와 flowPrevious 의
+// 일관된 RWMutex 보호 영구 가드. read-only 시나리오 만 으로는 rotate 경로 의 동시 쓰기 race window 가
+// 자극 되지 않아 reader 와 writer goroutine 을 동시 진입 시키는 패턴 으로 보강.
 func TestEnricher_ConcurrentMultiOpRace(t *testing.T) {
 	e := NewEnricher(nil)
 
@@ -81,16 +84,32 @@ func TestEnricher_ConcurrentMultiOpRace(t *testing.T) {
 	const iterations = 100
 
 	var wg sync.WaitGroup
-	wg.Add(workers)
+	wg.Add(workers * 2)
+	// Reader goroutine N 개: lookupFlow read 경로 동시 진입.
 	for i := 0; i < workers; i++ {
 		gid := i
 		go func() {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
-				// 다양한 cookie 로 lookupFlow 호출. previous hit 시 promote 경로 진입, current hit 시
-				// RLock 만 으로 종료. 두 경로 가 동시 다발 발생 해도 race-free 인지 검증.
 				cookie := uint64(0x1000 + ((gid + j) % 16))
 				_, _ = e.lookupFlow(cookie)
+			}
+		}()
+	}
+	// Writer goroutine N 개: rememberFlow 호출로 flowCurrent write 와 maybeRotateFlowsLocked 진입.
+	// reader 와 동시 발생 해 RWMutex 의 Lock / RLock 경합 표면적 확보. flowMaxCurrent 초과 시 rotate
+	// 도 함께 자극 되어 flowCurrent / flowPrevious 통째 교체 와 lookup 의 race-free 검증.
+	for i := 0; i < workers; i++ {
+		gid := i
+		go func() {
+			defer wg.Done()
+			now := time.Now()
+			for j := 0; j < iterations; j++ {
+				cookie := uint64(0x1000 + ((gid + j) % 16))
+				e.rememberFlow(cookie,
+					kube.PodIdentity{PodUID: "uid-write-src"},
+					kube.PodIdentity{PodUID: "uid-write-dst"},
+					now)
 			}
 		}()
 	}

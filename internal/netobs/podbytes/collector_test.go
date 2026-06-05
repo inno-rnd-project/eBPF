@@ -300,13 +300,14 @@ func TestCollector_ConcurrentSetMapAndCollectRace(t *testing.T) {
 			}
 		}()
 	}
-	// podbytes Describe 는 2 desc (bytes / packets) 를 emit 하므로 buffer 는 2x. 또는 drain goroutine
-	// 으로 흡수. 본 케이스 는 race 검증 목적 이라 결과 desc 의 정확성 은 검증 외. drain goroutine 으로
+	// Reader goroutine N 개: Collect 호출 로 내부 atomic.Pointer.Load 진입 (bpfMap nil 분기 까지 도달 해
+	// race window 표면적 확보). Describe 는 c.bytesDesc / c.packetsDesc 만 emit 하고 bpfMap 을 참조
+	// 하지 않 으므로 본 테스트 의 race detector 표면적 확보 의도 와 무관 하다. drain goroutine 으로
 	// channel hang 회피.
-	descCh := make(chan *prometheus.Desc, 4096)
+	metricCh := make(chan prometheus.Metric, 4096)
 	drainDone := make(chan struct{})
 	go func() {
-		for range descCh {
+		for range metricCh {
 		}
 		close(drainDone)
 	}()
@@ -314,11 +315,11 @@ func TestCollector_ConcurrentSetMapAndCollectRace(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
-				c.Describe(descCh)
+				c.Collect(metricCh)
 			}
 		}()
 	}
 	wg.Wait()
-	close(descCh)
+	close(metricCh)
 	<-drainDone
 }

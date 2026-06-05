@@ -28,3 +28,13 @@ test/perf/bpf-map-race/verify.sh
 - `flow_bytes` 는 dev overlay 의 `NETOBS_FLOW_ALLOW_NAMESPACES` env 미설정으로 자연 0 일 수 있음. counter 증가 미관측은 warn 처리.
 - iperf3 컨테이너 가 dev cluster 의 image pull policy `IfNotPresent` 로 자연 캐시. air-gapped 환경에서는 사전에 image 가 노드에 푸시되어 있어야 함.
 - cross-node 흐름이 의도라 `ebpf-worker1` 과 `ebpf-worker2` 두 노드가 모두 Ready 상태여야 통과 가능.
+
+## 실행 환경 제약
+
+본 스크립트는 Prometheus 의 `ClusterIP` 를 직접 조회 해 curl 로 query 를 보낸다. `ClusterIP` 는 쿠버네티스 클러스터 내부 네트워크에서만 라우팅 가능 하므로 본 스크립트의 실행 환경은 다음 중 하나여야 한다.
+
+- dev cluster 의 control-plane 또는 worker 노드에서 직접 실행
+- 클러스터 내부 Pod 에서 실행
+- 클러스터 외부에서 실행할 경우 사전에 `kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090` 으로 port-forward 설정 후 `PROM_NAMESPACE` 와 `PROM_SVC` 를 localhost 대체 endpoint 로 override
+
+본 PR 의 dev cluster 검증은 첫 번째 패턴 (노드에서 직접 실행) 으로 수행 되었다. Prometheus 가 도달 불가능한 환경 에서는 스크립트 시작 단계의 `/-/ready` 헬스 체크가 fail-fast 로 종료 시켜 false positive (Prometheus 장애 시 모든 메트릭이 0 으로 반환 되어 monotonic 검증이 항상 pass 하는 결함) 를 차단 한다.

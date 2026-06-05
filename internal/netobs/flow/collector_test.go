@@ -334,12 +334,13 @@ func TestCollector_ConcurrentSetMapAndCollectRace(t *testing.T) {
 			}
 		}()
 	}
-	// Reader goroutine N 개: Describe 호출 로 내부 desc 슬롯 read 와 atomic.Pointer.Load race window 표면적 확보.
-	// drain goroutine 으로 channel hang 회피 (Describe 가 future 에 desc N 종 emit 으로 변경 되어도 안전).
-	descCh := make(chan *prometheus.Desc, 4096)
+	// Reader goroutine N 개: Collect 호출 로 내부 atomic.Pointer.Load 진입 (bpfMap nil 분기 까지 도달 해
+	// race window 표면적 확보). Describe 는 c.bytesDesc 만 emit 하고 bpfMap 을 참조 하지 않 으므로 본
+	// 테스트 의 race detector 표면적 확보 의도 와 무관 하다. drain goroutine 으로 channel hang 회피.
+	metricCh := make(chan prometheus.Metric, 4096)
 	drainDone := make(chan struct{})
 	go func() {
-		for range descCh {
+		for range metricCh {
 		}
 		close(drainDone)
 	}()
@@ -347,11 +348,11 @@ func TestCollector_ConcurrentSetMapAndCollectRace(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
-				c.Describe(descCh)
+				c.Collect(metricCh)
 			}
 		}()
 	}
 	wg.Wait()
-	close(descCh)
+	close(metricCh)
 	<-drainDone
 }
