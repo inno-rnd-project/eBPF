@@ -1152,21 +1152,23 @@ spec:
             description: "Optional kprobe {{ $labels.symbol }} could not be attached on {{ $labels.instance }} (kernel build option or version difference). Receive-path or drop-path metrics may be missing. Inspect agent logs for the attach error message."
 
         # NetObsBpfAttachFailureHigh
-        # #105 의 BPF program attach 실패 빈도 가 2 분 이상 0.1/s 를 넘으면 발화. NetObsBpfProgramUnavailable
-        # 이 현재 attach 미상태의 gauge 신호 라면 본 alert 는 startup 이후 attach 시도의 실패 비율 추세
-        # 신호 다. retry budget (5s × 시도 횟수) 안에서 transient flap 이 반복 되는 경우 본 alert 가 먼저
-        # 발화 해 운영자가 영구 실패 전 단계에서 root cause (kernel 변경 / capability / verifier) 를
-        # 진단할 시간을 확보 한다. 라벨 partition (program / result) 로 어느 program 의 실패 빈도 가
-        # spike 했는지 즉시 식별 가능.
+        # #105 의 BPF program attach 실패 발생 을 5 분 윈도우 increase 로 감지 해 2 분 이상 지속 시 발화.
+        # NetObsBpfProgramUnavailable 이 현재 attach 미상태 의 gauge 신호 라면 본 alert 는 startup 이후
+        # attach 시도 의 실패 발생 신호 다. attach 시도 는 agent startup 시점 1 회 만 발생 하므로 rate 기반
+        # 임계값 (예: > 0.1/s) 은 5 분 윈도우 에서 max 1/300=0.0033 으로 절대 발화 하지 않 는다. 본 alert 는
+        # increase(...[5m]) > 0 으로 "직전 5 분 안 1 회 라도 실패" 를 단정 감지 한다. retry budget 안에서
+        # transient flap 이 반복 되어도 마지막 시도 가 success 면 attach_total{result="failure"} 가 증가
+        # 하지 않 으므로 영구 실패 만 본 alert 로 발화 된다. 라벨 partition (program) 으로 어느 program 의
+        # 실패 가 발생 했는지 즉시 식별 가능.
         - alert: NetObsBpfAttachFailureHigh
-          expr: sum by(program) (rate(netobs_bpf_program_attach_total{result="failure"}[5m])) > 0.1
+          expr: sum by(program) (increase(netobs_bpf_program_attach_total{result="failure"}[5m])) > 0
           for: 2m
           labels:
             severity: warning
             component: netobs
           annotations:
-            summary: "netobs BPF program {{ $labels.program }} attach failure rate {{ $value | humanize }}/s"
-            description: "BPF program {{ $labels.program }} attach has failed at >0.1/s for 2 minutes (#105). Check netobs_bpf_program_attach_retry_total for the failure reason (symbol_not_found / kernel_version_mismatch / btf_missing / verifier_rejected / permission_denied / link_internal_error / other). Cross-reference with netobs_bpf_program_loaded for current state. See docs/netobs/bpf-self-health.md for the remediation matrix."
+            summary: "netobs BPF program {{ $labels.program }} attach failed {{ $value | humanize }} times in 5m"
+            description: "BPF program {{ $labels.program }} attach has failed at least once in the last 5 minutes for 2 minutes (#105). Check netobs_bpf_program_attach_retry_total for the failure reason (symbol_not_found / kernel_version_mismatch / btf_missing / verifier_rejected / permission_denied / link_internal_error / other). Cross-reference with netobs_bpf_program_loaded for current state. See docs/netobs/bpf-self-health.md for the remediation matrix."
 
         # GPUObsCudaSymbolUnavailable
         # gpuobs uprobe 의 attach 실패가 5 분 이상 지속되면 발화. #41 의 기존 메트릭을 self-health

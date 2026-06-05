@@ -23,9 +23,13 @@ import (
 // #105 attach retry 정책. linear backoff 500ms, max retries 3 회, 전체 budget 5s. budget 산정 근거는
 // CO-RE relocation 의 driver init 비용 추정 (kernel BTF resolve + verifier 부담 ~500ms × 3) 으로 본 PR
 // 의 docs/netobs/bpf-self-health.md 에 근거 정리. 운영 중 dynamic tuning 은 본 이슈 비목표 로 hardcoded.
-const (
+// `attachRetryBackoff` 와 `attachTotalBudget` 은 var 로 두어 단위 테스트 가 짧은 값 으로 override 후
+// 빠르게 retry 흐름 을 검증 가능 하게 한다 (테스트 가 500ms × 3 실제 대기 하면 CI 피드백 루프 가 느려짐).
+// `attachMaxRetries` 는 logic invariant (loop 종료 조건) 와 강결합 이라 const 유지.
+const attachMaxRetries = 3
+
+var (
 	attachRetryBackoff = 500 * time.Millisecond
-	attachMaxRetries   = 3
 	attachTotalBudget  = 5 * time.Second
 )
 
@@ -45,13 +49,16 @@ func attachWithRetry(program string, fn func() (link.Link, error)) (link.Link, e
 			return l, nil
 		}
 		lastErr = err
-		reason := classifyAttachError(err)
-		metrics.RecordBpfAttachRetry(program, reason.String())
 
-		// 마지막 시도 였거나 budget 소진 한 경우 retry 중단.
+		// 마지막 시도 였거나 budget 소진 한 경우 retry 중단. counter 가 "retry" 의미 그대로 가 되도록
+		// 본 분기 (= retry 미진행) 에서는 counter 증가 하지 않고 break.
 		if attempt == attachMaxRetries || time.Now().Add(attachRetryBackoff).After(deadline) {
 			break
 		}
+		// 실제 retry 가 일어날 때만 reason 분류 후 retry counter +1. 마지막 실패는 retry 가 아니라
+		// failed attempt 라 attach_total{result="failure"} 에만 반영 한다.
+		reason := classifyAttachError(err)
+		metrics.RecordBpfAttachRetry(program, reason.String())
 		time.Sleep(attachRetryBackoff)
 	}
 	metrics.RecordBpfAttachResult(program, false)

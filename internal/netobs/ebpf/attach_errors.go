@@ -1,4 +1,4 @@
-// Package ebpf 의 attach_errors.go 는 #105 의 BPF program attach 실패 가시화 를 위한 에러 분류 진입점
+// Package ebpfx 의 attach_errors.go 는 #105 의 BPF program attach 실패 가시화 를 위한 에러 분류 진입점
 // 이다. cilium/ebpf 와 kernel syscall 의 에러 값을 운영자가 이해 가능한 7종 enum 으로 정규화 해 metrics
 // 라벨 카디널리티 폭증을 차단 한다. 본 분류 helper 는 후속 BPF program type (tracepoint / fentry / perf_event /
 // tc / xdp) 도입 시에도 동일 시그니처 로 재사용 되도록 program type 무관 으로 설계 되었다.
@@ -95,7 +95,7 @@ func classifyAttachError(err error) AttachReason {
 	// 3) verifier / BTF 관련 에러 는 cilium/ebpf 가 정형 타입 으로 노출 하지 않는 경로 가 있어 메시지
 	//    substring 매칭 으로 흡수. kernel 메시지가 안정적 이라 카디널리티 영향 없음.
 	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "verifier") || strings.Contains(msg, "invalid argument") && strings.Contains(msg, "bpf") {
+	if strings.Contains(msg, "verifier") || (strings.Contains(msg, "invalid argument") && strings.Contains(msg, "bpf")) {
 		return ReasonVerifierRejected
 	}
 	if strings.Contains(msg, "btf") {
