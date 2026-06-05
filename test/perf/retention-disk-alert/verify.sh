@@ -13,12 +13,20 @@ PROM_SVC="${PROM_SVC:-kube-prometheus-stack-prometheus}"
 PROM_PORT="${PROM_PORT:-9090}"
 TIMEOUT_SECONDS="${RULE_TIMEOUT:-180}"
 
-PROM_IP=$(kubectl get svc -n "${PROM_NAMESPACE}" "${PROM_SVC}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
-if [[ -z "${PROM_IP}" ]]; then
-  echo "[fatal] failed to resolve ${PROM_SVC} ClusterIP in ${PROM_NAMESPACE}"
-  exit 1
+# PROM_URL 우선순위. (1) env로 직접 주입된 PROM_URL (예: kubectl port-forward 후 localhost:9090) 그대로
+# 사용, (2) 미설정 시 ClusterIP 조회 후 http URL 구성, (3) ClusterIP가 비거나 "None" (Headless Service)
+# 이면 in-cluster DNS (`${PROM_SVC}.${PROM_NAMESPACE}.svc.cluster.local`) fallback. 본 우선순위로 클러스터
+# 내부 / 외부 / port-forward / Headless Service 모든 환경 호환.
+PROM_URL="${PROM_URL:-}"
+if [[ -z "${PROM_URL}" ]]; then
+  PROM_IP=$(kubectl get svc -n "${PROM_NAMESPACE}" "${PROM_SVC}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+  if [[ -z "${PROM_IP}" || "${PROM_IP}" == "None" ]]; then
+    PROM_URL="http://${PROM_SVC}.${PROM_NAMESPACE}.svc.cluster.local:${PROM_PORT}"
+    echo "[setup] ClusterIP 부재 또는 Headless 라 in-cluster DNS fallback 사용"
+  else
+    PROM_URL="http://${PROM_IP}:${PROM_PORT}"
+  fi
 fi
-PROM_URL="http://${PROM_IP}:${PROM_PORT}"
 echo "[setup] prometheus URL: ${PROM_URL}"
 
 if ! curl -sf --max-time 5 "${PROM_URL}/-/ready" >/dev/null 2>&1; then

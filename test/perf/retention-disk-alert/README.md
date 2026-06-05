@@ -11,9 +11,12 @@ test/perf/retention-disk-alert/verify.sh
 env로 override 가능.
 
 - `RULE_TIMEOUT` (기본 180s): rule 등록 polling timeout
-- `PROM_NAMESPACE` (기본 `monitoring`): Prometheus 리소스의 namespace
+- `PROM_URL` (미설정 시 자동 구성): Prometheus base URL을 직접 주입. `kubectl port-forward` 사용 시 `PROM_URL=http://localhost:9090` 형태로 지정
+- `PROM_NAMESPACE` (기본 `monitoring`): Prometheus 리소스의 namespace. `PROM_URL` 미설정 시 ClusterIP 조회에 사용
 - `PROM_SVC` (기본 `kube-prometheus-stack-prometheus`): Prometheus Service 이름
 - `PROM_PORT` (기본 `9090`): Prometheus API 포트
+
+`PROM_URL`이 미설정이면 스크립트가 자동으로 ClusterIP를 조회하고 ClusterIP가 비거나 `"None"` (Headless Service) 인 경우 in-cluster DNS (`${PROM_SVC}.${PROM_NAMESPACE}.svc.cluster.local`) 로 fallback한다. 클러스터 내부 / 외부 / port-forward / Headless Service 모든 환경에서 동작 가능.
 
 ## 가드 단계
 

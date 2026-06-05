@@ -83,8 +83,11 @@ spec:
         # container_spec_memory_limit_bytes 메트릭 부재 환경 (cAdvisor / kube-state-metrics 미수집) 이라
         # 절대값 임계로 fallback. 현재 값 ~40 MB 대비 60일 retention 누적 시 4-8 GB 추정 의 80% 마진 으로
         # 3 GB 설정. cardinality alert 와 함께 OOM 위험 의 다른 측면 (process memory) 을 cover 한다.
+        # job 매칭 패턴 `.*-prometheus$` 의 끝 anchor 는 helm release 이름 변경 에 robust 하면서도
+        # alertmanager / grafana / operator / node-exporter 같은 다른 컴포넌트 의 process memory 매칭 을
+        # 차단 해 false positive 를 회피 한다. dev cluster 검증 결과 본 패턴 이 prometheus 단일 시리즈만 매칭.
         - alert: PrometheusMemoryPressure
-          expr: process_resident_memory_bytes{job=~".*prometheus.*"} > 3000000000
+          expr: process_resident_memory_bytes{job=~".*-prometheus$"} > 3000000000
           for: 15m
           labels:
             severity: warning
