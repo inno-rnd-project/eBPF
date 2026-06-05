@@ -18,7 +18,8 @@ spec:
   route:
     # top-level route 는 fallback receiver 역할 도 겸한다. 본 receiver 가 정의 되어 있어야 매칭 안 된
     # alert 도 silent drop 되지 않 고 최소 1 회 webhook 호출 을 받는다 (직전 PR 의 25 alert 미라우팅 갭
-    # 해소). top-level matchers 부재 가 곧 "모든 alert 흡수" 의미.
+    # 해소). 사용자 정의 matchers 부재 가 곧 "본 CRD scope 안 의 모든 alert 흡수" 의미 다 (prometheus-
+    # operator 가 namespace="ebpf-project" matcher 를 자동 주입 해 다른 namespace 의 alert 와 격리).
     receiver: rca-summarizer
     continue: true
     groupBy: ["alertname", "component", "namespace"]
@@ -26,22 +27,23 @@ spec:
     groupInterval: 5m
     repeatInterval: 24h
     routes:
-      # (1) critical 분기. severity=critical 모든 alert. group_interval 10s 와 repeat 1h 의 즉시 통보
-      # 정책 으로 두어 향후 PagerDuty escalation 와 Slack #oncall 동시 송신 자리 가 준비 된다.
+      # (1) critical 분기. severity=critical 모든 alert. group_interval 30s 와 repeat 1h 의 즉시 통보
+      # 정책 으로 두어 향후 PagerDuty escalation 와 Slack #oncall 동시 송신 자리 가 준비 된다. 10s
+      # 미만 의 짧은 group_interval 은 alert storm 시 외부 채널 의 rate limit 초과 위험 이 있어 30s 로 둔다.
+      # groupBy 는 top-level 의 [alertname, component, namespace] 를 inheritance 로 상속 한다.
       - receiver: rca-summarizer
         continue: true
         matchers:
           - name: severity
             matchType: "="
             value: critical
-        groupBy: ["alertname", "component", "namespace"]
         groupWait: 5s
-        groupInterval: 10s
+        groupInterval: 30s
         repeatInterval: 1h
 
       # (2) capacity 분기. severity=warning + component=~".*-capacity" 4 alert (#88 capacity-trends).
       # group_interval 5m 와 repeat 12h 의 저빈도 정책 으로 capacity 선행 신호 의 noise 를 누른다.
-      # 향후 Slack #capacity-planning 송신 자리.
+      # 향후 Slack #capacity-planning 송신 자리. groupBy 는 top-level 상속.
       - receiver: rca-summarizer
         continue: true
         matchers:
@@ -51,14 +53,13 @@ spec:
           - name: component
             matchType: "=~"
             value: ".*-capacity"
-        groupBy: ["alertname", "component", "namespace"]
         groupWait: 30s
         groupInterval: 5m
         repeatInterval: 12h
 
       # (3) anomaly 분기. severity=warning + component=~".*-anomaly" 4 alert (#89 anomaly-spike).
       # group_interval 30s 와 repeat 4h 의 중간 빈도 정책 으로 spike 의 transient 특성 을 반영 한다.
-      # 향후 Slack #oncall-secondary 송신 자리.
+      # 향후 Slack #oncall-secondary 송신 자리. groupBy 는 top-level 상속.
       - receiver: rca-summarizer
         continue: true
         matchers:
@@ -68,7 +69,6 @@ spec:
           - name: component
             matchType: "=~"
             value: ".*-anomaly"
-        groupBy: ["alertname", "component", "namespace"]
         groupWait: 15s
         groupInterval: 30s
         repeatInterval: 4h

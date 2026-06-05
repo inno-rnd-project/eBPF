@@ -12,8 +12,12 @@ env 로 override 가능.
 
 - `ROUTE_TIMEOUT` (기본 180s): configYAML 정합 polling timeout
 - `ALERT_NAMESPACE` (기본 `ebpf-project`): AlertmanagerConfig CRD 의 namespace
-- `ALERTMGR_NAMESPACE` (기본 `monitoring`): Alertmanager Pod 의 namespace
+- `ALERTMGR_NAMESPACE` (기본 `monitoring`): Alertmanager 리소스의 namespace
+- `ALERTMGR_SVC` (기본 `kube-prometheus-stack-alertmanager`): Alertmanager Service 이름 (ClusterIP 조회용)
 - `ALERTMGR_POD` (기본 `alertmanager-kube-prometheus-stack-alertmanager-0`): amtool 실행 대상 Pod
+- `ALERTMGR_PORT` (기본 `9093`): Alertmanager API 포트
+- `CRD_NAME` (기본 `rca-summarizer`): AlertmanagerConfig CRD 이름
+- `RECEIVER_RE` (기본 `ebpf-project[/-]rca-summarizer[/-]rca-summarizer`): 2차 가드의 fallback 노드 매칭 정규식. prometheus-operator 의 receiver naming convention 이 버전 별로 slash 또는 hyphen 으로 다를 수 있어 character class 로 두 형식 모두 흡수
 
 ## 가드 단계
 

@@ -6,8 +6,8 @@
 
 본 PR 적용 후의 routing tree 는 다음 4 분기 구조 다.
 
-- **(1) critical 분기** matcher `severity="critical"`. 모든 component 에 적용. `groupWait=5s`, `groupInterval=10s`, `repeatInterval=1h` 의 즉시 통보 정책. 향후 PagerDuty escalation 과 Slack `#oncall` 동시 송신 자리. 본 PR 시점 에는 `GPUIdleWithHostComputeStall` 1 종 alert 가 본 분기로 흡수된다.
-- **(2) capacity 분기** matcher `severity="warning"` + `component=~".*-capacity"`. `groupWait=30s`, `groupInterval=5m`, `repeatInterval=12h` 의 저빈도 정책. capacity 선행 신호의 noise 를 누른다. 향후 Slack `#capacity-planning` 송신 자리. `gpuobs-capacity` / `netobs-capacity` / `cpu-capacity` / `memory-capacity` 의 #88 anomaly-detector 4 종이 본 분기로 흡수된다.
+- **(1) critical 분기** matcher `severity="critical"`. 모든 component 에 적용. `groupWait=5s`, `groupInterval=30s`, `repeatInterval=1h` 의 즉시 통보 정책. 향후 PagerDuty escalation 과 Slack `#oncall` 동시 송신 자리. 본 PR 시점 에는 `GPUIdleWithHostComputeStall` 1 종 alert 가 본 분기로 흡수된다.
+- **(2) capacity 분기** matcher `severity="warning"` + `component=~".*-capacity"`. `groupWait=30s`, `groupInterval=5m`, `repeatInterval=12h` 의 저빈도 정책. capacity 선행 신호의 noise 를 누른다. 향후 Slack `#capacity-planning` 송신 자리. `gpuobs-capacity` / `netobs-capacity` / `cpu-capacity` / `memory-capacity` 의 #88 capacity-trends 4 종이 본 분기로 흡수된다.
 - **(3) anomaly 분기** matcher `severity="warning"` + `component=~".*-anomaly"`. `groupWait=15s`, `groupInterval=30s`, `repeatInterval=4h` 의 중간 빈도 정책. spike 의 transient 특성을 반영. 향후 Slack `#oncall-secondary` 송신 자리. `gpuobs-anomaly` / `netobs-anomaly` / `cpu-anomaly` / `memory-anomaly` 의 #89 anomaly-spike 4 종이 본 분기로 흡수된다.
 - **(4) fallback 분기** top-level route 자체. 위 3 분기 미매칭 alert (component 가 `gpuobs` / `netobs` / `correlation` / `observability` 인 일반 warning 과 라벨 부재 케이스) 모두 흡수. `groupWait=30s`, `groupInterval=5m`, `repeatInterval=24h` 의 최저 빈도 정책. 향후 Email 송신 자리.
 
@@ -83,13 +83,12 @@ kubectl get alertmanagerconfig -n ebpf-project rca-summarizer
 
 ```sh
 ALERTMGR_IP=$(kubectl get svc -n monitoring kube-prometheus-stack-alertmanager -o jsonpath='{.spec.clusterIP}')
-curl -sf "http://${ALERTMGR_IP}:9093/api/v2/status" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-print(d['config']['original'])" | grep -A 20 "ebpf-project/rca-summarizer"
+curl -sf "http://${ALERTMGR_IP}:9093/api/v2/status" \
+  | python3 -c 'import sys, json; print(json.load(sys.stdin)["config"]["original"])' \
+  | grep -EA 20 'ebpf-project[/-]rca-summarizer[/-]rca-summarizer'
 ```
 
-응답에 critical / capacity / anomaly 3 자식 노드와 4 종 matcher 가 포함되어야 한다.
+응답에 critical / capacity / anomaly 3 자식 노드와 4 종 matcher 가 포함되어야 한다. prometheus-operator 가 webhook URL 자체는 `configYAML` 응답 에서 마스킹 하므로 receiver 이름으로 매칭 한다. receiver 이름 포맷의 구분자 (slash vs hyphen) 는 prometheus-operator 버전에 따라 달라 character class `[/-]` 로 두 형식 모두 흡수 한다.
 
 ### 3. 합성 alert payload dry-run 매칭
 
@@ -103,6 +102,6 @@ amtool config routes test --config.file=<(curl -s "http://${ALERTMGR_IP}:9093/ap
 ## Troubleshooting
 
 - alert 가 어느 분기에도 안 잡힘: `kubectl describe alertmanagerconfig -n ebpf-project rca-summarizer` 로 CRD 의 spec 적용 상태 확인. `kubectl logs -n monitoring alertmanager-kube-prometheus-stack-alertmanager-0 -c config-reloader` 로 reload 에러 확인.
-- 동일 alert 가 multi 분기에 hit: top-level route 의 `continue: true` 와 각 자식 노드의 `continue: true` 가 의도된 동작. 향후 외부 채널 통합 시 동일 alert 가 critical 분기와 fallback 분기 모두로 send 되어 PagerDuty 와 Email 동시 escalation 의도 구현.
+- 동일 alert 가 top-level fallback 과 자식 분기 양쪽으로 send: 의도된 동작이다. top-level route 의 `continue: true` 와 각 자식 노드의 `continue: true` 가 결합 해 동일 alert 가 자식 분기 (예: critical) 매칭 후 top-level fallback 까지 도달 한다. 향후 외부 채널 통합 시 동일 alert 가 PagerDuty (critical 분기 receiver) 와 Email (fallback receiver) 양쪽 으로 동시 escalation 되는 구조의 base. 단 본 PR 시점 에는 모든 분기 receiver 가 동일 `rca-summarizer` 라 webhook 호출 횟수만 늘어나며 정합 문제는 없다. 자식 분기 끼리 (예: critical 과 capacity) 는 matcher 가 배타적 이라 동시 hit 가 발생 하지 않는다.
 - repeatInterval 이 의도와 다름: AlertmanagerConfig CRD 의 한 사이클 reload 가 누락되었을 수 있음. 위 검증 2 의 configYAML 응답으로 실제 적용 값 확인.
-- 외부 채널 미통합 상태에서 alert 가 어디로도 안 감: 본 PR 시점의 의도된 동작. 모든 alert 가 `rca-summarizer` webhook 에 도달하며 외부 가시화 는 follow-up 이슈에서 receiver 추가 후 활성화 된다.
+- 외부 채널 미통합 상태에서 alert 가 Slack / Email / PagerDuty 로는 안 감: 본 PR 시점의 의도된 동작. 모든 alert 는 `rca-summarizer` webhook 에 정상 도달 하며 외부 SaaS 가시화 는 follow-up 이슈에서 receiver 추가 후 활성화 된다.

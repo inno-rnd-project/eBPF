@@ -31,21 +31,24 @@ echo "[pass] CRD 등록 확인"
 
 # 2차 가드: Alertmanager configYAML 응답 에 routing tree 4 분기 노드 가 포함 되어 있는지 정합 검증.
 # kube-prometheus-stack 의 reconcile 이 완료 되어 본 CRD 가 alertmanager.yaml 에 머지 되기 까지 통상
-# 30-60s 가 소요 되므로 timeout 안 에서 polling.
+# 30-60s 가 소요 되므로 timeout 안 에서 polling. receiver 이름 포맷 (slash vs hyphen) 은 prometheus-
+# operator 버전 에 따라 다를 수 있어 webhook URL 을 통한 매칭 으로 안정성 확보.
 TIMEOUT_SECONDS="${ROUTE_TIMEOUT:-180}"
+# prometheus-operator 의 receiver naming convention 은 버전 에 따라 slash (`ns/config/recv`) 또는
+# hyphen (`ns-config-recv`) 두 가지가 가능 하므로 character class 로 둘 다 매칭 한다. webhook URL 자체는
+# `configYAML` 응답 에서 마스킹 되어 보이지 않 으므로 receiver 이름 으로 매칭 한다.
+RECEIVER_RE="${RECEIVER_RE:-${ALERT_NAMESPACE:-ebpf-project}[/-]rca-summarizer[/-]rca-summarizer}"
 echo "[poll] 2차 가드 configYAML 의 4 분기 노드 정합 (timeout ${TIMEOUT_SECONDS}s)"
 deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
 got_critical=0; got_capacity=0; got_anomaly=0; got_fallback=0
 while (( $(date +%s) < deadline )); do
-  cfg=$(curl -sf --max-time 10 "${ALERTMGR_URL}/api/v2/status" 2>/dev/null | python3 -c "
-import sys, json
-try: print(json.load(sys.stdin)['config']['original'])
-except: pass" 2>/dev/null || echo "")
-  # 4 분기 노드 각각 정합 검증 (matcher 와 receiver 가 본 namespace 의 것 인지)
+  cfg=$(curl -sf --max-time 10 "${ALERTMGR_URL}/api/v2/status" 2>/dev/null \
+    | python3 -c 'import sys, json; print(json.load(sys.stdin).get("config", {}).get("original", ""))' \
+    2>/dev/null || echo "")
   echo "${cfg}" | grep -q 'severity="critical"' && got_critical=1 || got_critical=0
   echo "${cfg}" | grep -q 'component=~".*-capacity"' && got_capacity=1 || got_capacity=0
   echo "${cfg}" | grep -q 'component=~".*-anomaly"' && got_anomaly=1 || got_anomaly=0
-  echo "${cfg}" | grep -q 'ebpf-project/rca-summarizer/rca-summarizer' && got_fallback=1 || got_fallback=0
+  echo "${cfg}" | grep -qE "${RECEIVER_RE}" && got_fallback=1 || got_fallback=0
   if (( got_critical == 1 && got_capacity == 1 && got_anomaly == 1 && got_fallback == 1 )); then
     echo "[pass] 4 분기 노드 모두 configYAML 에 포함 (critical / capacity / anomaly / fallback)"
     break
