@@ -1,0 +1,63 @@
+# iperf3-multistream 워크로드 는 #107 BPF map race 회귀 가드 의 multi-stream 트래픽 발생 자 다.
+# server 1 Pod 와 client 1 Pod 가 -P 16 의 16 parallel streams 로 트래픽 을 흘려 BPF flow_bytes 와
+# pod_bytes 의 counter monotonic 정합 을 검증 할 표면적 을 확보 한다. dev cluster ebpf-worker1 /
+# ebpf-worker2 양쪽 노드 에 배포 해 cross-node 흐름 으로 multi-CPU race 시나리오 도 자연 발생 한다.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: iperf3-server
+  namespace: ebpf-project
+  labels:
+    app: iperf3-server
+    perf-workload: bpf-map-race
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: ebpf-worker1
+  containers:
+    - name: iperf3
+      image: networkstatic/iperf3:latest
+      imagePullPolicy: IfNotPresent
+      command: ["iperf3", "-s", "-p", "5201"]
+      ports:
+        - containerPort: 5201
+          protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iperf3-server
+  namespace: ebpf-project
+spec:
+  selector:
+    app: iperf3-server
+  ports:
+    - port: 5201
+      targetPort: 5201
+      protocol: TCP
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: iperf3-client
+  namespace: ebpf-project
+  labels:
+    app: iperf3-client
+    perf-workload: bpf-map-race
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: ebpf-worker2
+  containers:
+    - name: iperf3
+      image: networkstatic/iperf3:latest
+      imagePullPolicy: IfNotPresent
+      # 16 parallel streams 로 sustained 트래픽 발생. 60s 동안 흐른 뒤 자연 종료. -P 16 으로 multi-CPU
+      # 동시 sendmsg / recvmsg path 가 inc_flow_bytes / inc_pod_bytes 의 race window 를 자극.
+      command:
+        - sh
+        - -c
+        - |
+          # iperf3-server Service 의 DNS 해상 까지 짧게 대기 후 client 시작.
+          sleep 5
+          iperf3 -c iperf3-server.ebpf-project.svc.cluster.local -p 5201 -P 16 -t 60 -i 5

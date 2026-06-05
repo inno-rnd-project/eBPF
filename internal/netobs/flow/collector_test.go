@@ -3,6 +3,7 @@ package flow
 import (
 	"encoding/binary"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -310,4 +311,48 @@ func TestMergeEntry_SkipsUnresolvedCgroup(t *testing.T) {
 	if len(agg) != 0 {
 		t.Errorf("agg size=%d want 0 (모든 unresolved entry 가 skip 되어야 함)", len(agg))
 	}
+}
+
+// TestCollector_ConcurrentSetMapAndCollectRace 는 #107 audit 의 회귀 가드 다. atomic.Pointer 기반 BPF
+// map 핸들 Store-once 패턴 이 multi-goroutine 동시 SetMap / Describe / 내부 상태 read 진입 시 race
+// detector 위반 없이 흐르는지 검증. nil map 케이스 만 활용 해 BPF runtime 의존 없이 핸들 갱신 경로 만
+// 격리 검증 한다.
+func TestCollector_ConcurrentSetMapAndCollectRace(t *testing.T) {
+	c := New(&fakeCgroup{}, &fakeIP{}, metrics.NewFlowGuard([]string{"ns-a"}, 100), nil, "node1", true)
+
+	const workers = 16
+	const iterations = 100
+
+	var wg sync.WaitGroup
+	wg.Add(workers * 2)
+	// Writer goroutine N 개: SetMap(nil) 반복 호출 로 atomic.Pointer.Store race window 표면적 확보.
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				c.SetMap(nil)
+			}
+		}()
+	}
+	// Reader goroutine N 개: Collect 호출 로 내부 atomic.Pointer.Load 진입 (bpfMap nil 분기 까지 도달 해
+	// race window 표면적 확보). Describe 는 c.bytesDesc 만 emit 하고 bpfMap 을 참조 하지 않 으므로 본
+	// 테스트 의 race detector 표면적 확보 의도 와 무관 하다. drain goroutine 으로 channel hang 회피.
+	metricCh := make(chan prometheus.Metric, 4096)
+	drainDone := make(chan struct{})
+	go func() {
+		for range metricCh {
+		}
+		close(drainDone)
+	}()
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				c.Collect(metricCh)
+			}
+		}()
+	}
+	wg.Wait()
+	close(metricCh)
+	<-drainDone
 }
