@@ -8,25 +8,81 @@ metadata:
     app.kubernetes.io/part-of: ebpf-project
     app.kubernetes.io/component: rca-summarizer
 spec:
-  # route 는 본 PR 의 RCA mapping 이 등록된 9 alert 만 매치한다. continue=true 로 두어 기본
-  # receiver (Slack / PagerDuty 등) 가 같은 알람을 추가로 처리할 수 있게 한다. RCA 요약은
-  # 운영자에게 보조 신호로 제공되어야 하며 기본 알림 경로를 차단하지 않는다.
+  # #106 routing tree skeleton. 외부 채널 (Slack / SMTP / PagerDuty) 통합 부재 환경 이라 모든 분기 의
+  # receiver 는 rca-summarizer webhook 으로 동일 하되 routing 트리 의 노드 분리 자체 가 향후 채널 통합
+  # 시 receiver 만 교체 하면 즉시 활성화 되는 base 가 된다.
+  # 직전 PR 의 hardcoded 9 alert matcher (NetObsDropBurst 외 8 종) 는 본 트리 의 severity / component
+  # 분기로 자연 흡수 된다 (예: GPUIdleWithHostComputeStall severity=critical 은 critical 노드, 그 외
+  # warning 8 종 은 fallback 노드 로 매칭). RCA mapping 의도 (rca-summarizer 호출) 는 receiver 단일성
+  # 으로 보존 된다.
   route:
+    # top-level route 는 fallback receiver 역할 도 겸한다. 본 receiver 가 정의 되어 있어야 매칭 안 된
+    # alert 도 silent drop 되지 않 고 최소 1 회 webhook 호출 을 받는다 (직전 PR 의 25 alert 미라우팅 갭
+    # 해소). 사용자 정의 matchers 부재 가 곧 "본 CRD scope 안 의 모든 alert 흡수" 의미 다 (prometheus-
+    # operator 가 namespace="ebpf-project" matcher 를 자동 주입 해 다른 namespace 의 alert 와 격리).
     receiver: rca-summarizer
     continue: true
-    groupBy: ["alertname"]
-    groupWait: 10s
-    groupInterval: 30s
-    repeatInterval: 5m
-    matchers:
-      - name: alertname
-        matchType: =~
-        value: "NetObsDropBurst|GPUObsCudaStreamWaitHigh|GPUObsThermalThrottleSustained|GPUIdleWithPCIeSaturation|GPUIdleWithNetworkPressure|GPUIdleWithCPUThrottle|GPUIdleWithMemoryPressure|GPUIdleWithHostComputeStall|CorrelationStrongNoisyNeighbor"
+    groupBy: ["alertname", "component", "namespace"]
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 24h
+    routes:
+      # (1) critical 분기. severity=critical 모든 alert. group_interval 30s 와 repeat 1h 의 즉시 통보
+      # 정책 으로 두어 향후 PagerDuty escalation 와 Slack #oncall 동시 송신 자리 가 준비 된다. 10s
+      # 미만 의 짧은 group_interval 은 alert storm 시 외부 채널 의 rate limit 초과 위험 이 있어 30s 로 둔다.
+      # groupBy 는 top-level 의 [alertname, component, namespace] 를 inheritance 로 상속 한다.
+      - receiver: rca-summarizer
+        continue: true
+        matchers:
+          - name: severity
+            matchType: "="
+            value: critical
+        groupWait: 5s
+        groupInterval: 30s
+        repeatInterval: 1h
+
+      # (2) capacity 분기. severity=warning + component=~".*-capacity" 4 alert (#88 capacity-trends).
+      # group_interval 5m 와 repeat 12h 의 저빈도 정책 으로 capacity 선행 신호 의 noise 를 누른다.
+      # 향후 Slack #capacity-planning 송신 자리. groupBy 는 top-level 상속.
+      - receiver: rca-summarizer
+        continue: true
+        matchers:
+          - name: severity
+            matchType: "="
+            value: warning
+          - name: component
+            matchType: "=~"
+            value: ".*-capacity"
+        groupWait: 30s
+        groupInterval: 5m
+        repeatInterval: 12h
+
+      # (3) anomaly 분기. severity=warning + component=~".*-anomaly" 4 alert (#89 anomaly-spike).
+      # group_interval 30s 와 repeat 4h 의 중간 빈도 정책 으로 spike 의 transient 특성 을 반영 한다.
+      # 향후 Slack #oncall-secondary 송신 자리. groupBy 는 top-level 상속.
+      - receiver: rca-summarizer
+        continue: true
+        matchers:
+          - name: severity
+            matchType: "="
+            value: warning
+          - name: component
+            matchType: "=~"
+            value: ".*-anomaly"
+        groupWait: 15s
+        groupInterval: 30s
+        repeatInterval: 4h
+
+      # (4) fallback 분기 는 top-level route 가 흡수 하므로 별도 정의 없음. severity=warning + component
+      # 이 capacity / anomaly 가 아닌 케이스 (gpuobs / netobs / correlation / observability) 와 라벨 부재
+      # 케이스 모두 top-level 의 receiver / groupInterval=5m / repeatInterval=24h 정책 으로 발행 된다.
+      # 향후 Email 송신 자리 도 본 fallback 에 receiver 만 추가 하면 활성화 된다.
+
   receivers:
     - name: rca-summarizer
       webhookConfigs:
-        # in-cluster DNS 로 cross-namespace 호출이 가능하다. rca-summarizer Service 의 port 9850
-        # 과 /webhook path 가 본 PR commit 6 의 deployment manifest 에 정의되어 있다.
+        # in-cluster DNS 로 cross-namespace 호출이 가능하다. rca-summarizer Service 의 port 9850 과
+        # /webhook path 가 deployment manifest 에 정의되어 있다.
         - url: http://rca-summarizer.ebpf-project.svc.cluster.local:9850/webhook
           sendResolved: true
           maxAlerts: 0
