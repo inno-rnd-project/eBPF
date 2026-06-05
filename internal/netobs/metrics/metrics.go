@@ -220,6 +220,8 @@ func Register(reg prometheus.Registerer) {
 		dstClassifierEmits,
 		nicCapacityBytesPerSec,
 		bpfProgramLoaded,
+		bpfProgramAttachTotal,
+		bpfProgramAttachRetryTotal,
 		bpfRingbufDropsTotal,
 		bpfMapUtilizationRatio,
 		informerSyncLagSeconds,
