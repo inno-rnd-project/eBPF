@@ -15,8 +15,11 @@ import (
 func resetPodMetricsState(t *testing.T) {
 	t.Helper()
 	podMemoryUsed.Reset()
+	podUtilization.Reset()
 	podMetricsEnabled = true
+	podUtilAllowNamespaces = nil
 	lastPodSampleKeys = make(map[string]struct{})
+	lastPodUtilKeys = make(map[string]struct{})
 }
 
 // resetDeviceMetricsState는 패키지 레벨 device gauge/counter와 모든 delta 추적기를 초기화한다.
@@ -1143,5 +1146,177 @@ func TestSetCudaLaunchBaselinePerSec(t *testing.T) {
 	}
 	if got := testutil.CollectAndCount(cudaLaunchBaselinePerSec); got != 1 {
 		t.Errorf("series count=%d want 1 (single node)", got)
+	}
+}
+
+// TestRecordMigMode_AllThreeSeriesPerDevice 는 #104 self-health 발행 흐름 검증. 한 device 의 현재
+// MigMode 에 대해 3 mode 시리즈 (enabled / disabled / unsupported) 가 모두 발행되되 일치 mode 만 1, 나머지
+// 2종은 0 으로 둠 으로써 mode 전환 시 stale 라벨이 자연 cleanup 되도록 한다.
+func TestRecordMigMode_AllThreeSeriesPerDevice(t *testing.T) {
+	migMode.Reset()
+
+	dev := types.GPUDevice{Index: 0, UUID: "GPU-A", Model: "RTX 3090", MigMode: types.MigModeUnsupported}
+	RecordMigMode("node-a", dev)
+
+	if got := testutil.CollectAndCount(migMode); got != 3 {
+		t.Errorf("series count=%d want 3 (3 mode values)", got)
+	}
+	if got := testutil.ToFloat64(migMode.WithLabelValues("node-a", "GPU-A", "0", "RTX 3090", "unsupported")); got != 1 {
+		t.Errorf("unsupported=%v want 1", got)
+	}
+	if got := testutil.ToFloat64(migMode.WithLabelValues("node-a", "GPU-A", "0", "RTX 3090", "disabled")); got != 0 {
+		t.Errorf("disabled=%v want 0", got)
+	}
+	if got := testutil.ToFloat64(migMode.WithLabelValues("node-a", "GPU-A", "0", "RTX 3090", "enabled")); got != 0 {
+		t.Errorf("enabled=%v want 0", got)
+	}
+}
+
+// TestRecordMigMode_EnabledFlipsActiveSeries 는 mode 전환 시 active 시리즈가 정확히 한 mode 에만
+// 1 로 노출되는지 검증한다.
+func TestRecordMigMode_EnabledFlipsActiveSeries(t *testing.T) {
+	migMode.Reset()
+
+	dev := types.GPUDevice{Index: 1, UUID: "GPU-B", Model: "H100", MigMode: types.MigModeEnabled}
+	RecordMigMode("node-b", dev)
+
+	if got := testutil.ToFloat64(migMode.WithLabelValues("node-b", "GPU-B", "1", "H100", "enabled")); got != 1 {
+		t.Errorf("enabled=%v want 1", got)
+	}
+	if got := testutil.ToFloat64(migMode.WithLabelValues("node-b", "GPU-B", "1", "H100", "disabled")); got != 0 {
+		t.Errorf("disabled=%v want 0", got)
+	}
+}
+
+// TestRecordMpsActive_TogglesValue 는 detect 결과가 device 라벨 시리즈의 값으로 1 또는 0 으로 발행 되는지
+// 검증한다. 동일 device 의 후속 호출 은 같은 라벨 시리즈를 덮어쓴다.
+func TestRecordMpsActive_TogglesValue(t *testing.T) {
+	mpsActive.Reset()
+
+	dev := types.GPUDevice{Index: 0, UUID: "GPU-X", Model: "A100"}
+	RecordMpsActive("node-z", dev, true)
+	if got := testutil.ToFloat64(mpsActive.WithLabelValues("node-z", "GPU-X", "0", "A100")); got != 1 {
+		t.Errorf("active=true value=%v want 1", got)
+	}
+
+	RecordMpsActive("node-z", dev, false)
+	if got := testutil.ToFloat64(mpsActive.WithLabelValues("node-z", "GPU-X", "0", "A100")); got != 0 {
+		t.Errorf("active=false value=%v want 0", got)
+	}
+	if got := testutil.CollectAndCount(mpsActive); got != 1 {
+		t.Errorf("series count=%d want 1 (single device)", got)
+	}
+}
+
+// TestRecordPodSnapshot_EmitsUtilizationSeries 는 #104 의 gpuobs_pod_utilization_percent 가 podLabels
+// 6종 그대로 발행 되고, SmUtilPct 값 이 그대로 노출 되는지 검증.
+func TestRecordPodSnapshot_EmitsUtilizationSeries(t *testing.T) {
+	resetPodMetricsState(t)
+
+	samples := []PodGPUSample{
+		{
+			ID:           kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "trainer-0", PodUID: "uid-xyz"},
+			Device:       types.GPUDevice{Index: 1, UUID: "GPU-uuid-1"},
+			MemUsedBytes: 4096,
+			SmUtilPct:    72,
+		},
+	}
+	RecordPodSnapshot("node-a", samples)
+
+	if got := testutil.ToFloat64(podUtilization.WithLabelValues("node-a", "ml", "trainer-0", "uid-xyz", "GPU-uuid-1", "1")); got != 72 {
+		t.Errorf("util=%v want 72", got)
+	}
+	if got := testutil.CollectAndCount(podUtilization); got != 1 {
+		t.Errorf("util series count=%d want 1", got)
+	}
+}
+
+// TestRecordPodSnapshot_UtilDiffCleanupRemovesStaleSeries 는 podUtilization 의 diff cleanup 이
+// podMemoryUsed 와 동일 cleanup 키 셋 으로 동작 하는지 검증. 직전 poll 에 있던 Pod 가 사라지면
+// util 시리즈 도 자동 정리 된다.
+func TestRecordPodSnapshot_UtilDiffCleanupRemovesStaleSeries(t *testing.T) {
+	resetPodMetricsState(t)
+
+	RecordPodSnapshot("n", []PodGPUSample{
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "a", PodUID: "uid-a"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 40},
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "b", PodUID: "uid-b"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 60},
+	})
+	if got := testutil.CollectAndCount(podUtilization); got != 2 {
+		t.Fatalf("util series before cleanup=%d want 2", got)
+	}
+
+	RecordPodSnapshot("n", []PodGPUSample{
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "a", PodUID: "uid-a"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 45},
+	})
+	if got := testutil.CollectAndCount(podUtilization); got != 1 {
+		t.Errorf("util series after cleanup=%d want 1 (b removed)", got)
+	}
+	if got := testutil.ToFloat64(podUtilization.WithLabelValues("n", "ml", "a", "uid-a", "GPU-1", "0")); got != 45 {
+		t.Errorf("util a=%v want 45", got)
+	}
+}
+
+// TestPodUtilAllowList_AllowAllWhenEmpty 는 allow-list 미설정 시 모든 namespace 의 util 시리즈 가 발행 되는지
+// 검증 (기본 escape hatch off 동작).
+func TestPodUtilAllowList_AllowAllWhenEmpty(t *testing.T) {
+	resetPodMetricsState(t)
+	SetPodUtilAllowNamespaces(nil)
+
+	RecordPodSnapshot("n", []PodGPUSample{
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "a", PodUID: "uid-a"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 40},
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "infra", PodName: "b", PodUID: "uid-b"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 60},
+	})
+	if got := testutil.CollectAndCount(podUtilization); got != 2 {
+		t.Errorf("util series=%d want 2 (allow-all)", got)
+	}
+}
+
+// TestPodUtilAllowList_FiltersToSpecifiedNamespace 는 명시 allow-list 가 미매칭 namespace 의 util 시리즈
+// 발행 을 차단 하는지 검증. podMemoryUsed 는 영향 받지 않는다.
+func TestPodUtilAllowList_FiltersToSpecifiedNamespace(t *testing.T) {
+	resetPodMetricsState(t)
+	SetPodUtilAllowNamespaces([]string{"ml"})
+
+	RecordPodSnapshot("n", []PodGPUSample{
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "a", PodUID: "uid-a"}, Device: types.GPUDevice{UUID: "GPU-1"}, MemUsedBytes: 100, SmUtilPct: 40},
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "infra", PodName: "b", PodUID: "uid-b"}, Device: types.GPUDevice{UUID: "GPU-1"}, MemUsedBytes: 200, SmUtilPct: 60},
+	})
+
+	if got := testutil.CollectAndCount(podUtilization); got != 1 {
+		t.Errorf("util series=%d want 1 (only ml allowed)", got)
+	}
+	if got := testutil.ToFloat64(podUtilization.WithLabelValues("n", "ml", "a", "uid-a", "GPU-1", "0")); got != 40 {
+		t.Errorf("ml util=%v want 40", got)
+	}
+
+	// podMemoryUsed 는 allow-list 와 무관하게 두 시리즈 모두 발행 (기존 발행 정책 유지).
+	if got := testutil.CollectAndCount(podMemoryUsed); got != 2 {
+		t.Errorf("memory series=%d want 2 (unaffected by allow-list)", got)
+	}
+}
+
+// TestPodUtilAllowList_TogglingCleansUpStaleUtilSeries 는 allow-list 변경 시 직전 poll 에 있던 util
+// 시리즈 가 자연 cleanup 되는지 검증 (lastPodUtilKeys diff 동작).
+func TestPodUtilAllowList_TogglingCleansUpStaleUtilSeries(t *testing.T) {
+	resetPodMetricsState(t)
+
+	// 1차: allow-list 미설정 (모두 발행).
+	SetPodUtilAllowNamespaces(nil)
+	RecordPodSnapshot("n", []PodGPUSample{
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "a", PodUID: "uid-a"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 40},
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "infra", PodName: "b", PodUID: "uid-b"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 60},
+	})
+	if got := testutil.CollectAndCount(podUtilization); got != 2 {
+		t.Fatalf("before tighten=%d want 2", got)
+	}
+
+	// 2차: allow-list 를 ml 로 좁히고 동일 samples 다시 발행. infra 시리즈 는 cleanup 되어야.
+	SetPodUtilAllowNamespaces([]string{"ml"})
+	RecordPodSnapshot("n", []PodGPUSample{
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "a", PodUID: "uid-a"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 40},
+		{ID: kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "infra", PodName: "b", PodUID: "uid-b"}, Device: types.GPUDevice{UUID: "GPU-1"}, SmUtilPct: 60},
+	})
+	if got := testutil.CollectAndCount(podUtilization); got != 1 {
+		t.Errorf("after tighten=%d want 1 (infra cleanup)", got)
 	}
 }

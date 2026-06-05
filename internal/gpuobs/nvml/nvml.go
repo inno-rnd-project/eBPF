@@ -55,10 +55,36 @@ type NVML interface {
 // Device는 개별 GPU device에 대한 읽기 전용 접근을 제공한다.
 // Close는 device 수명 동안 알록된 자원(GPM sample 버퍼 등)을 해제한다.
 // collector.Run이 NVML.Shutdown 직전에 모든 device에 대해 호출한다.
+// MIG / process-util 7종 메서드는 #104 도입의 Pod-level GPU utilization 산정과 self-health 분기에
+// 사용된다. MIG 인스턴스 핸들도 동일 Device 인터페이스로 노출되어 (NVIDIA NVML 디자인 그대로) parent
+// device 와 동일 메서드 셋을 호출할 수 있다. 미지원 GPU 에서는 본 7종 모두 정규화된 zero return 으로
+// 안전 흡수된다.
 type Device interface {
 	Info() (types.GPUDevice, error)
 	Snapshot() (types.GPUSnapshot, error)
 	RunningProcesses() ([]types.GPUProcess, error)
+	// ProcessUtilization 은 직전 호출 이후의 per-process util sample 을 반환한다. NVML
+	// DeviceGetProcessUtilization 의 NOT_FOUND (sample 없음) 와 NOT_SUPPORTED 는 빈 슬라이스로 정상 흡수한다.
+	// lastSeenTimestamp lifecycle 은 device 가 atomic 으로 내부 관리하므로 호출자는 파라미터 없이 매 poll
+	// 호출만 하면 된다 (반환 sample 의 max(TimeStamp) 로 내부 슬롯 자동 갱신).
+	ProcessUtilization() ([]types.GPUProcessUtil, error)
+	// MigMode 는 device 의 MIG 활성 상태를 반환한다. NOT_SUPPORTED 응답은 MigModeUnsupported 로 정규화된다.
+	MigMode() (types.MigMode, error)
+	// MaxMigDeviceCount 는 MIG enabled device 의 최대 인스턴스 슬롯 수를 반환한다. MIG disabled / unsupported
+	// 환경 에서는 (0, nil) 을 반환한다.
+	MaxMigDeviceCount() (int, error)
+	// MigDevice 는 index 슬롯의 MIG 인스턴스 핸들을 Device 로 반환한다. 빈 슬롯이거나 MIG disabled 인 경우
+	// (nil, nil) 을 반환한다. 반환된 핸들은 parent 와 동일 인터페이스이지만 IsMigDevice / GpuInstanceId /
+	// ComputeInstanceId 호출 시 instance 식별자를 반환한다.
+	MigDevice(index int) (Device, error)
+	// IsMigDevice 는 본 핸들이 MIG 인스턴스 핸들인지 반환한다. parent device 는 false, MigDevice 결과는 true.
+	IsMigDevice() (bool, error)
+	// GpuInstanceId 는 MIG instance 의 GPU Instance ID 를 반환한다. parent device 또는 미지원 환경에서는
+	// (0, nil) 을 반환한다.
+	GpuInstanceId() (uint32, error)
+	// ComputeInstanceId 는 MIG instance 의 Compute Instance ID 를 반환한다. parent device 또는 미지원
+	// 환경에서는 (0, nil) 을 반환한다.
+	ComputeInstanceId() (uint32, error)
 	Close() error
 }
 
@@ -127,6 +153,13 @@ func (n *nvmlImpl) Device(index uint) (Device, error) {
 	// 정적 device 특성(compute capability / architecture / 최대 PCIe 스펙 등) 을 1회 fetch해 d.info에 캐싱한다.
 	// 개별 NVML 호출이 미지원이면 해당 필드만 zero value로 남고 나머지는 정상 채워진다.
 	d.populateStaticInfo()
+
+	// #104 MigMode 는 device 수명 동안 사실상 불변 (변경 시 nvidia-smi mig + driver reset 필요) 이라
+	// 정적 info 와 동일하게 1회 fetch + 캐싱한다. NOT_SUPPORTED 는 MigModeUnsupported 로 정규화 되어
+	// consumer GPU 에서도 graceful 흡수된다.
+	if mode, err := d.MigMode(); err == nil {
+		d.info.MigMode = mode
+	}
 
 	// 온도 threshold 값(slowdown/shutdown 등) 도 device 수명 동안 불변이므로 1회 fetch + 캐싱한다.
 	d.initTemperatureThresholds()
@@ -206,6 +239,20 @@ type deviceImpl struct {
 	// initTemperatureThresholds가 1회 fetch 후 보관하고 fillTemperatureThresholds는 매 poll 캐시를 그대로 snapshot에 복사한다.
 	// 키는 reason 라벨 문자열이며 값은 Celsius. 미지원 threshold는 키 자체가 부재한다.
 	temperatureThresholds map[string]uint32
+
+	// processUtilLastSeenTs 는 #104 ProcessUtilization 의 lastSeenTimestamp lifecycle 슬롯이다. NVML
+	// DeviceGetProcessUtilization 이 직전 호출 ts 이후 sample 만 반환하므로 매 호출 결과의 max(TimeStamp)
+	// 를 atomic 갱신해 다음 호출에 전달한다. 0 (첫 호출) 이면 NVML 이 모든 가용 sample 을 반환한다.
+	processUtilLastSeenTs atomic.Uint64
+
+	// migInstancesCache 는 #104 MIG instance handle 캐시다. MigDevice(i) 첫 호출 시 instance 별
+	// deviceImpl 을 생성해 본 슬롯에 저장하고 이후 호출은 캐싱된 핸들 그대로 반환한다. instance handle
+	// 도 자체 processUtilLastSeenTs 와 unsupported 슬롯을 보유하므로 lifetime 동안 동일 핸들 재사용이
+	// lastSeen sample dedup 와 NOT_SUPPORTED 캐싱 보존의 필수 조건이다.
+	// migInstancesMu 가 캐시 보호. nil 값 슬롯은 "해당 index 가 빈 슬롯" 의미로 보존되어 매 poll 마다
+	// 빈 슬롯 재조회 비용을 차단한다.
+	migInstancesMu    sync.Mutex
+	migInstancesCache map[int]*deviceImpl
 }
 
 // violationReasons는 GetViolationStatus를 호출할 PerfPolicyType 8종이다. 각 reason은 NVML이
@@ -762,6 +809,20 @@ func (d *deviceImpl) Close() error {
 	start := time.Now()
 	defer func() { observeNvmlCall("Close", start, &nvmlRet) }()
 
+	// #104 MIG instance handle 캐시도 함께 해제. 자식 deviceImpl 들도 자체 Close 호출 (각자 GPM
+	// 미할당이라 no-op 이지만 lifecycle 일관성 유지 와 향후 instance level 자원 도입 대비).
+	d.migInstancesMu.Lock()
+	for _, child := range d.migInstancesCache {
+		if child == nil {
+			continue
+		}
+		if err := child.Close(); err != nil {
+			log.Printf("gpuobs: mig instance close idx=%d: %v", d.index, err)
+		}
+	}
+	d.migInstancesCache = nil
+	d.migInstancesMu.Unlock()
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.gpmAllocated {
@@ -1002,4 +1063,201 @@ func (d *deviceImpl) RunningProcesses() ([]types.GPUProcess, error) {
 	// PID 오름차순 정렬로 결정성 확보 — collector 합산 결과는 순서 무관이지만 로그/디버깅/테스트 일관성을 위해.
 	sort.Slice(result, func(i, j int) bool { return result[i].PID < result[j].PID })
 	return result, nil
+}
+
+// ProcessUtilization 은 #104 도입의 per-process util sample 수집 진입점이다. NVML
+// DeviceGetProcessUtilization 의 NOT_FOUND (직전 호출 이후 sample 없음) 와 NOT_SUPPORTED 는 빈 슬라이스
+// 정상 흡수로 처리해 collector 가 분기 없이 결과를 합산할 수 있다. NOT_SUPPORTED 는 unsupported 셋에
+// 캐싱되어 다음 poll 부터 NVML 호출 자체를 건너뛴다. lastSeenTimestamp lifecycle 은 본 메서드 내부에서
+// atomic 슬롯으로 관리해 호출자는 매 poll 호출만 하면 sample 중복 없이 자동 누적된다.
+func (d *deviceImpl) ProcessUtilization() ([]types.GPUProcessUtil, error) {
+	if d.isUnsupported("process_util") {
+		return nil, nil
+	}
+	var nvmlRet gonvml.Return
+	start := time.Now()
+	defer func() { observeNvmlCall("ProcessUtilization", start, &nvmlRet) }()
+
+	lastSeen := d.processUtilLastSeenTs.Load()
+	samples, ret := d.handle.GetProcessUtilization(lastSeen)
+	nvmlRet = ret
+	if ret == gonvml.ERROR_NOT_FOUND {
+		// 직전 호출 이후 sample 이 비어 있는 정상 케이스. ts 슬롯 갱신 없이 빈 결과 반환.
+		return nil, nil
+	}
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		d.markUnsupported("process_util")
+		return nil, nil
+	}
+	if err := d.wrapErr("process utilization", ret); err != nil {
+		return nil, err
+	}
+	out := make([]types.GPUProcessUtil, 0, len(samples))
+	var maxTs uint64
+	for _, s := range samples {
+		out = append(out, types.GPUProcessUtil{
+			PID:        s.Pid,
+			TimeStamp:  s.TimeStamp,
+			SmUtilPct:  s.SmUtil,
+			MemUtilPct: s.MemUtil,
+			EncUtilPct: s.EncUtil,
+			DecUtilPct: s.DecUtil,
+		})
+		if s.TimeStamp > maxTs {
+			maxTs = s.TimeStamp
+		}
+	}
+	if maxTs > lastSeen {
+		// CompareAndSwap 가 아닌 단순 Store 로 충분하다. Snapshot 과 동일하게 본 메서드는 collector
+		// pollOnce 의 단일 goroutine 에서만 호출되며, 동시 호출 발생 시에도 더 큰 ts 가 손실되어 sample
+		// 일부 중복 정도 (정합성 결함 없음) 만 발생한다.
+		d.processUtilLastSeenTs.Store(maxTs)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PID < out[j].PID })
+	return out, nil
+}
+
+// MigMode 는 #104 도입의 MIG 활성 상태 정규화 진입점이다. NVML 호출 결과 (currentMode, _, ret) 를
+// MigModeUnsupported / Disabled / Enabled 3종 enum 으로 흡수한다. pendingMode 는 dashboard 단의 운영적
+// 의미가 약해 본 메서드에서 노출하지 않는다.
+func (d *deviceImpl) MigMode() (types.MigMode, error) {
+	var nvmlRet gonvml.Return
+	start := time.Now()
+	defer func() { observeNvmlCall("MigMode", start, &nvmlRet) }()
+
+	current, _, ret := d.handle.GetMigMode()
+	nvmlRet = ret
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		return types.MigModeUnsupported, nil
+	}
+	if err := d.wrapErr("mig mode", ret); err != nil {
+		return types.MigModeUnsupported, err
+	}
+	if current == gonvml.DEVICE_MIG_ENABLE {
+		return types.MigModeEnabled, nil
+	}
+	return types.MigModeDisabled, nil
+}
+
+// MaxMigDeviceCount 는 MIG enabled device 의 최대 인스턴스 슬롯 수를 반환한다. MIG disabled / unsupported
+// 환경에서는 (0, nil) 로 정상 흡수해 호출자 분기를 단순화한다.
+func (d *deviceImpl) MaxMigDeviceCount() (int, error) {
+	var nvmlRet gonvml.Return
+	start := time.Now()
+	defer func() { observeNvmlCall("MaxMigDeviceCount", start, &nvmlRet) }()
+
+	count, ret := d.handle.GetMaxMigDeviceCount()
+	nvmlRet = ret
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		return 0, nil
+	}
+	if err := d.wrapErr("max mig device count", ret); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// MigDevice 는 index 슬롯의 MIG 인스턴스 핸들을 Device 인터페이스로 래핑해 반환한다. 빈 슬롯 또는 MIG
+// disabled 환경에서는 (nil, nil) 을 반환해 호출자 enumerate loop 가 단순 skip 으로 처리할 수 있다. MIG
+// 인스턴스 deviceImpl 은 parent 의 heavy init (GPM 초기화, 정적 info populate, temp threshold fetch) 을
+// 모두 건너뛰며 instance 만 노출하는 부분 기능 셋 (Info / ProcessUtilization / IsMigDevice / Ids / Close)
+// 만 의미 있게 동작한다. instance handle 은 parent lifetime 동안 캐싱되어 동일 index 의 재호출은 같은
+// deviceImpl 을 반환한다 (processUtilLastSeenTs 와 unsupported 캐시 보존을 통한 sample dedup 와 미지원
+// 메서드 호출 비용 절감 의 핵심 invariant).
+func (d *deviceImpl) MigDevice(index int) (Device, error) {
+	d.migInstancesMu.Lock()
+	defer d.migInstancesMu.Unlock()
+	if d.migInstancesCache == nil {
+		d.migInstancesCache = make(map[int]*deviceImpl)
+	}
+	if cached, ok := d.migInstancesCache[index]; ok {
+		// nil 캐시 슬롯은 "이전 호출 결과 빈 슬롯" 의미. instance handle 부재 그대로 반환.
+		if cached == nil {
+			return nil, nil
+		}
+		return cached, nil
+	}
+
+	var nvmlRet gonvml.Return
+	start := time.Now()
+	defer func() { observeNvmlCall("MigDevice", start, &nvmlRet) }()
+
+	handle, ret := d.handle.GetMigDeviceHandleByIndex(index)
+	nvmlRet = ret
+	if ret == gonvml.ERROR_NOT_FOUND || ret == gonvml.ERROR_NOT_SUPPORTED || ret == gonvml.ERROR_INVALID_ARGUMENT {
+		d.migInstancesCache[index] = nil
+		return nil, nil
+	}
+	if err := d.wrapErr("mig device handle", ret); err != nil {
+		return nil, err
+	}
+	uuid, ret := handle.GetUUID()
+	nvmlRet = ret
+	if err := d.wrapErr("mig device uuid", ret); err != nil {
+		return nil, err
+	}
+	mig := &deviceImpl{
+		handle:         handle,
+		index:          d.index,
+		unsupported:    make(map[string]struct{}),
+		gpmPreviousIdx: -1,
+		info:           types.GPUDevice{Index: d.index, UUID: uuid, Model: d.info.Model, MigMode: types.MigModeEnabled},
+	}
+	mig.currentIdx.Store(uint64(d.index))
+	d.migInstancesCache[index] = mig
+	return mig, nil
+}
+
+// IsMigDevice 는 본 핸들이 MIG 인스턴스 핸들인지 반환한다. parent device 는 false, MigDevice 반환값은
+// true. NOT_SUPPORTED 는 false 정상 흡수.
+func (d *deviceImpl) IsMigDevice() (bool, error) {
+	var nvmlRet gonvml.Return
+	start := time.Now()
+	defer func() { observeNvmlCall("IsMigDevice", start, &nvmlRet) }()
+
+	is, ret := d.handle.IsMigDeviceHandle()
+	nvmlRet = ret
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		return false, nil
+	}
+	if err := d.wrapErr("is mig device", ret); err != nil {
+		return false, err
+	}
+	return is, nil
+}
+
+// GpuInstanceId 는 MIG instance 의 GPU Instance ID 를 반환한다. parent device / 미지원 환경에서는
+// (0, nil) 로 정상 흡수한다.
+func (d *deviceImpl) GpuInstanceId() (uint32, error) {
+	var nvmlRet gonvml.Return
+	start := time.Now()
+	defer func() { observeNvmlCall("GpuInstanceId", start, &nvmlRet) }()
+
+	id, ret := d.handle.GetGpuInstanceId()
+	nvmlRet = ret
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		return 0, nil
+	}
+	if err := d.wrapErr("gpu instance id", ret); err != nil {
+		return 0, err
+	}
+	return uint32(id), nil
+}
+
+// ComputeInstanceId 는 MIG instance 의 Compute Instance ID 를 반환한다. parent device / 미지원 환경에서는
+// (0, nil) 로 정상 흡수한다.
+func (d *deviceImpl) ComputeInstanceId() (uint32, error) {
+	var nvmlRet gonvml.Return
+	start := time.Now()
+	defer func() { observeNvmlCall("ComputeInstanceId", start, &nvmlRet) }()
+
+	id, ret := d.handle.GetComputeInstanceId()
+	nvmlRet = ret
+	if ret == gonvml.ERROR_NOT_SUPPORTED {
+		return 0, nil
+	}
+	if err := d.wrapErr("compute instance id", ret); err != nil {
+		return 0, err
+	}
+	return uint32(id), nil
 }

@@ -128,8 +128,17 @@ type toggleFakeNvmlDevice struct {
 func (d *toggleFakeNvmlDevice) Info() (types.GPUDevice, error) {
 	return types.GPUDevice{UUID: d.uuid, Index: d.index}, nil
 }
-func (d *toggleFakeNvmlDevice) Snapshot() (types.GPUSnapshot, error)     { return d.snapshot, nil }
+func (d *toggleFakeNvmlDevice) Snapshot() (types.GPUSnapshot, error) { return d.snapshot, nil }
 func (d *toggleFakeNvmlDevice) RunningProcesses() ([]types.GPUProcess, error) {
 	return nil, nil
 }
-func (d *toggleFakeNvmlDevice) Close() error { return nil }
+func (d *toggleFakeNvmlDevice) ProcessUtilization() ([]types.GPUProcessUtil, error) {
+	return nil, nil
+}
+func (d *toggleFakeNvmlDevice) MigMode() (types.MigMode, error)    { return types.MigModeUnsupported, nil }
+func (d *toggleFakeNvmlDevice) MaxMigDeviceCount() (int, error)    { return 0, nil }
+func (d *toggleFakeNvmlDevice) MigDevice(int) (nvml.Device, error) { return nil, nil }
+func (d *toggleFakeNvmlDevice) IsMigDevice() (bool, error)         { return false, nil }
+func (d *toggleFakeNvmlDevice) GpuInstanceId() (uint32, error)     { return 0, nil }
+func (d *toggleFakeNvmlDevice) ComputeInstanceId() (uint32, error) { return 0, nil }
+func (d *toggleFakeNvmlDevice) Close() error                       { return nil }

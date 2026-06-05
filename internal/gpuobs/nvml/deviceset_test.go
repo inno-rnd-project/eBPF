@@ -118,6 +118,15 @@ func (d *fakeDeviceSetDevice) Snapshot() (types.GPUSnapshot, error) {
 	return types.GPUSnapshot{Device: info}, nil
 }
 func (d *fakeDeviceSetDevice) RunningProcesses() ([]types.GPUProcess, error) { return nil, nil }
+func (d *fakeDeviceSetDevice) ProcessUtilization() ([]types.GPUProcessUtil, error) {
+	return nil, nil
+}
+func (d *fakeDeviceSetDevice) MigMode() (types.MigMode, error)    { return types.MigModeUnsupported, nil }
+func (d *fakeDeviceSetDevice) MaxMigDeviceCount() (int, error)    { return 0, nil }
+func (d *fakeDeviceSetDevice) MigDevice(int) (Device, error)      { return nil, nil }
+func (d *fakeDeviceSetDevice) IsMigDevice() (bool, error)         { return false, nil }
+func (d *fakeDeviceSetDevice) GpuInstanceId() (uint32, error)     { return 0, nil }
+func (d *fakeDeviceSetDevice) ComputeInstanceId() (uint32, error) { return 0, nil }
 func (d *fakeDeviceSetDevice) Close() error {
 	d.parent.mu.Lock()
 	d.parent.closed[d.uuid]++
@@ -438,7 +447,16 @@ func (d *fakeRaceDevice) Snapshot() (types.GPUSnapshot, error) {
 	return types.GPUSnapshot{Device: types.GPUDevice{UUID: d.uuid}}, nil
 }
 func (d *fakeRaceDevice) RunningProcesses() ([]types.GPUProcess, error) { return nil, nil }
-func (d *fakeRaceDevice) Close() error                                  { d.parent.closeCount++; return nil }
+func (d *fakeRaceDevice) ProcessUtilization() ([]types.GPUProcessUtil, error) {
+	return nil, nil
+}
+func (d *fakeRaceDevice) MigMode() (types.MigMode, error)    { return types.MigModeUnsupported, nil }
+func (d *fakeRaceDevice) MaxMigDeviceCount() (int, error)    { return 0, nil }
+func (d *fakeRaceDevice) MigDevice(int) (Device, error)      { return nil, nil }
+func (d *fakeRaceDevice) IsMigDevice() (bool, error)         { return false, nil }
+func (d *fakeRaceDevice) GpuInstanceId() (uint32, error)     { return 0, nil }
+func (d *fakeRaceDevice) ComputeInstanceId() (uint32, error) { return 0, nil }
+func (d *fakeRaceDevice) Close() error                       { d.parent.closeCount++; return nil }
 
 func TestDeviceSet_ReorderUpdatesIndex(t *testing.T) {
 	// hot-remove 후 NVML 이 remaining device 의 index 를 재배치할 때, 본 셋은 기존 UUID 의 index 를

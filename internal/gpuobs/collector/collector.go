@@ -10,9 +10,15 @@ import (
 
 	"netobs/internal/gpuobs/config"
 	"netobs/internal/gpuobs/metrics"
+	"netobs/internal/gpuobs/mps"
 	"netobs/internal/gpuobs/nvml"
+	"netobs/internal/gpuobs/types"
 	"netobs/internal/kube"
 )
+
+// mpsDetect 는 mps.Detect 의 test seam 이다. 운영 코드는 본 변수의 기본값으로 mps.Detect 를 사용 하고,
+// 단위 테스트는 분기 결정성을 위해 본 변수를 임시 함수로 교체한다.
+var mpsDetect = mps.Detect
 
 // PodResolver는 collector가 PID → PodIdentity 해석을 위해 의존하는 최소 인터페이스다.
 // 운영에서는 *kube.Resolver가 자연스럽게 만족하며, 단위 테스트에서는 fake로 주입한다.
@@ -31,6 +37,8 @@ type Collector struct {
 	// 운영 코드는 New에서 metrics.RecordPodSnapshot을 기본값으로 받고, 단위 테스트에서는
 	// spy 함수로 교체해 호출 인자(snapshot)를 검증한다.
 	recordSnapshot func(node string, samples []metrics.PodGPUSample)
+	// recordMigSnapshot 은 #104 MIG 활성 시리즈 발행 test seam. 운영 기본값 metrics.RecordPodMigSnapshot.
+	recordMigSnapshot func(node string, samples []metrics.PodMigGPUSample)
 }
 
 // New는 NVML 핸들과 Config, 그리고 선택적 PodResolver를 받아 Collector를 구성한다.
@@ -40,10 +48,11 @@ type Collector struct {
 // /proc/<pid>/cgroup 읽기 비용을 발생시키지 않는다.
 func New(nv nvml.NVML, cfg config.Config, resolver PodResolver) *Collector {
 	return &Collector{
-		nvml:           nv,
-		cfg:            cfg,
-		resolver:       resolver,
-		recordSnapshot: metrics.RecordPodSnapshot,
+		nvml:              nv,
+		cfg:               cfg,
+		resolver:          resolver,
+		recordSnapshot:    metrics.RecordPodSnapshot,
+		recordMigSnapshot: metrics.RecordPodMigSnapshot,
 	}
 }
 
@@ -116,6 +125,15 @@ type podGPUKey struct {
 	gpuIndex uint
 }
 
+// podMigKey 는 #104 MIG 활성 환경의 (Pod, MIG instance) 단위 합산 키다. parent gpuUUID 와 instance
+// 식별자 (migUUID, gpuInstanceID) 조합 으로 동일 device 내 instance 간 분리 보장.
+type podMigKey struct {
+	podUID         string
+	gpuUUID        string
+	migUUID        string
+	gpuInstanceID  uint32
+}
+
 // pollOnce는 DeviceSet.Snapshot 으로 현재 알려진 device 핸들을 받아 각 device 마다 Snapshot 과
 // RunningProcesses 를 읽고, per-pod 분량은 (podUID, gpu) 키로 합산한 뒤 한 번에
 // metrics.RecordPodSnapshot 으로 전달한다.
@@ -128,9 +146,14 @@ func (c *Collector) pollOnce() {
 	perPodEnabled := c.resolver != nil && c.cfg.PodMetricsEnabled
 
 	var aggregated map[podGPUKey]*metrics.PodGPUSample
+	var aggregatedMig map[podMigKey]*metrics.PodMigGPUSample
 	if perPodEnabled {
 		aggregated = make(map[podGPUKey]*metrics.PodGPUSample)
+		aggregatedMig = make(map[podMigKey]*metrics.PodMigGPUSample)
 	}
+
+	// #104 MPS daemon active 여부 는 노드 단위 신호 라 device loop 진입 전 1회 detect.
+	mpsOn := mpsDetect()
 
 	for _, dev := range c.devSet.Snapshot() {
 		snap, err := dev.Snapshot()
@@ -141,6 +164,11 @@ func (c *Collector) pollOnce() {
 		}
 		metrics.Record(c.cfg.NodeName, snap)
 
+		// #104 self-health 메트릭 발행. MigMode 는 nvml init 단계 에서 캐싱 되어 매 poll 비용 zero.
+		// MPS 는 위에서 1회 detect 한 결과 를 device 라벨 4종 으로 동일 값 발행.
+		metrics.RecordMigMode(c.cfg.NodeName, snap.Device)
+		metrics.RecordMpsActive(c.cfg.NodeName, snap.Device, mpsOn)
+
 		if !perPodEnabled {
 			continue
 		}
@@ -150,6 +178,15 @@ func (c *Collector) pollOnce() {
 			log.Printf("gpuobs: running processes: %v", err)
 			continue
 		}
+		// #104 per-process SM util 수집. NVML 이 RunningProcesses (메모리 사용량) 와 ProcessUtilization
+		// (SM util) 을 별도 호출로 노출 하므로 device 마다 두 호출 결과를 PID 기준 inner join 한다.
+		// ProcessUtilization 실패는 비치명적 으로 흡수 한다 (메모리 메트릭은 계속 발행 되며 util 만 0 으로 강등).
+		utils, err := dev.ProcessUtilization()
+		if err != nil {
+			log.Printf("gpuobs: process utilization: %v", err)
+			utils = nil
+		}
+		utilByPID := buildProcessUtilMap(utils)
 		for _, p := range procs {
 			id := c.resolver.ResolvePID(p.PID)
 			if !id.IsPod() {
@@ -161,15 +198,25 @@ func (c *Collector) pollOnce() {
 				gpuUUID:  snap.Device.UUID,
 				gpuIndex: snap.Device.Index,
 			}
+			smUtil := utilByPID[p.PID]
 			if v, ok := aggregated[key]; ok {
 				v.MemUsedBytes += p.MemoryUsedBytes
+				v.SmUtilPct = capUtilPct(uint32(v.SmUtilPct) + smUtil)
 				continue
 			}
 			aggregated[key] = &metrics.PodGPUSample{
 				ID:           id,
 				Device:       snap.Device,
 				MemUsedBytes: p.MemoryUsedBytes,
+				SmUtilPct:    smUtil,
 			}
+		}
+
+		// #104 MIG 활성 경로. parent device 의 MigMode 가 Enabled 일 때만 instance enumerate 후
+		// instance 별 process util 산정. RTX 3090 같은 MIG 미지원 device 에서는 본 분기 미진입 (graceful
+		// degradation). instance enumerate / per-instance util 실패는 비치명 적 으로 흡수.
+		if snap.Device.MigMode == types.MigModeEnabled {
+			c.collectMigInstances(dev, snap.Device, aggregatedMig)
 		}
 	}
 
@@ -181,6 +228,84 @@ func (c *Collector) pollOnce() {
 			samples = append(samples, *v)
 		}
 		c.recordSnapshot(c.cfg.NodeName, samples)
+
+		// #104 MIG 활성 시리즈 도 동일 cleanup invariant 유지 위해 항상 호출. RTX 3090 같은 MIG 미지원
+		// device 만 있는 노드 에서는 aggregatedMig 가 항상 empty 라 cleanup 외 부수 효과 zero.
+		migSamples := make([]metrics.PodMigGPUSample, 0, len(aggregatedMig))
+		for _, v := range aggregatedMig {
+			migSamples = append(migSamples, *v)
+		}
+		c.recordMigSnapshot(c.cfg.NodeName, migSamples)
+	}
+}
+
+// collectMigInstances 는 #104 MIG 활성 device 의 instance 별 process util 을 수집해 aggregated 맵 에
+// 누적 한다. enumerate / per-instance 호출 실패는 비치명적 으로 흡수 (다른 instance 폴링 차단 하지 않음).
+// instance handle 의 lifecycle 은 parent deviceImpl 이 캐시 슬롯으로 보유 하므로 본 함수는 Close 호출
+// 책임 이 없다 (parent Close 시 children 일괄 해제). 캐싱 으로 instance 의 processUtilLastSeenTs 와
+// unsupported 캐시 가 lifetime 동안 보존 되어 매 poll sample 중복 / NOT_SUPPORTED 반복 호출이 사라진다.
+func (c *Collector) collectMigInstances(parent nvml.Device, parentDev types.GPUDevice, aggregated map[podMigKey]*metrics.PodMigGPUSample) {
+	count, err := parent.MaxMigDeviceCount()
+	if err != nil {
+		log.Printf("gpuobs: mig max device count: %v", err)
+		return
+	}
+	for i := 0; i < count; i++ {
+		instance, err := parent.MigDevice(i)
+		if err != nil {
+			log.Printf("gpuobs: mig device idx=%d: %v", i, err)
+			continue
+		}
+		if instance == nil {
+			// 빈 슬롯 (instance 미생성 또는 disabled).
+			continue
+		}
+		c.collectMigInstance(instance, parentDev, aggregated)
+	}
+}
+
+// collectMigInstance 는 단일 MIG instance 의 process util 을 PID 단위 ResolvePID 후 (podUID, instance) 키
+// 로 합산 한다. instance Info / GpuInstanceId 호출 실패는 비치명적 으로 흡수 하되 식별자 부재 시 다른
+// instance 와 키 충돌 위험 이 있어 해당 instance 수집을 skip 한다.
+func (c *Collector) collectMigInstance(instance nvml.Device, parentDev types.GPUDevice, aggregated map[podMigKey]*metrics.PodMigGPUSample) {
+	info, err := instance.Info()
+	if err != nil {
+		log.Printf("gpuobs: mig instance info: %v", err)
+		return
+	}
+	giID, err := instance.GpuInstanceId()
+	if err != nil {
+		// 식별자 부재 로 다른 instance 와 (podUID, mig_uuid, gi_id) 키 가 충돌 할 위험 회피 위해 skip.
+		log.Printf("gpuobs: mig instance gpu instance id: %v", err)
+		return
+	}
+	utils, err := instance.ProcessUtilization()
+	if err != nil {
+		log.Printf("gpuobs: mig instance process util: %v", err)
+		return
+	}
+	for _, u := range utils {
+		id := c.resolver.ResolvePID(u.PID)
+		if !id.IsPod() {
+			continue
+		}
+		key := podMigKey{
+			podUID:        id.PodUID,
+			gpuUUID:       parentDev.UUID,
+			migUUID:       info.UUID,
+			gpuInstanceID: giID,
+		}
+		if v, ok := aggregated[key]; ok {
+			v.SmUtilPct = capUtilPct(uint32(v.SmUtilPct) + u.SmUtilPct)
+			continue
+		}
+		aggregated[key] = &metrics.PodMigGPUSample{
+			ID:            id,
+			Device:        parentDev,
+			MigUUID:       info.UUID,
+			GpuInstanceID: giID,
+			SmUtilPct:     u.SmUtilPct,
+		}
 	}
 }
 
@@ -189,4 +314,30 @@ func signalReady(onReady func()) {
 	if onReady != nil {
 		onReady()
 	}
+}
+
+// buildProcessUtilMap 은 #104 ProcessUtilization 결과 슬라이스를 PID 기준 lookup map 으로 변환한다.
+// NVML 이 짧은 sampling window 안에 같은 PID 의 sample 을 다회 반환할 수 있어 동일 PID 값은 max 채택
+// (sampling jitter 보정) 한다. nil / empty 입력 은 빈 map 을 반환해 호출자 분기를 단순화한다.
+func buildProcessUtilMap(utils []types.GPUProcessUtil) map[uint32]uint32 {
+	if len(utils) == 0 {
+		return map[uint32]uint32{}
+	}
+	out := make(map[uint32]uint32, len(utils))
+	for _, u := range utils {
+		if u.SmUtilPct > out[u.PID] {
+			out[u.PID] = u.SmUtilPct
+		}
+	}
+	return out
+}
+
+// capUtilPct 는 동일 GPU 의 multi-PID workload 합산 결과가 100 을 초과하지 않도록 cap 한다. NVML
+// per-process SM util 은 process 단위 cost share 라 동일 GPU 의 모든 process 합이 100 을 초과하지
+// 않아야 하지만, sampling jitter 와 multi-context 경합으로 일시 초과가 발생할 수 있어 안전 cap.
+func capUtilPct(v uint32) uint32 {
+	if v > 100 {
+		return 100
+	}
+	return v
 }

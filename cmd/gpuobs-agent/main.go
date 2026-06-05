@@ -36,6 +36,12 @@ func main() {
 	reg := prometheus.NewRegistry()
 	metrics.Register(reg)
 	metrics.SetPodMetricsEnabled(cfg.PodMetricsEnabled)
+	// #104 gpuobs_pod_utilization_percent 의 namespace allow-list 통제 startup 적용. 빈 슬라이스 이면
+	// 전체 발행 (기본값) 이고 명시 시 매칭 namespace 만 발행.
+	metrics.SetPodUtilAllowNamespaces(cfg.PodUtilAllowNamespaces)
+	if len(cfg.PodUtilAllowNamespaces) > 0 {
+		log.Printf("pod util allow-list: %v (gpuobs_pod_utilization_percent emit restricted)", cfg.PodUtilAllowNamespaces)
+	}
 	// CUDA launch baseline tunable을 정적 gauge로 노출해 correlation host_compute_stall_score 의 분모
 	// 로 사용한다.
 	metrics.SetCudaLaunchBaselinePerSec(cfg.NodeName, cfg.CudaLaunchBaselinePerSec)

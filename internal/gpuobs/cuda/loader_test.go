@@ -294,7 +294,16 @@ func (f *fakeNvmlDevice) RunningProcesses() ([]types.GPUProcess, error) {
 	}
 	return out, nil
 }
-func (f *fakeNvmlDevice) Close() error { return nil }
+func (f *fakeNvmlDevice) ProcessUtilization() ([]types.GPUProcessUtil, error) {
+	return nil, nil
+}
+func (f *fakeNvmlDevice) MigMode() (types.MigMode, error)    { return types.MigModeUnsupported, nil }
+func (f *fakeNvmlDevice) MaxMigDeviceCount() (int, error)    { return 0, nil }
+func (f *fakeNvmlDevice) MigDevice(int) (nvml.Device, error) { return nil, nil }
+func (f *fakeNvmlDevice) IsMigDevice() (bool, error)         { return false, nil }
+func (f *fakeNvmlDevice) GpuInstanceId() (uint32, error)     { return 0, nil }
+func (f *fakeNvmlDevice) ComputeInstanceId() (uint32, error) { return 0, nil }
+func (f *fakeNvmlDevice) Close() error                       { return nil }
 
 func TestReaderCollectPidToUUID_LastWinsAndCountsMultiGPU(t *testing.T) {
 	devA := &fakeNvmlDevice{uuid: "GPU-A", index: 0, pids: []uint32{1, 2}}

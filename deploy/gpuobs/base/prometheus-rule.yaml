@@ -22,10 +22,18 @@ spec:
         # node:gpu_util_p95:5m
         # 노드별 GPU 사용률 5분 윈도우 95-percentile. 멀티 GPU 노드는 GPU 단위 p95를 먼저 산출한 뒤
         # node 차원에서 max로 롤업해 "노드의 가장 바쁜 GPU" 부하를 단일 시리즈로 노출한다.
-        # 이슈 원안 pod:gpu_util_p95:5m는 NVML이 pod-level GPU compute util을 노출하지 않아 정의 불가하므로
-        # device-level로 대체했다 (README의 Per-metric NVML support detection 노트 참고).
+        # #104 도입의 gpuobs_pod_utilization_percent 기반 pod:gpu_util_p95:5m 가 정식 시리즈로 추가되어
+        # 본 node:* 시리즈와 pod 단위가 함께 운용된다.
         - record: node:gpu_util_p95:5m
           expr: max by(node) (quantile_over_time(0.95, gpuobs_device_utilization_percent[5m]))
+
+        # pod:gpu_util_p95:5m
+        # pod x GPU 단위 5분 윈도우 95-percentile GPU 사용률. #104 의 gpuobs_pod_utilization_percent 도입으로
+        # 정식 시리즈로 승격된 record다. capacity-trends (#86 과 #88) 의 GPU 도메인 device-scope fallback 강등
+        # 이 본 시리즈 활성으로 회복된다. MIG 활성 환경의 instance 단위는 별도 gpuobs_pod_mig_utilization_percent
+        # 기반 시리즈로 향후 분리 발행 가능 하다.
+        - record: pod:gpu_util_p95:5m
+          expr: max by(src_namespace, src_pod, gpu_uuid) (quantile_over_time(0.95, gpuobs_pod_utilization_percent[5m]))
 
         # pod:gpu_memory_used_avg:5m
         # pod x GPU 단위 5분 평균 메모리 사용량. 라벨은 (node, src_namespace, src_pod, src_pod_uid, gpu_uuid, gpu_index) 그대로 보존.

@@ -30,6 +30,15 @@ var agentInfo = prometheus.NewGauge(
 // index는 slot, model은 그래프 범주화, node는 클러스터 내 귀속에 쓴다.
 var deviceLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model"}
 
+// migModeLabels 는 #104 의 gpuobs_mig_mode self-health 라벨 세트다. mode 라벨 은 unsupported / disabled
+// / enabled 3종 이며 각 device 마다 3 시리즈 모두 0 또는 1 로 발행 해 운영자 가 단일 query
+// (`gpuobs_mig_mode{mode="enabled"} == 1`) 로 환경별 분기 가시화 가 가능 하다.
+var migModeLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model", "mode"}
+
+// mpsActiveLabels 는 #104 의 gpuobs_mps_active self-health 라벨 세트다. MPS daemon 활성 여부 는 노드
+// 단위 신호 지만 dashboard 정합 (다른 device 메트릭 과 동일 키 join) 을 위해 device 라벨 4종 그대로 노출.
+var mpsActiveLabels = deviceLabels
+
 // deviceClockLabels는 도메인별 clock gauge에 `clock` 라벨을 추가한 변형이다.
 var deviceClockLabels = []string{"node", "gpu_uuid", "gpu_index", "gpu_model", "clock"}
 
@@ -116,6 +125,12 @@ var (
 // gpu_uuid/gpu_index는 GPU 차원을 추가해 한 Pod이 복수 GPU를 사용하는 경우 분리 측정한다.
 var podLabels = []string{"node", "src_namespace", "src_pod", "src_pod_uid", "gpu_uuid", "gpu_index"}
 
+// podMigLabels 는 #104 MIG 활성 환경 한정 의 Pod-level utilization 라벨 셋 이다. 기존 podLabels 6종 에
+// mig_uuid 와 gi_id (GPU Instance ID) 2종 을 추가 부착 해 instance 단위 시리즈로 발행 한다. metric 이름
+// 자체를 분리 (gpuobs_pod_mig_utilization_percent) 해 라벨 셋 충돌 을 피하고 dashboard query 가 환경 별
+// 분기 (MIG 활성 노드 만 본 메트릭 hit) 를 단일 metric 이름 으로 표현 가능 하게 한다.
+var podMigLabels = []string{"node", "src_namespace", "src_pod", "src_pod_uid", "gpu_uuid", "gpu_index", "mig_uuid", "gi_id"}
+
 // cudaPodLabels 는 cuda uprobe 카운터가 공유하는 Pod 차원 라벨 세트다.
 // 앞 4개는 netobs/podLabels 와 동일한 4-key 조인 표준이고, 마지막 gpu_uuid 는 NVML
 // GetComputeRunningProcesses 캐시로 PID 를 GPU 에 매핑한 결과다. gpu_index 는 cuda
@@ -140,20 +155,68 @@ func SetPodMetricsEnabled(v bool) {
 	podMetricsEnabled = v
 }
 
+// podUtilAllowNamespaces 는 #104 의 gpuobs_pod_utilization_percent 발행 namespace allow-list 이다. nil
+// 또는 빈 셋 이면 전체 namespace 발행, 명시 시 매칭 namespace 만 발행. SetPodUtilAllowNamespaces 가
+// startup 단계 에서 1 회 갱신하고 이후 RecordPodSnapshot 매 호출 에서 읽기 전용 으로 참조된다.
+var podUtilAllowNamespaces map[string]struct{}
+
+// SetPodUtilAllowNamespaces 는 #104 카디널리티 통제 셋업 진입점 이다. 반드시 RecordPodSnapshot 호출 전
+// (main startup) 에 1 회만 호출 한다. 빈 슬라이스 / nil 은 전체 namespace 발행 (escape hatch off) 의미.
+func SetPodUtilAllowNamespaces(ns []string) {
+	if len(ns) == 0 {
+		podUtilAllowNamespaces = nil
+		return
+	}
+	out := make(map[string]struct{}, len(ns))
+	for _, n := range ns {
+		out[n] = struct{}{}
+	}
+	podUtilAllowNamespaces = out
+}
+
+// podUtilAllowed 는 RecordPodSnapshot 매 sample 의 emit 분기 helper. allow-list 미설정 (전체 발행) 또는
+// 명시 셋 에 포함 된 namespace 면 true. 본 helper 는 hot path 라 map lookup 1 회 비용 만 발생.
+func podUtilAllowed(namespace string) bool {
+	if podUtilAllowNamespaces == nil {
+		return true
+	}
+	_, ok := podUtilAllowNamespaces[namespace]
+	return ok
+}
+
 // PodGPUSample은 한 (Pod, GPU device) 조합의 메모리 관측치다.
 // collector가 NVML RunningProcesses 결과를 (podUID, gpu) 키로 합산한 뒤 한 번에 RecordPodSnapshot으로 전달한다.
 type PodGPUSample struct {
 	ID           kube.PodIdentity
 	Device       types.GPUDevice
 	MemUsedBytes uint64
+	// SmUtilPct 는 #104 도입의 per-pod SM utilization 합산값 (0-100, cap=100) 이다. collector 가 NVML
+	// DeviceGetProcessUtilization 결과를 PID 단위로 합산해 본 필드에 채운다. 본 commit (Commit 3) 은 본
+	// 필드의 수집 흐름만 도입하고, 본 값을 prometheus 메트릭으로 노출하는 RecordPodSnapshot 갱신은 다음
+	// commit (Commit 4 의 gpuobs_pod_utilization_percent 신설) 에서 들어온다.
+	SmUtilPct uint32
 }
 
-// lastPodSampleKeys는 직전 RecordPodSnapshot 호출에서 기록된 라벨 키 셋이다.
+// PodMigGPUSample 은 #104 MIG 활성 환경 한정 의 (Pod, MIG instance) 단위 SM util 합산 결과다. parent
+// device 정보 (UUID / Index) 외 에 instance 식별자 (MigUUID, GpuInstanceID) 를 함께 운반 한다.
+type PodMigGPUSample struct {
+	ID             kube.PodIdentity
+	Device         types.GPUDevice
+	MigUUID        string
+	GpuInstanceID  uint32
+	SmUtilPct      uint32
+}
+
+// lastPodSampleKeys는 직전 RecordPodSnapshot 호출에서 기록된 라벨 키 셋이다 (podMemoryUsed 기준).
 // diff-based cleanup에 쓰여, 이번 호출에 등장하지 않은 키는 DeleteLabelValues로 series에서 제거된다.
 // 호출자는 단일 goroutine(collector pollOnce)이지만, 본 변수가 패키지 전역이고 RecordPodSnapshot이
 // public 함수라 향후 호출 패턴 변경에 대비해 lastPodSampleKeysMu로 보호한다.
+// #104 podUtilization 은 namespace allow-list 통제 결과로 발행 키 셋 이 podMemoryUsed 와 다를 수 있어
+// lastPodUtilKeys 로 별도 추적 한다. 두 셋 모두 동일 mutex 로 보호.
 var (
 	lastPodSampleKeys   = make(map[string]struct{})
+	lastPodUtilKeys     = make(map[string]struct{})
+	lastPodMigUtilKeys  = make(map[string]struct{})
 	lastPodSampleKeysMu sync.Mutex
 )
 
@@ -188,6 +251,26 @@ var (
 			Help: "GPU compute utilization (0-100) sampled from NVML",
 		},
 		deviceLabels,
+	)
+
+	// migMode 는 #104 self-health gauge. 각 device 마다 3 mode (enabled/disabled/unsupported) 시리즈 를
+	// 0/1 로 매 poll 발행 해 환경 변경 시점 까지 label 흐트러짐 없이 단일 query 로 fleet-wide MIG 분포 가시화.
+	migMode = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_mig_mode",
+			Help: "MIG mode of the GPU device (1 if matching the mode label, else 0). mode label one of enabled / disabled / unsupported. Use {mode=\"enabled\"} == 1 to count MIG-active devices fleet-wide",
+		},
+		migModeLabels,
+	)
+
+	// mpsActive 는 #104 self-health gauge. CUDA_MPS_PIPE_DIRECTORY env 와 /var/run/nvidia/mps/control
+	// 소켓 존재 와 nvidia-cuda-mps-control process 3종 OR 로직 으로 detect 한 값 (1 / 0) 을 발행 한다.
+	mpsActive = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_mps_active",
+			Help: "1 if NVIDIA MPS daemon is active on the node, else 0. When 1, per-process SM utilization (gpuobs_pod_utilization_percent) is best-effort because MPS time-slices a single CUDA context across multiple processes which NVML cannot disaggregate",
+		},
+		mpsActiveLabels,
 	)
 
 	deviceMemoryUsed = prometheus.NewGaugeVec(
@@ -430,6 +513,31 @@ var (
 		podLabels,
 	)
 
+	// podUtilization 은 #104 의 Pod-level GPU compute utilization (0-100) gauge 다. 라벨 셋 은 podLabels
+	// 6종 그대로 podMemoryUsed 와 정합 유지 하여 PromQL join key 호환성 을 보존한다. collector 가 NVML
+	// DeviceGetProcessUtilization 결과 를 (podUID, gpu) 단위 합산 (100 cap) 한 값 을 SmUtilPct 슬롯 으로
+	// 받아 발행한다. MIG 활성 환경 의 instance level 라벨 (mig_uuid, gi_id) 분리 발행 은 별도 메트릭
+	// podMigUtilization 으로 노출 (라벨 셋 호환성 보존 위해 metric 이름 자체를 분리).
+	podUtilization = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_pod_utilization_percent",
+			Help: "GPU compute utilization (0-100) attributed to a single Pod via NVML per-process SM utilization and cgroup-based PID resolution. Best-effort while gpuobs_cuda_pid_multi_gpu_count is nonzero (see #33). Accuracy drops in MPS time-sliced single-context environments — check gpuobs_mps_active",
+		},
+		podLabels,
+	)
+
+	// podMigUtilization 은 #104 MIG 활성 환경 한정 의 instance level Pod-level utilization gauge 다.
+	// podUtilization 과 metric 이름 을 분리 하여 라벨 셋 (6 vs 8) 호환성 유지. MIG 활성 device 에서만
+	// 시리즈 가 생기며 collector 가 instance 별 DeviceGetProcessUtilization 결과 를 (podUID, mig_uuid, gi_id)
+	// 키로 합산 (100 cap) 한 값 을 발행 한다.
+	podMigUtilization = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_pod_mig_utilization_percent",
+			Help: "Per-Pod GPU compute utilization (0-100) on a specific MIG GPU Instance. Emitted only when the parent device has MIG mode = enabled. Use to disaggregate Pod attribution within an A100/H100 partitioned device",
+		},
+		podMigLabels,
+	)
+
 	cudaKernelLaunchesTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "gpuobs_cuda_kernel_launches_total",
@@ -543,6 +651,8 @@ func Register(reg prometheus.Registerer) {
 	reg.MustRegister(
 		agentInfo,
 		deviceUtilization,
+		migMode,
+		mpsActive,
 		deviceMemoryUsed,
 		deviceMemoryTotal,
 		deviceTemperature,
@@ -573,6 +683,8 @@ func Register(reg prometheus.Registerer) {
 		deviceInfo,
 		deviceFirmwareInfo,
 		podMemoryUsed,
+		podUtilization,
+		podMigUtilization,
 		cudaKernelLaunchesTotal,
 		cudaH2DBytesTotal,
 		cudaD2HBytesTotal,
@@ -596,6 +708,35 @@ func Register(reg prometheus.Registerer) {
 // 통제된다.
 func SetCudaLaunchBaselinePerSec(node string, baseline float64) {
 	cudaLaunchBaselinePerSec.WithLabelValues(node).Set(baseline)
+}
+
+// migModeValues 는 RecordMigMode 가 매 poll 발행할 mode 라벨 값 3종 enum 이다. types.MigMode.String()
+// 의 반환값 집합과 정확히 일치 해야 활성 mode 시리즈가 1, 비활성 2 시리즈가 0 으로 정확히 정렬된다.
+var migModeValues = [3]string{"enabled", "disabled", "unsupported"}
+
+// RecordMigMode 는 #104 self-health 진입점이다. 한 device 의 현재 MigMode 에 대해 3 라벨 시리즈를
+// 모두 발행하되 일치하는 mode 만 1, 나머지 2종은 0 으로 둬 라벨 전환 시 stale 시리즈가 남지 않게 한다.
+func RecordMigMode(node string, dev types.GPUDevice) {
+	idx := strconv.FormatUint(uint64(dev.Index), 10)
+	current := dev.MigMode.String()
+	for _, m := range migModeValues {
+		v := 0.0
+		if m == current {
+			v = 1.0
+		}
+		migMode.WithLabelValues(node, dev.UUID, idx, dev.Model, m).Set(v)
+	}
+}
+
+// RecordMpsActive 는 #104 self-health 진입점이다. detect 결과 (true=1 / false=0) 를 device 라벨 4종으로
+// 발행한다. MPS 자체 는 노드 단위 신호 이지만 device 라벨 정합 유지 로 dashboard join 이 단순해진다.
+func RecordMpsActive(node string, dev types.GPUDevice, active bool) {
+	idx := strconv.FormatUint(uint64(dev.Index), 10)
+	v := 0.0
+	if active {
+		v = 1.0
+	}
+	mpsActive.WithLabelValues(node, dev.UUID, idx, dev.Model).Set(v)
 }
 
 // Record는 한 device의 현재 스냅샷을 모든 device gauge에 기록한다.
@@ -876,6 +1017,7 @@ func recordPcieReplayDelta(node, uuid, idx, model string, current uint32) {
 // 전역이라 향후 호출 패턴 변경에 대비해 lastPodSampleKeysMu로 보호한다.
 func RecordPodSnapshot(node string, samples []PodGPUSample) {
 	currentKeys := make(map[string]struct{}, len(samples))
+	currentUtilKeys := make(map[string]struct{}, len(samples))
 
 	if podMetricsEnabled {
 		for _, s := range samples {
@@ -891,12 +1033,21 @@ func RecordPodSnapshot(node string, samples []PodGPUSample) {
 				s.Device.UUID,
 				idx,
 			}
+			key := strings.Join(labels, podLabelSeparator)
 			podMemoryUsed.WithLabelValues(labels...).Set(float64(s.MemUsedBytes))
-			currentKeys[strings.Join(labels, podLabelSeparator)] = struct{}{}
+			currentKeys[key] = struct{}{}
+			// #104 podUtilization 은 namespace allow-list 통제 적용 후 발행. allow-list 미설정 이면 모든
+			// namespace, 명시 시 매칭 namespace 만. 키 셋 도 별도 추적 해 cleanup 정합 유지.
+			if podUtilAllowed(s.ID.NamespaceLabel()) {
+				podUtilization.WithLabelValues(labels...).Set(float64(s.SmUtilPct))
+				currentUtilKeys[key] = struct{}{}
+			}
 		}
 	}
 
 	// 직전 poll에는 있었지만 이번에는 없는 라벨 series 제거 (Pod 종료 / 프로세스 종료 / toggle off 모두 흡수).
+	// #104 podUtilization 은 allow-list 통제 결과로 키 셋 이 podMemoryUsed 와 다를 수 있어 lastPodUtilKeys
+	// 로 별도 추적 한다.
 	lastPodSampleKeysMu.Lock()
 	defer lastPodSampleKeysMu.Unlock()
 	for key := range lastPodSampleKeys {
@@ -904,7 +1055,57 @@ func RecordPodSnapshot(node string, samples []PodGPUSample) {
 			podMemoryUsed.DeleteLabelValues(strings.Split(key, podLabelSeparator)...)
 		}
 	}
+	for key := range lastPodUtilKeys {
+		if _, ok := currentUtilKeys[key]; !ok {
+			podUtilization.DeleteLabelValues(strings.Split(key, podLabelSeparator)...)
+		}
+	}
 	lastPodSampleKeys = currentKeys
+	lastPodUtilKeys = currentUtilKeys
+}
+
+// RecordPodMigSnapshot 은 #104 MIG 활성 환경 의 (Pod, MIG instance) 단위 util sample 을 일괄 기록한다.
+// 호출자 (collector) 는 MIG enabled device 에 대해 instance 별 process util 결과를 (podUID, mig_uuid,
+// gi_id) 키로 합산 한 뒤 본 함수 1회 호출 한다. 직전 poll 에 있었지만 이번 poll 에 없는 시리즈는
+// DeleteLabelValues 로 자동 정리 되어 instance 재분할 / Pod 종료 시 stale 시리즈가 영구히 남지 않는다.
+// podMetricsEnabled 가 false 이면 신규 기록은 건너뛰지만 cleanup 은 그대로 수행 한다. allow-list 통제
+// (podUtilAllowed) 도 동일 적용 한다.
+func RecordPodMigSnapshot(node string, samples []PodMigGPUSample) {
+	currentKeys := make(map[string]struct{}, len(samples))
+
+	if podMetricsEnabled {
+		for _, s := range samples {
+			if !s.ID.IsPod() {
+				continue
+			}
+			if !podUtilAllowed(s.ID.NamespaceLabel()) {
+				continue
+			}
+			idx := strconv.FormatUint(uint64(s.Device.Index), 10)
+			giID := strconv.FormatUint(uint64(s.GpuInstanceID), 10)
+			labels := []string{
+				node,
+				s.ID.NamespaceLabel(),
+				podName(s.ID),
+				podUID(s.ID),
+				s.Device.UUID,
+				idx,
+				s.MigUUID,
+				giID,
+			}
+			podMigUtilization.WithLabelValues(labels...).Set(float64(s.SmUtilPct))
+			currentKeys[strings.Join(labels, podLabelSeparator)] = struct{}{}
+		}
+	}
+
+	lastPodSampleKeysMu.Lock()
+	defer lastPodSampleKeysMu.Unlock()
+	for key := range lastPodMigUtilKeys {
+		if _, ok := currentKeys[key]; !ok {
+			podMigUtilization.DeleteLabelValues(strings.Split(key, podLabelSeparator)...)
+		}
+	}
+	lastPodMigUtilKeys = currentKeys
 }
 
 // podName과 podUID는 빈 필드일 때 "unknown"으로 폴백해 라벨 카디널리티가 빈 문자열로 늘어나는 것을 막는다.

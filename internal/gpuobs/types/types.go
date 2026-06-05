@@ -30,6 +30,48 @@ type GPUDevice struct {
 	// VbiosVersion / GspFirmwareVersion은 펌웨어 회귀 디버깅용 버전 문자열. 빈 문자열이면 미수집.
 	VbiosVersion       string
 	GspFirmwareVersion string
+
+	// MigMode 는 #104 도입의 device 단위 MIG 활성 상태다. nvml 계층 초기화 단계에서 DeviceGetMigMode 결과를
+	// 1회 fetch + 정규화 후 캐싱한다. metrics 계층의 gpuobs_mig_mode 시리즈 mode 라벨 값으로 본 필드의
+	// String() 결과 (enabled / disabled / unsupported) 가 발행된다.
+	MigMode MigMode
+}
+
+// MigMode 는 #104 도입의 device 단위 MIG (Multi-Instance GPU) 활성 상태 정규화 enum 이다. nvml 계층이
+// DeviceGetMigMode 결과 (DEVICE_MIG_ENABLE / DEVICE_MIG_DISABLE) 와 NOT_SUPPORTED 응답을 단일 enum 으로
+// 흡수해 collector / metrics 계층이 GPU 종류 별 분기 없이 단일 분기로 처리하도록 한다. MigModeUnsupported
+// 는 GPU 자체 가 MIG 를 지원하지 않는 경우 (consumer GPU 다수, MIG 미지원 데이터센터 GPU) 다.
+type MigMode uint8
+
+const (
+	MigModeUnsupported MigMode = 0
+	MigModeDisabled    MigMode = 1
+	MigModeEnabled     MigMode = 2
+)
+
+// String 은 MigMode 를 metrics 라벨 값으로 안정 노출할 소문자 문자열로 변환한다. 라벨 값이 enum 추가로
+// 변경되어도 유효 셋이 enabled / disabled / unsupported 3종으로 고정되어 dashboard 정합이 보존된다.
+func (m MigMode) String() string {
+	switch m {
+	case MigModeEnabled:
+		return "enabled"
+	case MigModeDisabled:
+		return "disabled"
+	}
+	return "unsupported"
+}
+
+// GPUProcessUtil 은 #104 도입의 per-process util sample 이다. NVML DeviceGetProcessUtilization 이 PID
+// 별로 반환한 sample 한 건을 그대로 운반한다. 단위는 모두 0-100 (%) 이며, TimeStamp 는 sample 의 NVML
+// wall-clock 으로 다음 호출 시 device 별 lastSeenTimestamp 슬롯의 atomic 갱신에 사용된다. SmUtilPct 는
+// pod-level utilization 산정의 1차 입력이고 Mem/Enc/Dec 는 향후 확장 슬롯 으로 보관만 한다.
+type GPUProcessUtil struct {
+	PID        uint32
+	TimeStamp  uint64
+	SmUtilPct  uint32
+	MemUtilPct uint32
+	EncUtilPct uint32
+	DecUtilPct uint32
 }
 
 // GPUSnapshot은 특정 시점에 측정된 GPU 상태를 담는다.
