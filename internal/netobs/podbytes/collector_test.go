@@ -1,6 +1,7 @@
 package podbytes
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -279,4 +280,45 @@ func TestCollectorDescribe(t *testing.T) {
 	if got != 2 {
 		t.Errorf("Describe emitted %d descs; want 2 (bytes + packets)", got)
 	}
+}
+
+// TestCollector_ConcurrentSetMapAndCollectRace 는 #107 audit 의 회귀 가드 다. flow.Collector 의 동등
+// 패턴 (atomic.Pointer 기반 SetMap-once + Describe / Load 동시 read) 의 race detector 회귀 차단 영구 가드.
+func TestCollector_ConcurrentSetMapAndCollectRace(t *testing.T) {
+	c := New(&fakeResolver{table: map[uint64]kube.PodIdentity{}}, "node1", true)
+
+	const workers = 16
+	const iterations = 100
+
+	var wg sync.WaitGroup
+	wg.Add(workers * 2)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				c.SetMap(nil)
+			}
+		}()
+	}
+	// podbytes Describe 는 2 desc (bytes / packets) 를 emit 하므로 buffer 는 2x. 또는 drain goroutine
+	// 으로 흡수. 본 케이스 는 race 검증 목적 이라 결과 desc 의 정확성 은 검증 외. drain goroutine 으로
+	// channel hang 회피.
+	descCh := make(chan *prometheus.Desc, 4096)
+	drainDone := make(chan struct{})
+	go func() {
+		for range descCh {
+		}
+		close(drainDone)
+	}()
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				c.Describe(descCh)
+			}
+		}()
+	}
+	wg.Wait()
+	close(descCh)
+	<-drainDone
 }
