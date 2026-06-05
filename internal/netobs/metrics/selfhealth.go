@@ -51,6 +51,30 @@ var (
 			Help: "Seconds since the kube informer last received any watch event for Pod / Service / Node. Before the first event the gauge falls back to seconds since agent startup so it remains interpretable during the warm-up window. Stale informer cache is detected by sustained values well above the resync period.",
 		},
 	)
+
+	// bpfProgramAttachTotal 은 #105 의 BPF program attach 시도 누적 카운터다. startup 단계 에서 program
+	// 별 attach 호출마다 result=success 또는 result=failure 로 emit 된다. counter 라 agent restart 시
+	// 0 으로 리셋 되며, 본 동작은 "본 에이전트 인스턴스 의 attach 시도 빈도" 운영 의미와 자연 정합 한다
+	// (bpfRingbufDropsTotal 의 baseline-then-delta 패턴과 의도적 으로 다른 lifecycle).
+	bpfProgramAttachTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "netobs_bpf_program_attach_total",
+			Help: "Cumulative attach attempts per BPF program (kprobe / kretprobe), partitioned by result. result=success counts attempts that completed within the retry budget; result=failure counts attempts that exhausted retries. Unlike netobs_bpf_program_loaded (current state gauge), this counter visualizes attach attempt frequency since agent startup. Reset on agent restart.",
+		},
+		[]string{"program", "result"},
+	)
+
+	// bpfProgramAttachRetryTotal 은 #105 의 attach retry 부담 누적 카운터다. attach 시도 한 번 안에서
+	// retry 가 발생할 때마다 reason 라벨 (#105 의 7종 enum) 과 함께 +1 emit 된다. result=success 이지만
+	// retry_total 이 누적된 program 은 transient flap 으로 식별 가능 하고, retry_total 누적 후 결국
+	// result=failure 로 마감된 program 은 영구 실패로 분류된다 (program_loaded=0 동시 관측).
+	bpfProgramAttachRetryTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "netobs_bpf_program_attach_retry_total",
+			Help: "Cumulative attach retries per BPF program, partitioned by classified failure reason (#105 7-value enum: symbol_not_found, kernel_version_mismatch, btf_missing, verifier_rejected, permission_denied, link_internal_error, other). Each retry increments the counter; the program that eventually succeeds shows up as transient flap (success in netobs_bpf_program_attach_total + retry_total > 0).",
+		},
+		[]string{"program", "reason"},
+	)
 )
 
 // SetBpfProgramLoaded 는 kprobe / kretprobe attach 결과를 심볼 단위로 emit 한다. loader 가 attach
@@ -84,4 +108,40 @@ func SetBpfMapUtilization(mapName string, ratio float64) {
 // event time 0 (미수신) 케이스의 fallback 처리를 수행해 본 함수는 항상 의미 있는 수치만 받는다.
 func SetInformerSyncLag(seconds float64) {
 	informerSyncLagSeconds.Set(seconds)
+}
+
+// RecordBpfAttachResult 는 #105 의 attach 시도 결과 emit 진입점이다. 한 번의 attach 시도 (retry 포함)
+// 가 success 로 마감 됐는지 budget 소진 후 failure 로 끝났는지를 program 라벨 과 함께 누적 한다.
+// loader 는 retry loop 마감 시점 에 본 helper 를 1 회 호출 해 result 라벨 의 누적 의미를 attempts-per-program
+// 으로 일관 유지 한다. 매 retry 시점 의 시도 횟수 는 별도 RecordBpfAttachRetry 에서 추적 한다.
+func RecordBpfAttachResult(program string, success bool) {
+	result := "failure"
+	if success {
+		result = "success"
+	}
+	bpfProgramAttachTotal.WithLabelValues(program, result).Inc()
+}
+
+// RecordBpfAttachRetry 는 #105 의 retry 부담 emit 진입점이다. attach 호출 1 회의 매 retry 시도 마다
+// classifyAttachError 분류 결과의 String() 출력 을 reason 라벨 로 전달 받아 +1 누적 한다. reason 라벨
+// 값은 ebpf 패키지의 AttachReason.String() 결과 7종 enum 으로 폐쇄 유지 되어 카디널리티 폭증 위험이
+// 없다. metrics 패키지가 ebpf 패키지를 import 하면 ebpf → metrics → ebpf import cycle 이 발생 하므로
+// caller (loader) 가 string 으로 변환 후 본 helper 에 전달 하는 의존 방향 단방향 invariant 를 유지 한다.
+func RecordBpfAttachRetry(program, reason string) {
+	bpfProgramAttachRetryTotal.WithLabelValues(program, reason).Inc()
+}
+
+// PreregisterBpfAttachLabels 는 #105 의 attach 메트릭 카디널리티 사전 등록 진입점이다. agent startup
+// 단계 에서 tracked program 셋 과 reason enum 라벨 값 의 모든 조합 을 0 으로 노출 해 시리즈 발생 전
+// 에도 dashboard / alert query 가 빈 결과 가 아닌 0 값 을 받도록 한다. reasons 슬라이스 는 caller (loader)
+// 가 ebpf.AttachReasonValues 를 String() 으로 변환 후 전달 한다.
+func PreregisterBpfAttachLabels(programs, reasons []string) {
+	for _, p := range programs {
+		// counter 의 WithLabelValues 호출 만으로 시리즈 가 생성 되며 초기값 은 0 이다. Inc 호출 없음.
+		bpfProgramAttachTotal.WithLabelValues(p, "success")
+		bpfProgramAttachTotal.WithLabelValues(p, "failure")
+		for _, r := range reasons {
+			bpfProgramAttachRetryTotal.WithLabelValues(p, r)
+		}
+	}
 }

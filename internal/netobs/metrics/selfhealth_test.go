@@ -140,3 +140,65 @@ func keys(m map[string]bool) []string {
 	}
 	return out
 }
+
+// TestRecordBpfAttachResult_LabelsResultEnum 는 #105 의 attach_total 발행이 success / failure 2종 라벨
+// 값으로 정확히 분기 되는지 검증. helper 단일 호출 후 testutil.ToFloat64 로 시리즈 별 값 확인.
+func TestRecordBpfAttachResult_LabelsResultEnum(t *testing.T) {
+	bpfProgramAttachTotal.Reset()
+	RecordBpfAttachResult("tcp_sendmsg", true)
+	RecordBpfAttachResult("tcp_v6_rcv", false)
+	if got := testutil.ToFloat64(bpfProgramAttachTotal.WithLabelValues("tcp_sendmsg", "success")); got != 1 {
+		t.Errorf("success=%v want 1", got)
+	}
+	if got := testutil.ToFloat64(bpfProgramAttachTotal.WithLabelValues("tcp_v6_rcv", "failure")); got != 1 {
+		t.Errorf("failure=%v want 1", got)
+	}
+	// 동일 라벨 재호출 시 누적 증가 동작 검증 (counter 의 기본 invariant).
+	RecordBpfAttachResult("tcp_sendmsg", true)
+	if got := testutil.ToFloat64(bpfProgramAttachTotal.WithLabelValues("tcp_sendmsg", "success")); got != 2 {
+		t.Errorf("repeat success=%v want 2", got)
+	}
+}
+
+// TestRecordBpfAttachRetry_ReasonStringEnum 는 #105 의 retry_total 발행이 caller (loader) 가 전달한
+// reason string 그대로 라벨에 부착 되는지 검증. 본 helper 는 string 만 받아 ebpf 패키지 import cycle 을
+// 회피 한다.
+func TestRecordBpfAttachRetry_ReasonStringEnum(t *testing.T) {
+	bpfProgramAttachRetryTotal.Reset()
+	RecordBpfAttachRetry("tcp_sendmsg", "symbol_not_found")
+	RecordBpfAttachRetry("tcp_sendmsg", "symbol_not_found")
+	RecordBpfAttachRetry("tcp_v6_rcv", "kernel_version_mismatch")
+	if got := testutil.ToFloat64(bpfProgramAttachRetryTotal.WithLabelValues("tcp_sendmsg", "symbol_not_found")); got != 2 {
+		t.Errorf("symbol_not_found=%v want 2", got)
+	}
+	if got := testutil.ToFloat64(bpfProgramAttachRetryTotal.WithLabelValues("tcp_v6_rcv", "kernel_version_mismatch")); got != 1 {
+		t.Errorf("kernel_version_mismatch=%v want 1", got)
+	}
+}
+
+// TestPreregisterBpfAttachLabels_CreatesAllSeriesZero 는 #105 의 카디널리티 사전 등록 invariant 검증.
+// 호출 후 모든 (program, result) 와 (program, reason) 조합 시리즈가 0 값으로 노출 되어야 dashboard 가
+// attach 호출 전에도 empty 가 아닌 0 시계열을 받을 수 있다.
+func TestPreregisterBpfAttachLabels_CreatesAllSeriesZero(t *testing.T) {
+	bpfProgramAttachTotal.Reset()
+	bpfProgramAttachRetryTotal.Reset()
+	programs := []string{"tcp_sendmsg", "udp_recvmsg"}
+	reasons := []string{"symbol_not_found", "kernel_version_mismatch", "other"}
+	PreregisterBpfAttachLabels(programs, reasons)
+
+	// (2 program × 2 result) = 4 attach_total 시리즈.
+	if got := testutil.CollectAndCount(bpfProgramAttachTotal); got != 4 {
+		t.Errorf("attach_total series=%d want 4", got)
+	}
+	// (2 program × 3 reason) = 6 retry_total 시리즈.
+	if got := testutil.CollectAndCount(bpfProgramAttachRetryTotal); got != 6 {
+		t.Errorf("retry_total series=%d want 6", got)
+	}
+	// 사전 등록 시리즈 의 값은 모두 0.
+	if got := testutil.ToFloat64(bpfProgramAttachTotal.WithLabelValues("tcp_sendmsg", "success")); got != 0 {
+		t.Errorf("preregistered success=%v want 0", got)
+	}
+	if got := testutil.ToFloat64(bpfProgramAttachRetryTotal.WithLabelValues("udp_recvmsg", "other")); got != 0 {
+		t.Errorf("preregistered other=%v want 0", got)
+	}
+}

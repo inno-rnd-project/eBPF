@@ -53,7 +53,7 @@
         "type": "query",
         "datasource": "${datasource}",
         "query": "label_values(netobs_pod_stage_latency_labeled_seconds_count{node=~\"$node\",src_namespace=~\"$src_namespace\"}, src_pod)",
-        "description": "netobs-agent의 Pod metrics가 비활성(POD_METRICS_ENABLED=false)인 환경에서는 본 변수가 비게 된다. 그 경우 'Per-pod stage latency p95' 패널만 영향을 받고 stage / drop / retransmission 패널은 정상 동작한다.",
+        "description": "netobs-agent\uc758 Pod metrics\uac00 \ube44\ud65c\uc131(POD_METRICS_ENABLED=false)\uc778 \ud658\uacbd\uc5d0\uc11c\ub294 \ubcf8 \ubcc0\uc218\uac00 \ube44\uac8c \ub41c\ub2e4. \uadf8 \uacbd\uc6b0 'Per-pod stage latency p95' \ud328\ub110\ub9cc \uc601\ud5a5\uc744 \ubc1b\uace0 stage / drop / retransmission \ud328\ub110\uc740 \uc815\uc0c1 \ub3d9\uc791\ud55c\ub2e4.",
         "multi": true,
         "includeAll": true,
         "label": "Source pod",
@@ -67,7 +67,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "Send path stage latency p99 (sendmsg_ret / tcp_write_xmit / tcp_transmit_skb / to_devq)",
-      "description": "#82 send path 4 stage 분해. tcp_sendmsg syscall 진입부터 __dev_queue_xmit NIC queue 진입까지의 kernel 내부 처리 시간을 stage 단위로 노출한다. tcp_write_xmit 는 TCP control path (cwnd / nagle / window throttle), tcp_transmit_skb 는 개별 segment transmit entry 의 latency 다 (TSO/GSO 활성 시 첫 segment 만 측정).",
+      "description": "#82 send path 4 stage \ubd84\ud574. tcp_sendmsg syscall \uc9c4\uc785\ubd80\ud130 __dev_queue_xmit NIC queue \uc9c4\uc785\uae4c\uc9c0\uc758 kernel \ub0b4\ubd80 \ucc98\ub9ac \uc2dc\uac04\uc744 stage \ub2e8\uc704\ub85c \ub178\ucd9c\ud55c\ub2e4. tcp_write_xmit \ub294 TCP control path (cwnd / nagle / window throttle), tcp_transmit_skb \ub294 \uac1c\ubcc4 segment transmit entry \uc758 latency \ub2e4 (TSO/GSO \ud65c\uc131 \uc2dc \uccab segment \ub9cc \uce21\uc815).",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 8,
@@ -109,7 +109,7 @@
       "id": 2,
       "type": "timeseries",
       "title": "Receive path stage latency p99 (rcv_demux / rcv_established / rcv_app)",
-      "description": "#65 receive path 3 stage. tcp_v4_do_rcv socket lookup 직후부터 tcp_recvmsg app boundary 까지의 처리 시간을 stage 단위로 노출한다. send path 패널과 같은 화면 비교로 양방향 stage breakdown 을 한 눈에 본다.",
+      "description": "#65 receive path 3 stage. tcp_v4_do_rcv socket lookup \uc9c1\ud6c4\ubd80\ud130 tcp_recvmsg app boundary \uae4c\uc9c0\uc758 \ucc98\ub9ac \uc2dc\uac04\uc744 stage \ub2e8\uc704\ub85c \ub178\ucd9c\ud55c\ub2e4. send path \ud328\ub110\uacfc \uac19\uc740 \ud654\uba74 \ube44\uad50\ub85c \uc591\ubc29\ud5a5 stage breakdown \uc744 \ud55c \ub208\uc5d0 \ubcf8\ub2e4.",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 8,
@@ -568,7 +568,7 @@
       "id": 200,
       "type": "timeseries",
       "title": "Network flow bytes by ip_version (IPv4/IPv6 stacked, requires NETOBS_FLOW_ALLOW_NAMESPACES)",
-      "description": "#103 IPv6/UDP 트래픽 추적 확장. netobs_flow_bytes_total 의 ip_version 라벨로 IPv4/IPv6 분포를 stacked time-series로 노출한다. flow_bytes는 NETOBS_FLOW_ALLOW_NAMESPACES 환경 변수가 설정된 namespace 의 5-tuple flow 만 emit 한다. ip_version=4 (IPv4) blue, ip_version=6 (IPv6) red 색상으로 한눈에 분포 비교 가능.",
+      "description": "#103 IPv6/UDP \ud2b8\ub798\ud53d \ucd94\uc801 \ud655\uc7a5. netobs_flow_bytes_total \uc758 ip_version \ub77c\ubca8\ub85c IPv4/IPv6 \ubd84\ud3ec\ub97c stacked time-series\ub85c \ub178\ucd9c\ud55c\ub2e4. flow_bytes\ub294 NETOBS_FLOW_ALLOW_NAMESPACES \ud658\uacbd \ubcc0\uc218\uac00 \uc124\uc815\ub41c namespace \uc758 5-tuple flow \ub9cc emit \ud55c\ub2e4. ip_version=4 (IPv4) blue, ip_version=6 (IPv6) red \uc0c9\uc0c1\uc73c\ub85c \ud55c\ub208\uc5d0 \ubd84\ud3ec \ube44\uad50 \uac00\ub2a5.",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 8,
@@ -651,7 +651,7 @@
       "id": 201,
       "type": "timeseries",
       "title": "Drop events by ip_version (5m rate)",
-      "description": "#103 netobs_drop_events_flow_total 의 ip_version 라벨로 IPv4/IPv6 drop event 분포 노출. flow_total 은 NETOBS_DROP_FLOW_ALLOW_NAMESPACES 환경 변수 가 설정 된 namespace 만 emit.",
+      "description": "#103 netobs_drop_events_flow_total \uc758 ip_version \ub77c\ubca8\ub85c IPv4/IPv6 drop event \ubd84\ud3ec \ub178\ucd9c. flow_total \uc740 NETOBS_DROP_FLOW_ALLOW_NAMESPACES \ud658\uacbd \ubcc0\uc218 \uac00 \uc124\uc815 \ub41c namespace \ub9cc emit.",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 8,
@@ -692,6 +692,74 @@
           ]
         }
       }
+    },
+    {
+      "id": 110,
+      "type": "timeseries",
+      "title": "BPF program attach result rate (#105)",
+      "datasource": "${datasource}",
+      "description": "BPF program attach \uc2dc\ub3c4\uc758 result \ubcc4 \ub204\uc801 \uce74\uc6b4\ud130 rate. result=success \uac00 \uc815\uc0c1 \ud658\uacbd\uc758 \uae30\ubcf8 \uc2e0\ud638, result=failure \uac00 \uc601\uad6c \uc2e4\ud328 \ub610\ub294 transient flap \uc758 spike \uc2e0\ud638. netobs_bpf_program_loaded gauge \uc640 \ud568\uaed8 \ubcf4\uba74 \ud604\uc7ac \uc0c1\ud0dc (gauge) vs \uc2dc\ub3c4 \ube48\ub3c4 (counter rate) \uc758 \uc758\ubbf8 \ubd84\ub9ac\uac00 \uc989\uc2dc \ubcf4\uc778\ub2e4.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 66
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by(program, result) (rate(netobs_bpf_program_attach_total[5m]))",
+          "legendFormat": "{{program}} {{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 111,
+      "type": "timeseries",
+      "title": "BPF attach retry pressure by reason (#105)",
+      "datasource": "${datasource}",
+      "description": "attach \uc2e4\ud328 reason \ubcc4 retry \uce74\uc6b4\ud130 rate. 7\uc885 enum (symbol_not_found / kernel_version_mismatch / btf_missing / verifier_rejected / permission_denied / link_internal_error / other) \uc73c\ub85c \ubd84\ub958 \ub41c retry \ubd80\ub2f4 \ucd94\uc138. \ud2b9\uc815 reason \uc758 spike \uac00 root cause \uc9c4\ub2e8\uc758 1\ucc28 \ub2e8\uc11c.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 66
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by(program, reason) (rate(netobs_bpf_program_attach_retry_total[5m]))",
+          "legendFormat": "{{program}} {{reason}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "annotations": {

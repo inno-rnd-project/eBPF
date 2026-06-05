@@ -7,6 +7,9 @@ import (
 	"errors"
 	"log"
 	"net"
+	"os"
+	"strings"
+	"time"
 
 	cebpf "github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -16,6 +19,70 @@ import (
 	"netobs/internal/netobs/metrics"
 	"netobs/internal/netobs/types"
 )
+
+// #105 attach retry 정책. linear backoff 500ms, max retries 3 회, 전체 budget 5s. budget 산정 근거는
+// CO-RE relocation 의 driver init 비용 추정 (kernel BTF resolve + verifier 부담 ~500ms × 3) 으로 본 PR
+// 의 docs/netobs/bpf-self-health.md 에 근거 정리. 운영 중 dynamic tuning 은 본 이슈 비목표 로 hardcoded.
+// `attachRetryBackoff` 와 `attachTotalBudget` 은 var 로 두어 단위 테스트 가 짧은 값 으로 override 후
+// 빠르게 retry 흐름 을 검증 가능 하게 한다 (테스트 가 500ms × 3 실제 대기 하면 CI 피드백 루프 가 느려짐).
+// `attachMaxRetries` 는 logic invariant (loop 종료 조건) 와 강결합 이라 const 유지.
+const attachMaxRetries = 3
+
+var (
+	attachRetryBackoff = 500 * time.Millisecond
+	attachTotalBudget  = 5 * time.Second
+)
+
+// attachWithRetry 는 #105 의 BPF program attach 재시도 진입점 이다. fn closure 는 program type 별
+// cilium/ebpf API 차이 (link.Kprobe / link.Kretprobe / link.Tracepoint 등) 를 흡수 하므로 본 helper 가
+// program type 무관 으로 재사용 가능 하다. 시도 마다 실패 시 classifyAttachError 결과 를
+// metrics.RecordBpfAttachRetry 로 emit 하고, 최종 결과 (success 또는 budget 소진 후 failure) 를
+// metrics.RecordBpfAttachResult 로 emit 한다. retry 동안 race-free 보장은 startup 단일 goroutine 흐름
+// 이라 추가 동기화 불요.
+func attachWithRetry(program string, fn func() (link.Link, error)) (link.Link, error) {
+	deadline := time.Now().Add(attachTotalBudget)
+	var lastErr error
+	for attempt := 0; attempt <= attachMaxRetries; attempt++ {
+		l, err := fn()
+		if err == nil {
+			metrics.RecordBpfAttachResult(program, true)
+			return l, nil
+		}
+		lastErr = err
+
+		// 마지막 시도 였거나 budget 소진 한 경우 retry 중단. counter 가 "retry" 의미 그대로 가 되도록
+		// 본 분기 (= retry 미진행) 에서는 counter 증가 하지 않고 break.
+		if attempt == attachMaxRetries || time.Now().Add(attachRetryBackoff).After(deadline) {
+			break
+		}
+		// 실제 retry 가 일어날 때만 reason 분류 후 retry counter +1. 마지막 실패는 retry 가 아니라
+		// failed attempt 라 attach_total{result="failure"} 에만 반영 한다.
+		reason := classifyAttachError(err)
+		metrics.RecordBpfAttachRetry(program, reason.String())
+		time.Sleep(attachRetryBackoff)
+	}
+	metrics.RecordBpfAttachResult(program, false)
+	return nil, lastErr
+}
+
+// fakeAttachSymbols 는 #105 verify.sh 의 시뮬 진입점 이다. `NETOBS_BPF_FAKE_ATTACH_SYMBOLS` env 가
+// 명시 되면 본 env 의 콤마 구분 symbol 들 을 trackedSymbols 와 동일 라이프사이클 로 attach 시도 한다.
+// fake symbol 은 kernel 에 존재 하지 않 으므로 attach 가 자연 실패 (syscall.ENOENT → symbol_not_found)
+// 해 attach_total{result="failure"} 와 attach_retry_total{reason="symbol_not_found"} 메트릭 발화 를 통해
+// e2e verify.sh 가 attach 실패 경로 회귀 가드 를 수행 가능 하게 한다. prod overlay 미설정 으로 자연 차단.
+func fakeAttachSymbols() []string {
+	raw := strings.TrimSpace(os.Getenv("NETOBS_BPF_FAKE_ATTACH_SYMBOLS"))
+	if raw == "" {
+		return nil
+	}
+	out := make([]string, 0)
+	for _, tok := range strings.Split(raw, ",") {
+		if sym := strings.TrimSpace(tok); sym != "" {
+			out = append(out, sym)
+		}
+	}
+	return out
+}
 
 // trackedSymbols 는 netlat BPF 가 attach 시도할 kprobe / kretprobe 심볼 21 종이다. required 2 종 +
 // optional 19 종으로 구성되며 슬라이스 순서는 Run 의 attach 루프 순서와 정합한다. gpuobs 의
@@ -61,7 +128,9 @@ func ipToU32(ipStr string) (uint32, error) {
 }
 
 func attachRequiredKprobe(symbol string, prog *cebpf.Program, links *[]link.Link) error {
-	l, err := link.Kprobe(symbol, prog, nil)
+	l, err := attachWithRetry(symbol, func() (link.Link, error) {
+		return link.Kprobe(symbol, prog, nil)
+	})
 	if err != nil {
 		return err
 	}
@@ -75,18 +144,23 @@ func attachRequiredKprobe(symbol string, prog *cebpf.Program, links *[]link.Link
 // 않고 "<symbol>_ret" 접미를 붙여 kretprobe 의 attach 실패가 kprobe 와 구분되어 진단되도록 한다.
 // trackedSymbols 의 "tcp_sendmsg_ret" 항목과 정합한다.
 func attachRequiredKretprobe(symbol string, prog *cebpf.Program, links *[]link.Link) error {
-	l, err := link.Kretprobe(symbol, prog, nil)
+	program := symbol + "_ret"
+	l, err := attachWithRetry(program, func() (link.Link, error) {
+		return link.Kretprobe(symbol, prog, nil)
+	})
 	if err != nil {
 		return err
 	}
 	*links = append(*links, l)
-	metrics.SetBpfProgramLoaded(symbol+"_ret", true)
+	metrics.SetBpfProgramLoaded(program, true)
 	log.Printf("attached kretprobe/%s", symbol)
 	return nil
 }
 
 func attachOptionalKprobe(symbol string, prog *cebpf.Program, links *[]link.Link) {
-	l, err := link.Kprobe(symbol, prog, nil)
+	l, err := attachWithRetry(symbol, func() (link.Link, error) {
+		return link.Kprobe(symbol, prog, nil)
+	})
 	if err != nil {
 		log.Printf("skip optional kprobe/%s: %v", symbol, err)
 		return
@@ -100,13 +174,16 @@ func attachOptionalKprobe(symbol string, prog *cebpf.Program, links *[]link.Link
 // 측 라벨은 attachRequiredKretprobe 와 마찬가지로 symbol 에 "_ret" 접미사를 붙여 kprobe 와
 // 구분되도록 한다. trackedSymbols 의 "*_ret" 항목과 정합한다.
 func attachOptionalKretprobe(symbol string, prog *cebpf.Program, links *[]link.Link) {
-	l, err := link.Kretprobe(symbol, prog, nil)
+	program := symbol + "_ret"
+	l, err := attachWithRetry(program, func() (link.Link, error) {
+		return link.Kretprobe(symbol, prog, nil)
+	})
 	if err != nil {
 		log.Printf("skip optional kretprobe/%s: %v", symbol, err)
 		return
 	}
 	*links = append(*links, l)
-	metrics.SetBpfProgramLoaded(symbol+"_ret", true)
+	metrics.SetBpfProgramLoaded(program, true)
 	log.Printf("attached kretprobe/%s", symbol)
 }
 
@@ -142,9 +219,28 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 	// 진단 시그널 일관성: attach 시도 자체가 일어나기 전에 모든 심볼을 0 으로 선등록해 둔다.
 	// LoadNetObsObjects 실패 / capability 부족 등으로 attach 단계조차 못 가는 상황도 운영자가
 	// netobs_bpf_program_loaded 메트릭만 보고 진단할 수 있다 (gpuobs cuda loader 의 동일 패턴).
-	for _, sym := range trackedSymbols {
+	allSymbols := append([]string(nil), trackedSymbols...)
+	if fake := fakeAttachSymbols(); len(fake) > 0 {
+		// #105 verify.sh 시뮬 진입점. fake symbol 은 kernel 부재 라 attach 시도 시 ENOENT 자연 실패 →
+		// attach_total{result="failure"} 와 attach_retry_total{reason="symbol_not_found"} 메트릭 발화.
+		log.Printf("netobs: NETOBS_BPF_FAKE_ATTACH_SYMBOLS active: %v (test-only)", fake)
+		allSymbols = append(allSymbols, fake...)
+	}
+	for _, sym := range allSymbols {
 		metrics.SetBpfProgramLoaded(sym, false)
 	}
+
+	// #105 attach 카운터 라벨 사전 등록. tracked + fake program 셋과 7종 reason enum 의 모든 조합을
+	// 0 으로 노출 해 attach 시도 전 / 정상 환경 모두에서 dashboard query 가 empty 가 아닌 0 시계열을
+	// 받게 한다. reasons 는 caller (본 패키지) 가 AttachReasonValues 를 String() 변환 후 전달.
+	reasonStrings := make([]string, 0, len(AttachReasonValues))
+	for _, r := range AttachReasonValues {
+		reasonStrings = append(reasonStrings, r.String())
+	}
+	// kretprobe 라벨은 "_ret" 접미가 부착되므로 program 라벨 셋에 함께 포함.
+	preregPrograms := make([]string, 0, len(allSymbols))
+	preregPrograms = append(preregPrograms, allSymbols...)
+	metrics.PreregisterBpfAttachLabels(preregPrograms, reasonStrings)
 
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return err
@@ -220,6 +316,14 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 	attachOptionalKprobe("udp_recvmsg", objs.HandleUdpRecvmsg, &links)
 	attachOptionalKprobe("udpv6_sendmsg", objs.HandleUdpv6Sendmsg, &links)
 	attachOptionalKprobe("udpv6_recvmsg", objs.HandleUdpv6Recvmsg, &links)
+
+	// #105 fake symbol attach 시뮬. NETOBS_BPF_FAKE_ATTACH_SYMBOLS env 명시 시에만 진입. 본 경로는
+	// kernel 부재 symbol 이라 attach 자연 실패 → attach_total{result="failure"} 와 attach_retry_total
+	// {reason="symbol_not_found"} 메트릭 발화 가 e2e verify.sh 의 회귀 가드 진입점 으로 동작 한다.
+	// 실제 BPF program 으로는 HandleTcpSendmsg 를 재사용 (program 자체는 무관, attach 자체가 실패).
+	for _, sym := range fakeAttachSymbols() {
+		attachOptionalKprobe(sym, objs.HandleTcpSendmsg, &links)
+	}
 
 	rd, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
