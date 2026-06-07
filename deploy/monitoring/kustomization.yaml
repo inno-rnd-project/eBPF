@@ -10,3 +10,4 @@ namespace: monitoring
 
 resources:
   - prometheus-retention-patch.yaml
+  - prometheus-pv-alert.yaml
