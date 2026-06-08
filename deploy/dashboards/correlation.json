@@ -573,7 +573,7 @@
       },
       "targets": [
         {
-          "expr": "max by(victim_node, suspect_node, dimension) (correlation_cross_node_score{victim_node=~\"$victim_node\",suspect_node=~\"$suspect_node\",dimension=~\"$cross_dimension\"})",
+          "expr": "topk(20, max by(victim_node, suspect_node, dimension) (correlation_cross_node_score{victim_node=~\"$victim_node\",suspect_node=~\"$suspect_node\",dimension=~\"$cross_dimension\"}))",
           "instant": true,
           "format": "table",
           "refId": "A"

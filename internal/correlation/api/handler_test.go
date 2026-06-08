@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"netobs/internal/correlation"
@@ -211,9 +212,18 @@ func TestListCrossNode_NilSourceGracefulEmpty(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200 (nil source graceful empty)", w.Code)
 	}
+	// 응답 body 가 "items": null 이 아닌 "items": [] 형태 인지 raw body 단언 으로 확인 한다.
+	// resp.Items 의 nil/non-nil 은 unmarshal 후 동일 슬라이스 값 (nil 또는 []) 으로 lost 되어
+	// JSON wire format 단에서 직접 검증 해야 graceful empty 정책 회귀 가 차단 된다.
+	if !strings.Contains(w.Body.String(), `"items":[]`) {
+		t.Errorf("body=%s, want items:[] in wire format (nil source graceful empty)", w.Body.String())
+	}
 	var resp CrossNodeListResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Page.Total != 0 {
 		t.Errorf("total=%d want 0", resp.Page.Total)
+	}
+	if resp.Items == nil {
+		t.Errorf("items is nil, want empty slice []")
 	}
 }
