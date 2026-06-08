@@ -85,6 +85,7 @@ fi
 echo "[poll] waiting up to ${TIMEOUT_SECONDS}s for cross_node_score{victim=${VICTIM_NODE},suspect=${SUSPECT_NODE},dimension=cpu} >= ${SCORE_THRESHOLD}"
 deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
 query="correlation_cross_node_score{victim_node=\"${VICTIM_NODE}\",suspect_node=\"${SUSPECT_NODE}\",dimension=\"cpu\"}"
+guard2_passed=0
 while (( $(date +%s) < deadline )); do
   if response=$(curl -sf --max-time 10 --data-urlencode "query=${query}" "${PROM_URL}/api/v1/query" 2>/dev/null); then
     # grep 기반 추출은 공백 / 과학적 표기법 / NaN 등의 JSON 포맷 변형에 취약하므로 python3 의 json
@@ -100,7 +101,8 @@ except Exception:
       if awk "BEGIN { exit !(${value} >= ${SCORE_THRESHOLD}) }"; then
         echo "[pass] cross_node_score=${value} >= ${SCORE_THRESHOLD}"
         echo "${response}"
-        exit 0
+        guard2_passed=1
+        break
       fi
       echo "[wait] cross_node_score=${value} (< ${SCORE_THRESHOLD})"
     else
@@ -112,6 +114,58 @@ except Exception:
   sleep "${POLL_INTERVAL}"
 done
 
-echo "[fail] timed out waiting for cross_node_score{victim=${VICTIM_NODE},suspect=${SUSPECT_NODE},dimension=cpu} >= ${SCORE_THRESHOLD}"
-echo "       correlation-exporter 의 CrossNodeEnabled 와 DefaultMetrics 의 node-level series 노출 여부 를 점검 하라."
-exit 1
+if (( guard2_passed == 0 )); then
+  echo "[fail] timed out waiting for cross_node_score{victim=${VICTIM_NODE},suspect=${SUSPECT_NODE},dimension=cpu} >= ${SCORE_THRESHOLD}"
+  echo "       correlation-exporter 의 CrossNodeEnabled 와 DefaultMetrics 의 node-level series 노출 여부 를 점검 하라."
+  exit 1
+fi
+
+# 3차 가드 (#119): /api/v1/cross-node-interference endpoint 정상 응답 과 JSON schema 정합 확인. 2차
+# 가드 의 prometheus query 가 통과 한 상태 면 exporter snapshot 도 동일 페어 를 보관 하고 있어야 한
+# 다. items 배열 비어 있음 / 필수 필드 (victim_node, suspect_node, dimension, score) 누락 / dimension
+# mismatch 는 모두 fail-on-miss 로 처리 해 API endpoint 회귀 를 차단 한다.
+echo "[guard] 3차 가드 /api/v1/cross-node-interference endpoint 정상 응답 (#119)"
+EXPORTER_NAMESPACE="${CROSS_NODE_EXPORTER_NAMESPACE:-${NAMESPACE}}"
+EXPORTER_SVC="${CROSS_NODE_EXPORTER_SVC:-correlation-exporter}"
+EXPORTER_PORT="${CROSS_NODE_EXPORTER_PORT:-9830}"
+exporter_ip=$(kubectl get svc -n "${EXPORTER_NAMESPACE}" "${EXPORTER_SVC}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+if [[ -z "${exporter_ip}" ]]; then
+  echo "[fail] correlation-exporter Service ClusterIP 조회 실패 (${EXPORTER_NAMESPACE}/${EXPORTER_SVC})"
+  exit 1
+fi
+api_url="http://${exporter_ip}:${EXPORTER_PORT}/api/v1/cross-node-interference?victim_node=${VICTIM_NODE}&suspect_node=${SUSPECT_NODE}&dimension=cpu&limit=10"
+echo "[guard] GET ${api_url}"
+if ! api_resp=$(curl -sf --max-time 10 "${api_url}" 2>&1); then
+  echo "[fail] /api/v1/cross-node-interference HTTP 응답 실패: ${api_resp}"
+  exit 1
+fi
+schema_check=$(echo "${api_resp}" | python3 -c "import json,sys
+try:
+    r = json.load(sys.stdin)
+    items = r.get('items')
+    page = r.get('page')
+    if not isinstance(items, list) or not isinstance(page, dict):
+        print('schema_invalid')
+        sys.exit(0)
+    if not items:
+        print('items_empty')
+        sys.exit(0)
+    required = ('victim_node', 'suspect_node', 'dimension', 'score')
+    for it in items:
+        missing = [f for f in required if f not in it]
+        if missing:
+            print('missing:' + ','.join(missing))
+            sys.exit(0)
+        if it.get('dimension') != 'cpu':
+            print('dimension_mismatch:' + str(it.get('dimension')))
+            sys.exit(0)
+    print('ok:' + str(len(items)))
+except Exception as e:
+    print('exception:' + str(e))" 2>/dev/null || echo "python_failed")
+if [[ "${schema_check}" != ok:* ]]; then
+  echo "[fail] /api/v1/cross-node-interference JSON schema 검증 실패: ${schema_check}"
+  echo "       응답 본문: ${api_resp}"
+  exit 1
+fi
+echo "[pass] /api/v1/cross-node-interference 정상 응답 과 schema 정합 확인 (${schema_check})"
+exit 0

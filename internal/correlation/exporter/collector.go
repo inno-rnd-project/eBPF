@@ -132,6 +132,20 @@ func (c *Collector) ReplaceCrossNode(crossNode []correlation.NodeInterference) {
 	c.mu.Unlock()
 }
 
+// CrossNodeSnapshot 은 가장 최근 ReplaceCrossNode 가 보관한 NodeInterference 리스트 의 안전한 복사본
+// 을 반환 한다. #119 의 /api/v1/cross-node-interference endpoint 가 본 메서드 를 in-memory read 로 호출
+// 해 Prometheus query 재계산 없이 cross-node snapshot 을 외부 시스템 (RCA summarizer 와 운영 자동화)
+// 에 노출 한다. CrossNodeEnabled=false 또는 첫 reconcile 전이면 nil 을 돌려 주어 호출 측이 빈 응답
+// 으로 graceful degradation 한다.
+func (c *Collector) CrossNodeSnapshot() []correlation.NodeInterference {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.crossNode) == 0 {
+		return nil
+	}
+	return append([]correlation.NodeInterference(nil), c.crossNode...)
+}
+
 // Describe 는 prometheus.Collector 인터페이스를 만족한다.
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.scoreDesc

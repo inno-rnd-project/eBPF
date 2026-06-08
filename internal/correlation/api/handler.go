@@ -19,23 +19,40 @@ type SnapshotSource interface {
 	Snapshot() []correlation.NoisyNeighbor
 }
 
-// Handler 는 noisy-neighbor API endpoint 의 의존성을 모은다. SnapshotSource 외 별도 상태가 없어
-// 동시 호출 안전 (Snapshot() 내부 RLock).
+// CrossNodeSnapshotSource 는 #119 의 cross-node interference snapshot 을 제공 하는 추상 인터페이스 다.
+// exporter.Collector 의 CrossNodeSnapshot() 메서드 가 본 인터페이스 를 만족 한다. test 측 에서 fake
+// snapshot 주입 시 사용 한다.
+type CrossNodeSnapshotSource interface {
+	CrossNodeSnapshot() []correlation.NodeInterference
+}
+
+// Handler 는 correlation API endpoint 들 의 의존성을 모은다. SnapshotSource 두 종 외 별도 상태가
+// 없어 동시 호출 안전 (각 Snapshot() 내부 RLock).
 type Handler struct {
-	source SnapshotSource
+	source          SnapshotSource
+	crossNodeSource CrossNodeSnapshotSource
 }
 
-// NewHandler 는 SnapshotSource 를 주입 받아 API handler 를 만든다. cmd/correlation-exporter/main.go
-// 의 main 함수 에서 exporter.Collector 를 그대로 전달 한다.
-func NewHandler(source SnapshotSource) *Handler {
-	return &Handler{source: source}
+// NewHandler 는 두 SnapshotSource 를 주입 받아 API handler 를 만든다. cmd/correlation-exporter/main.go
+// 의 main 함수 에서 exporter.Collector 가 두 인터페이스 를 모두 만족 하므로 동일 인스턴스 를 두 번
+// 전달 한다. crossNodeSource 가 nil 이면 /api/v1/cross-node-interference 가 graceful empty response
+// 를 돌려 준다.
+func NewHandler(source SnapshotSource, crossNodeSource CrossNodeSnapshotSource) *Handler {
+	return &Handler{source: source, crossNodeSource: crossNodeSource}
 }
 
-// Register 는 ServeMux 에 /api/v1/noisy-neighbor 라우트 를 등록 한다. 호출 측은 mux 를 그대로
-// 전달 하면 된다. 본 함수는 미들웨어 적용 (Logging, Recover, CORS) 도 함께 처리 한다.
+// Register 는 ServeMux 에 /api/v1/noisy-neighbor 와 /api/v1/cross-node-interference 두 라우트 를 등록
+// 한다. 호출 측은 mux 를 그대로 전달 하면 된다. 본 함수는 미들웨어 적용 (Logging, Recover, CORS) 도
+// 함께 처리 한다.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/api/v1/noisy-neighbor", apicommon.Chain(
 		http.HandlerFunc(h.ListNoisyNeighbors),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
+	mux.Handle("/api/v1/cross-node-interference", apicommon.Chain(
+		http.HandlerFunc(h.ListCrossNode),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
@@ -48,6 +65,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 type NoisyNeighborListResponse struct {
 	Items []correlation.NoisyNeighbor `json:"items"`
 	Page  apicommon.Page              `json:"page"`
+}
+
+// CrossNodeListResponse 는 /api/v1/cross-node-interference 응답 의 typed 표현 이다 (#119). swaggo 가
+// 본 구조체 를 OpenAPI schema 로 생성 한다. items 는 NodeInterference 슬라이스, page 는 공용
+// pagination 메타데이터 이며 NoisyNeighborListResponse 와 형식 일관성 을 유지 한다.
+type CrossNodeListResponse struct {
+	Items []correlation.NodeInterference `json:"items"`
+	Page  apicommon.Page                 `json:"page"`
 }
 
 // ErrorResponse 는 swaggo cross-package type resolution 한계 회피 용 으로 ErrorResponse 와
@@ -155,4 +180,83 @@ func validDimension(d string) bool {
 		return true
 	}
 	return false
+}
+
+// ListCrossNode 는 /api/v1/cross-node-interference 의 GET 핸들러 다 (#119). cross-node interference
+// snapshot 을 victim_node 와 suspect_node 와 dimension 과 rank_max filter 적용 후 pagination 응답
+// 으로 반환 한다. ListNoisyNeighbors 와 동일 패턴 을 따르며 라벨 셋 만 node-level 로 교체 된다.
+//
+// @Summary      List cross-node interference top-N
+// @Description  victim_node 와 suspect_node 와 dimension 과 rank 필터 후 pagination 적용한 cross-node interference 시리즈 반환
+// @Tags         correlation
+// @Produce      json
+// @Param        victim_node    query  string  false  "victim node 이름 필터"
+// @Param        suspect_node   query  string  false  "suspect node 이름 필터"
+// @Param        dimension      query  string  false  "리소스 차원 필터 (cpu/memory/network/gpu)"
+// @Param        rank_max       query  int     false  "max rank (기본 무제한)"
+// @Param        limit          query  int     false  "응답 item 최대 개수 (기본 100, 최대 1000)"
+// @Param        offset         query  int     false  "응답 시작 offset (기본 0)"
+// @Success      200  {object}  CrossNodeListResponse
+// @Failure      400  {object}  ErrorResponse
+// @Router       /api/v1/cross-node-interference [get]
+func (h *Handler) ListCrossNode(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	dimension := strings.ToLower(strings.TrimSpace(q.Get("dimension")))
+	if dimension != "" && !validDimension(dimension) {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_dimension", "dimension 은 cpu / memory / network / gpu 중 하나여야 합니다")
+		return
+	}
+
+	var rankMax int
+	if raw := strings.TrimSpace(q.Get("rank_max")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			apicommon.WriteError(w, http.StatusBadRequest, "invalid_rank_max", "rank_max 는 양의 정수여야 합니다")
+			return
+		}
+		rankMax = v
+	}
+
+	victimNode := strings.TrimSpace(q.Get("victim_node"))
+	suspectNode := strings.TrimSpace(q.Get("suspect_node"))
+
+	var all []correlation.NodeInterference
+	if h.crossNodeSource != nil {
+		all = h.crossNodeSource.CrossNodeSnapshot()
+	}
+	filtered := make([]correlation.NodeInterference, 0, len(all))
+	for _, n := range all {
+		if dimension != "" && !strings.EqualFold(string(n.Dimension), dimension) {
+			continue
+		}
+		if rankMax > 0 && n.Rank > rankMax {
+			continue
+		}
+		if victimNode != "" && n.VictimNode != victimNode {
+			continue
+		}
+		if suspectNode != "" && n.SuspectNode != suspectNode {
+			continue
+		}
+		filtered = append(filtered, n)
+	}
+
+	limit, offset := apicommon.ParsePagination(r)
+	paged := apicommon.ApplyPagination(filtered, limit, offset)
+	// apicommon.ApplyPagination 이 빈 입력 또는 offset 초과 시 nil 슬라이스 를 반환 할 수 있어
+	// JSON 직렬화 가 "items": null 로 떨어질 위험 이 있다. graceful empty response 보장 위해
+	// nil 시 빈 슬라이스 로 정규화 해 응답 schema 가 항상 "items": [] 형태 를 유지 하게 한다.
+	if paged == nil {
+		paged = []correlation.NodeInterference{}
+	}
+
+	resp := CrossNodeListResponse{
+		Items: paged,
+		Page: apicommon.Page{
+			Limit:  limit,
+			Offset: offset,
+			Total:  len(filtered),
+		},
+	}
+	apicommon.WriteJSON(w, resp)
 }
