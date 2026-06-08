@@ -49,6 +49,72 @@ dimension 라벨 4종 × 노드 페어 수 (n × (n-1)) 로 cardinality 가 cap�
 - node 자체 의 hardware 고장 진단은 본 PR 범위 밖이다 (kube_node_status_condition 등 기존 신호 활용)
 - dashboard drill-down navigation은 #87, 시간대별 추이 분석은 #88, z-score highlight는 #89, alert annotation은 #90 의 follow-up
 
+## API 활용 (#119)
+
+`correlation-exporter` 가 `/api/v1/cross-node-interference` endpoint 로 cross-node interference snapshot 을 JSON 으로 노출 한다. 외부 시스템 (RCA summarizer 와 운영 자동화) 이 본 endpoint 를 polling 해 Prometheus query 재계산 없이 in-memory snapshot 을 활용 가능 하다. dashboard 의 `Top cross-node interference` panel 도 동일 데이터 셋 을 표 형식 으로 표시 한다.
+
+### query 파라미터
+
+| 파라미터 | 타입 | 기본 | 설명 |
+|---|---|---|---|
+| `victim_node` | string | 무필터 | victim node 이름 정확 일치 필터 |
+| `suspect_node` | string | 무필터 | suspect node 이름 정확 일치 필터 |
+| `dimension` | enum | 무필터 | `cpu` 와 `memory` 와 `network` 와 `gpu` 중 택일 |
+| `rank_max` | int | 무제한 | (victim_node, dimension) 그룹 내 max rank cap |
+| `limit` | int | `100` | 응답 item 최대 개수 (최대 1000) |
+| `offset` | int | `0` | 응답 시작 offset |
+
+### 응답 schema
+
+```json
+{
+  "items": [
+    {
+      "victim_node": "gpu",
+      "victim_metric": "node:netobs_pod_stage_latency_p99:5m",
+      "suspect_node": "ebpf-worker1",
+      "suspect_metric": "node:cpu_pressure_score:5m",
+      "dimension": "cpu",
+      "rank": 1,
+      "score": 0.82,
+      "lag_steps": 1,
+      "sample_count": 60,
+      "p_value": 0.012,
+      "granger_ok": true
+    }
+  ],
+  "page": {
+    "limit": 100,
+    "offset": 0,
+    "total": 4
+  }
+}
+```
+
+### curl 예시
+
+특정 victim node 의 모든 suspect 조회:
+
+```sh
+curl -sf "http://correlation-exporter.ebpf-project:9830/api/v1/cross-node-interference?victim_node=gpu" | jq
+```
+
+특정 dimension 의 TopN (rank 5 이내) 만 조회:
+
+```sh
+curl -sf "http://correlation-exporter.ebpf-project:9830/api/v1/cross-node-interference?dimension=cpu&rank_max=5" | jq
+```
+
+특정 victim 과 suspect pair 의 score 시계열 확인 (단일 페어):
+
+```sh
+curl -sf "http://correlation-exporter.ebpf-project:9830/api/v1/cross-node-interference?victim_node=gpu&suspect_node=ebpf-worker1" | jq
+```
+
+### RCA summarizer 연계
+
+`rca-summarizer` 가 alert webhook handler 에서 victim_node 단위 cross-node interference 후보 를 본 endpoint 로 조회 해 root cause 분석 prompt 에 첨부 한다. exporter 의 in-memory snapshot 을 그대로 활용 하므로 Prometheus query 재계산 비용 이 없 고 webhook 응답 30s 임계 를 안정 적 으로 통과 한다.
+
 ## 회귀 검증
 
-dev cluster의 한 노드 (`ebpf-worker1`) 에 workload-injector cpu Kind 부하를 인가하고 다른 노드 (`gpu` 또는 `ebpf-worker2`) 에 latency-sensitive workload를 두어 `correlation_cross_node_score{victim_node="gpu",suspect_node="ebpf-worker1",dimension="cpu"}` 가 임계 (`test/perf/cross-node/verify.sh` 의 `CROSS_NODE_THRESHOLD` 기본값 0.3) 이상으로 산정되는지 회귀 가드한다. `victim_node == suspect_node`인 시리즈가 0 개임을 함께 확인한다. 가드 통과 직후 두 워크로드는 `kubectl delete`로 정리해 dev cluster 상주를 회피한다.
+dev cluster의 한 노드 (`ebpf-worker1`) 에 workload-injector cpu Kind 부하를 인가하고 다른 노드 (`gpu` 또는 `ebpf-worker2`) 에 latency-sensitive workload를 두어 `correlation_cross_node_score{victim_node="gpu",suspect_node="ebpf-worker1",dimension="cpu"}` 가 임계 (`test/perf/cross-node/verify.sh` 의 `CROSS_NODE_THRESHOLD` 기본값 0.3) 이상으로 산정되는지 회귀 가드한다. `victim_node == suspect_node`인 시리즈가 0 개임을 함께 확인한다. `verify.sh` 의 3 차 가드 (#119) 가 신규 `/api/v1/cross-node-interference` endpoint 의 정상 응답 과 JSON schema 정합 도 fail-on-miss 로 검증 한다. 가드 통과 직후 두 워크로드는 `kubectl delete`로 정리해 dev cluster 상주를 회피한다.
