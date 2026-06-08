@@ -15,6 +15,70 @@ const docTemplatecorrelation = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/api/v1/cross-node-interference": {
+            "get": {
+                "description": "victim_node 와 suspect_node 와 dimension 과 rank 필터 후 pagination 적용한 cross-node interference 시리즈 반환",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "correlation"
+                ],
+                "summary": "List cross-node interference top-N",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "victim node 이름 필터",
+                        "name": "victim_node",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "suspect node 이름 필터",
+                        "name": "suspect_node",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "리소스 차원 필터 (cpu/memory/network/gpu)",
+                        "name": "dimension",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "max rank (기본 무제한)",
+                        "name": "rank_max",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 item 최대 개수 (기본 100, 최대 1000)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 시작 offset (기본 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.CrossNodeListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/drops": {
             "get": {
                 "description": "drop_reason 별 5-tuple 분포 조회. namespace 와 reason 필터 후 pagination 적용",
@@ -492,6 +556,20 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "internal_correlation_api.CrossNodeListResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/netobs_internal_correlation.NodeInterference"
+                    }
+                },
+                "page": {
+                    "$ref": "#/definitions/netobs_internal_apicommon.Page"
+                }
+            }
+        },
         "internal_correlation_api.ErrorDetail": {
             "type": "object",
             "properties": {
@@ -602,6 +680,44 @@ const docTemplatecorrelation = `{
                 },
                 "total": {
                     "type": "integer"
+                }
+            }
+        },
+        "netobs_internal_correlation.NodeInterference": {
+            "type": "object",
+            "properties": {
+                "dimension": {
+                    "$ref": "#/definitions/netobs_internal_correlation.ResourceDimension"
+                },
+                "granger_ok": {
+                    "type": "boolean"
+                },
+                "lag_steps": {
+                    "type": "integer"
+                },
+                "p_value": {
+                    "type": "number"
+                },
+                "rank": {
+                    "type": "integer"
+                },
+                "sample_count": {
+                    "type": "integer"
+                },
+                "score": {
+                    "type": "number"
+                },
+                "suspect_metric": {
+                    "type": "string"
+                },
+                "suspect_node": {
+                    "type": "string"
+                },
+                "victim_metric": {
+                    "type": "string"
+                },
+                "victim_node": {
+                    "type": "string"
                 }
             }
         },

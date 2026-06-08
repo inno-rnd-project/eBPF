@@ -115,6 +115,15 @@ definitions:
       page:
         $ref: '#/definitions/internal_gpuobs_api.PageInfo'
     type: object
+  internal_correlation_api.CrossNodeListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/netobs_internal_correlation.NodeInterference'
+        type: array
+      page:
+        $ref: '#/definitions/netobs_internal_apicommon.Page'
+    type: object
   internal_correlation_api.ErrorDetail:
     properties:
       code:
@@ -187,6 +196,31 @@ definitions:
       total:
         type: integer
     type: object
+  netobs_internal_correlation.NodeInterference:
+    properties:
+      dimension:
+        $ref: '#/definitions/netobs_internal_correlation.ResourceDimension'
+      granger_ok:
+        type: boolean
+      lag_steps:
+        type: integer
+      p_value:
+        type: number
+      rank:
+        type: integer
+      sample_count:
+        type: integer
+      score:
+        type: number
+      suspect_metric:
+        type: string
+      suspect_node:
+        type: string
+      victim_metric:
+        type: string
+      victim_node:
+        type: string
+    type: object
   netobs_internal_correlation.NoisyNeighbor:
     properties:
       dimension:
@@ -243,6 +277,49 @@ definitions:
 info:
   contact: {}
 paths:
+  /api/v1/cross-node-interference:
+    get:
+      description: victim_node 와 suspect_node 와 dimension 과 rank 필터 후 pagination 적용한
+        cross-node interference 시리즈 반환
+      parameters:
+      - description: victim node 이름 필터
+        in: query
+        name: victim_node
+        type: string
+      - description: suspect node 이름 필터
+        in: query
+        name: suspect_node
+        type: string
+      - description: 리소스 차원 필터 (cpu/memory/network/gpu)
+        in: query
+        name: dimension
+        type: string
+      - description: max rank (기본 무제한)
+        in: query
+        name: rank_max
+        type: integer
+      - description: 응답 item 최대 개수 (기본 100, 최대 1000)
+        in: query
+        name: limit
+        type: integer
+      - description: 응답 시작 offset (기본 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.CrossNodeListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+      summary: List cross-node interference top-N
+      tags:
+      - correlation
   /api/v1/drops:
     get:
       description: drop_reason 별 5-tuple 분포 조회. namespace 와 reason 필터 후 pagination
