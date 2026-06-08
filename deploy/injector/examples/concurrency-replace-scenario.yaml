@@ -1,0 +1,21 @@
+# concurrency-replace-scenario.yaml 은 #118 LoadScenario manifest 예제 3 concurrencyPolicy 중
+# Replace 정책 의 base 다. controller 가 기존 lease 를 forceReleaseLease 로 해제 한 후 새 run 을
+# 즉시 trigger 한다. 최신 부하 시나리오 가 항상 active 한 상태 를 유지 하고 싶을 때 적합 하다.
+# 다만 진행 중인 부하 가 중간 에 끊겨 stale stress Pod 가 정리 되지 않 을 위험 이 있어 finalizer
+# 와 lifecycle (#102 controller 의 cleanup 흐름) 정상 동작 환경 에서만 권장 한다.
+apiVersion: injector.netobs.io/v1alpha1
+kind: LoadScenario
+metadata:
+  name: example-concurrency-replace
+  namespace: ebpf-project
+spec:
+  schedule: "@every 5m"
+  kind: cpu
+  duration: 4m
+  intensity: 500m
+  targetRef:
+    namespace: correlation-stress
+    name: victim
+  # Replace: 기존 lease 강제 해제 후 신규 run trigger.
+  concurrencyPolicy: Replace
+  maxFailures: 3

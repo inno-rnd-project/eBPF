@@ -1,0 +1,28 @@
+# cpu-stress-scenario.yaml 은 #118 LoadScenario manifest 예제 4 kind 중 cpu 부하 의 base 다.
+# 운영자가 신규 LoadScenario CR 작성 시 본 yaml 을 복사 후 targetRef 와 schedule 만 운영 환경에
+# 맞춰 정정하면 즉시 적용 가능 하다.
+#
+# spec 필드 의미:
+#   schedule: cron 표현식 (`@every 10m` 은 매 10분 1회). robfig/cron v3 의 standard parser.
+#   kind: cpu / memory / network / gpu 의 enum. 본 예제는 cpu 부하 의도.
+#   duration: 단일 run 의 지속 시간. metav1.Duration 형식 (예: "2m", "30s", "1h").
+#   intensity: cpu 의 경우 milliCPU 단위 (예: "500m" 은 0.5 core). 안전 상한 4000m (= 4 core,
+#     internal/injector/safety/safety.go 의 IntensityLimits 정의).
+#   targetRef: 부하를 인가할 대상 Pod 의 namespace 와 name. 본 예제 는 correlation-stress/victim
+#     을 default 로 두며 다른 namespace 의 Pod 는 운영자가 명시 정정 한다.
+apiVersion: injector.netobs.io/v1alpha1
+kind: LoadScenario
+metadata:
+  name: example-cpu-stress
+  namespace: ebpf-project
+spec:
+  schedule: "@every 10m"
+  kind: cpu
+  duration: 2m
+  # 800m = 0.8 core. dev cluster 의 victim Pod 1 core request 의 80% 점유 의도.
+  intensity: 800m
+  targetRef:
+    namespace: correlation-stress
+    name: victim
+  concurrencyPolicy: Forbid
+  maxFailures: 3

@@ -95,6 +95,32 @@ spec:
   maxFailures: 3
 ```
 
+## examples 디렉토리 활용 (#118)
+
+위 inline 샘플은 빠른 참조용이고 `kubectl apply` 로 직접 사용 가능한 base manifest 8종은 `deploy/injector/examples/` 에 별도 정리되어 있다 (#118). 운영자가 신규 LoadScenario CR을 작성할 때 본 디렉토리의 yaml을 복사 후 `targetRef`와 `schedule`만 운영 환경에 맞춰 정정하면 즉시 적용 가능하다.
+
+### 추천 base 매트릭스
+
+| 시나리오 | 추천 base yaml |
+|---|---|
+| CPU 부하 (cgroup throttling 자극) | `cpu-stress-scenario.yaml` |
+| memory 압박 (OOM 인접 신호) | `memory-pressure-scenario.yaml` |
+| GPU 부하 (RTX 3090 단일 GPU) | `gpu-load-scenario.yaml` |
+| network 트래픽 (iperf3 multi-stream) | `network-load-scenario.yaml` |
+| 동일 target 단일 lock 시나리오 | `concurrency-allow-scenario.yaml` |
+| 기존 run 보유 시 skip 의도 | `concurrency-forbid-scenario.yaml` |
+| 기존 lease 해제 후 신규 trigger | `concurrency-replace-scenario.yaml` |
+| 부하 종료 후 z-score spike alert 자동 검증 | `spike-assertion-scenario.yaml` |
+
+### 운영자 워크플로우
+
+- `deploy/injector/examples/` 의 추천 base yaml을 운영 환경의 임시 디렉토리로 복사
+- `targetRef.namespace`와 `targetRef.name`을 실제 부하 인가 대상 Pod로 정정
+- `schedule` 의 cron 표현식을 운영 의도에 맞춰 조정 (`@every 1m` 같은 짧은 schedule은 dev cluster 검증 한정)
+- `intensity` 의 안전 상한 (cpu 4000m, memory 2Gi, network 1000M, gpu 1) 을 넘지 않게 정정
+- `kubectl apply -f <정정한-yaml>` 적용 후 `kubectl get loadscenario -n <namespace>` 로 controller reconcile 진입 확인
+- `status.lastScheduleTime`과 `status.lastSuccessfulRunTime` 갱신으로 정상 동작 확인
+
 ## Troubleshooting
 
 ### reconciler stalled (`LoadScenarioReconcilerStalled` critical alert)

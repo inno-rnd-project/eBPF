@@ -1,0 +1,23 @@
+# memory-pressure-scenario.yaml 은 #118 LoadScenario manifest 예제 4 kind 중 memory 부하 의 base 다.
+# stress-ng --vm 으로 victim Pod 에 메모리 압박 을 발생시켜 OOM 인접 상황의 z-score spike alert 를
+# 자극 한다.
+#
+# spec 필드 의미:
+#   intensity: memory 의 경우 bytes 단위 (K8s resource.Quantity 규약). 예: "512Mi" 는 512 MiB.
+#     binary prefix (Ki / Mi / Gi) 와 decimal prefix (K / M / G) 모두 지원. 안전 상한 2Gi.
+apiVersion: injector.netobs.io/v1alpha1
+kind: LoadScenario
+metadata:
+  name: example-memory-pressure
+  namespace: ebpf-project
+spec:
+  schedule: "@every 30m"
+  kind: memory
+  duration: 3m
+  # 1Gi = victim Pod 메모리 limit 2Gi 의 50% 점유 의도. OOM 직전 단계 의 메모리 압박 신호 자극.
+  intensity: 1Gi
+  targetRef:
+    namespace: correlation-stress
+    name: victim
+  concurrencyPolicy: Forbid
+  maxFailures: 3

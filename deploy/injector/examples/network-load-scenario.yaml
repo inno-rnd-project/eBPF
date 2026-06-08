@@ -1,0 +1,22 @@
+# network-load-scenario.yaml 은 #118 LoadScenario manifest 예제 4 kind 중 network 부하 의 base 다.
+# iperf3 multi-stream 으로 victim Pod 에 sustained 트래픽 을 발생시켜 NetworkDropSpikeDetected 또는
+# correlation-stress 의 cross-pod 간섭 시나리오 를 자극 한다.
+#
+# spec 필드 의미:
+#   intensity: network 의 경우 bandwidth (iperf3 -b 형식). 예: "500M" 은 500 Mbps. 안전 상한 1000M.
+apiVersion: injector.netobs.io/v1alpha1
+kind: LoadScenario
+metadata:
+  name: example-network-load
+  namespace: ebpf-project
+spec:
+  schedule: "@every 15m"
+  kind: network
+  duration: 2m
+  # 500M = 500 Mbps. dev cluster 의 typical NIC capacity (1 Gbps) 의 50% 점유 의도.
+  intensity: 500M
+  targetRef:
+    namespace: correlation-stress
+    name: victim
+  concurrencyPolicy: Forbid
+  maxFailures: 3

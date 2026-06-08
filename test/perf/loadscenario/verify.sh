@@ -47,6 +47,11 @@ echo "[setup] 3차 가드 LoadScenario CR 적용 (@every 1m 짧은 schedule)"
 # window 동안 prometheus 의 ALERTS 시리즈 를 query 해 status 갱신 이 polling timeout 보다 더
 # 늦어진다. 본 가드 는 controller 의 schedule 따른 reconcile 정상 동작 만 검증 하고 spike alert
 # 자동 검증 은 별도 시나리오 로 follow-up.
+# 본 inline yaml 은 #118 의 deploy/injector/examples/cpu-stress-scenario.yaml 을 base 로 하되 dev
+# cluster 가드 시간 단축 목적 으로 schedule (@every 10m → @every 1m) 과 duration (2m → 30s) 와
+# intensity (800m → 500m) 만 정정 한 변형 이다. 운영자가 examples/ base 를 그대로 활용 하려면 본
+# verify.sh 가 아닌 manual `kubectl apply -f deploy/injector/examples/cpu-stress-scenario.yaml` 흐름
+# 으로 적용 한다 (본 verify.sh 의 5 차 가드 절에서 examples/ validation 별도 cover).
 cat <<EOF | kubectl apply -f -
 apiVersion: injector.netobs.io/v1alpha1
 kind: LoadScenario
@@ -105,5 +110,43 @@ fi
 echo "[skip] 5차 가드 spike alert 자동 검증 은 본 가드 의 spec.spikeAlertAssertion=false 채택 으로 skip"
 echo "       spike alert 자동 검증 단독 시나리오 는 follow-up issue 로 분리"
 
-echo "[pass] LoadScenario controller 회귀 가드 1-4 단계 통과"
+# 6차 가드 (#118): deploy/injector/examples/ 의 8 base manifest 가 CRD validation 통과 하는지 확인.
+# 본 가드 는 examples/ 의 운영자 학습 자료 가 controller 의 CRD spec 정합 을 유지 하는지 회귀 차단.
+# 디렉토리 부재 / 0 yaml 매칭 / validation 실패 모두 fail-on-miss 로 처리 해 examples 회귀 차단 강화.
+echo "[check] 6차 가드 examples/ 의 base manifest CRD validation (#118)"
+EXAMPLES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/deploy/injector/examples"
+if [[ ! -d "${EXAMPLES_DIR}" ]]; then
+  echo "[fail] deploy/injector/examples/ 디렉토리 부재. #118 의 examples 신설 누락"
+  exit 1
+fi
+
+# nullglob 으로 yaml 미매칭 시 빈 슬라이스 보장. 매칭 안 되면 0 count 로 fail.
+shopt -s nullglob
+example_files=("${EXAMPLES_DIR}"/*.yaml)
+shopt -u nullglob
+
+if (( ${#example_files[@]} == 0 )); then
+  echo "[fail] examples/ 디렉토리에 검증할 yaml 파일 부재"
+  exit 1
+fi
+
+all_pass=1
+for f in "${example_files[@]}"; do
+  name=$(basename "${f}")
+  # 에러 메시지를 캡처 해 debugging 가능 하게 한다. >/dev/null 만 두면 어느 필드 validation 실패 인지
+  # 운영자가 즉시 추적 불가.
+  if ! err_msg=$(kubectl apply --dry-run=server -f "${f}" 2>&1); then
+    echo "  [fail] ${name} server-side validation 실패"
+    echo "         에러 상세: ${err_msg}"
+    all_pass=0
+  fi
+done
+if (( all_pass == 1 )); then
+  echo "[pass] examples/ ${#example_files[@]}개 manifest 모두 CRD validation 통과"
+else
+  echo "[fail] examples/ 의 manifest 중 일부 가 CRD validation 실패. examples 정합 회귀 의심"
+  exit 1
+fi
+
+echo "[pass] LoadScenario controller 회귀 가드 1-4 단계와 6차 (examples validation) 통과"
 exit 0
