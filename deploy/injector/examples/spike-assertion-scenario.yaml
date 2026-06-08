@@ -1,0 +1,27 @@
+# spike-assertion-scenario.yaml 은 #118 LoadScenario manifest 예제 의 spikeAlertAssertion 활성
+# 시나리오 base 다. spikeAlertAssertion=true 로 두면 controller 가 부하 종료 시점 부터 5 분 polling
+# window 동안 Prometheus 의 ALERTS 시리즈 를 query 해 z-score spike alert (CPUThrottleSpike /
+# MemoryPressureSpike / NetworkDropSpike / GPUUtilizationSpike) 발화 hit 을 status.lastObservedSpikeAlerts
+# 에 기록 한다. 자동 회귀 검증 시나리오 의 base 로 활용 한다.
+#
+# 본 시나리오 는 cpu 부하 + 부하 종료 후 5 분 polling window 안 의 CPUThrottleSpike 발화 정합 을
+# 자동 검증 한다. 운영자는 본 base 를 다른 kind 로 변경 해 (kind: memory + MemoryPressureSpike,
+# kind: network + NetworkDropSpike, kind: gpu + GPUUtilizationSpike) 4 도메인 모두 cover 가능 하다.
+apiVersion: injector.netobs.io/v1alpha1
+kind: LoadScenario
+metadata:
+  name: example-spike-assertion
+  namespace: ebpf-project
+spec:
+  schedule: "@every 30m"
+  kind: cpu
+  duration: 3m
+  # 1500m = 1.5 core. CPUThrottleSpike z-score 임계 (#89 의 anomaly-spike) 초과 자극.
+  intensity: 1500m
+  targetRef:
+    namespace: correlation-stress
+    name: victim
+  concurrencyPolicy: Forbid
+  # spikeAlertAssertion=true 로 두면 부하 종료 후 status 에 alert 발화 hit 자동 기록.
+  spikeAlertAssertion: true
+  maxFailures: 3

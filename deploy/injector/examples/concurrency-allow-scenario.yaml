@@ -1,0 +1,21 @@
+# concurrency-allow-scenario.yaml 은 #118 LoadScenario manifest 예제 3 concurrencyPolicy 중
+# Allow 정책 의 base 다. concurrencyPolicy: Allow 는 동일 target Pod 에 대한 동시 injection 을
+# 허용 하는 의도 였 으나 internal/injector/safety/safety.go 의 AcquireLock 이 ConfigMap annotation
+# lease 로 동일 target 의 동시 lock 을 차단 하므로 사실상 Allow 는 lease 충돌 시 conflict error
+# 반환 동작 을 의미 한다. 운영자는 동일 target 의 단발 부하 만 의도 할 때 본 정책 을 채택 한다.
+apiVersion: injector.netobs.io/v1alpha1
+kind: LoadScenario
+metadata:
+  name: example-concurrency-allow
+  namespace: ebpf-project
+spec:
+  schedule: "@every 10m"
+  kind: cpu
+  duration: 1m
+  intensity: 500m
+  targetRef:
+    namespace: correlation-stress
+    name: victim
+  # Allow: 동일 target 에 대한 동시 injection 시도 시 lease 차단 으로 conflict error.
+  concurrencyPolicy: Allow
+  maxFailures: 3

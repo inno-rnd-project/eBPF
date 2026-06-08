@@ -1,0 +1,20 @@
+# concurrency-forbid-scenario.yaml 은 #118 LoadScenario manifest 예제 3 concurrencyPolicy 중
+# Forbid 정책 의 base 다. controller 가 기존 run 이 진행 중 인 동안 다음 schedule trigger 를
+# skip (consecutiveFailures 미증가) 한다. duration 이 schedule 주기 보다 길 가능성 이 있 어 lease
+# 보호 가 우선 일 때 적합 하다.
+apiVersion: injector.netobs.io/v1alpha1
+kind: LoadScenario
+metadata:
+  name: example-concurrency-forbid
+  namespace: ebpf-project
+spec:
+  schedule: "@every 5m"
+  kind: cpu
+  duration: 3m
+  intensity: 500m
+  targetRef:
+    namespace: correlation-stress
+    name: victim
+  # Forbid: 기존 run 보유 시 다음 trigger skip. consecutiveFailures 미증가.
+  concurrencyPolicy: Forbid
+  maxFailures: 3

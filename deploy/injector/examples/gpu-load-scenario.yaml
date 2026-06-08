@@ -1,0 +1,25 @@
+# gpu-load-scenario.yaml 은 #118 LoadScenario manifest 예제 4 kind 중 gpu 부하 의 base 다.
+# nvidia/cuda 의 vectorAdd sample 무한 반복으로 GPU 부하 를 발생시킨다. dev cluster 의 RTX 3090
+# 단일 GPU 환경 에 정합 하며 multi-GPU 점유 는 본 이슈 외 (#102 비목표 그대로).
+#
+# spec 필드 의미:
+#   intensity: gpu 의 경우 device 수. 안전 상한 "1" (multi-GPU 점유 follow-up). 본 예제 는 단일 GPU.
+#   targetRef: GPU 워크로드 Pod 의 namespace 와 name. dev cluster 의 pytorch-conv2d-bench 같은
+#     bench Pod 가 default 후보 이지만 ad-hoc bench Pod 라 본 예제 의 targetRef 는 운영자가 실제
+#     배포된 GPU Pod 의 namespace 와 name 으로 명시 정정 한다.
+apiVersion: injector.netobs.io/v1alpha1
+kind: LoadScenario
+metadata:
+  name: example-gpu-load
+  namespace: ebpf-project
+spec:
+  schedule: "@every 1h"
+  kind: gpu
+  duration: 5m
+  # GPU 단일 device 점유.
+  intensity: "1"
+  targetRef:
+    namespace: ebpf-project
+    name: pytorch-conv2d-bench
+  concurrencyPolicy: Forbid
+  maxFailures: 3
