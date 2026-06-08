@@ -1,5 +1,5 @@
 # network-load-scenario.yaml 은 #118 LoadScenario manifest 예제 4 kind 중 network 부하 의 base 다.
-# iperf3 multi-stream 으로 victim Pod 에 sustained 트래픽 을 발생시켜 NetworkDropSpike 또는
+# iperf3 multi-stream 으로 victim Pod 에 sustained 트래픽 을 발생시켜 NetworkDropSpikeDetected 또는
 # correlation-stress 의 cross-pod 간섭 시나리오 를 자극 한다.
 #
 # spec 필드 의미:

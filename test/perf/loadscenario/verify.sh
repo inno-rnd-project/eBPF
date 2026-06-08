@@ -112,25 +112,40 @@ echo "       spike alert 자동 검증 단독 시나리오 는 follow-up issue �
 
 # 6차 가드 (#118): deploy/injector/examples/ 의 8 base manifest 가 CRD validation 통과 하는지 확인.
 # 본 가드 는 examples/ 의 운영자 학습 자료 가 controller 의 CRD spec 정합 을 유지 하는지 회귀 차단.
-echo "[check] 6차 가드 examples/ 의 8 base manifest CRD validation (#118)"
+# 디렉토리 부재 / 0 yaml 매칭 / validation 실패 모두 fail-on-miss 로 처리 해 examples 회귀 차단 강화.
+echo "[check] 6차 가드 examples/ 의 base manifest CRD validation (#118)"
 EXAMPLES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/deploy/injector/examples"
-if [[ -d "${EXAMPLES_DIR}" ]]; then
-  all_pass=1
-  for f in "${EXAMPLES_DIR}"/*.yaml; do
-    name=$(basename "${f}")
-    if ! kubectl apply --dry-run=server -f "${f}" >/dev/null 2>&1; then
-      echo "  [fail] ${name} server-side validation 실패"
-      all_pass=0
-    fi
-  done
-  if (( all_pass == 1 )); then
-    echo "[pass] examples/ 8 manifest 모두 CRD validation 통과"
-  else
-    echo "[fail] examples/ 의 manifest 중 일부 가 CRD validation 실패. examples 정합 회귀 의심"
-    exit 1
+if [[ ! -d "${EXAMPLES_DIR}" ]]; then
+  echo "[fail] deploy/injector/examples/ 디렉토리 부재. #118 의 examples 신설 누락"
+  exit 1
+fi
+
+# nullglob 으로 yaml 미매칭 시 빈 슬라이스 보장. 매칭 안 되면 0 count 로 fail.
+shopt -s nullglob
+example_files=("${EXAMPLES_DIR}"/*.yaml)
+shopt -u nullglob
+
+if (( ${#example_files[@]} == 0 )); then
+  echo "[fail] examples/ 디렉토리에 검증할 yaml 파일 부재"
+  exit 1
+fi
+
+all_pass=1
+for f in "${example_files[@]}"; do
+  name=$(basename "${f}")
+  # 에러 메시지를 캡처 해 debugging 가능 하게 한다. >/dev/null 만 두면 어느 필드 validation 실패 인지
+  # 운영자가 즉시 추적 불가.
+  if ! err_msg=$(kubectl apply --dry-run=server -f "${f}" 2>&1); then
+    echo "  [fail] ${name} server-side validation 실패"
+    echo "         에러 상세: ${err_msg}"
+    all_pass=0
   fi
+done
+if (( all_pass == 1 )); then
+  echo "[pass] examples/ ${#example_files[@]}개 manifest 모두 CRD validation 통과"
 else
-  echo "[warn] deploy/injector/examples/ 디렉토리 부재. #118 의 examples 신설 누락 여부 점검"
+  echo "[fail] examples/ 의 manifest 중 일부 가 CRD validation 실패. examples 정합 회귀 의심"
+  exit 1
 fi
 
 echo "[pass] LoadScenario controller 회귀 가드 1-4 단계와 6차 (examples validation) 통과"
