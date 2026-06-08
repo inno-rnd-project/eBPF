@@ -60,6 +60,39 @@
         "refresh": 2,
         "sort": 1,
         "hide": 2
+      },
+      {
+        "name": "victim_node",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(correlation_cross_node_score, victim_node)",
+        "multi": true,
+        "includeAll": true,
+        "label": "Victim node",
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "suspect_node",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(correlation_cross_node_score{victim_node=~\"$victim_node\"}, suspect_node)",
+        "multi": true,
+        "includeAll": true,
+        "label": "Suspect node",
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "cross_dimension",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(correlation_cross_node_score, dimension)",
+        "multi": true,
+        "includeAll": true,
+        "label": "Cross-node dimension",
+        "refresh": 2,
+        "sort": 1
       }
     ]
   },
@@ -458,6 +491,226 @@
           }
         }
       ]
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "Cross-node interference (#84, #119)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 46
+      },
+      "panels": []
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Cross-node interference score (victim x suspect x dimension)",
+      "description": "#84 cross-node interference layer 의 correlation_cross_node_score 시계열. victim_node 와 suspect_node 와 dimension 3 라벨 partition. 0.5 이상 지속 시 cross-node noisy neighbor 의심. CrossNodeEnabled opt-in 시 만 emit 된다.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 47
+      },
+      "targets": [
+        {
+          "expr": "correlation_cross_node_score{victim_node=~\"$victim_node\",suspect_node=~\"$suspect_node\",dimension=~\"$cross_dimension\"}",
+          "legendFormat": "{{victim_node}} <- {{suspect_node}} ({{dimension}})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 3,
+          "min": -1,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "orange",
+                "value": 0.7
+              },
+              {
+                "color": "red",
+                "value": 0.85
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Top cross-node interference (victim x suspect x dimension)",
+      "description": "#119 의 TopN cross-node interference. score 내림차순 정렬. /api/v1/cross-node-interference endpoint 와 동일 데이터 를 dashboard 에 표 형식 으로 노출 한다.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 55
+      },
+      "targets": [
+        {
+          "expr": "max by(victim_node, suspect_node, dimension) (correlation_cross_node_score{victim_node=~\"$victim_node\",suspect_node=~\"$suspect_node\",dimension=~\"$cross_dimension\"})",
+          "instant": true,
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "endpoint": true,
+              "container": true,
+              "namespace": true,
+              "pod": true,
+              "service": true
+            },
+            "renameByName": {
+              "Value": "score"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "score",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "score"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "blue",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 0.5
+                    },
+                    {
+                      "color": "orange",
+                      "value": 0.7
+                    },
+                    {
+                      "color": "red",
+                      "value": 0.85
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "type": "heatmap",
+      "title": "Cross-node interference heatmap (시간별 score 분포)",
+      "description": "correlation_cross_node_score 의 시간×score 분포 heatmap. cross-node interference 강도 의 시간대별 집중 도 를 한눈에 보여 준다. dimension 은 $cross_dimension 변수 로 필터.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 65
+      },
+      "targets": [
+        {
+          "expr": "correlation_cross_node_score{victim_node=~\"$victim_node\",suspect_node=~\"$suspect_node\",dimension=~\"$cross_dimension\"}",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "calculate": true,
+        "calculation": {
+          "yBuckets": {
+            "mode": "count",
+            "value": "10"
+          }
+        },
+        "color": {
+          "mode": "scheme",
+          "scheme": "Oranges",
+          "steps": 64
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        }
+      }
     }
   ],
   "annotations": {
