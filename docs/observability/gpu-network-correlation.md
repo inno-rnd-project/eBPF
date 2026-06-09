@@ -10,7 +10,34 @@
 
 ## scope 와 join 의 의미
 
-본 패널은 두 도메인 시계열의 join key 를 엄밀히 매칭하지 않는다. dev cluster spike 결과 RTX 3090 단일 GPU 환경의 NVML 이 Pod scope GPU utilization 을 노출하지 않아 GPU 시계열은 device scope (`node`, `gpu_uuid`) 로 강등 적용된다. network 시계열은 Pod scope (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) 그대로 유지된다. 두 도메인의 공유 라벨은 `node` 하나라 같은 노드의 같은 timeline 위에 정렬하는 것까지만 보장한다. Pod 인스턴스 단위 GPU 부하 분할은 본 패널 범위 밖이며 follow-up 이슈로 분리될 예정이다.
+본 패널의 device scope row 는 두 도메인 시계열의 join key 를 엄밀히 매칭하지 않는다. GPU 시계열은 device scope (`node`, `gpu_uuid`) 로 두고 network 시계열은 Pod scope (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) 그대로 유지하므로 두 도메인의 공유 라벨은 `node` 하나라 같은 노드의 같은 timeline 위에 정렬하는 것까지만 보장한다. Pod 단위 정합 분석은 본 dashboard 의 별도 row 인 Pod 단위 multi-domain 분석 (#120) 에서 다룬다.
+
+## Pod 단위 multi-domain 분석 (#120)
+
+PR #104 의 `gpuobs_pod_utilization_percent` 와 기존 podbytes collector 의 `netobs_pod_bytes_total` 이 동일한 4 Pod 라벨 join key (`node`, `src_namespace`, `src_pod`, `src_pod_uid`) 를 공유하므로 두 도메인을 Pod 단위 로 직접 join 가능하다. 본 절은 dashboard 의 Pod scope row 의 panel 3 종 과 신규 recording rule `pod:gpu_network_correlation_score:5m` 의 의미를 정리한다.
+
+### 신규 recording rule 의 정의
+
+`pod:gpu_network_correlation_score:5m{node, src_namespace, src_pod, src_pod_uid}` 는 다음 두 factor 의 곱 형태 단일 score 다.
+
+- GPU factor 는 `max by(node, src_namespace, src_pod, src_pod_uid) (pod:gpu_util_p95:5m) / 100` 으로 GPU 사용률을 0-1 비율로 정규화. `gpu_uuid` 차원은 Pod 가 다수 GPU 사용 시 worst GPU 채택 후 drop
+- network factor 는 `clamp_max(pod:network_throughput_bps:5m / on(node) group_left() (netobs_node_nic_capacity_bytes_per_sec * 8), 1.0)` 으로 NIC capacity 점유율을 0-1 범위로 clamp. burst 시 score 폭주 차단
+
+GPU factor 와 network factor 둘 다 0-1 범위라 곱 score 도 0-1 범위 다. score 0.3 이상 Pod 가 GPU heavy 와 network heavy 를 동시 만족 하는 후보 다.
+
+### dashboard panel 3종
+
+- panel 5 dual-axis 시계열: 좌축 GPU util percentunit, 우축 network throughput bps 와 network p99 latency seconds. 동일 Pod 의 두 도메인 추세를 한 차트에 시간 정렬
+- panel 6 TopN 표: `topk(20, pod:gpu_network_correlation_score:5m)` 으로 상위 20 Pod 노출. score 컬럼은 color-background gradient 와 0.1/0.3/0.5 임계 색상 단계 적용
+- panel 7 산점도: x 축 GPU util p95, y 축 network throughput bps 의 Pod 별 분포. 우상단 영역 의 Pod 가 GPU heavy 와 network heavy 동시 만족
+
+### RTX 3090 의 MIG 미지원 환경 fallback 정책
+
+dev cluster 의 RTX 3090 은 MIG 미지원 환경 이라 instance 단위 분석은 본 절 범위 밖이다. 단 `gpuobs_pod_utilization_percent` 가 raw 메트릭 부재 환경 (active CUDA workload 가 없는 dev cluster) 에서는 `pod:gpu_util_p95:5m` 가 0 series 가 되어 `pod:gpu_network_correlation_score:5m` 도 0 series 로 graceful empty 된다. dashboard 의 Pod scope panel 도 동일한 0 series fallback 으로 empty 표시 된다. recording rule 정의 자체는 RTX 3090 외 GPU 모델 (A100, H100 등) 환경에서 그대로 활성된다.
+
+### 운영자 drilldown 흐름
+
+panel 6 TopN 표에서 단일 Pod 선택 후 link menu 의 netobs overview dashboard 로 이동해 해당 Pod 의 network flow 와 stage latency 상세 확인. GPU 도메인 상세는 panel 1 의 device scope row 의 gpuobs overview link 로 이동.
 
 ## variable cascading
 
@@ -51,11 +78,12 @@ network 도메인은 raw `netobs_pod_bytes_total` 의 `rate([5m]) * 8` 합산과
 
 ## 비목표
 
-- Pod 인스턴스 단위 GPU 부하 분할 (NVML 비지원 환경 제약)
+- Pod 인스턴스 단위 GPU 부하 분할의 NVML 직접 지원 (RTX 3090 환경 제약. #120 에서 Pod 단위 join score 도입으로 합성 score 흐름은 cover 되었으나 NVML 의 instance scope 직접 노출은 여전히 본 PR 범위 밖)
 - 자동 인과 분석 (이슈 본문 비목표 그대로)
 - alerting rule 신규 정의 (별도 이슈로 위임)
 - 다중 victim Pod 동시 비교 (단일 `$src_pod` 선택만 지원)
-- `$gpu_uuid` 기반 device 단위 drill-down (별도 follow-up 이슈로 분리 예정)
+- MIG instance 단위 cross-correlation (dev cluster RTX 3090 MIG 미지원으로 인터페이스 수준만 유지)
+- DCGM exporter 통합 (별도 이슈)
 
 ## 실패 진단
 
