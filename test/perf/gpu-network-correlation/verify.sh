@@ -79,6 +79,7 @@ probe() {
   extract_value "${resp}"
 }
 
+guard1_passed=0
 while (( $(date +%s) < deadline )); do
   gpu_util_count=$(probe "${query_gpu_util}")
   gpu_mem_count=$(probe "${query_gpu_mem}")
@@ -97,7 +98,8 @@ net_throughput=${net_throughput_count} net_p99=${net_p99_count}"
       else
         echo "[warn] correlation overlay 가 비어 있다 (idle cluster 일 가능성). overlay_count=${overlay_count:-0}"
       fi
-      exit 0
+      guard1_passed=1
+      break
     fi
     echo "[wait] gpu_util=${gpu_util_count} gpu_mem=${gpu_mem_count} \
 net_throughput=${net_throughput_count} net_p99=${net_p99_count} overlay=${overlay_count:-0}"
@@ -107,6 +109,44 @@ net_throughput=${net_throughput_count} net_p99=${net_p99_count} overlay=${overla
   sleep "${POLL_INTERVAL}"
 done
 
-echo "[fail] timed out waiting for cross-correlation recording rule series."
-echo "       PrometheusRule 적용 후 5 분 warmup 경과 와 dev cluster 의 자연 트래픽 활성 여부 를 점검 하라."
-exit 1
+if (( guard1_passed == 0 )); then
+  echo "[fail] timed out waiting for cross-correlation recording rule series."
+  echo "       PrometheusRule 적용 후 5 분 warmup 경과 와 dev cluster 의 자연 트래픽 활성 여부 를 점검 하라."
+  exit 1
+fi
+
+# 2차 가드 (#120): Pod join sanity check. 신규 pod:gpu_network_correlation_score:5m 의 query 가 정상
+# 응답 (식 syntactic 정합) 하는지 확인 한 뒤 pod:gpu_util_p95:5m 가 1 이상 시리즈 면 동일 4 Pod 라벨
+# join key 가 GPU 메트릭 과 network 메트릭 양쪽 에서 모두 발견 되는지 fail-on-miss 검증 한다. active
+# CUDA workload 부재 환경 (pod:gpu_util_p95:5m 0 series) 에서는 graceful skip 처리 한다. count() 의
+# empty vector 결과 는 시리즈 0 개를 의미 하므로 빈 문자열 을 0 으로 정규화 한다.
+echo "[guard2] Pod join sanity check (#120)"
+# query 자체 의 HTTP 응답 정합 검증. score query 응답 status 가 success 면 syntactic 정합 통과.
+score_status=$(curl -sf --max-time 10 --data-urlencode 'query=pod:gpu_network_correlation_score:5m' "${PROM_URL}/api/v1/query" 2>/dev/null | python3 -c "import json,sys
+try:
+    print(json.load(sys.stdin).get('status',''))
+except Exception:
+    print('')")
+if [[ "${score_status}" != "success" ]]; then
+  echo "[fail] pod:gpu_network_correlation_score:5m query 가 success 응답 미반환 (status=${score_status})"
+  exit 1
+fi
+score_count=$(probe "count(pod:gpu_network_correlation_score:5m)")
+score_count="${score_count:-0}"
+echo "[guard2] pod:gpu_network_correlation_score:5m count=${score_count}"
+
+gpu_pod_count=$(probe "count(pod:gpu_util_p95:5m)")
+gpu_pod_count="${gpu_pod_count:-0}"
+if awk "BEGIN { exit !(${gpu_pod_count} >= 1) }"; then
+  join_count=$(probe "count(pod:gpu_util_p95:5m and on(node, src_namespace, src_pod, src_pod_uid) pod:network_throughput_bps:5m)")
+  join_count="${join_count:-0}"
+  if awk "BEGIN { exit !(${join_count} >= 1) }"; then
+    echo "[pass] Pod join sanity check 통과 (gpu_pod=${gpu_pod_count} join=${join_count} score=${score_count})"
+  else
+    echo "[fail] GPU Pod-level 메트릭 ${gpu_pod_count} 시리즈 가 있으나 동일 4 Pod 라벨 join key 가 network 메트릭 과 매칭 되지 않는다"
+    exit 1
+  fi
+else
+  echo "[skip] pod:gpu_util_p95:5m 시리즈 부재 (active CUDA workload 부재 환경). graceful skip 처리"
+fi
+exit 0
