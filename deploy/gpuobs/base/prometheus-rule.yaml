@@ -1405,13 +1405,15 @@ spec:
         # bytes_per_sec * 8 (bytes/sec 의 bps 환산) 으로 나눠 0-1 점유율 로 정규화 한 network factor
         # 의 곱 형태 다. clamp_max 로 점유율 1.0 상한 두어 burst 시 score 폭주 차단. 라벨 셋은
         # 4 Pod 라벨 join key (node, src_namespace, src_pod, src_pod_uid) 로 두 도메인 정합 한다.
-        # gpu_uuid 는 max by 로 GPU 1 개 이상 사용 Pod 의 worst GPU 채택 후 라벨에서 drop.
+        # gpu_uuid 는 max by 로 GPU 1 개 이상 사용 Pod 의 worst GPU 채택 후 라벨에서 drop. 외부 곱셈은
+        # LHS 와 RHS 가 4 Pod 라벨 셋 동일 한 1-to-1 매칭 이라 on(...) 만 사용. 내부 분모 분기 의
+        # / on(node) group_left() 는 4 라벨 LHS 와 1 라벨 RHS 의 many-to-one 매칭 이라 그대로 유지.
         - record: pod:gpu_network_correlation_score:5m
           expr: |
             (
               max by(node, src_namespace, src_pod, src_pod_uid) (pod:gpu_util_p95:5m) / 100
             )
-            * on(node, src_namespace, src_pod, src_pod_uid) group_left()
+            * on(node, src_namespace, src_pod, src_pod_uid)
             clamp_max(
               pod:network_throughput_bps:5m
                 / on(node) group_left()
