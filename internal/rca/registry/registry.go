@@ -21,6 +21,12 @@ type RCASummary struct {
 	// EvidenceMetrics 는 운영자가 dashboard 에서 즉시 확인 가능한 메트릭 쿼리 / 라벨 hint 리스트다.
 	// 본 필드는 메트릭이 아닌 JSON 응답으로만 노출된다 (cardinality 가드).
 	EvidenceMetrics []string `json:"evidence_metrics"`
+	// ConfidenceScore 는 #122 의 multi-source cross-reference 산출 신뢰도 점수 다. 0-1 범위 의
+	// 정규화 값 이며 correlation source 와 netobs source 와 gpuobs source 의 가중치 합산 으로
+	// 계산 된다. 단일 도메인 신호 만 으로는 0.5 미만 에 머물며 다중 도메인 cross-reference 가
+	// 일치 할수록 1.0 에 가까워진다. webhook 의 false positive guard 가 본 점수 가 threshold
+	// (기본 0.3) 미만 인 alert 의 RCA emit 을 skip 한다.
+	ConfidenceScore float64 `json:"confidence_score"`
 }
 
 // Mapping 은 alert labels 를 받아 RCASummary 를 만들어 내는 단위 함수다. Sources 인터페이스를
@@ -36,6 +42,11 @@ type Sources interface {
 	// TopDropFlows 는 namespace 의 가장 빈번한 drop flow N 종을 돌려준다. 본 PR 의 registry 가
 	// 사용하는 mapping 은 단일 flow 만 필요해 [0] 만 참조한다.
 	TopDropFlows(namespace string) []DropFlowInfo
+	// GPUSignal 은 #122 의 multi-source cross-reference 산출 시 GPU 도메인 신호 강도 (0-1) 를
+	// 돌려준다. node 단위 GPU dominant cause weight 또는 GPU idle cause weight 의 Prometheus
+	// instant query 결과를 활용 한다. 매칭 시리즈 가 없 거나 fetch 실패 시 0 을 돌려주어
+	// confidence 산출 이 자연 감쇠 된다.
+	GPUSignal(node string) float64
 }
 
 // NeighborInfo 는 Sources.TopNeighbors 가 돌려주는 단일 neighbor 의 식별자와 score 다.

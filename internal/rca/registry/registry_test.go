@@ -8,10 +8,12 @@ import (
 
 // fakeSources 는 단위 테스트용 Sources 구현이다. 등록된 victim 키 별로 미리 준비한 neighbor 리스트
 // 를 돌려준다. drop flow 는 본 mapping 셋에서 mapNetObsDropBurst 만 잠재적으로 호출 가능한데 본
-// mapping 은 sources 를 사용하지 않으므로 빈 슬라이스만 준비해도 무해하다.
+// mapping 은 sources 를 사용하지 않으므로 빈 슬라이스만 준비해도 무해하다. gpuSignal 은 #122 의
+// multi-source cross-reference 산출 시 GPU 신호 강도 fixture 다.
 type fakeSources struct {
 	neighborsByVictim map[string][]NeighborInfo
 	dropFlows         []DropFlowInfo
+	gpuSignal         float64
 }
 
 func (f *fakeSources) TopNeighbors(ns, pod string) []NeighborInfo {
@@ -19,6 +21,9 @@ func (f *fakeSources) TopNeighbors(ns, pod string) []NeighborInfo {
 }
 func (f *fakeSources) TopDropFlows(namespace string) []DropFlowInfo {
 	return f.dropFlows
+}
+func (f *fakeSources) GPUSignal(node string) float64 {
+	return f.gpuSignal
 }
 
 // TestNew_RegistersExactlyNineMappings 는 명세상 9 alert mapping 이 정확히 등록되는지 회귀
