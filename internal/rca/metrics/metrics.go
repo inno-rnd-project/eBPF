@@ -83,6 +83,7 @@ func (m *Metrics) Record(summary registry.RCASummary) {
 		"primary_drop_flow":  defaultStr(summary.PrimaryDropFlow, "none"),
 	}
 
+	newDimension := defaultStr(summary.DominantDimension, "unknown")
 	if prev, ok := m.lastLabels[summary.AlertName]; ok {
 		// 이전 라벨 셋과 정확히 동일하면 Delete 후 재등록 비용을 회피한다.
 		if labelsEqual(prev, newLabels) {
@@ -90,6 +91,15 @@ func (m *Metrics) Record(summary registry.RCASummary) {
 		} else {
 			m.lastInfo.Delete(prev)
 			m.lastInfo.With(newLabels).Set(1)
+			// #122 confidence score gauge 의 stale series 차단. dominant_dimension 이 swap 되면
+			// 이전 라벨 셋 의 series 가 GaugeVec 메모리 에 잔류 하므로 명시 Delete 한다. lastInfo
+			// 와 동일 패턴 으로 alert 당 confidence series 1 개 만 유지 한다.
+			if prev["dominant_dimension"] != newDimension {
+				m.confidenceScore.Delete(prometheus.Labels{
+					"alert_name":         summary.AlertName,
+					"dominant_dimension": prev["dominant_dimension"],
+				})
+			}
 			m.lastLabels[summary.AlertName] = newLabels
 		}
 	} else {
@@ -98,12 +108,11 @@ func (m *Metrics) Record(summary registry.RCASummary) {
 	}
 
 	// #122 confidence score gauge 는 alert_name 과 dominant_dimension 2 라벨 만 으로 cardinality
-	// 폐쇄 되어 매 emit 마다 직접 Set 한다. 같은 alert 가 dominant_dimension 을 swap 하는 케이스
-	// 에서는 이전 라벨 셋 의 series 가 stale 로 남지만 본 메트릭 은 gauge 라 다음 scrape 에서
-	// 새 라벨 값 으로 자연 갱신 된다.
+	// 폐쇄 된다. dominant_dimension swap 시 의 stale series 는 위 분기 의 Delete 로 차단 되며 본
+	// 자리 는 현재 라벨 셋 의 값 만 Set 한다.
 	m.confidenceScore.WithLabelValues(
 		summary.AlertName,
-		defaultStr(summary.DominantDimension, "unknown"),
+		newDimension,
 	).Set(summary.ConfidenceScore)
 }
 

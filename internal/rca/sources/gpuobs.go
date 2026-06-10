@@ -5,6 +5,7 @@ package sources
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -85,29 +86,26 @@ func escapePromLabel(v string) string {
 }
 
 // parsePromInstantScalar 는 Prometheus instant query 응답 의 result[0].value[1] 을 float 으로
-// 추출 한다. 본 함수 는 dependency 없이 string scan 으로 동작 해 ringbuf 의 hot path 에 부담을
-// 주지 않는다. result 가 빈 vector 면 0 을 돌려주고 의도 한 값 이 아닌 응답 형식 이면 에러 를
-// 돌려준다.
+// 추출 한다. encoding/json 표준 라이브러리 를 사용 해 JSON 공백 변형 과 필드 순서 변경 에 강건
+// 하게 동작 한다. result 가 빈 vector 면 0 을 돌려주고 응답 schema 가 비정합 이면 에러 를 돌려
+// 준다.
 func parsePromInstantScalar(body []byte) (float64, error) {
-	idx := strings.Index(string(body), `"value":[`)
-	if idx < 0 {
-		return 0, nil
+	var response struct {
+		Data struct {
+			Result []struct {
+				Value []any `json:"value"`
+			} `json:"result"`
+		} `json:"data"`
 	}
-	tail := string(body)[idx+len(`"value":[`):]
-	commaIdx := strings.Index(tail, ",")
-	if commaIdx < 0 {
-		return 0, errors.New("malformed prometheus value")
-	}
-	rest := tail[commaIdx+1:]
-	end := strings.IndexAny(rest, `]`)
-	if end < 0 {
-		return 0, errors.New("malformed prometheus value end")
-	}
-	raw := strings.TrimSpace(rest[:end])
-	raw = strings.Trim(raw, `"`)
-	v, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
+	if err := json.Unmarshal(body, &response); err != nil {
 		return 0, err
 	}
-	return v, nil
+	if len(response.Data.Result) == 0 || len(response.Data.Result[0].Value) < 2 {
+		return 0, nil
+	}
+	valStr, ok := response.Data.Result[0].Value[1].(string)
+	if !ok {
+		return 0, errors.New("malformed prometheus value type")
+	}
+	return strconv.ParseFloat(valStr, 64)
 }
