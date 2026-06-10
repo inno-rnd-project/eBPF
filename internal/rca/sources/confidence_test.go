@@ -60,3 +60,21 @@ func TestComputeConfidenceScore_BelowThreshold(t *testing.T) {
 		t.Errorf("ComputeConfidenceScore(weak correlation)=%v want < 0.3", got)
 	}
 }
+
+// TestComputeConfidenceScore_NaN 은 NaN 입력 이 0 으로 clamp 되어 confidence 가 NaN 으로 전파
+// 되지 않는지 회귀 가드 한다. NaN 비교 가 항상 false 인 IEEE 754 정의 로 인해 webhook false
+// positive guard 의 < threshold 비교 가 우회 되는 회귀 를 차단 한다.
+func TestComputeConfidenceScore_NaN(t *testing.T) {
+	nan := math.NaN()
+	got := ComputeConfidenceScore(ConfidenceFactors{
+		Correlation: nan,
+		Netobs:      nan,
+		Gpuobs:      nan,
+	})
+	if math.IsNaN(got) {
+		t.Errorf("ComputeConfidenceScore(NaN factors)=NaN want 0")
+	}
+	if got != 0 {
+		t.Errorf("ComputeConfidenceScore(NaN factors)=%v want 0", got)
+	}
+}

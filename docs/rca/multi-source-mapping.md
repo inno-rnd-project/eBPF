@@ -40,14 +40,14 @@
 | `GPUIdleWithHostComputeStall` | `src_namespace`와 `src_pod` | 3 source 모두 | dimension cpu |
 | `CorrelationStrongNoisyNeighbor` | `victim_namespace`와 `victim_pod` | 3 source 모두 | alert 라벨의 suspect는 그대로 유지, cross-validation 목적 |
 
-`GPUObsThermalThrottleSustained`는 victim Pod 식별이 불가하므로 confidence가 최대 `WeightGpuobs` (0.2) 에 머무른다. 운영자는 본 alert의 emit threshold를 0.1 정도로 별도 조정하거나 thermal 도메인 전용 dashboard 흐름을 활용한다.
+`GPUObsThermalThrottleSustained`는 victim Pod 식별이 불가하므로 confidence가 최대 `WeightGpuobs` (0.2) 에 머무른다. 본 PR의 `RCA_CONFIDENCE_THRESHOLD` 와 `-confidence-threshold` 는 전역 설정이라 alert별 override는 미지원하며 기본 threshold 0.3 환경에서는 본 alert의 metrics emit이 항상 skip된다. metrics 가시화가 필요한 운영자는 전역 threshold를 0.2 이하로 낮춰 운영하거나 thermal 도메인 전용 dashboard 흐름과 `/rca?alert=GPUObsThermalThrottleSustained` JSON endpoint의 store entry를 활용한다. alert별 threshold override 도입은 별도 follow-up 이슈로 둔다.
 
 ## threshold 자동 튜닝 절차
 
 본 PR은 정적 hardcoded threshold (기본 0.3) 만 지원하며 dynamic tuning은 별도 follow-up 이슈로 둔다. 운영자가 환경별 false positive 비율을 확인 후 다음 절차로 수동 조정한다.
 
 - `rca_summary_skipped_total / rca_summary_emitted_total` 비율 1주일 추세 확인. 비율이 너무 높으면 threshold가 과도하게 높음
-- alert별 `rca_summary_confidence_score` histogram (Prometheus `histogram_quantile`) 으로 p50과 p95 산출. p95가 threshold보다 낮으면 대부분 alert가 skip
+- alert별 `rca_summary_confidence_score` 시계열을 `quantile_over_time(0.5, ...[1w])` 와 `quantile_over_time(0.95, ...[1w])` 으로 p50과 p95 산출. 본 메트릭은 gauge라 histogram_quantile은 적용 불가하며 range-vector quantile을 사용한다. p95가 threshold보다 낮으면 대부분 alert가 skip
 - threshold 조정. `RCA_CONFIDENCE_THRESHOLD` env 갱신 또는 `-confidence-threshold` flag로 재배포
 
 자동 튜닝 (예: percentile 기반 자가 조정) 은 본 PR 범위 외다.

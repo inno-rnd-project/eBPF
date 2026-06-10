@@ -30,7 +30,9 @@ func maxNeighborScore(neighbors []registry.NeighborInfo) float64 {
 const DropFlowNormalizationRate = 100.0
 
 // maxDropFlowFactor 는 DropFlowInfo 슬라이스 의 max rate 를 DropFlowNormalizationRate 로 나눠
-// 0-1 범위 의 정규화 값을 돌려준다. 빈 슬라이스 는 0 을 돌려준다.
+// 0-1 범위 의 정규화 값을 돌려준다. 빈 슬라이스 는 0 을 돌려준다. clamp01 을 함수 단독 출력 에
+// 도 적용 해 factor 자체 의 의미 (0-1 범위) 가 ComputeConfidenceScore 호출 외 의 재사용 경로 에
+// 서도 보존 되도록 한다.
 func maxDropFlowFactor(flows []registry.DropFlowInfo) float64 {
 	max := 0.0
 	for _, f := range flows {
@@ -41,5 +43,5 @@ func maxDropFlowFactor(flows []registry.DropFlowInfo) float64 {
 	if max <= 0 {
 		return 0
 	}
-	return max / DropFlowNormalizationRate
+	return clamp01(max / DropFlowNormalizationRate)
 }

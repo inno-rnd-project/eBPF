@@ -38,8 +38,13 @@ func ComputeConfidenceScore(f ConfidenceFactors) float64 {
 }
 
 // clamp01 은 입력 값을 0-1 범위 로 자르는 헬퍼 다. 음수 는 0 으로 1.0 초과 는 1.0 으로 정규화
-// 한다. ComputeConfidenceScore 의 각 factor clamp 에서 일관 사용 된다.
+// 한다. NaN 은 0 으로 강제 변환 해 ComputeConfidenceScore 의 결과 가 NaN 으로 전파 되어 webhook
+// false positive guard 의 < threshold 비교 가 항상 false 가 되는 회귀 (NaN 비교 의 정의 상 결과)
+// 를 차단 한다. ComputeConfidenceScore 의 각 factor clamp 에서 일관 사용 된다.
 func clamp01(v float64) float64 {
+	if v != v { // NaN 식별. IEEE 754 정의 상 NaN 만 자기 자신 과 부등
+		return 0
+	}
 	if v < 0 {
 		return 0
 	}

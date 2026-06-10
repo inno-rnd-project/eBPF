@@ -64,8 +64,13 @@ func New(snapshotURL, prometheusURL string, fetchTimeout, snapshotTTL time.Durat
 
 // GPUSignal 은 #122 의 multi-source cross-reference 산출 시 GPU 도메인 신호 강도 (0-1) 를
 // 돌려준다. gpuobsSource 의 Prometheus instant query 가 timeout 또는 빈 결과 면 0 을 돌려주어
-// confidence 가 자연 감쇠 된다.
+// confidence 가 자연 감쇠 된다. 테스트 또는 부분 초기화 환경 에서 gpuobs 가 nil 인 경우 panic
+// 회피 위해 0 을 돌려준다. 본 가드 는 다른 두 source (snapshot 과 promql) 의 빈 결과 처리 와
+// 동일 한 graceful empty 계약 을 유지 한다.
 func (s *Sources) GPUSignal(node string) float64 {
+	if s.gpuobs == nil {
+		return 0
+	}
 	return s.gpuobs.fetchGPUSignal(node)
 }
 

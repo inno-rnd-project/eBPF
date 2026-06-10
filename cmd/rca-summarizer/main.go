@@ -42,8 +42,8 @@ type config struct {
 	// confidenceThreshold 는 #122 의 multi-source cross-reference confidence score 의 false
 	// positive guard threshold 다. RCASummary 의 ConfidenceScore 가 본 값 미만 인 alert 는
 	// metrics emit 을 skip 하고 warn 로그 와 skipped_total counter 만 갱신 한다. 기본값 0.3 은
-	// 단일 source 만 으로 도달 가능한 가장 강한 신호 (correlation factor 0.6) 의 절반 으로
-	// 두어 다중 source cross-reference 부재 시 metrics 노이즈 를 차단 한다.
+	// correlation 단일 신호 강도 가 0.6 이상 일 때 통과 가능 한 임계 (0.6 * WeightCorrelation
+	// 0.5 = 0.3) 로 두어 다중 source cross-reference 부재 시 metrics 노이즈 를 차단 한다.
 	confidenceThreshold float64
 }
 

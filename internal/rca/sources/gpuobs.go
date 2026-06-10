@@ -18,7 +18,8 @@ import (
 
 // gpuSignalQueryTemplate 은 node 단위 GPU 신호 강도 의 PromQL query 다. pod:gpu_idle_cause_weight:5m
 // 의 max weight 를 node 별 집계 하여 GPU idle 게이팅 활성 시간대 의 최대 cause weight 를 0-1
-// 범위 로 반환 한다. fallback 으로 correlation_dominant_dimension (raw weight) 도 시도 한다.
+// 범위 로 반환 한다. 단일 query 의 결과 가 빈 vector 면 0 으로 떨어져 confidence 가 자연 감쇠
+// 된다. correlation_dominant_dimension 같은 fallback query 는 본 PR 외 follow-up 영역.
 const gpuSignalQueryTemplate = `max by(node) (pod:gpu_idle_cause_weight:5m{node="%s"})`
 
 // httpGpuobsSource 는 Prometheus instant query 로 GPU 신호 를 fetch 하는 production 구현 이다.
