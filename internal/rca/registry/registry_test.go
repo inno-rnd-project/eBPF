@@ -26,6 +26,46 @@ func (f *fakeSources) GPUSignal(node string) float64 {
 	return f.gpuSignal
 }
 
+// EvaluateConfidence 는 production Sources 와 동일한 가중치 식을 fixture 로 복제 한다. 단위
+// 테스트 가 실제 confidence 산출 식 의 동작 을 mapping 단계 까지 추적 가능 하게 한다. 가중치
+// 정합 은 sources 패키지 의 confidence_test 에서 별도 회귀 가드 한다.
+func (f *fakeSources) EvaluateConfidence(neighbors []NeighborInfo, dropFlows []DropFlowInfo, gpuSignal float64) float64 {
+	c := 0.0
+	for _, n := range neighbors {
+		s := n.Score
+		if s < 0 {
+			s = -s
+		}
+		if s > c {
+			c = s
+		}
+	}
+	if c > 1 {
+		c = 1
+	}
+	n := 0.0
+	for _, d := range dropFlows {
+		if d.RatePerSec > n {
+			n = d.RatePerSec
+		}
+	}
+	n = n / 100.0
+	if n > 1 {
+		n = 1
+	}
+	if n < 0 {
+		n = 0
+	}
+	g := gpuSignal
+	if g > 1 {
+		g = 1
+	}
+	if g < 0 {
+		g = 0
+	}
+	return 0.5*c + 0.3*n + 0.2*g
+}
+
 // TestNew_RegistersExactlyNineMappings 는 명세상 9 alert mapping 이 정확히 등록되는지 회귀
 // 가드한다. 신규 mapping 추가 시 본 테스트의 expected 셋도 함께 갱신해야 하며 의도된 변경이
 // 아닌 누락 / 오타가 발견된다.

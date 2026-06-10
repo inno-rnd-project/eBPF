@@ -10,17 +10,19 @@ func registerNetobs(r *Registry) {
 }
 
 // mapNetObsDropBurst 는 alert 라벨의 5-tuple 을 primary_drop_flow 로 직렬화하고 dominant_dimension
-// 을 network 로 두어 RCASummary 를 만든다. alert expr 이 이미 5-tuple 수준이라 Sources.TopDropFlows
-// 가 돌려주는 추가 flow 는 본 alert 의 진단에 잉여라 호출하지 않는다.
-func mapNetObsDropBurst(labels map[string]string, _ Sources) RCASummary {
+// 을 network 로 두어 RCASummary 를 만든다. #122 의 multi-source cross-reference 산출 을 위해 victim
+// 매칭 noisy neighbor 와 drop flow Top-N 과 node 단위 GPU signal 을 동시 조회 후 EvaluateConfidence
+// 의 결과 를 ConfidenceScore 필드 에 채운다.
+func mapNetObsDropBurst(labels map[string]string, sources Sources) RCASummary {
 	srcNS := labelOr(labels, "src_namespace", "")
 	srcPod := labelOr(labels, "src_pod", "")
 	dstIP := labelOr(labels, "dst_ip", "")
 	dstPort := labelOr(labels, "dst_port", "")
 	proto := labelOr(labels, "protocol", "")
 	reason := labelOr(labels, "drop_reason", "")
+	node := labelOr(labels, "node", "")
 
-	return RCASummary{
+	summary := RCASummary{
 		DominantDimension: "network",
 		TopSuspect:        formatPod(srcNS, srcPod),
 		PrimaryDropFlow:   fmt.Sprintf("%s -> %s:%s proto=%s reason=%s", formatPod(srcNS, srcPod), dstIP, dstPort, proto, reason),
@@ -29,4 +31,21 @@ func mapNetObsDropBurst(labels map[string]string, _ Sources) RCASummary {
 			"netobs_drop_events_flow_total",
 		},
 	}
+
+	if sources != nil {
+		var neighbors []NeighborInfo
+		var dropFlows []DropFlowInfo
+		if srcNS != "" && srcPod != "" {
+			neighbors = sources.TopNeighbors(srcNS, srcPod)
+		}
+		if srcNS != "" {
+			dropFlows = sources.TopDropFlows(srcNS)
+		}
+		gpuSignal := 0.0
+		if node != "" {
+			gpuSignal = sources.GPUSignal(node)
+		}
+		summary.ConfidenceScore = sources.EvaluateConfidence(neighbors, dropFlows, gpuSignal)
+	}
+	return summary
 }

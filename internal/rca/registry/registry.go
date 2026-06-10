@@ -47,6 +47,11 @@ type Sources interface {
 	// instant query 결과를 활용 한다. 매칭 시리즈 가 없 거나 fetch 실패 시 0 을 돌려주어
 	// confidence 산출 이 자연 감쇠 된다.
 	GPUSignal(node string) float64
+	// EvaluateConfidence 는 #122 의 multi-source cross-reference confidence score 산출 진입점
+	// 이다. mapping 이 각 source 의 raw 결과를 모은 뒤 본 메서드를 호출 해 0-1 정규화 점수를
+	// 받는다. 가중치 정책 과 정규화 식 은 sources 패키지의 ComputeConfidenceScore 가 single
+	// source of truth 로 보유 한다.
+	EvaluateConfidence(neighbors []NeighborInfo, dropFlows []DropFlowInfo, gpuSignal float64) float64
 }
 
 // NeighborInfo 는 Sources.TopNeighbors 가 돌려주는 단일 neighbor 의 식별자와 score 다.

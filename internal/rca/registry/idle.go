@@ -28,22 +28,36 @@ func registerIdle(r *Registry) {
 // idleMapping 은 GPUIdleWith* 5 종 alert 의 공통 흐름을 closure 로 캡슐화한다. dimension 은
 // alert 이름에서 추출한 cause 차원이며 evidence 는 cause 별로 dashboard 에서 운영자가 즉시
 // 참조 가능한 메트릭 키를 채운다. victim Pod 식별이 가능하면 noisy neighbor Top-N 의 [0] 으로
-// top_suspect 를 갱신한다.
+// top_suspect 를 갱신한다. #122 의 multi-source cross-reference 산출 시 세 source 의 raw 결과
+// 를 모아 EvaluateConfidence 로 ConfidenceScore 를 채운다.
 func idleMapping(dimension string, evidence []string) Mapping {
 	return func(labels map[string]string, sources Sources) RCASummary {
 		srcNS := labelOr(labels, "src_namespace", "")
 		srcPod := labelOr(labels, "src_pod", "")
+		node := labelOr(labels, "node", "")
 
 		summary := RCASummary{
 			DominantDimension: dimension,
 			TopSuspect:        formatPod(srcNS, srcPod),
 			EvidenceMetrics:   append([]string(nil), evidence...),
 		}
-		if sources != nil && srcNS != "" && srcPod != "" {
-			neighbors := sources.TopNeighbors(srcNS, srcPod)
-			if len(neighbors) > 0 {
-				summary.TopSuspect = formatPod(neighbors[0].SuspectNamespace, neighbors[0].SuspectPod)
+		if sources != nil {
+			var neighbors []NeighborInfo
+			var dropFlows []DropFlowInfo
+			if srcNS != "" && srcPod != "" {
+				neighbors = sources.TopNeighbors(srcNS, srcPod)
+				if len(neighbors) > 0 {
+					summary.TopSuspect = formatPod(neighbors[0].SuspectNamespace, neighbors[0].SuspectPod)
+				}
 			}
+			if srcNS != "" {
+				dropFlows = sources.TopDropFlows(srcNS)
+			}
+			gpuSignal := 0.0
+			if node != "" {
+				gpuSignal = sources.GPUSignal(node)
+			}
+			summary.ConfidenceScore = sources.EvaluateConfidence(neighbors, dropFlows, gpuSignal)
 		}
 		return summary
 	}

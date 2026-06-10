@@ -69,6 +69,19 @@ func (s *Sources) GPUSignal(node string) float64 {
 	return s.gpuobs.fetchGPUSignal(node)
 }
 
+// EvaluateConfidence 는 mapping 이 각 source 의 raw 결과 를 모은 뒤 호출 하는 multi-source
+// confidence score 산출 진입점 이다. 가중치 정책 (correlation 0.5 와 netobs 0.3 과 gpuobs
+// 0.2) 과 정규화 식 은 ComputeConfidenceScore 가 single source of truth 로 보유 한다. 본
+// 메서드 는 source 별 raw 결과 를 ConfidenceFactors 로 변환 한 뒤 ComputeConfidenceScore 에
+// 위임 한다.
+func (s *Sources) EvaluateConfidence(neighbors []registry.NeighborInfo, dropFlows []registry.DropFlowInfo, gpuSignal float64) float64 {
+	return ComputeConfidenceScore(ConfidenceFactors{
+		Correlation: maxNeighborScore(neighbors),
+		Netobs:      maxDropFlowFactor(dropFlows),
+		Gpuobs:      gpuSignal,
+	})
+}
+
 // TopNeighbors 는 snapshotSource 에서 victim 매칭 entry 를 모두 모은 뒤 Score 절대값 내림차순
 // 으로 정렬해 상위 topN 을 돌려준다. correlation-exporter snapshot 은 (victim, dimension, rank)
 // 그룹 단위 정렬이라 victim 매칭 entry 가 등장 순서로는 가장 강한 score 가 [0] 이라는 보장이 없다.
