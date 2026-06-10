@@ -168,6 +168,31 @@ var (
 		[]string{"stage", "node", "src_namespace", "src_pod", "src_pod_uid", "traffic_scope", "direction", "dst_namespace", "dst_workload", "dst_pod_uid"},
 	)
 
+	// #121 TSO/GSO 환경 send path 의 segment 누적 latency histogram. tcp_transmit_skb 의 모든 segment
+	// 호출 latency 의 합산이며 sendmsg 사이클 1회 당 1 sample emit 된다. raw stage_latency 의 첫 segment
+	// 만 측정하는 한계를 보완해 운영자가 large message 의 transmit_skb 처리 비용 합산을 정확히 추적한다.
+	// 라벨 셋은 podStageLatencyLabeled 에서 stage 라벨 제외 한 9종 으로 cardinality 정합 유지.
+	sendPathFullLatencySeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "netobs_send_path_full_latency_seconds",
+			Help:    "TSO/GSO 환경 send path 의 segment 누적 latency 합산 (seconds). tcp_transmit_skb 의 모든 segment 호출 latency 합산이며 sendmsg 사이클 1회 당 1 sample emit 된다. raw netobs_pod_stage_latency_labeled_seconds 의 첫 segment 만 측정 하는 한계 를 보완 한다.",
+			Buckets: prometheus.ExponentialBuckets(1e-6, 2, 20),
+		},
+		[]string{"node", "src_namespace", "src_pod", "src_pod_uid", "traffic_scope", "direction", "dst_namespace", "dst_workload", "dst_pod_uid"},
+	)
+
+	// #121 TSO/GSO 환경 send path 의 누적 segment 개수 counter. tcp_transmit_skb 호출 횟수 의 합산
+	// 이며 segment_count > 1 누적 증가 는 TSO/GSO 활성 환경 의 large message 분할 신호다. cardinality
+	// 폭증 회피 위해 segment_count 자체를 라벨로 두지 않고 Add(float64(segment_count)) 로 누적 합산
+	// 한다.
+	sendPathSegmentCountTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "netobs_send_path_segment_count_total",
+			Help: "TSO/GSO 환경 send path 의 누적 segment 개수. tcp_transmit_skb 호출 횟수 의 합산이며 segment_count > 1 누적 증가 는 large message 의 multi-segment 분할 신호 다.",
+		},
+		[]string{"node", "src_namespace", "src_pod", "src_pod_uid", "traffic_scope", "direction", "dst_namespace", "dst_workload", "dst_pod_uid"},
+	)
+
 	// dstClassifierEmits 는 dst 라벨 분류 outcome 분포를 카운팅하는 self-observe 메트릭이다.
 	// allow-list 가 잘못 설정돼 단명 Pod 의 churn 으로 dst_pod_uid 가 폭증하는 경우 rate(pod_with_uid)
 	// 가 비정상적으로 높게 잡혀 운영자가 cardinality bomb 징후를 조기에 발견할 수 있다. disabled 버킷
@@ -217,6 +242,8 @@ func Register(reg prometheus.Registerer) {
 		retransEventsLabeled,
 		podStageEventsLabeled,
 		podStageLatencyLabeled,
+		sendPathFullLatencySeconds,
+		sendPathSegmentCountTotal,
 		dstClassifierEmits,
 		nicCapacityBytesPerSec,
 		bpfProgramLoaded,
@@ -302,6 +329,15 @@ func Record(ev types.EnrichedEvent) {
 			types.StageTcpWriteXmit, types.StageTcpTransmitSkb:
 			latencySec := float64(ev.Raw.LatencyUs) / 1_000_000.0
 			podStageLatencyLabeled.WithLabelValues(podCommon...).Observe(latencySec)
+		}
+
+		// #121 sendmsg_ret stage 의 segment 누적 latency 와 segment_count 를 별도 메트릭으로 emit.
+		// segment_count > 0 가드 로 seg_accum entry 가 부재 한 sendmsg (tcp_transmit_skb 미호출) 의
+		// 0 sample 노이즈 를 차단 한다. raw stage_latency 의 첫 segment 측정 흐름 과 독립.
+		if ev.Raw.Stage == types.StageSendmsgRet && ev.Raw.SegmentCount > 0 {
+			fullLatencySec := float64(ev.Raw.FullLatencyNs) / 1_000_000_000.0
+			sendPathFullLatencySeconds.WithLabelValues(podCommon...).Observe(fullLatencySec)
+			sendPathSegmentCountTotal.WithLabelValues(podCommon...).Add(float64(ev.Raw.SegmentCount))
 		}
 	}
 
