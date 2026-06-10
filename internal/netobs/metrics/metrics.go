@@ -333,11 +333,12 @@ func Record(ev types.EnrichedEvent) {
 
 		// #121 sendmsg_ret stage 의 segment 누적 latency 와 segment_count 를 별도 메트릭으로 emit.
 		// segment_count > 0 가드 로 seg_accum entry 가 부재 한 sendmsg (tcp_transmit_skb 미호출) 의
-		// 0 sample 노이즈 를 차단 한다. raw stage_latency 의 첫 segment 측정 흐름 과 독립.
+		// 0 sample 노이즈 를 차단 한다. raw stage_latency 의 첫 segment 측정 흐름 과 독립. podCommon
+		// 의 첫 항목 (stage 라벨) 을 제외 한 9 종 라벨 셋 으로 cardinality 정합 유지.
 		if ev.Raw.Stage == types.StageSendmsgRet && ev.Raw.SegmentCount > 0 {
 			fullLatencySec := float64(ev.Raw.FullLatencyNs) / 1_000_000_000.0
-			sendPathFullLatencySeconds.WithLabelValues(podCommon...).Observe(fullLatencySec)
-			sendPathSegmentCountTotal.WithLabelValues(podCommon...).Add(float64(ev.Raw.SegmentCount))
+			sendPathFullLatencySeconds.WithLabelValues(podCommon[1:]...).Observe(fullLatencySec)
+			sendPathSegmentCountTotal.WithLabelValues(podCommon[1:]...).Add(float64(ev.Raw.SegmentCount))
 		}
 	}
 
