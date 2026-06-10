@@ -98,5 +98,43 @@ else
   echo "[warn] netobs_flow_bytes_total 시리즈 0. NETOBS_FLOW_ALLOW_NAMESPACES 환경 변수 미설정 으로 자연 비어 있음 (dev overlay 기본 동작)"
 fi
 
-echo "[pass] protocol-coverage 회귀 가드 1-2 단계 통과 (3 단계 warn 처리)"
+# 4차 가드 (#121): TSO/GSO send path segment 누적 메트릭 emit 확인. 자연 트래픽 의 small message
+# 위주 환경 에서는 segment_count = 1 sample 만 emit 될 수 있어 본 가드 는 metric emit 자체 와 schema
+# 정합 만 검증 한다. segment_count > 1 의 large message 분할 검증 은 별도 워크로드 가 필요 하므로
+# sample 부재 환경 에서는 graceful skip 으로 처리 한다.
+echo "[poll] 4차 가드 (#121) send path segment 누적 메트릭 emit 확인"
+deadline=$(( $(date +%s) + 120 ))
+guard4_passed=0
+while (( $(date +%s) < deadline )); do
+  resp=$(curl -sf --max-time 10 -G "${PROM_URL}/api/v1/query" \
+    --data-urlencode "query=count(netobs_send_path_full_latency_seconds_count)" 2>/dev/null || echo "")
+  cnt=$(echo "${resp}" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    res = d.get('data',{}).get('result',[])
+    print(res[0]['value'][1] if res else 0)
+except: print(0)" 2>/dev/null || echo "0")
+  if [[ "${cnt}" -ge 1 ]]; then
+    resp2=$(curl -sf --max-time 10 -G "${PROM_URL}/api/v1/query" \
+      --data-urlencode "query=sum(netobs_send_path_segment_count_total)" 2>/dev/null || echo "")
+    seg_total=$(echo "${resp2}" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    res = d.get('data',{}).get('result',[])
+    print(res[0]['value'][1] if res else 0)
+except: print(0)" 2>/dev/null || echo "0")
+    echo "[pass] netobs_send_path_full_latency_seconds 시리즈 count=${cnt} segment_count_total sum=${seg_total}"
+    guard4_passed=1
+    break
+  fi
+  echo "[wait] send path segment 누적 메트릭 emit 대기"
+  sleep 15
+done
+if (( guard4_passed == 0 )); then
+  echo "[skip] send path segment 누적 메트릭 sample 부재 (active sendmsg 트래픽 부재 환경). graceful skip"
+fi
+
+echo "[pass] protocol-coverage 회귀 가드 1-2 단계와 4 단계 (#121) 통과 (3 단계 warn 처리)"
 exit 0

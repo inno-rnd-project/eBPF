@@ -38,33 +38,41 @@ type NetObsNetobsPodBytesValue struct {
 	Packets uint64
 }
 
+type NetObsNetobsSegAccum struct {
+	FirstTs             uint64
+	CumulativeLatencyNs uint64
+	SegmentCount        uint32
+	Pad                 [4]uint8
+}
+
 type NetObsNetobsStartInfo struct {
-	TsNs          uint64
-	CgroupId      uint64
-	SocketCookie  uint64
-	Saddr         [16]uint8
-	Daddr         [16]uint8
-	Pid           uint32
-	Tid           uint32
-	Ifindex       uint32
-	SkbIif        uint32
-	Sport         uint16
-	Dport         uint16
-	Comm          [16]int8
-	SeenVeth      uint8
-	SeenDevq      uint8
-	RetSeen       uint8
-	Protocol      uint8
-	SndCwnd       uint32
-	SrttUs        uint32
-	SndSsthresh   uint32
-	PadAlign      [4]uint8
-	TsWriteXmit   uint64
-	TsTransmitSkb uint64
-	SeenWriteXmit uint8
-	SeenTransmit  uint8
-	Family        uint8
-	Pad82         [5]uint8
+	TsNs           uint64
+	CgroupId       uint64
+	SocketCookie   uint64
+	Saddr          [16]uint8
+	Daddr          [16]uint8
+	Pid            uint32
+	Tid            uint32
+	Ifindex        uint32
+	SkbIif         uint32
+	Sport          uint16
+	Dport          uint16
+	Comm           [16]int8
+	SeenVeth       uint8
+	SeenDevq       uint8
+	RetSeen        uint8
+	Protocol       uint8
+	SndCwnd        uint32
+	SrttUs         uint32
+	SndSsthresh    uint32
+	PadAlign       [4]uint8
+	TsWriteXmit    uint64
+	TsTransmitSkb  uint64
+	TsSegmentEntry uint64
+	SeenWriteXmit  uint8
+	SeenTransmit   uint8
+	Family         uint8
+	Pad82          [5]uint8
 }
 
 // LoadNetObs returns the embedded CollectionSpec for NetObs.
@@ -141,6 +149,7 @@ type NetObsMapSpecs struct {
 	EventsDropped *ebpf.MapSpec `ebpf:"events_dropped"`
 	FlowBytes     *ebpf.MapSpec `ebpf:"flow_bytes"`
 	PodBytes      *ebpf.MapSpec `ebpf:"pod_bytes"`
+	SegAccum      *ebpf.MapSpec `ebpf:"seg_accum"`
 	Starts        *ebpf.MapSpec `ebpf:"starts"`
 	TargetDaddr   *ebpf.MapSpec `ebpf:"target_daddr"`
 }
@@ -176,6 +185,7 @@ type NetObsMaps struct {
 	EventsDropped *ebpf.Map `ebpf:"events_dropped"`
 	FlowBytes     *ebpf.Map `ebpf:"flow_bytes"`
 	PodBytes      *ebpf.Map `ebpf:"pod_bytes"`
+	SegAccum      *ebpf.Map `ebpf:"seg_accum"`
 	Starts        *ebpf.Map `ebpf:"starts"`
 	TargetDaddr   *ebpf.Map `ebpf:"target_daddr"`
 }
@@ -187,6 +197,7 @@ func (m *NetObsMaps) Close() error {
 		m.EventsDropped,
 		m.FlowBytes,
 		m.PodBytes,
+		m.SegAccum,
 		m.Starts,
 		m.TargetDaddr,
 	)

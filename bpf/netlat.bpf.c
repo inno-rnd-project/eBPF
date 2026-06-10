@@ -79,6 +79,26 @@ struct {
     __type(value, struct netobs_flow_value);
 } flow_bytes SEC(".maps");
 
+/* #121 TSO/GSO send path segment 누적 latency map. key 는 socket_cookie (u64), value 는 첫 transmit
+ * timestamp 와 segment 단위 latency 누적 합산 과 segment 개수 의 누적 추적 struct 다. sendmsg
+ * 사이클 중 호출 되는 모든 __tcp_transmit_skb 의 segment latency 를 본 map 에 합산 누적 하고
+ * sendmsg_ret 시점 에 emit 후 entry 를 cleanup 한다. max_entries 8192 는 (활성 socket 4096) x
+ * (direction 2) 의 cap 예산. BPF_MAP_TYPE_LRU_HASH 라 entry 폭주 시 자연 evict 된다.
+ */
+struct netobs_seg_accum {
+    __u64 first_ts;
+    __u64 cumulative_latency_ns;
+    __u32 segment_count;
+    __u8  pad[4];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 8192);
+    __type(key, __u64);
+    __type(value, struct netobs_seg_accum);
+} seg_accum SEC(".maps");
+
 static __always_inline int match_target(__u32 daddr_net)
 {
     __u32 key = 0;
@@ -343,13 +363,17 @@ static __always_inline void inc_flow_bytes(__u64 cgroup_id, __u8 family,
 
 /* emit_event 의 stack_id 인자는 #83 drop event 의 kernel stack capture 용이다. drop 외 stage 는
  * 항상 -1 을 전달해 비-drop 메트릭 라벨에 stack 차원이 새지 않도록 가드한다. drop emit 만
- * handle_kfree_skb_reason 에서 bpf_get_stackid 의 반환값을 그대로 넘긴다. */
+ * handle_kfree_skb_reason 에서 bpf_get_stackid 의 반환값을 그대로 넘긴다. #121 의 full_latency_ns
+ * 와 segment_count 인자 는 sendmsg_ret stage 에서만 0 이 아닌 값을 전달 하며 다른 stage 는 모두
+ * 0 으로 채워 라벨 의미 정합 을 유지 한다. */
 static __always_inline void emit_event(const struct netobs_start_info *s,
                                        __u8 stage,
                                        __u32 reason,
                                        __u32 ret,
                                        __u32 latency_us,
-                                       __s32 stack_id)
+                                       __s32 stack_id,
+                                       __u64 full_latency_ns,
+                                       __u32 segment_count)
 {
     struct netobs_event *e;
 
@@ -390,6 +414,13 @@ static __always_inline void emit_event(const struct netobs_start_info *s,
     e->pad83[1]      = 0;
     e->pad83[2]      = 0;
     e->pad83[3]      = 0;
+
+    e->full_latency_ns = full_latency_ns;
+    e->segment_count   = segment_count;
+    e->pad121[0]       = 0;
+    e->pad121[1]       = 0;
+    e->pad121[2]       = 0;
+    e->pad121[3]       = 0;
 
     bpf_ringbuf_submit(e, 0);
 }
@@ -439,7 +470,19 @@ int BPF_KRETPROBE(handle_tcp_sendmsg_ret, int ret)
     now = bpf_ktime_get_ns();
     latency_us = (__u32)((now - s->ts_ns) / 1000);
 
-    emit_event(s, NETOBS_STAGE_SENDMSG_RET, 0, ret, latency_us, -1);
+    /* #121 sendmsg 사이클 의 segment 누적 latency 와 segment_count 를 sendmsg_ret stage event 에 함께
+     * emit. seg_accum entry 가 부재 한 경우 (tcp_transmit_skb 미호출 sendmsg 등) 0/0 으로 emit. emit
+     * 직후 cleanup 으로 long-running socket 의 stale entry 방지. */
+    __u64 full_latency_ns = 0;
+    __u32 segment_count = 0;
+    struct netobs_seg_accum *seg = bpf_map_lookup_elem(&seg_accum, &s->socket_cookie);
+    if (seg) {
+        full_latency_ns = seg->cumulative_latency_ns;
+        segment_count = seg->segment_count;
+        bpf_map_delete_elem(&seg_accum, &s->socket_cookie);
+    }
+
+    emit_event(s, NETOBS_STAGE_SENDMSG_RET, 0, ret, latency_us, -1, full_latency_ns, segment_count);
     s->ret_seen = 1;
 
     /* L4 egress 바이트는 ret > 0 (실제 전송 바이트) 일 때만 누적한다. ret <= 0 은 -errno 또는
@@ -505,7 +548,7 @@ int BPF_KRETPROBE(handle_tcp_write_xmit_ret)
     now = bpf_ktime_get_ns();
     latency_us = (__u32)((now - s->ts_write_xmit) / 1000);
 
-    emit_event(s, NETOBS_STAGE_TCP_WRITE_XMIT, 0, 0, latency_us, -1);
+    emit_event(s, NETOBS_STAGE_TCP_WRITE_XMIT, 0, 0, latency_us, -1, 0, 0);
     /* ts_write_xmit 을 0 으로 reset 해 한 sendmsg 사이클 내 첫 회 측정 후 후속 kretprobe 호출
      * (TSO/GSO 다중 segment 또는 timer / ack 콜백 경로) 에서 stale ts 로 잘못된 거대 latency 가
      * emit 되지 않게 한다. seen_write_xmit 은 sendmsg entry 의 zero-init 으로 다음 사이클에서
@@ -524,9 +567,10 @@ int BPF_KPROBE(handle_tcp_transmit_skb, struct sock *sk, struct sk_buff *skb)
 {
     __u32 tid = (__u32)bpf_get_current_pid_tgid();
     struct netobs_start_info *s;
+    __u64 now;
 
     s = bpf_map_lookup_elem(&starts, &tid);
-    if (!s || s->seen_transmit)
+    if (!s)
         return 0;
 
     /* tcp_write_xmit 과 동일 race 가드. __tcp_transmit_skb 가 softirq 컨텍스트에서 호출될 때
@@ -536,8 +580,31 @@ int BPF_KPROBE(handle_tcp_transmit_skb, struct sock *sk, struct sk_buff *skb)
     if (get_socket_cookie(sk) != s->socket_cookie)
         return 0;
 
-    s->ts_transmit_skb = bpf_ktime_get_ns();
-    s->seen_transmit = 1;
+    now = bpf_ktime_get_ns();
+
+    /* #82 첫 segment 의 ts_transmit_skb 만 stage_latency emit 용으로 보존. seen_transmit flag 가드로
+     * 후속 segment 는 stage_latency emit 흐름에서 자연 제외 된다. */
+    if (!s->seen_transmit) {
+        s->ts_transmit_skb = now;
+        s->seen_transmit = 1;
+    }
+
+    /* #121 모든 segment 의 entry timestamp 갱신. kretprobe 의 segment 단위 latency 산정 에 사용. */
+    s->ts_segment_entry = now;
+
+    /* #121 seg_accum 에 socket_cookie 별 segment count 증가. 첫 segment 는 entry create, 후속 segment
+     * 는 count++. cumulative_latency 는 kretprobe 에서 누적. */
+    struct netobs_seg_accum *seg = bpf_map_lookup_elem(&seg_accum, &s->socket_cookie);
+    if (!seg) {
+        struct netobs_seg_accum init = {
+            .first_ts = now,
+            .cumulative_latency_ns = 0,
+            .segment_count = 1,
+        };
+        bpf_map_update_elem(&seg_accum, &s->socket_cookie, &init, BPF_ANY);
+    } else {
+        seg->segment_count++;
+    }
     return 0;
 }
 
@@ -550,18 +617,32 @@ int BPF_KRETPROBE(handle_tcp_transmit_skb_ret)
     __u32 latency_us;
 
     s = bpf_map_lookup_elem(&starts, &tid);
-    if (!s || !s->ts_transmit_skb)
+    if (!s)
         return 0;
 
     now = bpf_ktime_get_ns();
-    latency_us = (__u32)((now - s->ts_transmit_skb) / 1000);
 
-    emit_event(s, NETOBS_STAGE_TCP_TRANSMIT_SKB, 0, 0, latency_us, -1);
-    /* tcp_write_xmit_ret 과 동일한 stale ts 가드. ts_transmit_skb 를 0 으로 reset 해 후속
-     * kretprobe 호출에서 huge latency (예: 524ms 의 histogram bucket 상한 outlier) 가 emit 되는
-     * 회귀를 막는다.
-     */
-    s->ts_transmit_skb = 0;
+    /* #121 모든 segment 의 ret 시점에 segment latency 를 seg_accum 에 누적. ts_segment_entry 는 매
+     * segment entry 마다 갱신되어 stale ts 위험 zero. */
+    if (s->ts_segment_entry) {
+        __u64 seg_lat = now - s->ts_segment_entry;
+        struct netobs_seg_accum *seg = bpf_map_lookup_elem(&seg_accum, &s->socket_cookie);
+        if (seg)
+            seg->cumulative_latency_ns += seg_lat;
+        s->ts_segment_entry = 0;
+    }
+
+    /* #82 첫 segment 의 stage_latency 만 emit. seen_transmit 가드로 ts_transmit_skb 가 살아 있는
+     * 첫 사이클 만 통과 한다. */
+    if (s->ts_transmit_skb) {
+        latency_us = (__u32)((now - s->ts_transmit_skb) / 1000);
+        emit_event(s, NETOBS_STAGE_TCP_TRANSMIT_SKB, 0, 0, latency_us, -1, 0, 0);
+        /* tcp_write_xmit_ret 과 동일한 stale ts 가드. ts_transmit_skb 를 0 으로 reset 해 후속
+         * kretprobe 호출에서 huge latency (예: 524ms 의 histogram bucket 상한 outlier) 가 emit 되는
+         * 회귀를 막는다.
+         */
+        s->ts_transmit_skb = 0;
+    }
     return 0;
 }
 
@@ -582,7 +663,7 @@ int BPF_KPROBE(handle_veth_xmit, struct sk_buff *skb)
     now = bpf_ktime_get_ns();
     latency_us = (__u32)((now - s->ts_ns) / 1000);
 
-    emit_event(s, NETOBS_STAGE_TO_VETH, 0, 0, latency_us, -1);
+    emit_event(s, NETOBS_STAGE_TO_VETH, 0, 0, latency_us, -1, 0, 0);
     s->seen_veth = 1;
 
     if (s->ret_seen && s->seen_devq)
@@ -618,7 +699,7 @@ int BPF_KPROBE(handle_dev_queue_xmit, struct sk_buff *skb)
     now = bpf_ktime_get_ns();
     latency_us = (__u32)((now - s->ts_ns) / 1000);
 
-    emit_event(s, NETOBS_STAGE_TO_DEVQ, 0, 0, latency_us, -1);
+    emit_event(s, NETOBS_STAGE_TO_DEVQ, 0, 0, latency_us, -1, 0, 0);
     s->seen_devq = 1;
 
     if (s->ret_seen && s->seen_veth)
@@ -650,7 +731,7 @@ int BPF_KPROBE(handle_tcp_retransmit_skb, struct sock *sk, struct sk_buff *skb, 
     }
 
     bpf_get_current_comm(&s.comm, sizeof(s.comm));
-    emit_event(&s, NETOBS_STAGE_RETRANS, 0, 0, 0, -1);
+    emit_event(&s, NETOBS_STAGE_RETRANS, 0, 0, 0, -1, 0, 0);
     return 0;
 }
 
@@ -761,7 +842,7 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
         fill_dev_from_skb(skb, &s);
 
     bpf_get_current_comm(&s.comm, sizeof(s.comm));
-    emit_event(&s, stage, 0, 0, 0, -1);
+    emit_event(&s, stage, 0, 0, 0, -1, 0, 0);
 }
 
 /* #65 receive path stage 별 kprobe.
@@ -941,6 +1022,6 @@ int BPF_KPROBE(handle_kfree_skb_reason, struct sk_buff *skb, int reason)
     stack_id = bpf_get_stackid(ctx, &drop_stacks, BPF_F_FAST_STACK_CMP);
 
     bpf_get_current_comm(&s.comm, sizeof(s.comm));
-    emit_event(&s, NETOBS_STAGE_DROP, reason, 0, 0, stack_id);
+    emit_event(&s, NETOBS_STAGE_DROP, reason, 0, 0, stack_id, 0, 0);
     return 0;
 }
