@@ -70,7 +70,9 @@ confidence=$(echo "${guard1_response}" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
-    v = d.get('confidence_score')
+    # /rca response 는 {summary: {...}, updated_at: ...} 형태 라 nested 접근 한다.
+    summary = d.get('summary', d)
+    v = summary.get('confidence_score')
     if v is None:
         print('MISSING')
     else:
