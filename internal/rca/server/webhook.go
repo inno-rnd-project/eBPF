@@ -29,8 +29,10 @@ const MaxWebhookPayloadBytes = 1 << 20
 // NewWebhookHandler 는 POST /webhook 핸들러를 만든다. payload 의 firing 알람만 처리하고
 // resolved 알람은 emit 없이 200 으로 ack 한다. mapping 미등록 alert 는 store 에는 raw labels
 // echo back 한 RCASummary 를 그대로 보관해 silent drop 을 회피하지만, metrics 에는 emit 하지
-// 않아 등록 alert 9 종으로 라벨 카디널리티가 폐쇄된다.
-func NewWebhookHandler(reg *registry.Registry, src registry.Sources, st *store.Store, met *rcametrics.Metrics) http.Handler {
+// 않아 등록 alert 9 종으로 라벨 카디널리티가 폐쇄된다. confidenceThreshold 는 #122 의 false
+// positive guard 임계 다. RCASummary.ConfidenceScore 가 본 값 미만 인 등록 alert 는 metrics emit
+// 을 skip 하고 store 에는 그대로 보관 + skipped_total counter 만 증가 한다.
+func NewWebhookHandler(reg *registry.Registry, src registry.Sources, st *store.Store, met *rcametrics.Metrics, confidenceThreshold float64) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var p alertmanagerPayload
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxWebhookPayloadBytes)).Decode(&p); err != nil {
@@ -54,10 +56,19 @@ func NewWebhookHandler(reg *registry.Registry, src registry.Sources, st *store.S
 			// 번째 반환값이 false 면 cap 초과로 silent drop 된 케이스다.
 			st.Set(summary, ok)
 			if ok {
-				// mapping 등록 alert (9 종) 만 metrics 에 emit 해 alert_name 라벨 카디널리티 폐쇄성
-				// 을 보장한다. 외부에서 임의 alertname 으로 webhook 이 도달해도 메트릭 시리즈가
-				// 폭증하지 않는다. 미등록 alert 의 진단 흐름은 /rca endpoint 의 store entry 로 유지.
-				met.Record(summary)
+				// #122 false positive guard. ConfidenceScore 가 threshold 미만 이면 metrics emit
+				// 을 skip 하고 skipped_total counter 만 증가 한다. store 는 그대로 유지 되어 운영자
+				// 가 /rca?alert=<name> 으로 진단 직접 조회 가능 하다.
+				if summary.ConfidenceScore < confidenceThreshold {
+					log.Printf("rca: skip emit alert=%s confidence=%.3f below threshold %.3f", alertname, summary.ConfidenceScore, confidenceThreshold)
+					met.RecordSkipped(alertname, "below_threshold")
+				} else {
+					// mapping 등록 alert (9 종) 만 metrics 에 emit 해 alert_name 라벨 카디널리티
+					// 폐쇄성 을 보장 한다. 외부 에서 임의 alertname 으로 webhook 이 도달 해도 메트릭
+					// 시리즈 가 폭증 하지 않는다. 미등록 alert 의 진단 흐름은 /rca endpoint 의 store
+					// entry 로 유지.
+					met.Record(summary)
+				}
 			}
 			processed++
 		}

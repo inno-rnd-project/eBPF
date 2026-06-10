@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -38,6 +39,12 @@ type config struct {
 	prometheusURL          string
 	correlationSnapshotURL string
 	webhookTimeout         time.Duration
+	// confidenceThreshold 는 #122 의 multi-source cross-reference confidence score 의 false
+	// positive guard threshold 다. RCASummary 의 ConfidenceScore 가 본 값 미만 인 alert 는
+	// metrics emit 을 skip 하고 warn 로그 와 skipped_total counter 만 갱신 한다. 기본값 0.3 은
+	// 단일 source 만 으로 도달 가능한 가장 강한 신호 (correlation factor 0.6) 의 절반 으로
+	// 두어 다중 source cross-reference 부재 시 metrics 노이즈 를 차단 한다.
+	confidenceThreshold float64
 }
 
 func parseConfig() (config, error) {
@@ -46,6 +53,7 @@ func parseConfig() (config, error) {
 		prometheusURL:          "http://kube-prometheus-stack-prometheus.monitoring.svc:9090",
 		correlationSnapshotURL: "http://correlation-exporter.ebpf-project.svc:9830/snapshot",
 		webhookTimeout:         30 * time.Second,
+		confidenceThreshold:    0.3,
 	}
 
 	if v := strings.TrimSpace(os.Getenv("LISTEN_ADDR")); v != "" {
@@ -63,18 +71,28 @@ func parseConfig() (config, error) {
 			cfg.webhookTimeout = d
 		}
 	}
+	if v := strings.TrimSpace(os.Getenv("RCA_CONFIDENCE_THRESHOLD")); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err == nil {
+			cfg.confidenceThreshold = f
+		}
+	}
 
 	fs := flag.NewFlagSet("rca-summarizer", flag.ContinueOnError)
 	fs.StringVar(&cfg.listenAddr, "listen", cfg.listenAddr, "metrics / webhook server listen address")
 	fs.StringVar(&cfg.prometheusURL, "prometheus-url", cfg.prometheusURL, "Prometheus base URL for top-N instant query")
 	fs.StringVar(&cfg.correlationSnapshotURL, "correlation-snapshot-url", cfg.correlationSnapshotURL, "correlation-exporter /snapshot URL")
 	fs.DurationVar(&cfg.webhookTimeout, "webhook-timeout", cfg.webhookTimeout, "max wall-clock to compose RCA summary per webhook")
+	fs.Float64Var(&cfg.confidenceThreshold, "confidence-threshold", cfg.confidenceThreshold, "#122: min ConfidenceScore to emit RCA metric (false positive guard)")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return config{}, err
 	}
 	if cfg.webhookTimeout <= 0 {
 		return config{}, errors.New("webhook-timeout must be positive")
+	}
+	if cfg.confidenceThreshold < 0 || cfg.confidenceThreshold > 1 {
+		return config{}, errors.New("confidence-threshold must be in [0, 1]")
 	}
 	return cfg, nil
 }
@@ -102,7 +120,7 @@ func main() {
 	mux := server.NewMux(server.Options{
 		Registry: reg,
 		Ready:    &ready,
-		Webhook:  server.NewWebhookHandler(rcaRegistry, src, st, met),
+		Webhook:  server.NewWebhookHandler(rcaRegistry, src, st, met, cfg.confidenceThreshold),
 		RCA:      server.NewRCAHandler(st),
 	})
 
