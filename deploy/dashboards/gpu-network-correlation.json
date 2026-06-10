@@ -62,6 +62,18 @@
         "label": "Pod",
         "refresh": 2,
         "sort": 1
+      },
+      {
+        "name": "gpu_uuid",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(gpuobs_device_utilization_percent{node=\"$node\"}, gpu_uuid)",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "GPU UUID",
+        "refresh": 2,
+        "sort": 1
       }
     ]
   },
@@ -379,6 +391,337 @@
           "datasource": "${datasource}"
         }
       ]
+    },
+    {
+      "id": 4,
+      "type": "row",
+      "title": "Pod 단위 multi-domain 분석 (#120)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "panels": []
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Pod 단위 GPU x network dual-axis ($src_namespace/$src_pod)",
+      "description": "#120 Pod 단위 multi-domain 분석. pod:gpu_util_p95:5m 와 pod:network_throughput_bps:5m 와 pod:network_p99_latency_seconds:5m 를 동일 4 Pod 라벨 join key (node, src_namespace, src_pod, src_pod_uid) 로 한 차트 에 시간 정렬 한다. 좌축 GPU util percentunit, 우축 network throughput bps 와 network p99 latency seconds.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bps"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "max",
+                "value": null
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "C"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "max",
+                "value": null
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by(node, src_namespace, src_pod) (pod:gpu_util_p95:5m{node=\"$node\",src_namespace=~\"$src_namespace\",src_pod=~\"$src_pod\",gpu_uuid=~\"$gpu_uuid\"}) / 100",
+          "legendFormat": "GPU util p95 ({{src_namespace}}/{{src_pod}})",
+          "datasource": "${datasource}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by(node, src_namespace, src_pod) (pod:network_throughput_bps:5m{node=\"$node\",src_namespace=~\"$src_namespace\",src_pod=~\"$src_pod\"})",
+          "legendFormat": "network throughput ({{src_namespace}}/{{src_pod}})",
+          "datasource": "${datasource}"
+        },
+        {
+          "refId": "C",
+          "expr": "max by(node, src_namespace, src_pod) (pod:network_p99_latency_seconds:5m{node=\"$node\",src_namespace=~\"$src_namespace\",src_pod=~\"$src_pod\"})",
+          "legendFormat": "network p99 latency ({{src_namespace}}/{{src_pod}})",
+          "datasource": "${datasource}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Top cross-domain Pod (pod:gpu_network_correlation_score:5m)",
+      "description": "#120 의 신규 score TopN 표. GPU 사용률 정규화 와 network 대역폭 점유율 의 곱 형태 단일 score 가 높은 상위 20 Pod 를 노출 한다. score 0 인 Pod 는 GPU factor 또는 network factor 한쪽 이 0 인 상태 라 join score 도 0 이 다.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(20, pod:gpu_network_correlation_score:5m{node=\"$node\",src_namespace=~\"$src_namespace\",src_pod=~\"$src_pod\"})",
+          "instant": true,
+          "format": "table",
+          "datasource": "${datasource}"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "endpoint": true,
+              "container": true,
+              "namespace": true,
+              "pod": true,
+              "service": true,
+              "src_pod_uid": true
+            },
+            "renameByName": {
+              "Value": "score",
+              "node": "node",
+              "src_namespace": "namespace",
+              "src_pod": "pod"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "score",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "score"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 4
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "blue",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 0.1
+                    },
+                    {
+                      "color": "orange",
+                      "value": 0.3
+                    },
+                    {
+                      "color": "red",
+                      "value": 0.5
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "links": [
+        {
+          "title": "Drill into netobs overview",
+          "url": "/d/netobs-overview?var-src_namespace=${__data.fields.namespace}&var-src_pod=${__data.fields.pod}&${__url_time_range}",
+          "targetBlank": true
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "xychart",
+      "title": "Pod 별 GPU util x network throughput 산점",
+      "description": "#120 Pod 단위 GPU 와 network 두 도메인 의 동조 분포 산점도. x 축 GPU util p95 percentunit, y 축 network throughput bps. 우상단 영역 의 Pod 가 GPU heavy + network heavy 동시 만족.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 53
+      },
+      "options": {
+        "mapping": "auto",
+        "series": [
+          {
+            "frame": {
+              "matcher": {
+                "id": "byName",
+                "options": "scatter"
+              }
+            },
+            "x": {
+              "matcher": {
+                "id": "byName",
+                "options": "gpu_util"
+              }
+            },
+            "y": {
+              "matcher": {
+                "id": "byName",
+                "options": "network_throughput"
+              }
+            }
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by(src_namespace, src_pod) (pod:gpu_util_p95:5m{node=\"$node\",src_namespace=~\"$src_namespace\",src_pod=~\"$src_pod\",gpu_uuid=~\"$gpu_uuid\"}) / 100",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "gpu_util",
+          "datasource": "${datasource}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by(src_namespace, src_pod) (pod:network_throughput_bps:5m{node=\"$node\",src_namespace=~\"$src_namespace\",src_pod=~\"$src_pod\"})",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "network_throughput",
+          "datasource": "${datasource}"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "Value #A": "gpu_util",
+              "Value #B": "network_throughput"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineWidth": 0,
+            "fillOpacity": 50,
+            "pointSize": 5
+          }
+        }
+      }
     }
   ],
   "annotations": {
