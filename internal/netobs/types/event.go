@@ -72,6 +72,16 @@ type Event struct {
 	// 일관성을 확보한다.
 	StackID int32
 	Pad83   [4]byte
+
+	// #121 TSO/GSO send path segment 누적 latency 와 segment 개수. sendmsg_ret stage 에서만 0 이 아닌
+	// 값을 가지며 다른 stage 는 0 으로 emit 된다. FullLatencyNs 는 sendmsg 사이클 의 모든
+	// tcp_transmit_skb segment latency 합산 (nanoseconds), SegmentCount 는 tcp_transmit_skb 호출
+	// 횟수 다. TSO/GSO 활성 환경 의 large message 가 multi-segment 로 분할 될 때 SegmentCount > 1
+	// 이 된다. 본 2 필드 추가로 struct size 가 104 → 120 byte 로 확장 되며 BPF 측 netobs_event 와
+	// 정합 한다.
+	FullLatencyNs uint64
+	SegmentCount  uint32
+	Pad121        [4]byte
 }
 
 type EnrichedEvent struct {

@@ -134,6 +134,10 @@ struct netobs_start_info {
      * 하도록 가드해 starts map slot race 를 회피한다. */
     __u64 ts_write_xmit;
     __u64 ts_transmit_skb;
+    /* #121 TSO/GSO 환경 의 모든 tcp_transmit_skb segment 의 entry timestamp 갱신 슬롯. seen_transmit
+     * flag 와 무관 하게 매 segment entry 마다 now 로 overwrite 되어 kretprobe 시점 에 segment 단위
+     * latency 산정 에 사용 된다. ts_transmit_skb 가 첫 segment 의 ts 만 보존 하는 것 과 분리. */
+    __u64 ts_segment_entry;
     __u8  seen_write_xmit;
     __u8  seen_transmit;
     /* #103 family enum (NETOBS_AF_INET / NETOBS_AF_INET6). fill_conn_from_sock 에서 sk_family 를
@@ -186,6 +190,15 @@ struct netobs_event {
      * byte 로 확장된다. */
     __s32 stack_id;
     __u8  pad83[4];
+
+    /* #121 TSO/GSO 환경 의 send path segment 누적 latency 와 segment 개수. sendmsg_ret stage 의 emit
+     * 에서만 0 이 아닌 값을 가지며 다른 stage 는 0 으로 emit 된다. full_latency_ns 는 sendmsg 사이
+     * 클 의 모든 tcp_transmit_skb 호출 의 segment latency 합산 (nanoseconds), segment_count 는 tcp_
+     * transmit_skb 호출 횟수 다. TSO/GSO 활성 환경 의 large message 가 multi-segment 로 분할 될 때
+     * segment_count > 1 이 된다. struct size 는 104 → 120 byte 로 확장 된다. */
+    __u64 full_latency_ns;
+    __u32 segment_count;
+    __u8  pad121[4];
 };
 
 #endif

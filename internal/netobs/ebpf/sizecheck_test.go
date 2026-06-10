@@ -3,6 +3,8 @@ package ebpfx
 import (
 	"testing"
 	"unsafe"
+
+	"netobs/internal/netobs/types"
 )
 
 // TestFlowKeySize 는 #103 의 IPv6 확장 후 netobs_flow_key 가 BPF 측 정의와 정합한 48 byte 인지
@@ -27,15 +29,27 @@ func TestFlowValueSize(t *testing.T) {
 	}
 }
 
-// TestStartInfoSize 는 #103 의 IPv6 확장 후 netobs_start_info 가 BPF 측 정의와 정합한 136 byte 인지
-// 회귀 가드 한다. #85 의 112 byte 에서 saddr / daddr 각각 12 byte 씩 (총 24 byte) 증가 하여 136 byte.
-// is_ipv4 는 family (동일 1 byte) 로 의미 확장 되어 size 영향 없음. 본 가드 가 깨지면 BPF C 측 struct
-// 와 Go 측 generated struct 의 layout 불일치 위험 이 있으며 LRU_HASH starts map 의 marshal 길이 검증
-// 도 함께 실패 한다.
+// TestStartInfoSize 는 #121 의 ts_segment_entry 추가 후 netobs_start_info 가 BPF 측 정의와 정합한
+// 144 byte 인지 회귀 가드 한다. #103 의 IPv6 확장 후 136 byte 에서 ts_segment_entry (u64 8 byte) 1 필드
+// 추가 하여 144 byte 가 된다. 본 가드 가 깨지면 BPF C 측 struct 와 Go 측 generated struct 의 layout
+// 불일치 위험 이 있으며 LRU_HASH starts map 의 marshal 길이 검증 도 함께 실패 한다.
 func TestStartInfoSize(t *testing.T) {
-	const want = 136
+	const want = 144
 	got := int(unsafe.Sizeof(NetObsNetobsStartInfo{}))
 	if got != want {
-		t.Errorf("NetObsNetobsStartInfo size=%d want %d (#103 IPv6 확장 후 size 정합)", got, want)
+		t.Errorf("NetObsNetobsStartInfo size=%d want %d (#121 ts_segment_entry 추가 후 size 정합)", got, want)
+	}
+}
+
+// TestEventSize 는 #121 의 full_latency_ns 와 segment_count 추가 후 types.Event (= BPF 측 netobs_event)
+// 가 정합한 144 byte 인지 회귀 가드 한다. #103 의 IPv6 확장 후 128 byte 에서 FullLatencyNs (u64 8 byte)
+// + SegmentCount (u32 4 byte) + Pad121 (4 byte) = 16 byte 증가 하여 144 byte 가 된다. 본 가드 가
+// 깨지면 ringbuf event 의 binary.Read parse 가 어긋나 모든 stage 메트릭 라벨이 잘못 채워질 위험 이
+// 있다.
+func TestEventSize(t *testing.T) {
+	const want = 144
+	got := int(unsafe.Sizeof(types.Event{}))
+	if got != want {
+		t.Errorf("types.Event size=%d want %d (#121 full_latency_ns 추가 후 size 정합)", got, want)
 	}
 }
