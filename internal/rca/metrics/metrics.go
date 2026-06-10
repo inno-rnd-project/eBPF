@@ -14,13 +14,15 @@ import (
 // Metrics 는 본 패키지의 두 메트릭과 라벨 셋 캐시를 묶는다. emit 호출이 동시 발생해도 라벨 셋
 // 교체 시점의 race 가 없도록 mu 로 직렬화한다.
 type Metrics struct {
-	emitted    *prometheus.CounterVec
-	lastInfo   *prometheus.GaugeVec
-	mu         sync.Mutex
-	lastLabels map[string]prometheus.Labels // alertname → 가장 최근 emit 한 라벨 셋
+	emitted         *prometheus.CounterVec
+	lastInfo        *prometheus.GaugeVec
+	confidenceScore *prometheus.GaugeVec
+	skippedTotal    *prometheus.CounterVec
+	mu              sync.Mutex
+	lastLabels      map[string]prometheus.Labels // alertname → 가장 최근 emit 한 라벨 셋
 }
 
-// New 는 두 메트릭을 만들어 반환한다. Register 는 호출 측이 별도로 한다 (테스트 격리 용이).
+// New 는 메트릭들을 만들어 반환한다. Register 는 호출 측이 별도로 한다 (테스트 격리 용이).
 func New() *Metrics {
 	return &Metrics{
 		emitted: prometheus.NewCounterVec(
@@ -37,13 +39,32 @@ func New() *Metrics {
 			},
 			[]string{"alert_name", "dominant_dimension", "top_suspect", "primary_drop_flow"},
 		),
+		// #122 multi-source cross-reference confidence score 의 alert 별 gauge. 라벨 셋은
+		// alert_name 과 dominant_dimension 2 종 으로 cardinality 폐쇄 (등록 alert 9 종 x 7 도메인
+		// 정도). float 값 의 confidence 자체 를 라벨 로 두지 않 아 series 폭주 방지.
+		confidenceScore: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "rca_summary_confidence_score",
+				Help: "Most recent multi-source cross-reference confidence score per alert (0-1). Computed from correlation snapshot, netobs drop flow, and gpuobs GPU signal with weights 0.5/0.3/0.2. Drives the false positive guard that gates metric emission below the configured threshold.",
+			},
+			[]string{"alert_name", "dominant_dimension"},
+		),
+		// #122 false positive guard 가 skip 한 alert 카운터. reason 라벨 은 항상 "below_threshold"
+		// 로 두어 향후 다른 skip 사유 추가 시 enum 확장 여지 를 남긴다.
+		skippedTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "rca_summary_skipped_total",
+				Help: "Cumulative count of RCA emissions skipped by the #122 false positive guard. Reason label distinguishes skip causes; current implementation emits only below_threshold.",
+			},
+			[]string{"alert_name", "reason"},
+		),
 		lastLabels: make(map[string]prometheus.Labels),
 	}
 }
 
 // Collectors 는 prometheus.Registerer.MustRegister 에 전달할 collector 슬라이스를 돌려준다.
 func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.emitted, m.lastInfo}
+	return []prometheus.Collector{m.emitted, m.lastInfo, m.confidenceScore, m.skippedTotal}
 }
 
 // Record 는 한 RCASummary 가 산출됐을 때 호출된다. emitted_total 을 증가시키고 last_summary_info
@@ -62,16 +83,44 @@ func (m *Metrics) Record(summary registry.RCASummary) {
 		"primary_drop_flow":  defaultStr(summary.PrimaryDropFlow, "none"),
 	}
 
+	newDimension := defaultStr(summary.DominantDimension, "unknown")
 	if prev, ok := m.lastLabels[summary.AlertName]; ok {
 		// 이전 라벨 셋과 정확히 동일하면 Delete 후 재등록 비용을 회피한다.
 		if labelsEqual(prev, newLabels) {
 			m.lastInfo.With(prev).Set(1)
-			return
+		} else {
+			m.lastInfo.Delete(prev)
+			m.lastInfo.With(newLabels).Set(1)
+			// #122 confidence score gauge 의 stale series 차단. dominant_dimension 이 swap 되면
+			// 이전 라벨 셋 의 series 가 GaugeVec 메모리 에 잔류 하므로 명시 Delete 한다. lastInfo
+			// 와 동일 패턴 으로 alert 당 confidence series 1 개 만 유지 한다.
+			if prev["dominant_dimension"] != newDimension {
+				m.confidenceScore.Delete(prometheus.Labels{
+					"alert_name":         summary.AlertName,
+					"dominant_dimension": prev["dominant_dimension"],
+				})
+			}
+			m.lastLabels[summary.AlertName] = newLabels
 		}
-		m.lastInfo.Delete(prev)
+	} else {
+		m.lastInfo.With(newLabels).Set(1)
+		m.lastLabels[summary.AlertName] = newLabels
 	}
-	m.lastInfo.With(newLabels).Set(1)
-	m.lastLabels[summary.AlertName] = newLabels
+
+	// #122 confidence score gauge 는 alert_name 과 dominant_dimension 2 라벨 만 으로 cardinality
+	// 폐쇄 된다. dominant_dimension swap 시 의 stale series 는 위 분기 의 Delete 로 차단 되며 본
+	// 자리 는 현재 라벨 셋 의 값 만 Set 한다.
+	m.confidenceScore.WithLabelValues(
+		summary.AlertName,
+		newDimension,
+	).Set(summary.ConfidenceScore)
+}
+
+// RecordSkipped 는 #122 false positive guard 가 ConfidenceScore 미달 으로 RCA emit 을 skip 할 때
+// 호출 한다. alert_name 라벨 카디널리티 는 등록 alert 9 종 으로 폐쇄 되며 reason 라벨 은 현재
+// "below_threshold" 단일 값 이다.
+func (m *Metrics) RecordSkipped(alertname, reason string) {
+	m.skippedTotal.WithLabelValues(alertname, reason).Inc()
 }
 
 // defaultStr 은 empty 문자열을 라벨에 그대로 흘리지 않도록 sentinel 로 치환한다. Prometheus

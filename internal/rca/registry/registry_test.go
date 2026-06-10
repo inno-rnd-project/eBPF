@@ -8,10 +8,12 @@ import (
 
 // fakeSources 는 단위 테스트용 Sources 구현이다. 등록된 victim 키 별로 미리 준비한 neighbor 리스트
 // 를 돌려준다. drop flow 는 본 mapping 셋에서 mapNetObsDropBurst 만 잠재적으로 호출 가능한데 본
-// mapping 은 sources 를 사용하지 않으므로 빈 슬라이스만 준비해도 무해하다.
+// mapping 은 sources 를 사용하지 않으므로 빈 슬라이스만 준비해도 무해하다. gpuSignal 은 #122 의
+// multi-source cross-reference 산출 시 GPU 신호 강도 fixture 다.
 type fakeSources struct {
 	neighborsByVictim map[string][]NeighborInfo
 	dropFlows         []DropFlowInfo
+	gpuSignal         float64
 }
 
 func (f *fakeSources) TopNeighbors(ns, pod string) []NeighborInfo {
@@ -19,6 +21,17 @@ func (f *fakeSources) TopNeighbors(ns, pod string) []NeighborInfo {
 }
 func (f *fakeSources) TopDropFlows(namespace string) []DropFlowInfo {
 	return f.dropFlows
+}
+func (f *fakeSources) GPUSignal(node string) float64 {
+	return f.gpuSignal
+}
+
+// EvaluateConfidence 는 registry 단위 테스트 의 fixture 다. 본 패키지 의 테스트 는 mapping 이
+// EvaluateConfidence 를 호출 하는지 와 ConfidenceScore 필드 가 채워지는지 만 검증 하고 산출 식
+// 자체 는 sources 패키지 의 confidence_test 가 회귀 가드 한다. production 가중치 식 의 복제 부담
+// 을 회피 하기 위해 고정 dummy 값 만 돌려준다.
+func (f *fakeSources) EvaluateConfidence(neighbors []NeighborInfo, dropFlows []DropFlowInfo, gpuSignal float64) float64 {
+	return 0.5
 }
 
 // TestNew_RegistersExactlyNineMappings 는 명세상 9 alert mapping 이 정확히 등록되는지 회귀

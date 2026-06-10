@@ -25,13 +25,20 @@ const DefaultFetchTimeout = 5 * time.Second
 // DefaultTopN 은 Sources 가 돌려주는 최대 항목 수다. registry 가 [0] 만 참조하므로 5 면 충분하다.
 const DefaultTopN = 5
 
-// Sources 는 snapshotSource 와 promQLSource 두 갈래를 하나의 registry.Sources 인터페이스 구현으로
-// 묶는 어댑터다. 둘 중 어느 한쪽이 unreachable / timeout 이어도 다른 쪽 결과는 mapping 에 그대로
-// 전달되어 RCA 산정이 완전히 끊기지 않는다.
+// Sources 는 snapshotSource 와 promQLSource 와 gpuobsSource 세 갈래를 하나의 registry.Sources
+// 인터페이스 구현 으로 묶는 어댑터다. 어느 한쪽이 unreachable / timeout 이어도 다른 쪽 결과 가
+// mapping 에 그대로 전달 되어 RCA 산정이 완전히 끊기지 않는다.
 type Sources struct {
 	snapshot snapshotSource
 	promql   promQLSource
+	gpuobs   gpuobsSource
 	topN     int
+}
+
+// gpuobsSource 는 GPU 신호 fetch 의 추상 인터페이스다. test 가 in-memory fake 를 주입할 수 있게
+// 한다.
+type gpuobsSource interface {
+	fetchGPUSignal(node string) float64
 }
 
 // New 는 production Sources 를 만든다. snapshotURL 은 correlation-exporter 의 /snapshot URL,
@@ -50,8 +57,34 @@ func New(snapshotURL, prometheusURL string, fetchTimeout, snapshotTTL time.Durat
 	return &Sources{
 		snapshot: newHTTPSnapshotSource(snapshotURL, fetchTimeout, snapshotTTL),
 		promql:   newHTTPPromQLSource(prometheusURL, fetchTimeout),
+		gpuobs:   newHTTPGpuobsSource(prometheusURL, fetchTimeout),
 		topN:     topN,
 	}
+}
+
+// GPUSignal 은 #122 의 multi-source cross-reference 산출 시 GPU 도메인 신호 강도 (0-1) 를
+// 돌려준다. gpuobsSource 의 Prometheus instant query 가 timeout 또는 빈 결과 면 0 을 돌려주어
+// confidence 가 자연 감쇠 된다. 테스트 또는 부분 초기화 환경 에서 gpuobs 가 nil 인 경우 panic
+// 회피 위해 0 을 돌려준다. 본 가드 는 다른 두 source (snapshot 과 promql) 의 빈 결과 처리 와
+// 동일 한 graceful empty 계약 을 유지 한다.
+func (s *Sources) GPUSignal(node string) float64 {
+	if s.gpuobs == nil {
+		return 0
+	}
+	return s.gpuobs.fetchGPUSignal(node)
+}
+
+// EvaluateConfidence 는 mapping 이 각 source 의 raw 결과 를 모은 뒤 호출 하는 multi-source
+// confidence score 산출 진입점 이다. 가중치 정책 (correlation 0.5 와 netobs 0.3 과 gpuobs
+// 0.2) 과 정규화 식 은 ComputeConfidenceScore 가 single source of truth 로 보유 한다. 본
+// 메서드 는 source 별 raw 결과 를 ConfidenceFactors 로 변환 한 뒤 ComputeConfidenceScore 에
+// 위임 한다.
+func (s *Sources) EvaluateConfidence(neighbors []registry.NeighborInfo, dropFlows []registry.DropFlowInfo, gpuSignal float64) float64 {
+	return ComputeConfidenceScore(ConfidenceFactors{
+		Correlation: maxNeighborScore(neighbors),
+		Netobs:      maxDropFlowFactor(dropFlows),
+		Gpuobs:      gpuSignal,
+	})
 }
 
 // TopNeighbors 는 snapshotSource 에서 victim 매칭 entry 를 모두 모은 뒤 Score 절대값 내림차순
@@ -136,6 +169,10 @@ func (noopSnapshot) fetch() []snapshotEntry { return nil }
 type noopPromQL struct{}
 
 func (noopPromQL) fetchTopDropFlows(string, int) []registry.DropFlowInfo { return nil }
+
+type noopGpuobs struct{}
+
+func (noopGpuobs) fetchGPUSignal(string) float64 { return 0 }
 
 // staleCache 는 snapshot 의 TTL 기반 in-memory cache 다. fetch 시 cache hit 이면 mu 잠금만으로
 // stale-OK 반환, miss 면 caller 가 backing fetcher 호출 후 store 한다.

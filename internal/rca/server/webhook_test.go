@@ -32,7 +32,7 @@ func fixtures(t *testing.T) (http.Handler, *store.Store, *rcametrics.Metrics, *p
 	mux := NewMux(Options{
 		Registry: reg,
 		Ready:    &ready,
-		Webhook:  NewWebhookHandler(rcaReg, nil, st, met),
+		Webhook:  NewWebhookHandler(rcaReg, nil, st, met, 0.0),
 		RCA:      NewRCAHandler(st),
 	})
 	return mux, st, met, reg
