@@ -407,6 +407,36 @@ spec:
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
 
+        # #123 신규 cause 슬롯 2 종. dev cluster 의 RTX 3090 환경 에서는 base score 시리즈 가 부재
+        # 하여 본 슬롯 들 의 weight 가 항상 0 으로 emit 된다. 데이터센터 GPU (A100, H100 등) 환경
+        # 에서 build tag 또는 env 토글 로 통합 되는 DCGM Source 와 NCCL Profiler 가 base score 시
+        # 리즈 를 emit 시작 하면 본 weight 도 자연 활성 된다.
+        #
+        # nccl_collective_stall 은 NCCL collective operation (allreduce, broadcast 등) 의 wait
+        # 신호 로 기존 host_compute_stall (kernel launch rate 저하) 와 의미 분리. allreduce 가 rank
+        # 간 sync 대기 로 GPU 가 유휴 상태 인 케이스 를 구분 한다.
+        #
+        # dcgm_pcie_replay 는 DCGM 의 PCIe replay count 카운터 기반 hardware-level 신호 로 기존
+        # pcie_saturation (heuristic 대역폭 점유) 와 의미 분리. PCIe link error 로 인한 retry 가
+        # GPU 의 compute 진입 지연 을 직접 일으키는 케이스 를 구분 한다.
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: nccl_collective_stall
+          expr: |
+            (
+              vector(0)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: dcgm_pcie_replay
+          expr: |
+            (
+              vector(0)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
         # cluster:gpu_idle_dominant_cause:5m
         # 5 cause weight 중 최대값을 가진 cause 1 종만 단일 시리즈로 노출한다. 정확한 동률 케이스에
         # 서 cause enum 사전순 가장 앞 라벨이 채택되도록 1e-6 단위의 deterministic offset 을
