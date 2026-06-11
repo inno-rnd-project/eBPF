@@ -44,6 +44,30 @@ var (
 			Help: "Seconds since the kube informer last received any watch event for Pod / Service / Node. Before the first event the gauge falls back to seconds since agent startup. Stale informer cache is detected by sustained values well above the resync period.",
 		},
 	)
+
+	// dcgmAvailable 은 #123 의 NVIDIA DCGM 통합 가용성 self-health gauge 다. cmd/gpuobs-agent 의
+	// wire-up 흐름 이 dcgm.Source.Available 결과 를 본 게이지 에 set 한다. dev cluster 의 RTX
+	// 3090 환경 에서는 build tag dcgm 비활성 으로 noopSource 만 wire-up 되어 0 emit 으로
+	// graceful degradation 식별 진입점 이 된다. 데이터센터 GPU 환경 에서는 실제 SDK 통합 후
+	// 1 emit 으로 전환 된다.
+	dcgmAvailable = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_dcgm_available",
+			Help: "1 if the NVIDIA DCGM source is reachable (SDK linked or dcgm-exporter endpoint OK), else 0. Drives the visibility of DCGM-derived dominant cause slots (e.g. dcgm_pcie_replay). On dev cluster RTX 3090 with the DCGM build tag disabled this gauge emits 0 as a graceful degradation signal.",
+		},
+	)
+
+	// ncclProfilerAvailable 은 #123 의 NCCL profiler 가용성 self-health gauge 다. cmd/gpuobs-
+	// agent 의 wire-up 흐름 이 nccl.Profiler.Available 결과 를 본 게이지 에 set 한다. RTX 3090
+	// 환경 에서는 noopProfiler 만 wire-up 되어 0 emit 으로 graceful degradation 식별 진입점 이
+	// 된다. 데이터센터 GPU 환경 에서는 cuProfiler symbol 또는 NCCL callback attach 후 1 emit
+	// 으로 전환 된다.
+	ncclProfilerAvailable = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_nccl_profiler_available",
+			Help: "1 if the NCCL collective profiler is attached (cuProfiler symbol or NCCL callback bound), else 0. Drives the visibility of NCCL-derived dominant cause slots (e.g. nccl_collective_stall). On dev cluster RTX 3090 with the NCCL build tag disabled this gauge emits 0 as a graceful degradation signal.",
+		},
+	)
 )
 
 // ObserveNvmlCall 은 NVML wrapper 진입에서 호출되어 duration 을 observe 하고 에러 시 errors_total
@@ -58,4 +82,25 @@ func ObserveNvmlCall(call string, durationSeconds float64, errCode string) {
 // SetInformerSyncLag 는 informer staleness 게이지를 갱신한다. netobs 측 동명 함수와 동일 의미.
 func SetInformerSyncLag(seconds float64) {
 	informerSyncLagSeconds.Set(seconds)
+}
+
+// SetDcgmAvailable 은 #123 의 dcgmAvailable 게이지를 갱신 한다. cmd/gpuobs-agent 의 wire-up 흐름
+// 이 dcgm.Source.Available 의 boolean 결과 를 1 또는 0 으로 변환 해 본 함수 에 전달 한다.
+func SetDcgmAvailable(active bool) {
+	if active {
+		dcgmAvailable.Set(1)
+		return
+	}
+	dcgmAvailable.Set(0)
+}
+
+// SetNcclProfilerAvailable 은 #123 의 ncclProfilerAvailable 게이지를 갱신 한다. cmd/gpuobs-agent
+// 의 wire-up 흐름 이 nccl.Profiler.Available 의 boolean 결과 를 1 또는 0 으로 변환 해 본 함수
+// 에 전달 한다.
+func SetNcclProfilerAvailable(active bool) {
+	if active {
+		ncclProfilerAvailable.Set(1)
+		return
+	}
+	ncclProfilerAvailable.Set(0)
 }

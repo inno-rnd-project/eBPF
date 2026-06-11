@@ -20,6 +20,39 @@ func resetSelfHealth() {
 		[]string{"call", "error_code"},
 	)
 	informerSyncLagSeconds = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gpuobs_informer_sync_lag_seconds"})
+	dcgmAvailable = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gpuobs_dcgm_available"})
+	ncclProfilerAvailable = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gpuobs_nccl_profiler_available"})
+}
+
+// TestSetDcgmAvailable 은 #123 의 dcgmAvailable 게이지 setter 가 boolean 입력 을 1 과 0 으로 정확
+// 히 변환 하는지 회귀 가드 한다. dev cluster 의 RTX 3090 환경 default 인 false 분기 와 데이터
+// 센터 GPU 환경 의 true 분기 모두 검증 한다.
+func TestSetDcgmAvailable(t *testing.T) {
+	resetSelfHealth()
+
+	SetDcgmAvailable(false)
+	if got := testutil.ToFloat64(dcgmAvailable); got != 0 {
+		t.Errorf("dcgmAvailable=%v want 0 after SetDcgmAvailable(false)", got)
+	}
+	SetDcgmAvailable(true)
+	if got := testutil.ToFloat64(dcgmAvailable); got != 1 {
+		t.Errorf("dcgmAvailable=%v want 1 after SetDcgmAvailable(true)", got)
+	}
+}
+
+// TestSetNcclProfilerAvailable 은 #123 의 ncclProfilerAvailable 게이지 setter 가 boolean 입력 을
+// 1 과 0 으로 정확히 변환 하는지 회귀 가드 한다.
+func TestSetNcclProfilerAvailable(t *testing.T) {
+	resetSelfHealth()
+
+	SetNcclProfilerAvailable(false)
+	if got := testutil.ToFloat64(ncclProfilerAvailable); got != 0 {
+		t.Errorf("ncclProfilerAvailable=%v want 0 after SetNcclProfilerAvailable(false)", got)
+	}
+	SetNcclProfilerAvailable(true)
+	if got := testutil.ToFloat64(ncclProfilerAvailable); got != 1 {
+		t.Errorf("ncclProfilerAvailable=%v want 1 after SetNcclProfilerAvailable(true)", got)
+	}
 }
 
 // TestObserveNvmlCall_SuccessOmitsErrorEmit 은 SUCCESS 케이스에서 duration 만 observe 되고
