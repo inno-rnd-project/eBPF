@@ -55,16 +55,16 @@ type Config struct {
 	// netobs 의 NETOBS_FLOW_ALLOW_NAMESPACES 와 동일 parseNamespaceList 패턴 재사용.
 	PodUtilAllowNamespaces []string
 
-	// DcgmEnabled 는 #123 의 NVIDIA DCGM 통합 opt-in 토글 이다. 기본값 false 로 dev cluster 의
-	// RTX 3090 환경 에서 noopSource 만 wire-up 되어 gpuobs_dcgm_available 가 0 emit 된다. 데이터
-	// 센터 GPU (A100, H100 등) 환경 에서 true 로 두 면 build tag dcgm 으로 통합 된 production
-	// Source 가 활성 된다. 실제 SDK 통합 은 별도 follow-up PR 에 위임 한다.
+	// DcgmEnabled는 #123의 NVIDIA DCGM 통합 opt-in 토글이다. 기본값 false로 dev cluster의
+	// RTX 3090 환경에서 noopSource만 wire-up되어 gpuobs_dcgm_available이 0 emit된다. 데이터
+	// 센터 GPU (A100, H100 등) 환경에서 true로 두면 build tag dcgm으로 통합된 production
+	// Source가 활성된다. 실제 SDK 통합은 별도 follow-up PR에 위임한다.
 	DcgmEnabled bool
 
-	// NcclEnabled 는 #123 의 NCCL profiler 통합 opt-in 토글 이다. 기본값 false 로 RTX 3090 환경
-	// 에서 noopProfiler 만 wire-up 되어 gpuobs_nccl_profiler_available 가 0 emit 된다. 데이터센터
-	// GPU 환경 에서 true 로 두 면 cuProfiler symbol 또는 NCCL callback attach 가 활성 된다. 실제
-	// SDK 통합 은 별도 follow-up PR 에 위임 한다.
+	// NcclEnabled는 #123의 NCCL profiler 통합 opt-in 토글이다. 기본값 false로 RTX 3090 환경
+	// 에서 noopProfiler만 wire-up되어 gpuobs_nccl_profiler_available이 0 emit된다. 데이터센터
+	// GPU 환경에서 true로 두면 cuProfiler symbol 또는 NCCL callback attach가 활성된다. 실제
+	// SDK 통합은 별도 follow-up PR에 위임한다.
 	NcclEnabled bool
 }
 

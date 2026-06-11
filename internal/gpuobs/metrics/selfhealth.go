@@ -45,11 +45,11 @@ var (
 		},
 	)
 
-	// dcgmAvailable 은 #123 의 NVIDIA DCGM 통합 가용성 self-health gauge 다. cmd/gpuobs-agent 의
-	// wire-up 흐름 이 dcgm.Source.Available 결과 를 본 게이지 에 set 한다. dev cluster 의 RTX
-	// 3090 환경 에서는 build tag dcgm 비활성 으로 noopSource 만 wire-up 되어 0 emit 으로
-	// graceful degradation 식별 진입점 이 된다. 데이터센터 GPU 환경 에서는 실제 SDK 통합 후
-	// 1 emit 으로 전환 된다.
+	// dcgmAvailable은 #123의 NVIDIA DCGM 통합 가용성 self-health gauge다. cmd/gpuobs-agent의
+	// wire-up 흐름이 dcgm.Source.Available 결과를 본 게이지에 set한다. dev cluster의 RTX 3090
+	// 환경에서는 build tag dcgm 비활성으로 noopSource만 wire-up되어 0 emit으로 graceful
+	// degradation 식별 진입점이 된다. 데이터센터 GPU 환경에서는 실제 SDK 통합 후 1 emit으로
+	// 전환된다.
 	dcgmAvailable = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "gpuobs_dcgm_available",
@@ -57,11 +57,11 @@ var (
 		},
 	)
 
-	// ncclProfilerAvailable 은 #123 의 NCCL profiler 가용성 self-health gauge 다. cmd/gpuobs-
-	// agent 의 wire-up 흐름 이 nccl.Profiler.Available 결과 를 본 게이지 에 set 한다. RTX 3090
-	// 환경 에서는 noopProfiler 만 wire-up 되어 0 emit 으로 graceful degradation 식별 진입점 이
-	// 된다. 데이터센터 GPU 환경 에서는 cuProfiler symbol 또는 NCCL callback attach 후 1 emit
-	// 으로 전환 된다.
+	// ncclProfilerAvailable은 #123의 NCCL profiler 가용성 self-health gauge다. cmd/gpuobs-
+	// agent의 wire-up 흐름이 nccl.Profiler.Available 결과를 본 게이지에 set한다. RTX 3090
+	// 환경에서는 noopProfiler만 wire-up되어 0 emit으로 graceful degradation 식별 진입점이
+	// 된다. 데이터센터 GPU 환경에서는 cuProfiler symbol 또는 NCCL callback attach 후 1 emit
+	// 으로 전환된다.
 	ncclProfilerAvailable = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "gpuobs_nccl_profiler_available",
@@ -84,8 +84,8 @@ func SetInformerSyncLag(seconds float64) {
 	informerSyncLagSeconds.Set(seconds)
 }
 
-// SetDcgmAvailable 은 #123 의 dcgmAvailable 게이지를 갱신 한다. cmd/gpuobs-agent 의 wire-up 흐름
-// 이 dcgm.Source.Available 의 boolean 결과 를 1 또는 0 으로 변환 해 본 함수 에 전달 한다.
+// SetDcgmAvailable은 #123의 dcgmAvailable 게이지를 갱신한다. cmd/gpuobs-agent의 wire-up 흐름
+// 이 dcgm.Source.Available의 boolean 결과를 1 또는 0으로 변환해 본 함수에 전달한다.
 func SetDcgmAvailable(active bool) {
 	if active {
 		dcgmAvailable.Set(1)
@@ -94,9 +94,9 @@ func SetDcgmAvailable(active bool) {
 	dcgmAvailable.Set(0)
 }
 
-// SetNcclProfilerAvailable 은 #123 의 ncclProfilerAvailable 게이지를 갱신 한다. cmd/gpuobs-agent
-// 의 wire-up 흐름 이 nccl.Profiler.Available 의 boolean 결과 를 1 또는 0 으로 변환 해 본 함수
-// 에 전달 한다.
+// SetNcclProfilerAvailable은 #123의 ncclProfilerAvailable 게이지를 갱신한다. cmd/gpuobs-agent
+// 의 wire-up 흐름이 nccl.Profiler.Available의 boolean 결과를 1 또는 0으로 변환해 본 함수에
+// 전달한다.
 func SetNcclProfilerAvailable(active bool) {
 	if active {
 		ncclProfilerAvailable.Set(1)
