@@ -700,6 +700,8 @@ func Register(reg prometheus.Registerer) {
 		nvmlCallDuration,
 		nvmlErrorsTotal,
 		informerSyncLagSeconds,
+		dcgmAvailable,
+		ncclProfilerAvailable,
 	)
 }
 

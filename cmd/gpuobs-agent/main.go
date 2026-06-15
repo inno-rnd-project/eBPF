@@ -18,7 +18,9 @@ import (
 	"netobs/internal/gpuobs/collector"
 	"netobs/internal/gpuobs/config"
 	"netobs/internal/gpuobs/cuda"
+	"netobs/internal/gpuobs/dcgm"
 	"netobs/internal/gpuobs/metrics"
+	"netobs/internal/gpuobs/nccl"
 	"netobs/internal/gpuobs/nvml"
 	"netobs/internal/kube"
 	"netobs/internal/server"
@@ -46,6 +48,25 @@ func main() {
 	// 로 사용한다.
 	metrics.SetCudaLaunchBaselinePerSec(cfg.NodeName, cfg.CudaLaunchBaselinePerSec)
 	log.Printf("cuda launch baseline: %.1f hz (node=%s)", cfg.CudaLaunchBaselinePerSec, cfg.NodeName)
+
+	// #123 DCGM과 NCCL 통합 source wire-up. 기본값 false로 dev cluster의 RTX 3090 환경에서는
+	// noop 구현이 wire-up되어 gpuobs_dcgm_available과 gpuobs_nccl_profiler_available이 모두 0
+	// emit된다. 데이터센터 GPU 환경의 실제 SDK 통합 흐름은 별도 follow-up PR의 build tag 또는
+	// runtime dlopen 분기에서 도입한다. opt-in env (GPUOBS_DCGM_ENABLED, GPUOBS_NCCL_ENABLED) 가
+	// true더라도 본 PR의 wire-up 흐름은 SDK 통합 부재를 warn log로 안내하고 noop을 유지한다.
+	dcgmSource := dcgm.NewNoop()
+	if cfg.DcgmEnabled {
+		log.Printf("dcgm: GPUOBS_DCGM_ENABLED=true but the production SDK source is gated behind a follow-up PR; falling back to noop")
+	}
+	defer func() { _ = dcgmSource.Close() }()
+	metrics.SetDcgmAvailable(dcgmSource.Available())
+
+	ncclProfiler := nccl.NewNoop()
+	if cfg.NcclEnabled {
+		log.Printf("nccl: GPUOBS_NCCL_ENABLED=true but the production profiler attach is gated behind a follow-up PR; falling back to noop")
+	}
+	defer func() { _ = ncclProfiler.Close() }()
+	metrics.SetNcclProfilerAvailable(ncclProfiler.Available())
 
 	// kube.Resolver는 Pod/Service/Node informer를 띄우고 IP/UID 인덱스를 유지한다.
 	// gpuobs는 ResolvePID 경로만 사용하므로, PodMetricsEnabled가 false인 경우에는

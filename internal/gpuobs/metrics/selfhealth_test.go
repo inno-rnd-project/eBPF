@@ -20,6 +20,39 @@ func resetSelfHealth() {
 		[]string{"call", "error_code"},
 	)
 	informerSyncLagSeconds = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gpuobs_informer_sync_lag_seconds"})
+	dcgmAvailable = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gpuobs_dcgm_available"})
+	ncclProfilerAvailable = prometheus.NewGauge(prometheus.GaugeOpts{Name: "gpuobs_nccl_profiler_available"})
+}
+
+// TestSetDcgmAvailable은 #123의 dcgmAvailable 게이지 setter가 boolean 입력을 1과 0으로 정확히
+// 변환하는지 회귀 가드한다. dev cluster의 RTX 3090 환경 default인 false 분기와 데이터센터
+// GPU 환경의 true 분기 모두 검증한다.
+func TestSetDcgmAvailable(t *testing.T) {
+	resetSelfHealth()
+
+	SetDcgmAvailable(false)
+	if got := testutil.ToFloat64(dcgmAvailable); got != 0 {
+		t.Errorf("dcgmAvailable=%v want 0 after SetDcgmAvailable(false)", got)
+	}
+	SetDcgmAvailable(true)
+	if got := testutil.ToFloat64(dcgmAvailable); got != 1 {
+		t.Errorf("dcgmAvailable=%v want 1 after SetDcgmAvailable(true)", got)
+	}
+}
+
+// TestSetNcclProfilerAvailable은 #123의 ncclProfilerAvailable 게이지 setter가 boolean 입력을
+// 1과 0으로 정확히 변환하는지 회귀 가드한다.
+func TestSetNcclProfilerAvailable(t *testing.T) {
+	resetSelfHealth()
+
+	SetNcclProfilerAvailable(false)
+	if got := testutil.ToFloat64(ncclProfilerAvailable); got != 0 {
+		t.Errorf("ncclProfilerAvailable=%v want 0 after SetNcclProfilerAvailable(false)", got)
+	}
+	SetNcclProfilerAvailable(true)
+	if got := testutil.ToFloat64(ncclProfilerAvailable); got != 1 {
+		t.Errorf("ncclProfilerAvailable=%v want 1 after SetNcclProfilerAvailable(true)", got)
+	}
 }
 
 // TestObserveNvmlCall_SuccessOmitsErrorEmit 은 SUCCESS 케이스에서 duration 만 observe 되고
@@ -87,7 +120,8 @@ func TestSetInformerSyncLag_GpuobsOverwrite(t *testing.T) {
 	}
 }
 
-// TestGpuobsSelfHealthRegister 는 Register 가 self-health 3 종을 모두 등록하는지 회귀 가드한다.
+// TestGpuobsSelfHealthRegister는 Register가 self-health 5종을 모두 등록하는지 회귀 가드한다.
+// #123의 dcgmAvailable과 ncclProfilerAvailable 추가 후 등록 정합 검증 셋을 5종으로 확장한다.
 func TestGpuobsSelfHealthRegister(t *testing.T) {
 	resetSelfHealth()
 	reg := prometheus.NewPedanticRegistry()
@@ -96,6 +130,8 @@ func TestGpuobsSelfHealthRegister(t *testing.T) {
 	ObserveNvmlCall("DeviceCount", 0.001, "")
 	ObserveNvmlCall("Device", 0.001, "ERROR_NOT_SUPPORTED")
 	SetInformerSyncLag(1.0)
+	SetDcgmAvailable(false)
+	SetNcclProfilerAvailable(false)
 
 	mfs, err := reg.Gather()
 	if err != nil {
@@ -109,6 +145,8 @@ func TestGpuobsSelfHealthRegister(t *testing.T) {
 		"gpuobs_nvml_call_duration_seconds",
 		"gpuobs_nvml_errors_total",
 		"gpuobs_informer_sync_lag_seconds",
+		"gpuobs_dcgm_available",
+		"gpuobs_nccl_profiler_available",
 	}
 	for _, n := range want {
 		if !names[n] {

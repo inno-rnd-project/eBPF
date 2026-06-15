@@ -54,6 +54,18 @@ type Config struct {
 	// pod-metrics 가 활성 이고 본 allow-list 만 일부 namespace 로 좁혀 카디널리티 폭증 방어 가능 하다.
 	// netobs 의 NETOBS_FLOW_ALLOW_NAMESPACES 와 동일 parseNamespaceList 패턴 재사용.
 	PodUtilAllowNamespaces []string
+
+	// DcgmEnabled는 #123의 NVIDIA DCGM 통합 opt-in 토글이다. 기본값 false로 dev cluster의
+	// RTX 3090 환경에서 noopSource만 wire-up되어 gpuobs_dcgm_available이 0 emit된다. 데이터
+	// 센터 GPU (A100, H100 등) 환경에서 true로 두면 build tag dcgm으로 통합된 production
+	// Source가 활성된다. 실제 SDK 통합은 별도 follow-up PR에 위임한다.
+	DcgmEnabled bool
+
+	// NcclEnabled는 #123의 NCCL profiler 통합 opt-in 토글이다. 기본값 false로 RTX 3090 환경
+	// 에서 noopProfiler만 wire-up되어 gpuobs_nccl_profiler_available이 0 emit된다. 데이터센터
+	// GPU 환경에서 true로 두면 cuProfiler symbol 또는 NCCL callback attach가 활성된다. 실제
+	// SDK 통합은 별도 follow-up PR에 위임한다.
+	NcclEnabled bool
 }
 
 // Parse는 env와 CLI flag를 읽어 Config를 구성해 반환한다.
@@ -98,6 +110,8 @@ func Parse() (Config, error) {
 		CudaUprobeDeviceMapRefresh: cudaDeviceMapRefresh,
 		CudaLaunchBaselinePerSec:   cudaLaunchBaseline,
 		PodUtilAllowNamespaces:     parseNamespaceList(getenvDefault("GPUOBS_POD_UTIL_ALLOW_NAMESPACES", "")),
+		DcgmEnabled:                getenvBool("GPUOBS_DCGM_ENABLED", false),
+		NcclEnabled:                getenvBool("GPUOBS_NCCL_ENABLED", false),
 	}
 
 	fs := flag.NewFlagSet("gpuobs-agent", flag.ContinueOnError)
@@ -112,6 +126,8 @@ func Parse() (Config, error) {
 	fs.StringVar(&cfg.CudaUprobeLibcudartPath, "cuda-libcudart-path", cfg.CudaUprobeLibcudartPath, "absolute path to host libcudart.so reachable from inside the container; empty disables cudart attach")
 	fs.DurationVar(&cfg.CudaUprobeDeviceMapRefresh, "cuda-devicemap-refresh", cfg.CudaUprobeDeviceMapRefresh, "interval between NVML RunningProcesses sweeps that rebuild the PID→GPU map and clean up stale cuda series")
 	fs.Float64Var(&cfg.CudaLaunchBaselinePerSec, "cuda-launch-baseline", cfg.CudaLaunchBaselinePerSec, "expected CUDA kernel launch rate (Hz) used as denominator of pod:host_compute_stall_score:5m correlation rule (default 10)")
+	fs.BoolVar(&cfg.DcgmEnabled, "dcgm", cfg.DcgmEnabled, "#123: opt-in NVIDIA DCGM integration; default false keeps the noop source on RTX 3090 so gpuobs_dcgm_available emits 0 (real SDK wire-up arrives in a follow-up PR)")
+	fs.BoolVar(&cfg.NcclEnabled, "nccl-profiler", cfg.NcclEnabled, "#123: opt-in NCCL collective profiler; default false keeps the noop profiler on RTX 3090 so gpuobs_nccl_profiler_available emits 0 (real attach arrives in a follow-up PR)")
 	// -pod-util-allow-namespaces 의 default 를 "unset" sentinel 로 둬, 빈 문자열 명시 (`-pod-util-allow-namespaces=`)
 	// 로도 env 값을 덮어 "전체 namespace 발행" 으로 되돌릴 수 있게 한다. 단순 default="" 패턴 으로는 빈 값과
 	// 미지정 을 구분 못 해 env override 가 불가능 하다.
