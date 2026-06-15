@@ -78,3 +78,63 @@ GPU가 유휴 상태인데 그 원인이 PCIe 점유인지 network pressure인�
 | 2. dashboard drill-down | 각 도메인의 4주 시간대 trend overlay와 30일 baseline 대비 z-score panel에서 추세 이탈 시점 확인 |
 | 3. cross-reference | `Resource anomaly spike` row의 5분 z-score (7일 baseline 대비) 와 비교해 단기 spike와 장기 추세를 구분 |
 | 4. follow-up docs | [capacity-trends.md](observability/capacity-trends.md)의 z-score 임계의 운영적 의미와 알림 4종 발화 조건과 [resource-anomaly-spike.md](observability/resource-anomaly-spike.md)의 단기 spike 해석 참조 |
+
+## 기존 docs 영역별 색인
+
+29종 영역별 docs를 9 영역으로 분류한 단일 색인이다. 신규 운영자가 시스템 학습 시 영역별 상세 문서를 본 색인에서 찾는다.
+
+### netobs (eBPF 네트워크 관측)
+
+- [drop-reason.md](netobs/drop-reason.md): netobs drop reason 매핑
+- [drop-flow-analysis.md](netobs/drop-flow-analysis.md): drop flow 5-tuple 분석 가이드
+- [drop-stack-capture.md](netobs/drop-stack-capture.md): drop event kernel stack trace capture
+- [flow-tracking.md](netobs/flow-tracking.md): Pod 간 정상 flow의 5-tuple RX/TX 실시간 추적
+- [send-path-stage-latency.md](netobs/send-path-stage-latency.md): send path stage latency 분해
+- [rcv-path-tcp-state.md](netobs/rcv-path-tcp-state.md): receive path latency와 TCP 상태 운영 가이드
+- [protocol-coverage.md](netobs/protocol-coverage.md): netobs IPv6와 UDP 트래픽 추적 운영 가이드
+- [bpf-self-health.md](netobs/bpf-self-health.md): BPF program attach self-health 운영 가이드
+- [bpf-map-safety.md](netobs/bpf-map-safety.md): BPF map race safety audit 결과
+
+### gpuobs (GPU 자원 관측)
+
+- [pod-level-gpu.md](gpuobs/pod-level-gpu.md): Pod-level GPU utilization 운영 가이드
+- [cuda-sync-latency.md](gpuobs/cuda-sync-latency.md): CUDA stream과 event 동기화 latency 운영 가이드
+- [rtx-thermal-correlation.md](gpuobs/rtx-thermal-correlation.md): RTX consumer GPU의 thermal과 power와 clock 상관 분석 운영 가이드
+- [dcgm-nccl-integration.md](gpuobs/dcgm-nccl-integration.md): NVIDIA DCGM과 NCCL profiling 인터페이스 통합
+
+### correlation (간섭 상관 분석)
+
+- [diagnosis-gpu-idle.md](correlation/diagnosis-gpu-idle.md): GPU 유휴 원인 진단 가이드
+- [cross-node-interference.md](correlation/cross-node-interference.md): cross-node interference layer
+- [granger-causality.md](correlation/granger-causality.md): Granger causality와 dominant dimension 운영 가이드
+
+### observability (대시보드와 알림)
+
+- [dashboard-workflow.md](observability/dashboard-workflow.md): observability overview 운영 가이드
+- [drill-down-navigation.md](observability/drill-down-navigation.md): cluster-node-pod drill-down navigation
+- [gpu-idle-dominant-cause.md](observability/gpu-idle-dominant-cause.md): GPU 유휴 dominant cause 가중치 ranking 운영 가이드
+- [gpu-network-correlation.md](observability/gpu-network-correlation.md): GPU와 network cross-correlation 통합 패널
+- [capacity-trends.md](observability/capacity-trends.md): capacity-trends 운영자 가이드
+- [resource-anomaly-spike.md](observability/resource-anomaly-spike.md): resource-anomaly-spike 운영자 가이드
+- [alert-annotation.md](observability/alert-annotation.md): alert annotation 운영자 가이드
+- [alert-routing.md](observability/alert-routing.md): Alert routing skeleton 운영 가이드
+
+### rca (root cause analysis)
+
+- [multi-source-mapping.md](rca/multi-source-mapping.md): RCA 매핑 multi-source cross-reference
+
+### injector (합성 부하 자동화)
+
+- [auto-scenarios.md](injector/auto-scenarios.md): LoadScenario 자동 부하 시나리오 운영 가이드
+
+### api (REST API)
+
+- [rest-api.md](api/rest-api.md): REST API layer 운영자 가이드
+
+### monitoring (인프라 모니터링)
+
+- [retention-disk.md](monitoring/retention-disk.md): Prometheus retention 디스크 용량 자동 모니터링
+
+### perf (성능 측정)
+
+- [cuda-uprobe-overhead.md](perf/cuda-uprobe-overhead.md): cuda uprobe dispatch hot path overhead 측정
