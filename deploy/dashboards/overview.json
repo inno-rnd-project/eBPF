@@ -2734,6 +2734,125 @@
           }
         }
       ]
+    },
+    {
+      "id": 810,
+      "type": "row",
+      "title": "시나리오. Drop spike 추적 진입점",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 146
+      },
+      "panels": [
+        {
+          "id": 811,
+          "type": "timeseries",
+          "title": "Drop burst rate (5-tuple, 초당 이벤트)",
+          "description": "netobs_drop_burst:rate1m 의 5-tuple 별 drop burst rate (초당 이벤트) 시계열. src_namespace와 src_pod와 drop_reason 라벨을 보존해 어느 connection이 drop을 일으키는지 식별한다. dev cluster의 자연 drop burst 부재 환경에서는 No data로 graceful empty 표시된다.",
+          "datasource": "${datasource}",
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 147
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "topk(20, netobs_drop_burst:rate1m)",
+              "legendFormat": "{{src_namespace}}/{{src_pod}} {{drop_reason}} ({{dst_ip}}:{{dst_port}})",
+              "datasource": "${datasource}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "min": 0,
+              "noValue": "No data (drop burst 부재)",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "calcs": [
+                "max",
+                "lastNotNull"
+              ]
+            }
+          },
+          "links": [
+            {
+              "title": "Drill into netobs overview",
+              "url": "/d/netobs-overview?${__url_time_range}",
+              "targetBlank": true
+            }
+          ]
+        },
+        {
+          "id": 812,
+          "type": "timeseries",
+          "title": "Node drop rate (drop_category 별)",
+          "description": "node 와 drop_category 별 drop event rate (초당) 시계열. NetworkPolicy 위반과 conntrack과 protocol error 등 drop_category 분포로 drop 의 성격을 분류한다. 시나리오 1 의 drop burst 와 cross-reference해 spike 의 카테고리를 특정한다.",
+          "datasource": "${datasource}",
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 155
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(node, drop_category) (rate(netobs_drop_events_labeled_total[5m]))",
+              "legendFormat": "{{node}} {{drop_category}}",
+              "datasource": "${datasource}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "min": 0,
+              "noValue": "No data (drop 부재)",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "calcs": [
+                "max",
+                "lastNotNull"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
