@@ -2636,7 +2636,7 @@
           "id": 801,
           "type": "timeseries",
           "title": "GPU idle cause weight (5 cause stacked)",
-          "description": "pod:gpu_idle_cause_weight:5m 의 5 cause (pcie_saturation과 network_pressure과 cpu_throttle과 memory_pressure과 host_compute_stall) weight를 stacked로 표시한다. GPU 유휴 시간대에 어느 cause가 dominant인지 한눈에 식별한다. dev cluster의 RTX 3090 환경에서 nccl_collective_stall과 dcgm_pcie_replay 슬롯은 0 weight로 emit된다.",
+          "description": "avg by(cause) (pod:gpu_idle_cause_weight:5m) 의 5 cause (pcie_saturation과 network_pressure과 cpu_throttle과 memory_pressure과 host_compute_stall) weight를 cluster 평균으로 집계해 stacked로 표시한다. victim 단위 raw 메트릭을 cause 차원으로 avg 집계해 stacked 합이 victim 수에 비례해 부풀려지던 문제를 해소한다. 개별 cause weight는 0-1 범위이며 상대 크기로 어느 cause가 dominant인지 한눈에 식별한다. dev cluster의 RTX 3090 환경에서 nccl_collective_stall과 dcgm_pcie_replay 슬롯은 0 weight로 emit된다.",
           "datasource": "${datasource}",
           "gridPos": {
             "h": 8,
@@ -2647,7 +2647,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "pod:gpu_idle_cause_weight:5m{node=~\"$node\"}",
+              "expr": "avg by(cause) (pod:gpu_idle_cause_weight:5m{node=~\"$node\"})",
               "legendFormat": "{{cause}}",
               "datasource": "${datasource}"
             }
@@ -2751,7 +2751,7 @@
           "id": 811,
           "type": "timeseries",
           "title": "Drop burst rate (5-tuple, 초당 이벤트)",
-          "description": "netobs_drop_burst:rate1m 의 5-tuple 별 drop burst rate (초당 이벤트) 시계열. src_namespace와 src_pod와 drop_reason 라벨을 보존해 어느 connection이 drop을 일으키는지 식별한다. dev cluster의 자연 drop burst 부재 환경에서는 No data로 graceful empty 표시된다.",
+          "description": "netobs_drop_burst:rate1m 의 5-tuple 별 drop burst rate (초당 이벤트) 시계열. src_namespace와 src_pod와 drop_reason 라벨을 보존해 어느 connection이 drop을 일으키는지 식별한다. 본 recording rule은 5-tuple 단위 집계라 node 라벨을 보존하지 않으므로 상단 node 변수와 무관하게 cluster 전체 burst를 topk 20으로 노출한다. node 단위 분포는 아래 Node drop rate panel에서 확인한다. dev cluster의 자연 drop burst 부재 환경에서는 No data로 graceful empty 표시된다.",
           "datasource": "${datasource}",
           "gridPos": {
             "h": 8,
