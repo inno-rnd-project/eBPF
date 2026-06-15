@@ -2619,6 +2619,121 @@
           ]
         }
       }
+    },
+    {
+      "id": 800,
+      "type": "row",
+      "title": "시나리오. GPU idle 진단 진입점",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 136
+      },
+      "panels": [
+        {
+          "id": 801,
+          "type": "timeseries",
+          "title": "GPU idle cause weight (5 cause stacked)",
+          "description": "pod:gpu_idle_cause_weight:5m 의 5 cause (pcie_saturation과 network_pressure과 cpu_throttle과 memory_pressure과 host_compute_stall) weight를 stacked로 표시한다. GPU 유휴 시간대에 어느 cause가 dominant인지 한눈에 식별한다. dev cluster의 RTX 3090 환경에서 nccl_collective_stall과 dcgm_pcie_replay 슬롯은 0 weight로 emit된다.",
+          "datasource": "${datasource}",
+          "gridPos": {
+            "h": 8,
+            "w": 16,
+            "x": 0,
+            "y": 137
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "pod:gpu_idle_cause_weight:5m",
+              "legendFormat": "{{cause}}",
+              "datasource": "${datasource}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 40,
+                "showPoints": "never",
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "calcs": [
+                "mean",
+                "max",
+                "lastNotNull"
+              ]
+            }
+          },
+          "links": [
+            {
+              "title": "Drill into correlation overview",
+              "url": "/d/correlation-overview?${__url_time_range}",
+              "targetBlank": true
+            }
+          ]
+        },
+        {
+          "id": 802,
+          "type": "stat",
+          "title": "Dominant cause indicator",
+          "description": "cluster:gpu_idle_dominant_cause:5m 의 dominant cause 1종을 노출한다. 5 cause weight 중 최대값 cause가 표시되며 weight 시리즈가 idle 게이팅으로 emit되지 않는 시간대는 N/A다.",
+          "datasource": "${datasource}",
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 137
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "count by(cause) (cluster:gpu_idle_dominant_cause:5m)",
+              "legendFormat": "{{cause}}",
+              "datasource": "${datasource}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "N/A (GPU 유휴 아님)",
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "1": {
+                      "text": " "
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "name"
+          }
+        }
+      ]
     }
   ]
 }
