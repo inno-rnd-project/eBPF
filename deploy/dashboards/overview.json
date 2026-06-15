@@ -984,7 +984,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 59
+        "y": 67
       },
       "collapsed": false
     },
@@ -1073,7 +1073,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 68
+        "y": 76
       },
       "collapsed": false
     },
@@ -1187,7 +1187,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 77
+        "y": 85
       },
       "collapsed": false
     },
@@ -1201,7 +1201,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 78
+        "y": 86
       },
       "timeFrom": "now-4w",
       "timezone": "Asia/Seoul",
@@ -1280,7 +1280,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 78
+        "y": 86
       },
       "timeFrom": "now-4w",
       "timezone": "Asia/Seoul",
@@ -1343,7 +1343,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 78
+        "y": 86
       },
       "timeFrom": "now-30d",
       "timezone": "Asia/Seoul",
@@ -1438,7 +1438,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 86
+        "y": 94
       },
       "timeFrom": "now-4w",
       "timezone": "Asia/Seoul",
@@ -1517,7 +1517,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 86
+        "y": 94
       },
       "timeFrom": "now-4w",
       "timezone": "Asia/Seoul",
@@ -1580,7 +1580,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 86
+        "y": 94
       },
       "timeFrom": "now-30d",
       "timezone": "Asia/Seoul",
@@ -1675,7 +1675,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 94
+        "y": 102
       },
       "timeFrom": "now-4w",
       "timezone": "Asia/Seoul",
@@ -1754,7 +1754,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 94
+        "y": 102
       },
       "timeFrom": "now-4w",
       "timezone": "Asia/Seoul",
@@ -1817,7 +1817,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 94
+        "y": 102
       },
       "timeFrom": "now-30d",
       "timezone": "Asia/Seoul",
@@ -1912,7 +1912,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 102
+        "y": 110
       },
       "timeFrom": "now-4w",
       "timezone": "Asia/Seoul",
@@ -1991,7 +1991,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 102
+        "y": 110
       },
       "timeFrom": "now-4w",
       "timezone": "Asia/Seoul",
@@ -2054,7 +2054,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 102
+        "y": 110
       },
       "timeFrom": "now-30d",
       "timezone": "Asia/Seoul",
@@ -2147,7 +2147,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 111
+        "y": 119
       },
       "collapsed": false
     },
@@ -2161,7 +2161,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 112
+        "y": 120
       },
       "timeFrom": "now-1h",
       "timezone": "browser",
@@ -2256,7 +2256,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 112
+        "y": 120
       },
       "timeFrom": "now-1h",
       "timezone": "browser",
@@ -2351,7 +2351,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 120
+        "y": 128
       },
       "timeFrom": "now-1h",
       "timezone": "browser",
@@ -2446,7 +2446,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 120
+        "y": 128
       },
       "timeFrom": "now-1h",
       "timezone": "browser",
@@ -2530,6 +2530,95 @@
           "targetBlank": true
         }
       ]
+    },
+    {
+      "id": 401,
+      "type": "timeseries",
+      "title": "Pod 별 RX/TX 대역폭 (Mbps, $src_pod)",
+      "description": "Pod 단위 RX 와 TX 대역폭 의 Mbps 단위 시계열. raw counter netobs_pod_bytes_total 의 layer l4 rate 를 PromQL 단에서 직접 계산해 Mbps 환산 한다. direction 라벨 (egress 와 ingress) 별 시계열 자동 분리 로 RX 와 TX 를 한 panel 에서 비교 가능 하다. Grafana 의 unit Mbits 자동 SI prefix 변환 으로 Kbps 와 Gbps 표기 도 함께 cover 한다.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 59
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(direction) (rate(netobs_pod_bytes_total{layer=\"l4\", node=\"$node\", src_pod=~\"$src_pod\"}[5m])) * 8 / 1000000",
+          "legendFormat": "{{direction}}",
+          "datasource": "${datasource}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Mbits",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "egress"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              },
+              {
+                "id": "displayName",
+                "value": "egress (TX)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ingress"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              },
+              {
+                "id": "displayName",
+                "value": "ingress (RX)"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        }
+      }
     }
   ]
 }
