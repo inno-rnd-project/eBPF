@@ -343,6 +343,22 @@ spec:
         # 5 cause base score 의 합. cause weight 정규화의 분모로 쓰인다. base 시리즈가 비어 있는
         # cause 는 `or vector(0)` 로 0 으로 대체해 합이 NaN 으로 빠지지 않게 한다. dev cluster 처럼
         # PCIe / network 트래픽이 거의 없는 환경에서도 합 산출이 가능하게 한다.
+        # cluster:dcgm_pcie_replay_score:5m (#133)
+        # DCGM 의 DCGM_FI_DEV_PCIE_REPLAY_COUNTER (PCIe link error 로 인한 retry 누적 카운터) 의
+        # 5 분 rate 를 cluster max 로 집계 후 정규화 임계 (100 replays/sec) 로 나눠 0-1 score 로
+        # 만든다. clamp_max 로 burst 시 1.0 상한 둔다. dcgm-exporter 가 본 메트릭 을 Prometheus 에
+        # emit 하는 데이터센터 GPU 환경 에서만 활성 되고 dev cluster 의 RTX 3090 (DCGM 부재) 에서는
+        # base 메트릭 부재 로 or vector(0) fallback 이 0 을 돌려준다. 정규화 임계 100 은 PCIe replay
+        # 가 초당 수십 회 를 넘으면 link 품질 저하 신호 라는 경험치 기반 이며 운영자 가 환경 별로
+        # recording rule 을 override 가능 하다.
+        - record: cluster:dcgm_pcie_replay_score:5m
+          expr: |
+            clamp_max(
+              max(rate(DCGM_FI_DEV_PCIE_REPLAY_COUNTER[5m])) / 100,
+              1
+            )
+            or vector(0)
+
         - record: gpu_idle_cause_sum:5m
           expr: |
             (cluster:gpu_pcie_saturation_score:5m or vector(0))
@@ -350,6 +366,7 @@ spec:
             + (cluster:pod_memory_pressure_score:5m or vector(0))
             + (cluster:pod_network_pressure_score:5m or vector(0))
             + (cluster:pod_host_compute_stall_score:5m or vector(0))
+            + (cluster:dcgm_pcie_replay_score:5m or vector(0))
 
         # gpu_idle_cause_weight:5m{cause}
         # 5 cause 의 정규화 가중치 (cause 별 score / 5 cause 합). 분모가 0 인 idle window 는
@@ -407,10 +424,12 @@ spec:
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
 
-        # #123 신규 cause 슬롯 2종. dev cluster의 RTX 3090 환경에서는 base score 시리즈가 부재
-        # 하여 본 슬롯들의 weight가 항상 0으로 emit된다. 데이터센터 GPU (A100, H100 등) 환경
-        # 에서 build tag 또는 env 토글로 통합되는 DCGM Source와 NCCL Profiler가 base score
-        # 시리즈를 emit 시작하면 본 weight도 자연 활성된다.
+        # #123 신규 cause 슬롯 2종. nccl_collective_stall은 NCCL Profiler base score가 부재해
+        # dev cluster와 데이터센터 GPU 환경 모두 0으로 emit되며 별도 follow-up PR에서 활성된다.
+        # dcgm_pcie_replay는 #133에서 cluster:dcgm_pcie_replay_score:5m base score가 도입되어
+        # dcgm-exporter가 DCGM_FI_DEV_PCIE_REPLAY_COUNTER를 emit하는 데이터센터 GPU 환경에서
+        # 활성된다. dev cluster의 RTX 3090 (DCGM 부재) 에서는 base 메트릭 부재로 or vector(0)
+        # fallback이 0을 돌려줘 weight가 0으로 유지된다.
         #
         # nccl_collective_stall은 NCCL collective operation (allreduce, broadcast 등) 의 wait
         # 신호로 기존 host_compute_stall (kernel launch rate 저하) 와 의미 분리. allreduce가 rank
@@ -433,7 +452,8 @@ spec:
             cause: dcgm_pcie_replay
           expr: |
             (
-              vector(0)
+              (cluster:dcgm_pcie_replay_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
 
