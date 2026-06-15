@@ -2619,6 +2619,240 @@
           ]
         }
       }
+    },
+    {
+      "id": 800,
+      "type": "row",
+      "title": "시나리오. GPU idle 진단 진입점",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 136
+      },
+      "panels": [
+        {
+          "id": 801,
+          "type": "timeseries",
+          "title": "GPU idle cause weight (5 cause stacked)",
+          "description": "avg by(cause) (pod:gpu_idle_cause_weight:5m) 의 5 cause (pcie_saturation과 network_pressure과 cpu_throttle과 memory_pressure과 host_compute_stall) weight를 cluster 평균으로 집계해 stacked로 표시한다. victim 단위 raw 메트릭을 cause 차원으로 avg 집계해 stacked 합이 victim 수에 비례해 부풀려지던 문제를 해소한다. 개별 cause weight는 0-1 범위이며 상대 크기로 어느 cause가 dominant인지 한눈에 식별한다. dev cluster의 RTX 3090 환경에서 nccl_collective_stall과 dcgm_pcie_replay 슬롯은 0 weight로 emit된다.",
+          "datasource": "${datasource}",
+          "gridPos": {
+            "h": 8,
+            "w": 16,
+            "x": 0,
+            "y": 137
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "avg by(cause) (pod:gpu_idle_cause_weight:5m{node=~\"$node\"})",
+              "legendFormat": "{{cause}}",
+              "datasource": "${datasource}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "min": 0,
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 40,
+                "showPoints": "never",
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "calcs": [
+                "mean",
+                "max",
+                "lastNotNull"
+              ]
+            }
+          },
+          "links": [
+            {
+              "title": "Drill into correlation overview",
+              "url": "/d/correlation-overview?var-victim_node=${node:regex}&var-victim_pod=${src_pod:regex}&${__url_time_range}",
+              "targetBlank": true
+            }
+          ]
+        },
+        {
+          "id": 802,
+          "type": "stat",
+          "title": "Dominant cause indicator",
+          "description": "cluster:gpu_idle_dominant_cause:5m 의 dominant cause 1종을 노출한다. 5 cause weight 중 최대값 cause가 표시되며 weight 시리즈가 idle 게이팅으로 emit되지 않는 시간대는 N/A다.",
+          "datasource": "${datasource}",
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 137
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "count by(cause) (cluster:gpu_idle_dominant_cause:5m)",
+              "legendFormat": "{{cause}}",
+              "datasource": "${datasource}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "N/A (GPU 유휴 아님)",
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "1": {
+                      "text": " "
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "name"
+          }
+        }
+      ]
+    },
+    {
+      "id": 810,
+      "type": "row",
+      "title": "시나리오. Drop spike 추적 진입점",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 146
+      },
+      "panels": [
+        {
+          "id": 811,
+          "type": "timeseries",
+          "title": "Drop burst rate (5-tuple, 초당 이벤트)",
+          "description": "netobs_drop_burst:rate1m 의 5-tuple 별 drop burst rate (초당 이벤트) 시계열. src_namespace와 src_pod와 drop_reason 라벨을 보존해 어느 connection이 drop을 일으키는지 식별한다. 본 recording rule은 5-tuple 단위 집계라 node 라벨을 보존하지 않으므로 상단 node 변수와 무관하게 cluster 전체 burst를 topk 20으로 노출한다. node 단위 분포는 아래 Node drop rate panel에서 확인한다. dev cluster의 자연 drop burst 부재 환경에서는 No data로 graceful empty 표시된다.",
+          "datasource": "${datasource}",
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 147
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "topk(20, netobs_drop_burst:rate1m)",
+              "legendFormat": "{{src_namespace}}/{{src_pod}} {{drop_reason}} ({{dst_ip}}:{{dst_port}})",
+              "datasource": "${datasource}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "min": 0,
+              "noValue": "No data (drop burst 부재)",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "calcs": [
+                "max",
+                "lastNotNull"
+              ]
+            }
+          },
+          "links": [
+            {
+              "title": "Drill into netobs overview",
+              "url": "/d/netobs-overview?var-node=${node:regex}&var-src_pod=${src_pod:regex}&${__url_time_range}",
+              "targetBlank": true
+            }
+          ]
+        },
+        {
+          "id": 812,
+          "type": "timeseries",
+          "title": "Node drop rate (drop_category 별)",
+          "description": "node 와 drop_category 별 drop event rate (초당) 시계열. NetworkPolicy 위반과 conntrack과 protocol error 등 drop_category 분포로 drop 의 성격을 분류한다. 시나리오 1 의 drop burst 와 cross-reference해 spike 의 카테고리를 특정한다.",
+          "datasource": "${datasource}",
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 155
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(node, drop_category) (rate(netobs_drop_events_labeled_total{node=~\"$node\"}[5m]))",
+              "legendFormat": "{{node}} {{drop_category}}",
+              "datasource": "${datasource}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "min": 0,
+              "noValue": "No data (drop 부재)",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            },
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "calcs": [
+                "max",
+                "lastNotNull"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

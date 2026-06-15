@@ -84,6 +84,16 @@ cluster 의 이상 신호를 4 단계 (`cluster → node → pod → root cause`
 | `BlastRadiusHigh` | warning | `target_pod`, `kind`, `victim_pod`, `victim_namespace` | `$pod` = `victim_pod`, suspect 는 `target_pod` |
 | `InjectorStuck` | critical | `target_namespace`, `target_pod`, `kind` | `$pod` = `target_pod` |
 
+## 시나리오별 진입점 row
+
+dashboard 하단에 운영 시나리오별 collapsed row를 두어 운영자가 4 단계 워크플로 외에 시나리오 단위로도 진단을 시작할 수 있다. collapsed 상태로 시작하므로 row 헤더를 클릭해 펼친 뒤 사용한다.
+
+- **GPU idle 진단 진입점** (id 800): `pod:gpu_idle_cause_weight:5m` 의 5 cause weight stacked bar와 `cluster:gpu_idle_dominant_cause:5m` dominant cause indicator로 구성된다. dominant cause를 식별한 뒤 row의 `correlation-overview` drill-down link로 이동해 noisy neighbor 페어를 확정한다
+- **Drop spike 추적 진입점** (id 810): `netobs_drop_burst:rate1m` 의 5-tuple별 burst rate 시계열과 node와 drop_category별 drop rate 분포로 구성된다. burst를 일으키는 connection을 식별한 뒤 row의 `netobs-overview` drill-down link로 이동해 drop reason과 kernel stack을 확정한다
+- **Capacity 계획 진입점**: 별도 신규 row 없이 기존 `Capacity trends` row (id 600) 와 `Resource anomaly spike` row (id 700) 를 진입점으로 활용한다. 4주 heatmap의 시간대 패턴과 z-score 추세 이탈로 capacity 선행 신호를 본다
+
+세 시나리오의 전체 흐름은 [ONBOARDING.md](../ONBOARDING.md)의 주요 운영 시나리오 절에서 단계별 표로 안내한다.
+
 ## annotation 의 활용
 
 dashboard 의 모든 timeline 패널에 `ALERTS{alertstate="firing"}` 가 annotation 으로 표시된다. 시점이 health score 의 anomaly 와 일치하면 그 alert 가 변동 원인일 가능성이 높다. annotation 클릭 시 tag 라벨 (`severity`, `component`, `alertname`) 이 노출되어 단계 2 의 variable 선택을 즉시 결정 가능하다.
