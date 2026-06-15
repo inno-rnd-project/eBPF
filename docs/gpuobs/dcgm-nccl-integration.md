@@ -31,14 +31,16 @@ dev cluster의 RTX 3090 단일 GPU 환경에서는 다음 흐름이 default다.
 
 `GPUOBS_DCGM_ENABLED=true` 또는 `GPUOBS_NCCL_ENABLED=true` env를 명시해도 본 PR의 wire-up 흐름은 SDK 통합 부재를 warn log로 안내하고 noop을 유지한다. 실제 SDK 통합 분기는 별도 follow-up PR의 build tag 또는 runtime dlopen에서 도입한다.
 
-## 데이터센터 GPU 환경의 활성 절차
+## DCGM 활성 절차 (#133, dcgm-exporter HTTP 방식)
 
-A100 또는 H100 같은 데이터센터 GPU 환경 확보 후 다음 follow-up 단계를 거친다.
+A100 또는 H100 같은 데이터센터 GPU 환경에서 DCGM 통합은 dcgm-exporter HTTP endpoint 방식으로 활성한다. `internal/gpuobs/dcgm/http_source.go`의 production `Source`가 dcgm-exporter의 `/metrics`를 순수 Go HTTP client로 fetch하므로 CGO와 libdcgm.so 의존과 build tag 분리가 모두 불요하다.
 
-- DCGM SDK 또는 dcgm-exporter sidecar 배포 후 `internal/gpuobs/dcgm/dcgm_real.go` (build tag `//go:build dcgm`) 신설로 production `Source` 구현 도입
-- NCCL profiler callback 또는 cuProfiler symbol attach를 `internal/gpuobs/nccl/nccl_real.go` (build tag `//go:build nccl`) 에서 도입
-- `GPUOBS_DCGM_ENABLED=true`와 `GPUOBS_NCCL_ENABLED=true` opt-in 토글 활성과 함께 build tag 적용한 image를 별도 빌드
-- recording rule의 `nccl_collective_stall`와 `dcgm_pcie_replay` weight 산출 식을 vector(0) 에서 실제 base score로 교체
+- NVIDIA GPU Operator 또는 standalone manifest로 dcgm-exporter를 배포해 `DCGM_FI_DEV_PCIE_REPLAY_COUNTER`와 `DCGM_FI_DEV_NVLINK_BANDWIDTH_*` 같은 hardware counter를 Prometheus에 emit
+- gpuobs-agent에 `GPUOBS_DCGM_ENABLED=true` env (또는 `-dcgm` flag) 를 설정해 `dcgm.NewHTTPSource` wire-up을 활성. dcgm-exporter Service 경로가 기본값 (`http://dcgm-exporter.gpu-operator.svc:9400/metrics`) 과 다르면 `GPUOBS_DCGM_EXPORTER_URL` env로 override
+- dcgm-exporter가 reachable 하면 `gpuobs_dcgm_available` self-health gauge가 1로 전환
+- recording rule `cluster:dcgm_pcie_replay_score:5m`가 `DCGM_FI_DEV_PCIE_REPLAY_COUNTER`의 rate를 정규화해 base score를 산출하고 `gpu_idle_cause_weight:5m{cause="dcgm_pcie_replay"}` weight가 0보다 큰 값으로 활성
+
+NCCL profiler의 production attach는 별도 follow-up PR에서 도입하며 `nccl_collective_stall` weight는 그때까지 vector(0)으로 유지된다.
 
 ## 기존 5 cause와 신규 슬롯의 의미 분리
 
@@ -52,7 +54,7 @@ A100 또는 H100 같은 데이터센터 GPU 환경 확보 후 다음 follow-up �
 | `memory_pressure` | working_set과 limit 비율 | `pod:memory_pressure_score:5m` |
 | `host_compute_stall` | CUDA kernel launch rate 저하 | `pod:host_compute_stall_score:5m` |
 | `nccl_collective_stall` (#123 신규) | NCCL allreduce와 broadcast의 rank wait 신호 | `nccl.Profiler.Events` (데이터센터 GPU 환경 활성 시) |
-| `dcgm_pcie_replay` (#123 신규) | DCGM PCIe replay count hardware counter | `dcgm.Source.MetricForward("dcgm_pcie:")` (데이터센터 GPU 환경 활성 시) |
+| `dcgm_pcie_replay` (#133 활성) | DCGM PCIe replay count hardware counter | `cluster:dcgm_pcie_replay_score:5m` (dcgm-exporter의 `DCGM_FI_DEV_PCIE_REPLAY_COUNTER` 기반) |
 
 `host_compute_stall`은 host 측 launch 부족 신호이고 `nccl_collective_stall`은 rank 간 sync wait 신호라 별개 원인이다. `pcie_saturation`은 heuristic 대역폭 점유 신호이고 `dcgm_pcie_replay`는 hardware-level PCIe 링크 에러 신호라 별개 원인이다.
 
