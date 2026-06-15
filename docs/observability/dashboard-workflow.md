@@ -30,11 +30,28 @@ cluster 의 이상 신호를 4 단계 (`cluster → node → pod → root cause`
 
 ### 단계 3 — pod 좁힘
 
-`Pod` variable dropdown 에서 단계 2 의 의심 Pod 선택 후 `Pod drill-down` row 의 3 패널을 본다.
+`Pod` variable dropdown 에서 단계 2 의 의심 Pod 선택 후 `Pod drill-down` row 의 4 패널을 본다.
 
 - `Stage latency p99`: 본 Pod 의 stage 별 latency p99 시계열
 - `GPU memory used (Pod)`: GPU 사용 시 메모리 점유량. 미사용 Pod 는 N/A
 - `Noisy neighbor Top-N (victim=$pod)`: `correlation_noisy_neighbor_score` 의 dimension 별 suspect 순위. score 0.85 이상 빨강 / 0.7 주황 / 0.5 노랑 임계 색상으로 즉시 식별
+- `Pod 별 RX/TX 대역폭 (Mbps, $src_pod)` (#130): raw counter `netobs_pod_bytes_total` 의 layer l4 rate를 PromQL 단에서 Mbps 환산한 dual-direction 시계열. egress (TX, blue) 와 ingress (RX, green) 별 분리 표시
+
+#### Pod 별 RX/TX 대역폭 panel 의 활용
+
+본 panel은 Pod 단위 네트워크 대역폭을 Mbps 단위로 즉시 가시화해 운영자가 다음 시나리오에서 활용 가능하다.
+
+- **대역폭 spike 식별**: TX 의 sustained burst가 NIC capacity (`netobs_node_nic_capacity_bytes_per_sec`) 의 50% 이상이면 cross-pod 간섭 의심. `Noisy neighbor Top-N` 표의 network dimension 신호와 cross-reference
+- **RX/TX 비대칭 패턴 인식**: ingress 가 egress 대비 과도하게 높으면 본 Pod가 receive 측 (예: API 수신 서버) 이고 그 반대면 send 측 (예: 미디어 송신). 워크로드 성격에 따른 자연 패턴 비교
+- **drop spike와의 cross-reference**: 같은 시점의 `Node drop / retrans rate (drop_category 별)` panel과 비교. 대역폭 burst가 drop spike를 동반하면 NIC saturation 또는 queue overflow 의심
+
+본 panel 의 query 는 raw counter `netobs_pod_bytes_total` 의 rate를 PromQL 단에서 직접 계산해 신규 recording rule 도입 없이 direction 라벨 분리를 활용한다. unit `Mbits` 설정으로 Grafana 가 Kbps와 Gbps 표기를 자동 SI prefix 변환한다.
+
+본 panel의 비목표는 다음과 같다.
+
+- per-flow 5-tuple 분리는 본 panel 외 (`drop-flow` dashboard와 `netobs_flow_bytes_total` 메트릭 참조)
+- nic layer 의 raw counter 표시는 본 panel 외 (`layer="l4"` 필터 고정으로 cardinality 폐쇄)
+- alert 발화 threshold 도입은 본 panel 외 (별도 follow-up)
 
 ### 단계 4 — root cause 분석
 
