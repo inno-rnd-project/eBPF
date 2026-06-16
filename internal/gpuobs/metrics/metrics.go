@@ -200,11 +200,11 @@ type PodGPUSample struct {
 // PodMigGPUSample 은 #104 MIG 활성 환경 한정 의 (Pod, MIG instance) 단위 SM util 합산 결과다. parent
 // device 정보 (UUID / Index) 외 에 instance 식별자 (MigUUID, GpuInstanceID) 를 함께 운반 한다.
 type PodMigGPUSample struct {
-	ID             kube.PodIdentity
-	Device         types.GPUDevice
-	MigUUID        string
-	GpuInstanceID  uint32
-	SmUtilPct      uint32
+	ID            kube.PodIdentity
+	Device        types.GPUDevice
+	MigUUID       string
+	GpuInstanceID uint32
+	SmUtilPct     uint32
 }
 
 // lastPodSampleKeys는 직전 RecordPodSnapshot 호출에서 기록된 라벨 키 셋이다 (podMemoryUsed 기준).
@@ -643,6 +643,36 @@ var (
 		},
 		[]string{"node"},
 	)
+
+	// ncclCollectiveDurationSeconds 는 #134 의 NCCL collective wall-clock 분포다. libnccl.so 의
+	// collective 심볼 (ncclAllReduce 등) 에 attach 한 uprobe / uretprobe 페어가 산정한 entry-exit
+	// latency 를 operation 라벨별로 누적한다. multi-rank distributed training 에서 rank 간 sync
+	// 대기로 collective 가 길어지는 신호를 cluster:nccl_collective_stall_score:5m base score 의 입력
+	// 으로 활용한다. 라벨은 node 와 operation 2 종으로 cardinality 가 노드당 collective 종류 (최대 4)
+	// 로 통제된다. RTX 3090 dev cluster 와 build tag nccl 비활성 이미지에서는 noop profiler 가 event
+	// 를 emit 하지 않아 본 histogram 시리즈 자체가 생성되지 않는다.
+	ncclCollectiveDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "gpuobs_nccl_collective_duration_seconds",
+			Help:    "Distribution of NCCL collective operation wall-clock time captured by libnccl.so uprobe / uretprobe pairs (#134). The operation label is one of allreduce, broadcast, reducescatter, allgather. Long-tail durations indicate rank-to-rank synchronization stalls that leave the GPU idle; consumed by cluster:nccl_collective_stall_score:5m as the collective stall base score. Only emitted on images built with the nccl build tag attached to data-center GPUs; absent on RTX 3090 dev clusters where the noop profiler emits no events.",
+			Buckets: prometheus.ExponentialBuckets(1e-5, 2, 22),
+		},
+		[]string{"node", "operation"},
+	)
+
+	// ncclEventsLostTotal 는 #134 의 NCCL uprobe ringbuf 드롭 누적 카운터다. BPF 측 nccl_dropped
+	// percpu 카운터 (ringbuf reserve 실패) 와 userspace Event 채널 드롭 (소비자 지연) 의 합을
+	// profiler 가 주기적으로 baseline-then-delta 로 누적한다. cuda 의 gpuobs_cuda_events_lost_total
+	// 와 동일 의미로 본 카운터의 지속 증가는 ring buffer 또는 소비자가 현재 collective event rate 에
+	// 비해 부족하다는 self-health 신호다. RTX 3090 dev cluster 와 build tag nccl 비활성 이미지에서는
+	// noop profiler 가 본 카운터를 갱신하지 않아 시리즈 자체가 생성되지 않는다.
+	ncclEventsLostTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gpuobs_nccl_events_lost_total",
+			Help: "Cumulative count of NCCL uprobe collective events lost (#134), summing the BPF-side ringbuf reserve failures (nccl_dropped percpu counter) and userspace channel drops from a slow consumer. Sustained increase indicates the ring buffer or the consumer is undersized for the current collective event rate. Only emitted on images built with the nccl build tag; absent on RTX 3090 dev clusters where the noop profiler emits no events.",
+		},
+		[]string{"node"},
+	)
 )
 
 // Register는 gpuobs 지표를 주어진 Prometheus Registerer에 등록한다.
@@ -702,7 +732,25 @@ func Register(reg prometheus.Registerer) {
 		informerSyncLagSeconds,
 		dcgmAvailable,
 		ncclProfilerAvailable,
+		ncclCollectiveDurationSeconds,
+		ncclEventsLostTotal,
 	)
+}
+
+// RecordNcclCollective는 #134의 NCCL collective event 한 건을 operation 라벨별 duration histogram
+// 에 누적한다. cmd/gpuobs-agent의 nccl event 소비 goroutine이 nccl.Profiler.Events 채널에서 받은
+// Event의 wall-clock (nanoseconds) 을 초 단위로 변환해 본 함수에 넘긴다. operation은 nccl 패키지의
+// operationName이 산출한 소문자 라벨 (allreduce 등) 이며 cardinality는 노드당 collective 종류로
+// 통제된다. noop profiler가 wire-up된 환경에서는 Events 채널이 즉시 닫혀 본 함수가 호출되지 않는다.
+func RecordNcclCollective(node, operation string, durationSeconds float64) {
+	ncclCollectiveDurationSeconds.WithLabelValues(node, operation).Observe(durationSeconds)
+}
+
+// AddNcclEventsLost는 #134의 NCCL uprobe 드롭 누적 카운터에 lost 이벤트 수를 더한다. nccl 패키지의
+// production profiler가 BPF nccl_dropped percpu 카운터와 userspace 채널 드롭의 합을 baseline-then-
+// delta로 산정해 호출한다. 호출 측이 이미 양수 delta만 넘기므로 본 함수는 양수만 받는다고 가정한다.
+func AddNcclEventsLost(node string, lost uint64) {
+	ncclEventsLostTotal.WithLabelValues(node).Add(float64(lost))
 }
 
 // SetCudaLaunchBaselinePerSec는 노드 CUDA launch baseline gauge를 startup 시점에 1회 설정한다. 본

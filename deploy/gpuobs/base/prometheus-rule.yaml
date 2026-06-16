@@ -359,6 +359,27 @@ spec:
             )
             or vector(0)
 
+        # cluster:nccl_collective_stall_score:5m (#134)
+        # gpuobs 가 libnccl.so collective 심볼 uprobe 로 수집한 gpuobs_nccl_collective_duration_
+        # seconds histogram 의 _sum rate 를 node 단위로 합산 후 cluster max 로 집계해 0-1 score 로
+        # 만든다. _sum 의 5 분 rate 는 초당 누적 collective wall-clock (collective-seconds/sec) 이며
+        # 한 rank process 가 시간의 100% 를 collective 대기에 쓰면 1.0 에 근접하고 복수 rank 의 부분
+        # 대기 합도 누적된다. clamp_max 로 1.0 상한 둔다. NCCL profiler 가 활성 (build tag nccl 이미지
+        # + GPUOBS_NCCL_ENABLED=true + 데이터센터 GPU) 인 노드에서만 base 메트릭 이 emit 되고 dev
+        # cluster 의 RTX 3090 (noop profiler) 에서는 시리즈 부재 로 or vector(0) fallback 이 0 을
+        # 돌려준다. 정규화 임계 는 collective-seconds/sec 1.0 (한 rank 상시 대기) 을 score 1.0 으로
+        # 보는 경험치 기반 이며 노드 GPU 수가 많아 동시 collective 대기 합이 큰 환경 은 운영자 가
+        # 분모 를 GPU 수로 나눠 recording rule 을 override 가능 하다.
+        - record: cluster:nccl_collective_stall_score:5m
+          expr: |
+            clamp_max(
+              max(
+                sum by(node) (rate(gpuobs_nccl_collective_duration_seconds_sum[5m]))
+              ),
+              1
+            )
+            or vector(0)
+
         - record: gpu_idle_cause_sum:5m
           expr: |
             (cluster:gpu_pcie_saturation_score:5m or vector(0))
@@ -367,6 +388,7 @@ spec:
             + (cluster:pod_network_pressure_score:5m or vector(0))
             + (cluster:pod_host_compute_stall_score:5m or vector(0))
             + (cluster:dcgm_pcie_replay_score:5m or vector(0))
+            + (cluster:nccl_collective_stall_score:5m or vector(0))
 
         # gpu_idle_cause_weight:5m{cause}
         # 5 cause 의 정규화 가중치 (cause 별 score / 5 cause 합). 분모가 0 인 idle window 는
@@ -424,26 +446,30 @@ spec:
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
 
-        # #123 신규 cause 슬롯 2종. nccl_collective_stall은 NCCL Profiler base score가 부재해
-        # dev cluster와 데이터센터 GPU 환경 모두 0으로 emit되며 별도 follow-up PR에서 활성된다.
+        # #123/#133/#134 신규 cause 슬롯 2종. 둘 다 base score가 도입되어 해당 신호가 emit되는
+        # 환경에서 weight가 활성된다.
+        #
+        # nccl_collective_stall은 #134에서 cluster:nccl_collective_stall_score:5m base score가
+        # 도입되어 gpuobs가 libnccl.so collective uprobe로 gpuobs_nccl_collective_duration_seconds를
+        # emit하는 환경 (build tag nccl 이미지 + GPUOBS_NCCL_ENABLED=true + 데이터센터 GPU) 에서
+        # 활성된다. dev cluster의 RTX 3090 (noop profiler) 에서는 base 메트릭 부재로 or vector(0)
+        # fallback이 0을 돌려줘 weight가 0으로 유지된다. NCCL collective operation (allreduce,
+        # broadcast 등) 의 wait 신호로 기존 host_compute_stall (kernel launch rate 저하) 와 의미
+        # 분리. allreduce가 rank 간 sync 대기로 GPU가 유휴 상태인 케이스를 구분한다.
+        #
         # dcgm_pcie_replay는 #133에서 cluster:dcgm_pcie_replay_score:5m base score가 도입되어
         # dcgm-exporter가 DCGM_FI_DEV_PCIE_REPLAY_COUNTER를 emit하는 데이터센터 GPU 환경에서
         # 활성된다. dev cluster의 RTX 3090 (DCGM 부재) 에서는 base 메트릭 부재로 or vector(0)
-        # fallback이 0을 돌려줘 weight가 0으로 유지된다.
-        #
-        # nccl_collective_stall은 NCCL collective operation (allreduce, broadcast 등) 의 wait
-        # 신호로 기존 host_compute_stall (kernel launch rate 저하) 와 의미 분리. allreduce가 rank
-        # 간 sync 대기로 GPU가 유휴 상태인 케이스를 구분한다.
-        #
-        # dcgm_pcie_replay는 DCGM의 PCIe replay count 카운터 기반 hardware-level 신호로 기존
-        # pcie_saturation (heuristic 대역폭 점유) 와 의미 분리. PCIe link error로 인한 retry가
-        # GPU의 compute 진입 지연을 직접 일으키는 케이스를 구분한다.
+        # fallback이 0을 돌려줘 weight가 0으로 유지된다. DCGM의 PCIe replay count 카운터 기반
+        # hardware-level 신호로 기존 pcie_saturation (heuristic 대역폭 점유) 와 의미 분리. PCIe
+        # link error로 인한 retry가 GPU의 compute 진입 지연을 직접 일으키는 케이스를 구분한다.
         - record: gpu_idle_cause_weight:5m
           labels:
             cause: nccl_collective_stall
           expr: |
             (
-              vector(0)
+              (cluster:nccl_collective_stall_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
 
@@ -458,19 +484,23 @@ spec:
             and on() (max(node:gpu_idle:5m) > 0.5)
 
         # cluster:gpu_idle_dominant_cause:5m
-        # 5 cause weight 중 최대값을 가진 cause 1 종만 단일 시리즈로 노출한다. 정확한 동률 케이스에
+        # 7 cause weight 중 최대값을 가진 cause 1 종만 단일 시리즈로 노출한다. 정확한 동률 케이스에
         # 서 cause enum 사전순 가장 앞 라벨이 채택되도록 1e-6 단위의 deterministic offset 을
-        # cause 별로 가산해 tie-breaker 로 둔다. offset 단위는 어떤 실 weight 값에도 미치지 못해
-        # 일반 케이스의 정렬을 바꾸지 않는다. weight 시리즈 자체가 idle 게이팅으로 emit 되지 않는
-        # 시간대는 본 record 도 자연 emit 되지 않는다.
+        # cause 별로 가산해 tie-breaker 로 둔다. offset 은 사전순 (cpu_throttle, dcgm_pcie_replay,
+        # host_compute_stall, memory_pressure, nccl_collective_stall, network_pressure,
+        # pcie_saturation) 으로 7e-6 부터 1e-6 까지 부여한다. offset 단위는 어떤 실 weight 값에도
+        # 미치지 못해 일반 케이스의 정렬을 바꾸지 않는다. weight 시리즈 자체가 idle 게이팅으로 emit
+        # 되지 않는 시간대는 본 record 도 자연 emit 되지 않는다.
         - record: cluster:gpu_idle_dominant_cause:5m
           expr: |
             topk(1,
               gpu_idle_cause_weight:5m
               + on(cause) (
-                label_replace(vector(5e-6), "cause", "cpu_throttle", "", "")
-                or label_replace(vector(4e-6), "cause", "host_compute_stall", "", "")
-                or label_replace(vector(3e-6), "cause", "memory_pressure", "", "")
+                label_replace(vector(7e-6), "cause", "cpu_throttle", "", "")
+                or label_replace(vector(6e-6), "cause", "dcgm_pcie_replay", "", "")
+                or label_replace(vector(5e-6), "cause", "host_compute_stall", "", "")
+                or label_replace(vector(4e-6), "cause", "memory_pressure", "", "")
+                or label_replace(vector(3e-6), "cause", "nccl_collective_stall", "", "")
                 or label_replace(vector(2e-6), "cause", "network_pressure", "", "")
                 or label_replace(vector(1e-6), "cause", "pcie_saturation", "", "")
               )

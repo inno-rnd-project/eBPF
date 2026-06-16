@@ -68,11 +68,18 @@ type Config struct {
 	// 배포되면 GPUOBS_DCGM_EXPORTER_URL env로 override한다.
 	DcgmExporterURL string
 
-	// NcclEnabled는 #123의 NCCL profiler 통합 opt-in 토글이다. 기본값 false로 RTX 3090 환경
-	// 에서 noopProfiler만 wire-up되어 gpuobs_nccl_profiler_available이 0 emit된다. 데이터센터
-	// GPU 환경에서 true로 두면 cuProfiler symbol 또는 NCCL callback attach가 활성된다. 실제
-	// SDK 통합은 별도 follow-up PR에 위임한다.
+	// NcclEnabled는 #123/#134의 NCCL collective profiler 통합 opt-in 토글이다. 기본값 false로
+	// RTX 3090 환경에서 noopProfiler만 wire-up되어 gpuobs_nccl_profiler_available이 0 emit된다.
+	// 데이터센터 GPU 환경에서 build tag nccl로 빌드한 이미지에 true로 두면 nccl.NewProduction이
+	// NcclLibPath의 libnccl.so.2 collective 심볼에 uprobe를 attach한다. build tag nccl이 비활성인
+	// 기본 이미지에서는 true여도 stub이 noop을 돌려줘 graceful degradation을 유지한다.
 	NcclEnabled bool
+
+	// NcclLibPath는 #134의 host libnccl.so.2 절대경로다. NcclEnabled=true이고 build tag nccl로
+	// 빌드한 이미지일 때 nccl.NewProduction이 본 경로를 OpenExecutable해 collective 심볼에 uprobe를
+	// attach한다. DaemonSet의 hostPath 마운트 결과 경로 (예: /host/usr/lib/x86_64-linux-gnu/
+	// libnccl.so.2) 이며 GPUOBS_NCCL_LIB_PATH env로 override한다.
+	NcclLibPath string
 }
 
 // Parse는 env와 CLI flag를 읽어 Config를 구성해 반환한다.
@@ -120,6 +127,7 @@ func Parse() (Config, error) {
 		DcgmEnabled:                getenvBool("GPUOBS_DCGM_ENABLED", false),
 		DcgmExporterURL:            getenvDefault("GPUOBS_DCGM_EXPORTER_URL", "http://dcgm-exporter.gpu-operator.svc:9400/metrics"),
 		NcclEnabled:                getenvBool("GPUOBS_NCCL_ENABLED", false),
+		NcclLibPath:                getenvDefault("GPUOBS_NCCL_LIB_PATH", "/host/usr/lib/x86_64-linux-gnu/libnccl.so.2"),
 	}
 
 	fs := flag.NewFlagSet("gpuobs-agent", flag.ContinueOnError)
@@ -136,7 +144,8 @@ func Parse() (Config, error) {
 	fs.Float64Var(&cfg.CudaLaunchBaselinePerSec, "cuda-launch-baseline", cfg.CudaLaunchBaselinePerSec, "expected CUDA kernel launch rate (Hz) used as denominator of pod:host_compute_stall_score:5m correlation rule (default 10)")
 	fs.BoolVar(&cfg.DcgmEnabled, "dcgm", cfg.DcgmEnabled, "#123/#133: opt-in NVIDIA DCGM integration; default false keeps the noop source on RTX 3090 so gpuobs_dcgm_available emits 0. When true, the dcgm-exporter HTTP source fetches -dcgm-exporter-url")
 	fs.StringVar(&cfg.DcgmExporterURL, "dcgm-exporter-url", cfg.DcgmExporterURL, "#133: dcgm-exporter /metrics endpoint URL fetched by the production DCGM source when -dcgm is enabled")
-	fs.BoolVar(&cfg.NcclEnabled, "nccl-profiler", cfg.NcclEnabled, "#123: opt-in NCCL collective profiler; default false keeps the noop profiler on RTX 3090 so gpuobs_nccl_profiler_available emits 0 (real attach arrives in a follow-up PR)")
+	fs.BoolVar(&cfg.NcclEnabled, "nccl-profiler", cfg.NcclEnabled, "#123/#134: opt-in NCCL collective profiler; default false keeps the noop profiler on RTX 3090 so gpuobs_nccl_profiler_available emits 0. When true on an image built with the nccl build tag, the production profiler uprobe-attaches the libnccl.so collective symbols at -nccl-lib-path")
+	fs.StringVar(&cfg.NcclLibPath, "nccl-lib-path", cfg.NcclLibPath, "#134: absolute path to host libnccl.so.2 reachable from inside the container, uprobe-attached by the production NCCL profiler when -nccl-profiler is enabled on an nccl-tagged image")
 	// -pod-util-allow-namespaces 의 default 를 "unset" sentinel 로 둬, 빈 문자열 명시 (`-pod-util-allow-namespaces=`)
 	// 로도 env 값을 덮어 "전체 namespace 발행" 으로 되돌릴 수 있게 한다. 단순 default="" 패턴 으로는 빈 값과
 	// 미지정 을 구분 못 해 env override 가 불가능 하다.
