@@ -5,6 +5,7 @@ package nccl
 import (
 	"encoding/binary"
 	"testing"
+	"time"
 )
 
 // makeRawEvent는 decodeNcclEvent 검증용 32 bytes wire 버퍼를 만든다. bpf/nccl_uprobe.bpf.c의
@@ -71,9 +72,39 @@ func TestOperationName(t *testing.T) {
 // TestNewProduction_AvailableBeforeAttach는 Attach 전 production Profiler가 Available=false인지
 // 검증한다. wire-up이 Attach 성공 후에만 gpuobs_nccl_profiler_available=1을 set하는 회귀 가드다.
 func TestNewProduction_AvailableBeforeAttach(t *testing.T) {
-	p := NewProduction("/nonexistent/libnccl.so.2")
+	p := NewProduction("/nonexistent/libnccl.so.2", "test-node")
 	defer func() { _ = p.Close() }()
 	if p.Available() {
 		t.Errorf("NewProduction.Available()=true want false before Attach")
+	}
+}
+
+// TestNewProduction_CloseWithoutAttachClosesEvents는 Attach 없이 Close해도 Events 채널이 닫혀
+// 소비자의 range가 정상 종료하는지 검증한다. Attach 미수행 / attach 실패 경로에서 Events 소비
+// goroutine이 영원히 블록되지 않게 하는 회귀 가드다. range 종료 후 두 번째 Close가 double close
+// panic 없이 안전한지도 함께 확인한다.
+func TestNewProduction_CloseWithoutAttachClosesEvents(t *testing.T) {
+	p := NewProduction("/nonexistent/libnccl.so.2", "test-node")
+
+	done := make(chan struct{})
+	go func() {
+		for range p.Events() {
+		}
+		close(done)
+	}()
+
+	if err := p.Close(); err != nil {
+		t.Errorf("Close()=%v want nil", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Events() range did not terminate after Close (channel not closed)")
+	}
+
+	// 중복 Close가 double close panic 없이 안전해야 한다.
+	if err := p.Close(); err != nil {
+		t.Errorf("second Close()=%v want nil", err)
 	}
 }

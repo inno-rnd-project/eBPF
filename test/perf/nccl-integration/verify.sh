@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# nccl-integration/verify.sh 는 이슈 #134 의 libnccl.so uprobe NCCL Profiler 통합 회귀 가드 다.
+# nccl-integration/verify.sh 는 이슈 #134 의 libnccl.so uprobe NCCL Profiler 통합 회귀 가드다.
 # 데이터 센터 GPU (A100 과 H100 등) 의 multi-rank distributed training 환경 에서 build tag nccl 로
 # 빌드 한 이미지 가 배포 되고 GPUOBS_NCCL_ENABLED=true 로 활성 된 경우 gpuobs_nccl_profiler_
 # available 가 1 로 emit 되고 gpu_idle_cause_weight:5m{cause="nccl_collective_stall"} weight 가 0

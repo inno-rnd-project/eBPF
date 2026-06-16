@@ -1335,3 +1335,16 @@ func TestRecordNcclCollective(t *testing.T) {
 		t.Errorf("series count=%d want 2 (allreduce, broadcast)", got)
 	}
 }
+
+// TestAddNcclEventsLost는 #134의 NCCL lost 카운터가 node 라벨별로 단조 누적되는지 검증한다.
+// profiler의 baseline-then-delta 수집이 넘긴 delta가 정확히 더해지는 회귀 가드다.
+func TestAddNcclEventsLost(t *testing.T) {
+	ncclEventsLostTotal.Reset()
+
+	AddNcclEventsLost("n", 3)
+	AddNcclEventsLost("n", 5)
+
+	if got := testutil.ToFloat64(ncclEventsLostTotal.WithLabelValues("n")); got != 8 {
+		t.Errorf("ncclEventsLostTotal=%v want 8", got)
+	}
+}

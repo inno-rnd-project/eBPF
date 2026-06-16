@@ -27,6 +27,8 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
+
+	"netobs/internal/gpuobs/metrics"
 )
 
 // nccl collective op enum. bpf/nccl_uprobe.bpf.c의 enum nccl_op과 1:1 정합해야 한다. 어긋나면
@@ -55,11 +57,17 @@ type collectiveProbe struct {
 	exit   *cebpf.Program
 }
 
+// droppedRefreshInterval은 productionProfiler가 BPF nccl_dropped percpu 카운터와 userspace 채널
+// 드롭을 read + sum 해 gpuobs_nccl_events_lost_total에 누적하는 주기다. cuda 패키지의 dropped
+// 수집과 동일하게 30s로 둔다.
+const droppedRefreshInterval = 30 * time.Second
+
 // productionProfiler는 libnccl.so uprobe 기반 Profiler 구현이다. Attach가 BPF 객체 로드와 심볼
 // attach와 ringbuf reader 기동을 수행하고 read loop goroutine이 collective event를 Event 채널로
 // emit한다. Close가 read loop 종료와 link / ringbuf / BPF object를 graceful 해제한다.
 type productionProfiler struct {
-	libPath string
+	libPath  string
+	nodeName string
 
 	objs   NcclUprobeObjects
 	links  []link.Link
@@ -70,19 +78,26 @@ type productionProfiler struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
+	// closeEvents는 events 채널이 정확히 한 번만 닫히도록 보장한다. read loop가 채널을 닫지 않고
+	// Close가 wg.Wait 이후 닫아, Attach 미수행 / attach 실패 / 중복 Close 모든 경로에서 Events 소비자
+	// 의 range가 정상 종료하고 double close panic이 없다.
+	closeEvents sync.Once
+
 	attached atomic.Bool
-	// droppedUserspace는 Event 채널이 가득 차 read loop가 drop한 이벤트 수다. 소비자 부재 또는
-	// 지연의 self-health 신호로 Close 시 1회 로깅한다.
+	// droppedUserspace는 Event 채널이 가득 차 read loop가 drop한 이벤트 수다. dropped refresher가
+	// BPF nccl_dropped와 합산해 gpuobs_nccl_events_lost_total에 누적한다.
 	droppedUserspace atomic.Uint64
 }
 
-// NewProduction은 libnccl.so.2 절대경로로 production Profiler를 만든다. libPath는 DaemonSet의
-// hostPath 마운트 결과 (예: /host/usr/lib/x86_64-linux-gnu/libnccl.so.2) 다. 본 시점에는 attach를
-// 수행하지 않으며 Attach 호출 시 BPF 로드와 심볼 attach가 일어난다.
-func NewProduction(libPath string) Profiler {
+// NewProduction은 libnccl.so.2 절대경로와 노드명으로 production Profiler를 만든다. libPath는
+// DaemonSet의 hostPath 마운트 결과 (예: /host/usr/lib/x86_64-linux-gnu/libnccl.so.2) 이고 nodeName은
+// gpuobs_nccl_events_lost_total의 라벨이다. 본 시점에는 attach를 수행하지 않으며 Attach 호출 시
+// BPF 로드와 심볼 attach가 일어난다.
+func NewProduction(libPath, nodeName string) Profiler {
 	return &productionProfiler{
-		libPath: libPath,
-		events:  make(chan Event, eventChanBuffer),
+		libPath:  libPath,
+		nodeName: nodeName,
+		events:   make(chan Event, eventChanBuffer),
 	}
 }
 
@@ -161,6 +176,9 @@ func (p *productionProfiler) Attach() error {
 	p.wg.Add(1)
 	go p.readLoop()
 
+	p.wg.Add(1)
+	go p.runDroppedRefresher()
+
 	p.attached.Store(true)
 	log.Printf("nccl: attached %d/%d collective symbol pairs on %s", attached, len(probes), p.libPath)
 	return nil
@@ -168,10 +186,10 @@ func (p *productionProfiler) Attach() error {
 
 // readLoop는 ringbuf event를 decode해 Event 채널로 non-blocking send한다. 채널이 가득 차면
 // droppedUserspace를 증가시키고 drop해 kernel ringbuf back-pressure를 피한다. ctx 종료 또는
-// ringbuf close 시 채널을 닫고 종료한다.
+// ringbuf close 시 종료한다. events 채널 close는 Close가 wg.Wait 이후 단독 수행하므로 read loop는
+// 채널을 닫지 않는다 (double close 방지).
 func (p *productionProfiler) readLoop() {
 	defer p.wg.Done()
-	defer close(p.events)
 
 	for {
 		record, err := p.rd.Read()
@@ -209,22 +227,84 @@ func (p *productionProfiler) Events() <-chan Event {
 	return p.events
 }
 
-// Close는 read loop를 종료시키고 ringbuf reader와 uprobe link와 BPF object를 graceful 해제한다.
-// Attach 전 호출 또는 중복 호출에 안전하다.
+// Close는 read loop와 dropped refresher를 종료시키고 events 채널과 ringbuf reader와 uprobe link와
+// BPF object를 graceful 해제한다. cancel과 wg.Wait로 goroutine 종료를 보장한 뒤 events 채널을 단독
+// close하므로 read loop가 채널에 send 중인 상태와 겹치지 않는다. Attach 전 호출 / attach 실패 /
+// 중복 호출 모든 경로에서 events 채널이 정확히 한 번 닫혀 Events 소비자의 range가 정상 종료한다.
 func (p *productionProfiler) Close() error {
 	if p.cancel != nil {
 		p.cancel()
 	}
 	p.wg.Wait()
-	if dropped := p.droppedUserspace.Load(); dropped > 0 {
-		log.Printf("nccl: dropped %d events due to slow consumer", dropped)
-	}
+	p.closeEvents.Do(func() { close(p.events) })
 	p.closeLinks()
 	if p.attached.Load() {
 		_ = p.objs.Close()
 	}
 	p.attached.Store(false)
 	return nil
+}
+
+// runDroppedRefresher는 droppedRefreshInterval 주기로 BPF nccl_dropped percpu 카운터와 userspace
+// 채널 드롭의 합을 read + sum 해 baseline-then-delta로 gpuobs_nccl_events_lost_total에 누적한다.
+// percpu 카운터와 userspace 카운터 모두 단조증가라 delta만 가산하며 BPF map reset 같은 역행 케이스는
+// 거짓 spike 회피를 위해 baseline만 갱신하고 skip한다. ctx 종료 시 마지막 1회 수집 후 종료한다.
+func (p *productionProfiler) runDroppedRefresher() {
+	defer p.wg.Done()
+
+	var baseline uint64
+	var initialized bool
+	refresh := func() {
+		total := readNcclDroppedTotal(p.objs.NcclDropped) + p.droppedUserspace.Load()
+		if !initialized {
+			baseline = total
+			initialized = true
+			return
+		}
+		if total < baseline {
+			baseline = total
+			return
+		}
+		if delta := total - baseline; delta > 0 {
+			metrics.AddNcclEventsLost(p.nodeName, delta)
+			baseline = total
+		}
+	}
+
+	// 첫 수집을 baseline으로 잡아 attach 이전 누적이 spike로 잡히지 않게 한다.
+	refresh()
+
+	t := time.NewTicker(droppedRefreshInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-p.ctx.Done():
+			refresh()
+			return
+		case <-t.C:
+			refresh()
+		}
+	}
+}
+
+// readNcclDroppedTotal은 nccl_dropped percpu 카운터를 모든 CPU에 걸쳐 합산한다. cuda 패키지의
+// readDroppedTotal과 동일 패턴이다. lookup 실패 시 0을 돌려줘 self-health 수집이 graceful하게
+// 진행된다.
+func readNcclDroppedTotal(droppedMap *cebpf.Map) uint64 {
+	if droppedMap == nil {
+		return 0
+	}
+	var perCPU []uint64
+	var key uint32
+	if err := droppedMap.Lookup(key, &perCPU); err != nil {
+		log.Printf("nccl dropped map lookup: %v", err)
+		return 0
+	}
+	var sum uint64
+	for _, v := range perCPU {
+		sum += v
+	}
+	return sum
 }
 
 // closeLinks는 attach된 uprobe / uretprobe link를 모두 닫는다.

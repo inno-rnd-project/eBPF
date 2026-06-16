@@ -72,7 +72,7 @@ func main() {
 	// agent 기동을 막지 않고 noop으로 폴백한다.
 	ncclProfiler := nccl.NewNoop()
 	if cfg.NcclEnabled {
-		p := nccl.NewProduction(cfg.NcclLibPath)
+		p := nccl.NewProduction(cfg.NcclLibPath, cfg.NodeName)
 		if err := p.Attach(); err != nil {
 			log.Printf("warn: nccl profiler attach failed: %v; falling back to noop", err)
 			_ = p.Close()
