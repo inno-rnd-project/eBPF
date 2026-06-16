@@ -16,3 +16,12 @@ spec:
         - name: gpuobs-agent
           # 로컬에서 빌드한 이미지를 당기지 않고 바로 사용한다. Prod overlay에서는 IfNotPresent로 전환된다.
           imagePullPolicy: Never
+          # #133 dev cluster의 gpu-monitoring namespace에 dcgm-exporter가 RTX 3090에서 동작하므로
+          # dev overlay에서 DCGM HTTP source를 활성해 production 경로를 실 검증한다. 기본 URL은
+          # NVIDIA GPU Operator의 gpu-operator namespace 경로라 dev cluster의 gpu-monitoring
+          # namespace 경로로 override한다. prod overlay는 운영자가 명시 활성 결정할 때까지 default off.
+          env:
+            - name: GPUOBS_DCGM_ENABLED
+              value: "true"
+            - name: GPUOBS_DCGM_EXPORTER_URL
+              value: "http://dcgm-dcgm-exporter.gpu-monitoring.svc:9400/metrics"

@@ -57,9 +57,16 @@ type Config struct {
 
 	// DcgmEnabled는 #123의 NVIDIA DCGM 통합 opt-in 토글이다. 기본값 false로 dev cluster의
 	// RTX 3090 환경에서 noopSource만 wire-up되어 gpuobs_dcgm_available이 0 emit된다. 데이터
-	// 센터 GPU (A100, H100 등) 환경에서 true로 두면 build tag dcgm으로 통합된 production
-	// Source가 활성된다. 실제 SDK 통합은 별도 follow-up PR에 위임한다.
+	// 센터 GPU (A100, H100 등) 환경에서 true로 두면 #133의 dcgm-exporter HTTP Source가
+	// 활성되어 DcgmExporterURL의 /metrics를 fetch한다.
 	DcgmEnabled bool
+
+	// DcgmExporterURL은 #133의 dcgm-exporter /metrics endpoint URL이다. DcgmEnabled=true일 때
+	// dcgm.NewHTTPSource가 본 URL을 fetch해 DCGM hardware counter (PCIe replay count 등) 의
+	// reachability를 판정하고 gpuobs_dcgm_available gauge를 set한다. 기본값은 NVIDIA GPU
+	// Operator의 표준 dcgm-exporter Service 경로다. dcgm-exporter가 다른 namespace나 port에
+	// 배포되면 GPUOBS_DCGM_EXPORTER_URL env로 override한다.
+	DcgmExporterURL string
 
 	// NcclEnabled는 #123의 NCCL profiler 통합 opt-in 토글이다. 기본값 false로 RTX 3090 환경
 	// 에서 noopProfiler만 wire-up되어 gpuobs_nccl_profiler_available이 0 emit된다. 데이터센터
@@ -111,6 +118,7 @@ func Parse() (Config, error) {
 		CudaLaunchBaselinePerSec:   cudaLaunchBaseline,
 		PodUtilAllowNamespaces:     parseNamespaceList(getenvDefault("GPUOBS_POD_UTIL_ALLOW_NAMESPACES", "")),
 		DcgmEnabled:                getenvBool("GPUOBS_DCGM_ENABLED", false),
+		DcgmExporterURL:            getenvDefault("GPUOBS_DCGM_EXPORTER_URL", "http://dcgm-exporter.gpu-operator.svc:9400/metrics"),
 		NcclEnabled:                getenvBool("GPUOBS_NCCL_ENABLED", false),
 	}
 
@@ -126,7 +134,8 @@ func Parse() (Config, error) {
 	fs.StringVar(&cfg.CudaUprobeLibcudartPath, "cuda-libcudart-path", cfg.CudaUprobeLibcudartPath, "absolute path to host libcudart.so reachable from inside the container; empty disables cudart attach")
 	fs.DurationVar(&cfg.CudaUprobeDeviceMapRefresh, "cuda-devicemap-refresh", cfg.CudaUprobeDeviceMapRefresh, "interval between NVML RunningProcesses sweeps that rebuild the PID→GPU map and clean up stale cuda series")
 	fs.Float64Var(&cfg.CudaLaunchBaselinePerSec, "cuda-launch-baseline", cfg.CudaLaunchBaselinePerSec, "expected CUDA kernel launch rate (Hz) used as denominator of pod:host_compute_stall_score:5m correlation rule (default 10)")
-	fs.BoolVar(&cfg.DcgmEnabled, "dcgm", cfg.DcgmEnabled, "#123: opt-in NVIDIA DCGM integration; default false keeps the noop source on RTX 3090 so gpuobs_dcgm_available emits 0 (real SDK wire-up arrives in a follow-up PR)")
+	fs.BoolVar(&cfg.DcgmEnabled, "dcgm", cfg.DcgmEnabled, "#123/#133: opt-in NVIDIA DCGM integration; default false keeps the noop source on RTX 3090 so gpuobs_dcgm_available emits 0. When true, the dcgm-exporter HTTP source fetches -dcgm-exporter-url")
+	fs.StringVar(&cfg.DcgmExporterURL, "dcgm-exporter-url", cfg.DcgmExporterURL, "#133: dcgm-exporter /metrics endpoint URL fetched by the production DCGM source when -dcgm is enabled")
 	fs.BoolVar(&cfg.NcclEnabled, "nccl-profiler", cfg.NcclEnabled, "#123: opt-in NCCL collective profiler; default false keeps the noop profiler on RTX 3090 so gpuobs_nccl_profiler_available emits 0 (real attach arrives in a follow-up PR)")
 	// -pod-util-allow-namespaces 의 default 를 "unset" sentinel 로 둬, 빈 문자열 명시 (`-pod-util-allow-namespaces=`)
 	// 로도 env 값을 덮어 "전체 namespace 발행" 으로 되돌릴 수 있게 한다. 단순 default="" 패턴 으로는 빈 값과
