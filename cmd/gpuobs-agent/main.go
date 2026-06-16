@@ -63,11 +63,34 @@ func main() {
 	defer func() { _ = dcgmSource.Close() }()
 	metrics.SetDcgmAvailable(dcgmSource.Available())
 
-	// #123 NCCL profiler wire-up. NCCL profiler의 production attach는 별도 follow-up PR에 위임
-	// 되어 있어 opt-in env가 true더라도 noop을 유지하고 warn log로 안내한다.
+	// #123/#134 NCCL profiler wire-up. 기본값 false로 dev cluster의 RTX 3090 환경에서는 noop이
+	// wire-up되어 gpuobs_nccl_profiler_available이 0 emit된다. GPUOBS_NCCL_ENABLED=true이고 build
+	// tag nccl로 빌드한 이미지이면 nccl.NewProduction이 cfg.NcclLibPath의 libnccl.so collective
+	// 심볼에 uprobe를 attach하고 event 소비 goroutine이 collective duration을 metrics에 기록한다.
+	// build tag nccl이 비활성인 기본 이미지에서는 NewProduction이 stub noop을 돌려주므로 Attach가
+	// nil을 돌려줘도 Available이 false라 graceful degradation으로 0이 emit된다. attach 실패는
+	// agent 기동을 막지 않고 noop으로 폴백한다.
 	ncclProfiler := nccl.NewNoop()
 	if cfg.NcclEnabled {
-		log.Printf("nccl: GPUOBS_NCCL_ENABLED=true but the production profiler attach is gated behind a follow-up PR; falling back to noop")
+		p := nccl.NewProduction(cfg.NcclLibPath)
+		if err := p.Attach(); err != nil {
+			log.Printf("warn: nccl profiler attach failed: %v; falling back to noop", err)
+			_ = p.Close()
+		} else if p.Available() {
+			ncclProfiler = p
+			log.Printf("nccl: production profiler attached (libnccl=%s)", cfg.NcclLibPath)
+			go func() {
+				// Events 채널은 Close 시 닫혀 본 range가 정상 종료한다. duration_ns를 초로 변환해
+				// gpuobs_nccl_collective_duration_seconds histogram에 누적한다.
+				for ev := range ncclProfiler.Events() {
+					metrics.RecordNcclCollective(cfg.NodeName, ev.Operation, float64(ev.DurationNs)/1e9)
+				}
+			}()
+		} else {
+			// build tag nccl이 비활성인 이미지의 stub noop. Attach는 nil이지만 Available이 false다.
+			log.Printf("nccl: GPUOBS_NCCL_ENABLED=true but this image was built without the nccl build tag; falling back to noop")
+			_ = p.Close()
+		}
 	}
 	defer func() { _ = ncclProfiler.Close() }()
 	metrics.SetNcclProfilerAvailable(ncclProfiler.Available())

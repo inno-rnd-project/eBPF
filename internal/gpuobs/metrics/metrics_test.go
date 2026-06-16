@@ -1320,3 +1320,18 @@ func TestPodUtilAllowList_TogglingCleansUpStaleUtilSeries(t *testing.T) {
 		t.Errorf("after tighten=%d want 1 (infra cleanup)", got)
 	}
 }
+
+// TestRecordNcclCollective는 #134의 NCCL collective duration histogram이 operation 라벨별로 시리즈
+// 를 분리 누적하는지 검증한다. 동일 operation 의 복수 observe는 한 시리즈로 합쳐지고 다른
+// operation은 별 시리즈가 되어 cardinality가 노드당 collective 종류로 통제되는 회귀 가드다.
+func TestRecordNcclCollective(t *testing.T) {
+	ncclCollectiveDurationSeconds.Reset()
+
+	RecordNcclCollective("n", "allreduce", 0.5)
+	RecordNcclCollective("n", "allreduce", 1.5)
+	RecordNcclCollective("n", "broadcast", 0.1)
+
+	if got := testutil.CollectAndCount(ncclCollectiveDurationSeconds); got != 2 {
+		t.Errorf("series count=%d want 2 (allreduce, broadcast)", got)
+	}
+}
