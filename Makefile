@@ -69,7 +69,7 @@ BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 # .PHONY에 넣지 않는다. GNU make는 .PHONY 타깃에 대해 implicit rule(pattern rule 포함)
 # 탐색을 건너뛰므로 매치가 일어나지 않는다. 해당 타깃들은 동일 이름의 실제 파일이
 # 없어 매 호출마다 recipe가 재실행되므로 phony와 동등 동작이다.
-.PHONY: deps generate generate-gpuobs clean tree bump \
+.PHONY: deps generate generate-gpuobs generate-nccl clean tree bump \
 	build-all image-build-all image-push-all \
 	test test-integration setup-envtest \
 	check-prometheus-rules \
@@ -250,6 +250,21 @@ generate-gpuobs:
 	-cc clang \
 	-cflags "$(BPF_CFLAGS)" \
 	CudaUprobe ../../../bpf/cuda_uprobe.bpf.c -- -I../../../bpf
+
+# generate-nccl 은 #134 의 NCCL collective uprobe BPF (bpf/nccl_uprobe.bpf.c) 로부터 bpf2go 산출물을
+# internal/gpuobs/nccl 에 생성한다. generate-gpuobs 와 동일한 bpf2go 패턴이며 NCCL production
+# Profiler (build tag nccl) 가 본 산출물을 //go:embed 로 참조한다. build tag nccl 비활성 기본 빌드는
+# stub 의 noop 만 컴파일하므로 본 산출물을 참조하지 않는다.
+generate-nccl:
+	@if [ -z "$(BPFTOOL)" ]; then echo "bpftool not found"; exit 1; fi
+	@mkdir -p internal/gpuobs/nccl
+	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > ./bpf/vmlinux.h && \
+	cd internal/gpuobs/nccl && GOPACKAGE=nccl go run github.com/cilium/ebpf/cmd/bpf2go@v0.17.1 \
+	-go-package nccl \
+	-cc clang \
+	-cflags "$(BPF_CFLAGS)" \
+	-tags nccl \
+	NcclUprobe ../../../bpf/nccl_uprobe.bpf.c -- -I../../../bpf
 
 # ============================================================================
 # Agent build / image pipeline (pattern rule driven)
