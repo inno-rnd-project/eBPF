@@ -111,6 +111,18 @@ struct netobs_recv_state {
     __u64 ts_established;
 };
 
+/* #141 receive path stage latency 의 stale entry 가드 임계 (nanoseconds). socket_cookie 는 socket
+ * lifetime 동안 unique 하나 socket 종료 후 또는 LRU evict 후 재할당 될 수 있어, 닫힌 socket 의 오래된
+ * ts_established 가 남아 있으면 now 와의 차분이 거대한 outlier 가 된다. 정상 app pickup 대기는 본 임계
+ * (10s) 를 넘지 않으므로 초과 차분은 stale entry 로 간주해 latency 를 채택 하지 않는다. */
+#define NETOBS_RCV_STALE_NS 10000000000ULL
+
+/* #141 RCV_DEMUX 의 L3→demux recent 가드 임계 (nanoseconds). tcp_v4_rcv 의 L3 진입 과 tcp_v4_do_rcv
+ * 는 동일 softirq 연속 이라 차분 이 µs scale 이다. cross-node 처럼 early demux 가 없어 이전 do_rcv 의
+ * ts_l3 가 남아 있는 경우 차분 이 패킷 간 간격 (수 ms ~ 수 초) 이 되어 커널 처리시간 으로 오측정 되므로,
+ * 본 임계 (1ms) 초과 차분 은 L3→demux 가 아닌 stale 로 보고 RCV_DEMUX latency 를 0 으로 둔다. */
+#define NETOBS_RCV_DEMUX_MAX_NS 1000000ULL
+
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 8192);
@@ -825,8 +837,9 @@ int BPF_KPROBE(handle_tcp_cleanup_rbuf, struct sock *sk, int copied)
 static __always_inline void stash_recv_l3(struct sk_buff *skb)
 {
     struct sock *sk;
+    struct netobs_recv_state *st;
     __u64 cookie;
-    struct netobs_recv_state st = {};
+    __u64 now;
 
     if (!skb)
         return;
@@ -836,8 +849,22 @@ static __always_inline void stash_recv_l3(struct sk_buff *skb)
     cookie = get_socket_cookie(sk);
     if (!cookie)
         return;
-    st.ts_l3 = bpf_ktime_get_ns();
-    bpf_map_update_elem(&recv_starts, &cookie, &st, BPF_ANY);
+
+    now = bpf_ktime_get_ns();
+    /* 기존 entry 가 있으면 RCV_ESTABLISHED 가 기록한 ts_established 를 보존하고 ts_l3 만 갱신한다.
+     * value 전체를 0 초기화 한 struct 로 덮어쓰면 고트래픽 환경 에서 app read (RCV_APP) 이전 에
+     * 도착한 다음 패킷의 stash 가 ts_established 를 0 으로 날려 RCV_APP latency 가 0 으로 빈번히
+     * 폴백 되는 문제가 발생 한다. */
+    st = bpf_map_lookup_elem(&recv_starts, &cookie);
+    if (st) {
+        st->ts_l3 = now;
+        return;
+    }
+    {
+        struct netobs_recv_state ns = {};
+        ns.ts_l3 = now;
+        bpf_map_update_elem(&recv_starts, &cookie, &ns, BPF_ANY);
+    }
 }
 
 /* emit_rcv_event 는 receive path 의 sock 기반 stage 진입 시점에 호출되어 5-tuple 과 cgroup_id 를
@@ -890,29 +917,42 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
 
     /* #141 socket_cookie 기준 stage latency 산정. fill_conn_from_sock 가 s.socket_cookie 를 채운
      * 뒤이므로 본 시점에 recv_starts lookup 이 가능하다. monotonic clock 이라 now 가 stash 시각보다
-     * 앞설 일은 없으나 LRU evict 후 cookie 재할당 등 stale entry 가드를 위해 양수 차분만 채택한다. */
+     * 앞설 일은 없으나, cookie 재할당 으로 닫힌 socket 의 stale entry 를 조회 하면 차분 이 거대한
+     * outlier 가 되므로 NETOBS_RCV_STALE_NS (10s) 초과 차분 은 채택 하지 않고 기준점 을 리셋 한다. */
     st = bpf_map_lookup_elem(&recv_starts, &s.socket_cookie);
     if (stage == NETOBS_STAGE_RCV_DEMUX) {
-        if (st && st->ts_l3 && now > st->ts_l3) {
-            latency_us = (__u32)((now - st->ts_l3) / 1000);
-        } else if (!st) {
+        if (st) {
+            /* early demux 로 tcp_v4_rcv 가 직전에 ts_l3 를 stash 한 경우만 L3→demux 를 측정 한다.
+             * do_rcv 진입 시점 을 RCV_ESTABLISHED 기준점 으로 매번 재설정 해, cross-node 처럼
+             * tcp_v4_rcv stash 가 없어 이전 do_rcv 의 ts_l3 가 남아 있는 경우 패킷 간 간격 이 latency
+             * 로 오측정 되는 것을 막는다. L3→demux 는 µs scale 이라 NETOBS_RCV_DEMUX_MAX_NS (1ms)
+             * 초과 차분 은 stale 로 보고 0 으로 둔다. ts_established 는 RCV_ESTABLISHED / RCV_APP 의
+             * app pickup 측정 기준 이라 본 분기 에서 건드리지 않는다. */
+            if (st->ts_l3 && now > st->ts_l3 && (now - st->ts_l3) < NETOBS_RCV_DEMUX_MAX_NS)
+                latency_us = (__u32)((now - st->ts_l3) / 1000);
+            st->ts_l3 = now;
+        } else {
             /* tcp_v4_rcv 의 early demux stash 실패 (skb->sk null, cross-node forwarding / tunnel
              * 경로 등) 시 do_rcv 를 RX 기준점 으로 생성 해 후속 RCV_ESTABLISHED 와 RCV_APP latency
-             * 측정 을 보장 한다. 이 경우 RCV_DEMUX 자신 은 기준점 이라 latency 0 으로 emit 된다.
-             * early demux 가 성공 한 경우 는 tcp_v4_rcv 가 채운 ts_l3 가 살아 있어 본 분기 를 타지
-             * 않 으므로 RCV_DEMUX 도 L3 진입 기준 latency 를 갖는다. */
+             * 측정 을 보장 한다. 이 경우 RCV_DEMUX 자신 은 기준점 이라 latency 0 으로 emit 된다. */
             struct netobs_recv_state ns = {};
             ns.ts_l3 = now;
             bpf_map_update_elem(&recv_starts, &s.socket_cookie, &ns, BPF_ANY);
         }
     } else if (stage == NETOBS_STAGE_RCV_ESTABLISHED) {
-        if (st && st->ts_l3 && now > st->ts_l3)
-            latency_us = (__u32)((now - st->ts_l3) / 1000);
+        if (st && st->ts_l3 && now > st->ts_l3) {
+            __u64 diff = now - st->ts_l3;
+            if (diff < NETOBS_RCV_STALE_NS)
+                latency_us = (__u32)(diff / 1000);
+        }
         if (st)
             st->ts_established = now;
     } else if (stage == NETOBS_STAGE_RCV_APP) {
-        if (st && st->ts_established && now > st->ts_established)
-            latency_us = (__u32)((now - st->ts_established) / 1000);
+        if (st && st->ts_established && now > st->ts_established) {
+            __u64 diff = now - st->ts_established;
+            if (diff < NETOBS_RCV_STALE_NS)
+                latency_us = (__u32)(diff / 1000);
+        }
         if (st)
             bpf_map_delete_elem(&recv_starts, &s.socket_cookie);
     }
