@@ -419,6 +419,15 @@ func Record(ev types.EnrichedEvent) {
 		).Inc()
 
 	case types.StageRcvDemux, types.StageRcvEstablished, types.StageRcvApp:
+		// #141 receive path 의 stage 별 커널 처리시간을 송신 경로와 동일한 stage latency histogram 에
+		// Observe 한다. RCV_DEMUX 와 RCV_ESTABLISHED 는 L3 진입 기준 누적 커널 처리시간이고 RCV_APP 은
+		// established 기준 app pickup 대기라 의미가 다르지만 stage 라벨로 구분되며, dashboard 의
+		// receive path 패널이 본 rcv_* stage 시리즈를 쿼리한다. ts_l3 부재 (신규 SYN / listen socket)
+		// 케이스는 BPF 가 latency_us=0 으로 emit 하므로 0 sample 이 자연 포함된다.
+		latencySec := float64(ev.Raw.LatencyUs) / 1_000_000.0
+		legacyLatencySeconds.WithLabelValues(stage).Observe(latencySec)
+		stageLatencyLabeled.WithLabelValues(common...).Observe(latencySec)
+
 		// #65 receive path 의 TCP 상태 sample 을 수신 Pod (ingress event 의 Dst) 단위로 누적한다.
 		// aggregator 미설정 (nil) 또는 Dst 가 Pod 가 아닌 케이스 (peer 가 외부 / 노드) 는 emit 자체를
 		// skip 해 cardinality 가 클러스터 내 Pod 셋으로만 한정되게 한다.
