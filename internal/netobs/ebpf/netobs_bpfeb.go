@@ -38,6 +38,11 @@ type NetObsNetobsPodBytesValue struct {
 	Packets uint64
 }
 
+type NetObsNetobsRecvState struct {
+	TsL3          uint64
+	TsEstablished uint64
+}
+
 type NetObsNetobsSegAccum struct {
 	FirstTs             uint64
 	CumulativeLatencyNs uint64
@@ -149,6 +154,7 @@ type NetObsMapSpecs struct {
 	EventsDropped *ebpf.MapSpec `ebpf:"events_dropped"`
 	FlowBytes     *ebpf.MapSpec `ebpf:"flow_bytes"`
 	PodBytes      *ebpf.MapSpec `ebpf:"pod_bytes"`
+	RecvStarts    *ebpf.MapSpec `ebpf:"recv_starts"`
 	SegAccum      *ebpf.MapSpec `ebpf:"seg_accum"`
 	Starts        *ebpf.MapSpec `ebpf:"starts"`
 	TargetDaddr   *ebpf.MapSpec `ebpf:"target_daddr"`
@@ -185,6 +191,7 @@ type NetObsMaps struct {
 	EventsDropped *ebpf.Map `ebpf:"events_dropped"`
 	FlowBytes     *ebpf.Map `ebpf:"flow_bytes"`
 	PodBytes      *ebpf.Map `ebpf:"pod_bytes"`
+	RecvStarts    *ebpf.Map `ebpf:"recv_starts"`
 	SegAccum      *ebpf.Map `ebpf:"seg_accum"`
 	Starts        *ebpf.Map `ebpf:"starts"`
 	TargetDaddr   *ebpf.Map `ebpf:"target_daddr"`
@@ -197,6 +204,7 @@ func (m *NetObsMaps) Close() error {
 		m.EventsDropped,
 		m.FlowBytes,
 		m.PodBytes,
+		m.RecvStarts,
 		m.SegAccum,
 		m.Starts,
 		m.TargetDaddr,

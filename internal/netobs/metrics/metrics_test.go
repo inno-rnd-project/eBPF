@@ -278,6 +278,37 @@ func TestRecord_SendPathStage4Decomposition(t *testing.T) {
 	}
 }
 
+// TestRecord_RecvPathStageLatency 는 #141 의 receive path 3 종 stage (rcv_demux, rcv_established,
+// rcv_app) event 가 stageLatencyLabeled histogram 에 latency 를 emit 하는지 검증한다. 기존에는 rcv
+// stage 가 TCP 상태 sample 만 집계하고 latency 를 Observe 하지 않아 dashboard 수신 패널이 빈 데이터로
+// 남던 회귀를 가드한다.
+func TestRecord_RecvPathStageLatency(t *testing.T) {
+	cases := []struct {
+		stage     uint8
+		stageName string
+	}{
+		{types.StageRcvDemux, "rcv_demux"},
+		{types.StageRcvEstablished, "rcv_established"},
+		{types.StageRcvApp, "rcv_app"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.stageName, func(t *testing.T) {
+			resetMetrics()
+			reg := prometheus.NewPedanticRegistry()
+			reg.MustRegister(stageLatencyLabeled)
+
+			ev := sampleEvent(podID("ns-src", "src-pod", "uid-src"), podID("ns-dst", "dst-pod", "uid-dst"), tc.stage, tc.stageName)
+			Record(ev)
+
+			// latency 를 Observe 하지 않으면 series 자체가 없어 빈 라벨 값이 반환되어 실패한다.
+			got := labelValue(t, reg, "netobs_stage_latency_labeled_seconds", "stage")
+			if got != tc.stageName {
+				t.Errorf("stage label=%q want %q (%s latency 미Observe)", got, tc.stageName, tc.stageName)
+			}
+		})
+	}
+}
+
 // podID/serviceID/externalID는 dst_labels_test.go 와 동일 형태의 헬퍼이며, 두 패키지 간 reuse 가
 // 불가능 (test-only) 해 본 파일에 재정의한다.
 func podID(ns, name, uid string) kube.PodIdentity {
