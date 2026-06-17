@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -341,18 +342,21 @@ func externalID() kube.PodIdentity {
 func TestDropWallSeconds(t *testing.T) {
 	t.Cleanup(func() { SetDropClockOffset(0) })
 
+	// 큰 offset 의 float64 변환은 ns 단위 반올림 오차가 있어 동등 비교 대신 허용 오차 (1ms) 로 가드한다.
+	approx := func(got, want float64) bool { return math.Abs(got-want) <= 1e-3 }
+
 	SetDropClockOffset(0)
-	if got := dropWallSeconds(2_000_000_000); got != 2.0 {
-		t.Errorf("offset 0: dropWallSeconds(2e9 ns)=%v want 2.0", got)
+	if got := dropWallSeconds(2_000_000_000); !approx(got, 2.0) {
+		t.Errorf("offset 0: dropWallSeconds(2e9 ns)=%v want ~2.0", got)
 	}
 
 	// boot 시각이 unix 1700000000s 였다고 가정한 offset. ts_ns=0 (boot 순간) 은 그 wall 시각으로 환산.
 	SetDropClockOffset(1_700_000_000_000_000_000)
-	if got := dropWallSeconds(0); got != 1.7e9 {
-		t.Errorf("offset 적용: dropWallSeconds(0)=%v want 1.7e9", got)
+	if got := dropWallSeconds(0); !approx(got, 1.7e9) {
+		t.Errorf("offset 적용: dropWallSeconds(0)=%v want ~1.7e9", got)
 	}
-	if got := dropWallSeconds(5_000_000_000); got != 1_700_000_005.0 {
-		t.Errorf("offset+ts: dropWallSeconds(5e9 ns)=%v want 1700000005.0", got)
+	if got := dropWallSeconds(5_000_000_000); !approx(got, 1_700_000_005.0) {
+		t.Errorf("offset+ts: dropWallSeconds(5e9 ns)=%v want ~1700000005.0", got)
 	}
 }
 
@@ -362,7 +366,9 @@ func TestDropWallSeconds(t *testing.T) {
 func TestRecord_DropTimestampGauge(t *testing.T) {
 	dropLastTimestamp.Reset()
 	dropEventsFlow.Reset()
-	SetDropClockOffset(0)
+	// offset 이 0 이면 #142 의 gauge Set 이 skip 되므로 (CLOCK_MONOTONIC 실패 fallback), 정상 운영처럼
+	// 0 이 아닌 offset 을 주입해 gauge emit 경로를 검증한다.
+	SetDropClockOffset(1_700_000_000_000_000_000)
 	SetDropFlowGuard(NewDropFlowGuard([]string{"ns-src"}, 100))
 	t.Cleanup(func() {
 		SetDropFlowGuard(nil)

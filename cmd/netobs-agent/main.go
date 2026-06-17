@@ -69,12 +69,14 @@ func main() {
 	// #142 drop 발생 시점 gauge (netobs_drop_last_timestamp_seconds) 의 monotonic→wall 변환 offset 을
 	// startup 시 1회 산정한다. BPF bpf_ktime_get_ns 가 CLOCK_MONOTONIC 기준이라 (time.Now -
 	// CLOCK_MONOTONIC) 차이를 더하면 ts_ns 가 unix epoch wall-clock 으로 환산된다. clock 읽기 실패 시
-	// offset 미설정 (0) 으로 두어 gauge 가 monotonic 값을 노출하며 drop 추적 자체는 정상 동작한다.
+	// offset 미설정 (0) 으로 두면 metrics.Record 가 gauge Set 을 skip 해 monotonic 값을 wall-clock 으로
+	// 오노출 하지 않는다. 즉 시점 gauge 만 비활성 되고 drop 추적 자체는 정상 동작한다. mono.Sec /
+	// mono.Nsec 는 32-bit 아키텍처에서 int32 라 ns 환산 곱셈 전에 int64 로 승격해 오버플로를 막는다.
 	var mono unix.Timespec
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &mono); err != nil {
-		log.Printf("drop timestamp clock offset: CLOCK_MONOTONIC read failed (%v); gauge will expose monotonic ts", err)
+		log.Printf("drop timestamp clock offset: CLOCK_MONOTONIC read failed (%v); netobs_drop_last_timestamp_seconds disabled", err)
 	} else {
-		offsetNs := time.Now().UnixNano() - (mono.Sec*1_000_000_000 + mono.Nsec)
+		offsetNs := time.Now().UnixNano() - (int64(mono.Sec)*1_000_000_000 + int64(mono.Nsec))
 		metrics.SetDropClockOffset(offsetNs)
 		log.Printf("drop timestamp clock offset: %d ns (monotonic→wall)", offsetNs)
 	}

@@ -424,7 +424,13 @@ func Record(ev types.EnrichedEvent) {
 				types.IPVersion(ev.Raw.Family),
 			}
 			dropEventsFlow.WithLabelValues(flowLabels...).Inc()
-			dropLastTimestamp.WithLabelValues(flowLabels...).Set(dropWallSeconds(ev.Raw.TsNs))
+			// #142 offset 이 미설정 (0) 이면 CLOCK_MONOTONIC 읽기 실패로 wall-clock 변환이 불가한
+			// 상태다. 이때 gauge 를 Set 하면 monotonic 값이 "wall-clock unix timestamp" 로 오노출되어
+			// time() - netobs_drop_last_timestamp_seconds 가 왜곡되므로 Set 을 skip 해 시리즈를 emit
+			// 하지 않는다. 정상 wire-up 에서는 startup 에 0 이 아닌 offset 이 주입되어 항상 Set 된다.
+			if dropClockOffsetNs.Load() != 0 {
+				dropLastTimestamp.WithLabelValues(flowLabels...).Set(dropWallSeconds(ev.Raw.TsNs))
+			}
 		}
 		// #83 의 stack 메트릭은 별도 namespace allow-list / LRU 가드 (DropStackGuard) 와 resolver
 		// 의 ok 결과 양쪽이 통과해야 emit 된다. guard 와 resolver 가 nil 이면 fail-open 으로 emit
