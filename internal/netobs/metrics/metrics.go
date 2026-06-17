@@ -49,6 +49,25 @@ func SetTCPStateAggregator(a *TCPStateAggregator) {
 	tcpStateAggregator = a
 }
 
+// dropClockOffsetNs 는 #142 의 drop 발생 시점 gauge 가 BPF monotonic ts_ns 를 wall-clock unix ns 로
+// 변환할 때 더하는 offset 이다. cmd/netobs-agent 가 startup 시 (time.Now - CLOCK_MONOTONIC) 차이를
+// SetDropClockOffset 으로 주입한다. bpf_ktime_get_ns 가 CLOCK_MONOTONIC 기준이라 본 offset 을 더하면
+// boot 기준 monotonic 값이 unix epoch 기준 wall-clock 으로 환산된다. 미설정 (0) 이면 ts_ns 가 그대로
+// 초 변환되어 monotonic 값이 노출되나 정상 wire-up 에서는 항상 주입된다.
+var dropClockOffsetNs atomic.Int64
+
+// SetDropClockOffset 은 #142 의 monotonic→wall 변환 offset (nanoseconds) 을 설정한다. main agent 가
+// startup 시 1회 호출한다.
+func SetDropClockOffset(ns int64) {
+	dropClockOffsetNs.Store(ns)
+}
+
+// dropWallSeconds 는 BPF monotonic ts_ns 를 wall-clock unix seconds 로 변환한다. offset 미설정 시
+// monotonic 값을 그대로 초 변환한다.
+func dropWallSeconds(tsNs uint64) float64 {
+	return float64(int64(tsNs)+dropClockOffsetNs.Load()) / 1e9
+}
+
 func SetPodMetricsEnabled(v bool) {
 	podMetricsEnabled.Store(v)
 }
@@ -147,6 +166,19 @@ var (
 		[]string{"node", "src_namespace", "src_workload", "src_pod", "traffic_scope", "direction", "drop_reason", "drop_category", "protocol", "src_ip", "src_port", "dst_ip", "dst_port", "ip_version"},
 	)
 
+	// dropLastTimestamp 는 #142 의 drop 발생 시점 (wall-clock unix seconds) gauge 다. counter rate 가
+	// 잃는 "원인이 언제 발생했는가" 정보를 보존해 time() - netobs_drop_last_timestamp_seconds 로 마지막
+	// drop 이후 경과를 산정 가능하게 한다. BPF 가 캡처한 monotonic ts_ns 를 dropWallSeconds 가 boot
+	// offset 으로 wall-clock 으로 변환한 값이다. dropEventsFlow 와 동일한 5-tuple flow 라벨 셋과
+	// dropFlowGuard (allow-list + top-N LRU) 를 공유해 cardinality 가 동일하게 통제된다.
+	dropLastTimestamp = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "netobs_drop_last_timestamp_seconds",
+			Help: "Wall-clock unix timestamp (seconds) of the most recent packet drop per 5-tuple flow (#142). Converted from the BPF monotonic ts_ns via a boot-time offset. Preserves the drop occurrence time that counter rate windows lose; use time() - netobs_drop_last_timestamp_seconds to measure staleness since the last drop. Shares the netobs_drop_events_flow_total label set and dropFlowGuard (NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list + top-N LRU) so cardinality is controlled identically.",
+		},
+		[]string{"node", "src_namespace", "src_workload", "src_pod", "traffic_scope", "direction", "drop_reason", "drop_category", "protocol", "src_ip", "src_port", "dst_ip", "dst_port", "ip_version"},
+	)
+
 	// pod-level 메트릭에는 dst_pod_uid 까지 노출된다. POD_FLOW_DST_UID_ALLOW_NAMESPACES 토글에 등록된
 	// namespace 의 dst Pod 흐름에 한해 값이 채워지고 그 외에는 빈 문자열로 emit 되어 cardinality 가
 	// 통제된다.
@@ -239,6 +271,7 @@ func Register(reg prometheus.Registerer) {
 		stageLatencyLabeled,
 		dropEventsLabeled,
 		dropEventsFlow,
+		dropLastTimestamp,
 		retransEventsLabeled,
 		podStageEventsLabeled,
 		podStageLatencyLabeled,
@@ -371,7 +404,10 @@ func Record(ev types.EnrichedEvent) {
 			ev.DstIPText, ev.Raw.Dport,
 			ev.ProtocolText,
 		) {
-			dropEventsFlow.WithLabelValues(
+			// #142 dropEventsFlow (counter) 와 dropLastTimestamp (gauge) 가 동일한 5-tuple flow 라벨
+			// 셋을 공유하므로 라벨 슬라이스를 한 번 구성해 양쪽에 전달한다. counter 는 drop 누적을,
+			// gauge 는 발생 시점 (wall-clock seconds) 을 노출한다.
+			flowLabels := []string{
 				label(ev.ObservedNodeLabel()),
 				label(ev.SourceNamespaceLabel()),
 				label(ev.SourceWorkloadLabel()),
@@ -386,7 +422,15 @@ func Record(ev types.EnrichedEvent) {
 				label(ev.DstIPText),
 				strconv.FormatUint(uint64(ev.Raw.Dport), 10),
 				types.IPVersion(ev.Raw.Family),
-			).Inc()
+			}
+			dropEventsFlow.WithLabelValues(flowLabels...).Inc()
+			// #142 offset 이 미설정 (0) 이면 CLOCK_MONOTONIC 읽기 실패로 wall-clock 변환이 불가한
+			// 상태다. 이때 gauge 를 Set 하면 monotonic 값이 "wall-clock unix timestamp" 로 오노출되어
+			// time() - netobs_drop_last_timestamp_seconds 가 왜곡되므로 Set 을 skip 해 시리즈를 emit
+			// 하지 않는다. 정상 wire-up 에서는 startup 에 0 이 아닌 offset 이 주입되어 항상 Set 된다.
+			if dropClockOffsetNs.Load() != 0 {
+				dropLastTimestamp.WithLabelValues(flowLabels...).Set(dropWallSeconds(ev.Raw.TsNs))
+			}
 		}
 		// #83 의 stack 메트릭은 별도 namespace allow-list / LRU 가드 (DropStackGuard) 와 resolver
 		// 의 ok 결과 양쪽이 통과해야 emit 된다. guard 와 resolver 가 nil 이면 fail-open 으로 emit
