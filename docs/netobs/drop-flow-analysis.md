@@ -5,6 +5,7 @@
 ## 메트릭 카탈로그
 
 - `netobs_drop_events_flow_total{node, src_namespace, src_workload, src_pod, traffic_scope, direction, drop_reason, drop_category, protocol, src_ip, src_port, dst_ip, dst_port}` counter. drop event의 5-tuple flow context emit
+- `netobs_drop_last_timestamp_seconds{...동일 5-tuple flow 라벨...}` gauge (#142). 각 flow의 가장 최근 drop 발생 시각을 wall-clock unix seconds로 노출한다. counter rate가 잃는 "원인이 언제 발생했는가" 정보를 보존하며 `netobs_drop_events_flow_total`과 동일한 `dropFlowGuard` (allow-list + top-N LRU) 를 거쳐 emit된다
 - `netobs_drop_burst:rate1m{src_namespace, src_pod, src_ip, src_port, dst_ip, dst_port, protocol, drop_reason, drop_category}` recording rule. 1분 윈도우 rate 산출. evaluation interval 30s, ServiceMonitor scrape interval (15s) 보다 충분히 긴 rate window로 sample 부족을 회피
 
 ## 활성화 절차
@@ -57,7 +58,11 @@ drop_category가 다음 4 종 중 어디에 속하는지 확인한다.
 
 drop_category 별 의미는 [docs/netobs/drop-reason.md](drop-reason.md) 참고.
 
-### 3단계 — 동시 신호 cross-reference
+### 3단계 — 발생 시점 정밀 확인
+
+counter rate는 1분 윈도우 평균이라 burst가 정확히 언제 발생했는지 흐려진다. `netobs_drop_last_timestamp_seconds{...5-tuple...}`로 해당 flow의 가장 최근 drop 발생 시각을 unix seconds로 직접 읽고, `time() - netobs_drop_last_timestamp_seconds{...}`로 마지막 drop 이후 경과를 산정한다. 경과가 짧으면 현재 진행 중인 burst이고 길면 과거 사건이라 alert 노이즈와 실시간 사건을 구분할 수 있다.
+
+### 4단계 — 동시 신호 cross-reference
 
 burst 시점의 다음 메트릭을 같은 시간대에 확인한다.
 
@@ -66,7 +71,7 @@ burst 시점의 다음 메트릭을 같은 시간대에 확인한다.
 - `pod:memory_pressure_score:5m`: src_pod의 메모리 압박
 - `correlation_noisy_neighbor_score{victim_pod=$src_pod}`: src_pod가 다른 워크로드의 영향을 받는지
 
-### 4단계 — 합성 부하 검증
+### 5단계 — 합성 부하 검증
 
 drop이 자연 발생이라면 #52 의 `workload-injector` 로 동일 src_pod에 합성 부하를 추가해 burst 패턴이 재현되는지 확인한다.
 
