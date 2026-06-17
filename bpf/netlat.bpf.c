@@ -99,6 +99,25 @@ struct {
     __type(value, struct netobs_seg_accum);
 } seg_accum SEC(".maps");
 
+/* #141 receive path stage 별 latency 측정 map. key 는 socket_cookie (u64), value 는 L3 진입 시각과
+ * established 처리 시각 두 timestamp 다. send path 의 starts (tid 키) 와 달리 receive path 는 softirq
+ * context 라 tid 가 무의미 하므로 socket_cookie 로 동일 connection 의 stage 진입 시점 을 묶는다.
+ * tcp_v4_rcv 가 ts_l3 를 stash 하고 tcp_v4_do_rcv / tcp_rcv_established 가 ts_l3 기준 누적 latency 를
+ * 산정 한다 (send path 의 to_devq / to_veth 와 동일 누적 패턴). tcp_rcv_established 가 ts_established 를
+ * 갱신 하고 tcp_recvmsg 가 그 기준 으로 app pickup 대기 latency 를 산정 후 entry 를 cleanup 한다.
+ * max_entries 8192 는 seg_accum 과 동일한 (활성 socket 4096) x 2 예산 이며 LRU 라 자연 evict 된다. */
+struct netobs_recv_state {
+    __u64 ts_l3;
+    __u64 ts_established;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 8192);
+    __type(key, __u64);
+    __type(value, struct netobs_recv_state);
+} recv_starts SEC(".maps");
+
 static __always_inline int match_target(__u32 daddr_net)
 {
     __u32 key = 0;
@@ -798,17 +817,44 @@ int BPF_KPROBE(handle_tcp_cleanup_rbuf, struct sock *sk, int copied)
     return 0;
 }
 
+/* #141 stash_recv_l3 는 tcp_v4_rcv / tcp_v6_rcv 의 L3 진입 시점 timestamp 를 socket_cookie 키로
+ * recv_starts 에 기록한다. tcp_v4_rcv 는 socket lookup 이전 단계라 sk 인자가 없어 skb->sk (early
+ * demux 결과) 로 sock 을 복원한다. established 연결은 early demux 로 skb->sk 가 채워져 있어
+ * socket_cookie 산정이 가능하고, 신규 SYN / listen socket 등 sk 가 null 인 케이스는 skip 해
+ * RCV_DEMUX 가 ts_l3 부재 시 latency 0 으로 자연 fallback 하게 한다. */
+static __always_inline void stash_recv_l3(struct sk_buff *skb)
+{
+    struct sock *sk;
+    __u64 cookie;
+    struct netobs_recv_state st = {};
+
+    if (!skb)
+        return;
+    sk = BPF_CORE_READ(skb, sk);
+    if (!sk)
+        return;
+    cookie = get_socket_cookie(sk);
+    if (!cookie)
+        return;
+    st.ts_l3 = bpf_ktime_get_ns();
+    bpf_map_update_elem(&recv_starts, &cookie, &st, BPF_ANY);
+}
+
 /* emit_rcv_event 는 receive path 의 sock 기반 stage 진입 시점에 호출되어 5-tuple 과 cgroup_id 를
- * netobs_start_info 로 채워 ringbuf 에 emit 한다. ret / latency_us 는 별도 측정 hook 이 없는 본
- * 진입형 stage 에서 0 으로 둔다. emit 시점의 ts_ns 는 emit_event 가 bpf_ktime_get_ns 로 매번 갱신
- * 하므로 본 helper 가 채운 s->ts_ns 는 ringbuf 에 그대로 흘려보내지 않으며 (현재 Go 측에서 stage 별
- * latency 산정 로직도 두지 않음) emit 시각 자체만 event 라벨로 가공되어 사용된다. sock 에서 family
- * 가 IPv4 가 아니면 5-tuple 라벨 의미가 없어 emit 자체를 skip 한다. */
+ * netobs_start_info 로 채워 ringbuf 에 emit 한다. #141 부터 socket_cookie 기준 recv_starts 맵 으로
+ * stage 별 누적 latency 를 산정해 latency_us 로 함께 emit 한다. RCV_DEMUX 와 RCV_ESTABLISHED 는
+ * tcp_v4_rcv 가 stash 한 ts_l3 기준 누적 (send path 의 to_devq 와 동일 패턴) 이라 두 stage 차가
+ * demux→established 커널 처리 비용 이고, RCV_APP 은 RCV_ESTABLISHED 가 갱신한 ts_established 기준
+ * app pickup 대기 다. sock 에서 family 가 IPv4 / IPv6 가 아니면 5-tuple 라벨 의미가 없어 emit 자체를
+ * skip 한다. */
 static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb, __u8 stage)
 {
     struct netobs_start_info s = {};
+    struct netobs_recv_state *st;
     __u64 pid_tgid;
+    __u64 now;
     __u16 family;
+    __u32 latency_us = 0;
 
     if (!sk)
         return;
@@ -818,7 +864,8 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
         return;
 
     pid_tgid     = bpf_get_current_pid_tgid();
-    s.ts_ns      = bpf_ktime_get_ns();
+    now          = bpf_ktime_get_ns();
+    s.ts_ns      = now;
     s.cgroup_id  = sock_cgroup_id(sk);
     s.pid        = pid_tgid >> 32;
     s.tid        = (__u32)pid_tgid;
@@ -841,22 +888,52 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
     if (skb)
         fill_dev_from_skb(skb, &s);
 
+    /* #141 socket_cookie 기준 stage latency 산정. fill_conn_from_sock 가 s.socket_cookie 를 채운
+     * 뒤이므로 본 시점에 recv_starts lookup 이 가능하다. monotonic clock 이라 now 가 stash 시각보다
+     * 앞설 일은 없으나 LRU evict 후 cookie 재할당 등 stale entry 가드를 위해 양수 차분만 채택한다. */
+    st = bpf_map_lookup_elem(&recv_starts, &s.socket_cookie);
+    if (stage == NETOBS_STAGE_RCV_DEMUX) {
+        if (st && st->ts_l3 && now > st->ts_l3) {
+            latency_us = (__u32)((now - st->ts_l3) / 1000);
+        } else if (!st) {
+            /* tcp_v4_rcv 의 early demux stash 실패 (skb->sk null, cross-node forwarding / tunnel
+             * 경로 등) 시 do_rcv 를 RX 기준점 으로 생성 해 후속 RCV_ESTABLISHED 와 RCV_APP latency
+             * 측정 을 보장 한다. 이 경우 RCV_DEMUX 자신 은 기준점 이라 latency 0 으로 emit 된다.
+             * early demux 가 성공 한 경우 는 tcp_v4_rcv 가 채운 ts_l3 가 살아 있어 본 분기 를 타지
+             * 않 으므로 RCV_DEMUX 도 L3 진입 기준 latency 를 갖는다. */
+            struct netobs_recv_state ns = {};
+            ns.ts_l3 = now;
+            bpf_map_update_elem(&recv_starts, &s.socket_cookie, &ns, BPF_ANY);
+        }
+    } else if (stage == NETOBS_STAGE_RCV_ESTABLISHED) {
+        if (st && st->ts_l3 && now > st->ts_l3)
+            latency_us = (__u32)((now - st->ts_l3) / 1000);
+        if (st)
+            st->ts_established = now;
+    } else if (stage == NETOBS_STAGE_RCV_APP) {
+        if (st && st->ts_established && now > st->ts_established)
+            latency_us = (__u32)((now - st->ts_established) / 1000);
+        if (st)
+            bpf_map_delete_elem(&recv_starts, &s.socket_cookie);
+    }
+
     bpf_get_current_comm(&s.comm, sizeof(s.comm));
-    emit_event(&s, stage, 0, 0, 0, -1, 0, 0);
+    emit_event(&s, stage, 0, 0, latency_us, -1, 0, 0);
 }
 
 /* #65 receive path stage 별 kprobe.
  *
- * tcp_v4_rcv 는 L3 entry 로 socket lookup 이전이라 sk 가 null 이며 Pod 귀속이 불가능해 본 커밋에서는
- * emit 을 보류한 채 attach 만 유지한다. 후속 follow-up 에서 skb 헤더 파싱으로 5-tuple 을 복원해
- * stage 카운터로 활용할 여지를 남긴다. tcp_v4_do_rcv 부터는 sock 인자가 있어 sk_cgrp_data 기반
- * cgroup_id 로 수신 Pod 를 정확히 식별한다. tcp_recvmsg 는 process context 라
- * bpf_get_current_cgroup_id() 도 정답을 주지만 sock 경로로 통일해 다른 stage 와 동일한 키 공간을
- * 유지한다. netif_receive_skb 와 sk_data_ready 는 본 PR 의 범위 검토에서 제외했다 (cgroup 미식별,
- * kernel 6.x inline). */
+ * tcp_v4_rcv 는 L3 entry 로 socket lookup 이전이라 sk 인자가 없지만, #141 부터 skb->sk (early demux
+ * 결과) 로 sock 을 복원해 L3 진입 timestamp 를 socket_cookie 키로 stash 한다 (Pod 귀속은 여전히
+ * 보류하고 event emit 도 하지 않으며 후속 stage 의 누적 latency 기준점만 제공한다). tcp_v4_do_rcv
+ * 부터는 sock 인자가 있어 sk_cgrp_data 기반 cgroup_id 로 수신 Pod 를 정확히 식별한다. tcp_recvmsg 는
+ * process context 라 bpf_get_current_cgroup_id() 도 정답을 주지만 sock 경로로 통일해 다른 stage 와
+ * 동일한 키 공간을 유지한다. netif_receive_skb 와 sk_data_ready 는 본 PR 의 범위 검토에서 제외했다
+ * (cgroup 미식별, kernel 6.x inline). */
 SEC("kprobe/tcp_v4_rcv")
-int BPF_KPROBE(handle_tcp_v4_rcv)
+int BPF_KPROBE(handle_tcp_v4_rcv, struct sk_buff *skb)
 {
+    stash_recv_l3(skb);
     return 0;
 }
 
@@ -867,12 +944,13 @@ int BPF_KPROBE(handle_tcp_v4_do_rcv, struct sock *sk, struct sk_buff *skb)
     return 0;
 }
 
-/* #103 IPv6 TCP receive path entry. tcp_v4_rcv 와 동일 패턴 의 stub 으로 두며 RCV_L3 stage 의 event
- * emit 은 본 hook 에서 수행 하지 않는다 (cgroup 미식별 시점). tcp_v6_do_rcv 에서 sock 기반 demux
- * stage 가 emit_rcv_event 로 처리 된다. */
+/* #103 IPv6 TCP receive path entry. tcp_v4_rcv 와 동일 패턴 으로 #141 부터 skb->sk 로 L3 진입
+ * timestamp 를 stash 한다. RCV_L3 stage 의 event emit 은 본 hook 에서 수행 하지 않는다 (cgroup 미식별
+ * 시점). tcp_v6_do_rcv 에서 sock 기반 demux stage 가 emit_rcv_event 로 처리 된다. */
 SEC("kprobe/tcp_v6_rcv")
-int BPF_KPROBE(handle_tcp_v6_rcv)
+int BPF_KPROBE(handle_tcp_v6_rcv, struct sk_buff *skb)
 {
+    stash_recv_l3(skb);
     return 0;
 }
 
