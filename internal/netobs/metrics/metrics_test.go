@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"netobs/internal/kube"
 	"netobs/internal/netobs/metadata"
@@ -332,4 +333,68 @@ func serviceID(ns, name string) kube.PodIdentity {
 
 func externalID() kube.PodIdentity {
 	return kube.PodIdentity{IdentityClass: kube.IdentityClassExternal}
+}
+
+// TestDropWallSeconds 는 #142 의 monotonic ts_ns → wall-clock unix seconds 변환을 검증한다. offset
+// 미설정 시 monotonic 값을 그대로 초 변환하고, offset 설정 시 boot 기준 ts 가 unix epoch 으로 환산
+// 되는지 회귀 가드한다.
+func TestDropWallSeconds(t *testing.T) {
+	t.Cleanup(func() { SetDropClockOffset(0) })
+
+	SetDropClockOffset(0)
+	if got := dropWallSeconds(2_000_000_000); got != 2.0 {
+		t.Errorf("offset 0: dropWallSeconds(2e9 ns)=%v want 2.0", got)
+	}
+
+	// boot 시각이 unix 1700000000s 였다고 가정한 offset. ts_ns=0 (boot 순간) 은 그 wall 시각으로 환산.
+	SetDropClockOffset(1_700_000_000_000_000_000)
+	if got := dropWallSeconds(0); got != 1.7e9 {
+		t.Errorf("offset 적용: dropWallSeconds(0)=%v want 1.7e9", got)
+	}
+	if got := dropWallSeconds(5_000_000_000); got != 1_700_000_005.0 {
+		t.Errorf("offset+ts: dropWallSeconds(5e9 ns)=%v want 1700000005.0", got)
+	}
+}
+
+// TestRecord_DropTimestampGauge 는 #142 의 StageDrop 분기가 dropFlowGuard 통과 시 dropLastTimestamp
+// gauge 를 emit 하고, allow-list 밖 namespace 는 emit 하지 않는지 검증한다. counter (dropEventsFlow)
+// 와 동일한 가드 정책이 시점 gauge 에도 적용됨을 회귀 가드한다.
+func TestRecord_DropTimestampGauge(t *testing.T) {
+	dropLastTimestamp.Reset()
+	dropEventsFlow.Reset()
+	SetDropClockOffset(0)
+	SetDropFlowGuard(NewDropFlowGuard([]string{"ns-src"}, 100))
+	t.Cleanup(func() {
+		SetDropFlowGuard(nil)
+		SetDropClockOffset(0)
+		dropLastTimestamp.Reset()
+		dropEventsFlow.Reset()
+	})
+
+	ev := types.EnrichedEvent{
+		Raw:            types.Event{Stage: types.StageDrop, TsNs: 5_000_000_000},
+		Stage:          "drop",
+		Direction:      "ingress",
+		TrafficScope:   "pod_to_pod",
+		ObservedNode:   "node-a",
+		Src:            podID("ns-src", "src-pod", "uid-src"),
+		SrcIPText:      "10.0.0.1",
+		DstIPText:      "10.0.0.2",
+		ProtocolText:   "TCP",
+		DropReasonName: "TCP_INVALID_SEQUENCE",
+		DropCategory:   "protocol",
+	}
+	Record(ev)
+
+	if got := testutil.CollectAndCount(dropLastTimestamp); got != 1 {
+		t.Fatalf("allow-list 통과 dropLastTimestamp series=%d want 1", got)
+	}
+
+	// allow-list 밖 namespace 의 drop 은 gauge 도 emit 되지 않아야 한다.
+	dropLastTimestamp.Reset()
+	SetDropFlowGuard(NewDropFlowGuard([]string{"other-ns"}, 100))
+	Record(ev)
+	if got := testutil.CollectAndCount(dropLastTimestamp); got != 0 {
+		t.Errorf("allow-list 밖 dropLastTimestamp series=%d want 0 (가드 적용)", got)
+	}
 }

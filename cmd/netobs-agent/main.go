@@ -11,16 +11,17 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"golang.org/x/sys/unix"
 
 	"netobs/internal/kube"
+	netobsapi "netobs/internal/netobs/api"
+	netobsdocs "netobs/internal/netobs/api/docs"
 	"netobs/internal/netobs/config"
 	"netobs/internal/netobs/drop"
 	ebpfx "netobs/internal/netobs/ebpf"
 	"netobs/internal/netobs/flow"
 	"netobs/internal/netobs/metadata"
 	"netobs/internal/netobs/metrics"
-	netobsapi "netobs/internal/netobs/api"
-	netobsdocs "netobs/internal/netobs/api/docs"
 	"netobs/internal/netobs/podbytes"
 	"netobs/internal/netobs/selfhealth"
 	"netobs/internal/netobs/symbols"
@@ -64,6 +65,18 @@ func main() {
 		log.Printf("drop stack guard: allow_namespaces=%v max_active=%d", cfg.DropStackAllowNamespaces, cfg.DropStackMaxActive)
 	} else {
 		log.Printf("drop stack guard: disabled (NETOBS_DROP_STACK_ALLOW_NAMESPACES empty)")
+	}
+	// #142 drop 발생 시점 gauge (netobs_drop_last_timestamp_seconds) 의 monotonic→wall 변환 offset 을
+	// startup 시 1회 산정한다. BPF bpf_ktime_get_ns 가 CLOCK_MONOTONIC 기준이라 (time.Now -
+	// CLOCK_MONOTONIC) 차이를 더하면 ts_ns 가 unix epoch wall-clock 으로 환산된다. clock 읽기 실패 시
+	// offset 미설정 (0) 으로 두어 gauge 가 monotonic 값을 노출하며 drop 추적 자체는 정상 동작한다.
+	var mono unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &mono); err != nil {
+		log.Printf("drop timestamp clock offset: CLOCK_MONOTONIC read failed (%v); gauge will expose monotonic ts", err)
+	} else {
+		offsetNs := time.Now().UnixNano() - (mono.Sec*1_000_000_000 + mono.Nsec)
+		metrics.SetDropClockOffset(offsetNs)
+		log.Printf("drop timestamp clock offset: %d ns (monotonic→wall)", offsetNs)
 	}
 
 	// #65 의 receive path TCP 상태 sample 을 수신 Pod 단위 gauge 로 노출하는 aggregator. Collector
