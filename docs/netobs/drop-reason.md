@@ -30,11 +30,11 @@ drop reason runtime map loaded from /sys/kernel/tracing/events/skb/kfree_skb/for
 
 ## drop_category 분류
 
-`drop_category`는 정규화된 이름에 대한 부분 문자열 매칭 우선순위에 따라 결정된다. 운영자가 가장 자주 묻는 "어떤 종류의 drop인가"를 한 라벨로 답하기 위한 분류다. 매칭 순서가 결과를 결정한다 (앞 카테고리가 먼저 매칭되면 뒤 카테고리는 검사하지 않는다).
+`drop_category`는 정규화된 이름에 대한 매칭 우선순위에 따라 결정된다. 운영자가 가장 자주 묻는 "어떤 종류의 drop인가"를 한 라벨로 답하기 위한 분류다. 매칭 순서가 결과를 결정한다 (앞 카테고리가 먼저 매칭되면 뒤 카테고리는 검사하지 않는다). `socket`은 `SOCK`과 `SOCKET` 같은 인접 토큰의 오분류를 막기 위해 `_` 토큰 경계 매칭을 쓰고 나머지 카테고리는 부분 문자열 매칭을 쓴다.
 
 | 순서 | 카테고리 | 매칭 패턴 | 의미 |
 |---|---|---|---|
-| 1 | `socket` | `SOCKET` 포함 | 소켓 자체 또는 소켓 BPF 필터 / 버퍼 |
+| 1 | `socket` | `SOCK` 또는 `SOCKET` 토큰 | 소켓 자체 또는 소켓 BPF 필터 / 버퍼 |
 | 2 | `checksum` | `CSUM` 포함 | L3/L4 체크섬 실패 |
 | 3 | `policy` | `NETFILTER`, `FILTER`, `TC_`, `XDP` 포함 | 네트워크 정책 (iptables / nftables / tc / XDP / cgroup BPF) |
 | 4 | `queue` | `QDISC`, `QUEUE`, `BACKLOG`, `RING` 포함 | 큐 / 백로그 / NIC ring 포화 |
@@ -132,7 +132,7 @@ drop reason runtime map loaded from /sys/kernel/tracing/events/skb/kfree_skb/for
 | 81 | `IPV6_NDISC_NS_OTHERHOST` | device | NDISC NS가 다른 호스트 대상 |
 | 82 | `QUEUE_PURGE` | queue | 큐 비우기 중 drop |
 | 83 | `TC_COOKIE_ERROR` | policy | tc cookie 오류 |
-| 84 | `PACKET_SOCK_ERROR` | unknown | AF_PACKET 소켓 오류 |
+| 84 | `PACKET_SOCK_ERROR` | socket | AF_PACKET 소켓 오류 |
 | 85 | `TC_CHAIN_NOTFOUND` | policy | tc chain 미발견 |
 | 86 | `TC_RECLASSIFY_LOOP` | policy | tc 재분류 루프 한계 |
 
@@ -173,4 +173,4 @@ sum by (src_namespace, src_workload, traffic_scope) (
 
 본 표는 kernel 6.8.0-60-generic의 `enum skb_drop_reason` 정의를 기준으로 작성됐다. kernel 버전이 다르면 코드와 이름의 매핑이 달라지므로 agent 로그의 `drop reason runtime map loaded ... (N entries)` 한 줄이 본 표보다 우선한다. 코드의 의미가 바뀌는 회귀는 드물지만 N 값이 본 문서의 86과 크게 다르면 호스트 kernel의 `/sys/kernel/tracing/events/skb/kfree_skb/format`을 직접 확인해 표를 재작성한다.
 
-`drop_category` 분류기는 부분 문자열 매칭 기반이라 새로운 reason 이름이 들어와도 동작하지만, 분류 정확도가 의도와 다를 수 있다. 예를 들어 `PACKET_SOCK_ERROR`는 의미상 소켓 관련이지만 `SOCKET`이 아닌 `SOCK`만 포함해 현재 `unknown`으로 분류된다. 이런 분류 갭이 운영에서 문제 되는 경우 `internal/netobs/drop/reasons.go`의 `Category` 함수에 패턴을 추가한다.
+`drop_category` 분류기는 `socket`의 토큰 경계 매칭과 나머지 카테고리의 부분 문자열 매칭 기반이라 새로운 reason 이름이 들어와도 동작한다. `PACKET_SOCK_ERROR`는 `SOCK` 토큰을 가져 socket으로 분류된다 (#145의 토큰 경계 매칭 보정). 다만 부분 문자열 매칭과 매칭 순서에 의존하는 다른 카테고리는 분류 정확도가 의도와 다를 수 있다 (예: `IP_RPFILTER`가 routing이 아닌 policy로, `FULL_RING`이 resource가 아닌 queue로, `DEV_HDR`이 device가 아닌 protocol로 분류). 이런 분류 갭이 운영에서 문제 되는 경우 `internal/netobs/drop/reasons.go`의 `Category` 함수에 패턴이나 매칭 순서를 조정한다.
