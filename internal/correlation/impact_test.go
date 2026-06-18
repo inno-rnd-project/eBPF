@@ -21,18 +21,32 @@ func TestEffectSize_BasicDiff(t *testing.T) {
 	}
 }
 
-// TestEffectSize_NegativeClamp 는 압박 구간 victim 이 오히려 낮은 (음의 차이) 케이스가 0 으로 clamp
-// 되는지 검증한다. 음의 effect size 는 간섭 영향이 아니므로 노출하지 않는다.
-func TestEffectSize_NegativeClamp(t *testing.T) {
+// TestEffectSize_NegativeSkip 은 압박 구간 victim 이 오히려 낮은 (음의 차이) 케이스가 (0, false) 로
+// skip 되는지 검증한다. 음의 effect size 는 간섭 영향이 아니므로 collector 가 emit 하지 않도록
+// ImpactOK=false 로 둔다.
+func TestEffectSize_NegativeSkip(t *testing.T) {
 	suspect := []float64{0.0, 0.1, 0.2, 0.8, 0.9, 1.0}
 	victim := []float64{0.10, 0.10, 0.10, 0.01, 0.01, 0.01}
 
 	got, ok := EffectSize(suspect, victim, 3)
-	if !ok {
-		t.Fatalf("EffectSize ok=false want true")
+	if ok {
+		t.Fatalf("EffectSize ok=true want false (음의 차이는 skip)")
 	}
 	if got != 0 {
-		t.Errorf("EffectSize=%v want 0 (음의 차이 clamp)", got)
+		t.Errorf("EffectSize=%v want 0", got)
+	}
+}
+
+// TestEffectSize_GuardMinSamples 는 minSamples 가 1 미만이면 즉시 (0, false) 로 방어 skip 하는지
+// 검증한다. 0 division / panic 전파를 막는 exported API 가드의 회귀 가드다.
+func TestEffectSize_GuardMinSamples(t *testing.T) {
+	suspect := []float64{0.0, 1.0}
+	victim := []float64{0.01, 0.10}
+	if _, ok := EffectSize(suspect, victim, 0); ok {
+		t.Errorf("EffectSize(minSamples=0) ok=true want false")
+	}
+	if _, ok := EffectSize(suspect, victim, -1); ok {
+		t.Errorf("EffectSize(minSamples=-1) ok=true want false")
 	}
 }
 

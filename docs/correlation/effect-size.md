@@ -19,8 +19,8 @@ suspect 시계열 x와 victim latency 시계열 y에 대해 다음 차분으로 
 가드 규칙은 다음과 같다.
 
 - NaN과 Inf가 한쪽이라도 있는 timestamp는 pairwise 제거하고 length mismatch는 짧은 쪽으로 truncate한다 (Pearson과 동일 정책)
-- high와 low 각 구간 표본이 `MinSamples` 미만이면 산정을 skip하고 `impact_ok=false`로 둔다. suspect가 상수라 분리가 안 되는 경우도 한 구간이 비어 자연히 가드에 걸린다
-- 차이가 음수면 (압박이 latency를 줄이는 비-간섭 케이스) 0으로 clamp한다. collector는 `impact_ok=false` 시리즈를 emit하지 않아 0 noise가 끼지 않는다
+- high와 low 각 구간 표본이 effect size용 minSamples 미만이면 산정을 skip하고 `impact_ok=false`로 둔다. correlator는 Pearson 전체 표본 임계(`MinSamples`)의 1/4(최소 2)을 effect size용 minSamples로 넘겨, 짧은 window에서 양분된 각 구간이 임계를 채우게 한다. suspect가 상수라 분리가 안 되는 경우도 한 구간이 비어 자연히 가드에 걸린다
+- 차이가 0 이하면 (압박이 latency를 줄이거나 영향이 없는 비-간섭 케이스) `impact_ok=false`로 둔다. collector는 `impact_ok=false` 시리즈를 emit하지 않아 0 noise가 끼지 않는다
 
 ## score와 impact의 조합 해석
 

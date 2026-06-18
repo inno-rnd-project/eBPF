@@ -21,10 +21,17 @@ import (
 //     truncate 한다 (Pearson 과 동일 정책)
 //   - high / low 각 구간의 표본이 minSamples 미만이면 (0, false) 반환. suspect 가 상수라 분리가
 //     안 되는 경우 (모든 값이 중앙값 이하) 도 한 구간이 비어 자연히 가드에 걸린다
-//   - 차이가 음수면 (압박이 latency 를 줄이는 비-간섭 케이스) 0 으로 clamp 한다. 음의 effect size 는
-//     간섭 영향이 아니므로 노출하지 않는다
-//   - 정상 산출 시 (impactSeconds, true) 반환
+//   - 차이가 0 이하면 (압박이 latency 를 줄이거나 영향이 없는 비-간섭 케이스) (0, false) 를 반환한다.
+//     음의 effect size 는 간섭 영향이 아니므로 collector 가 emit 하지 않게 해 0-value noise 시리즈를
+//     방지한다
+//   - 양의 차이로 정상 산출 시 (impactSeconds, true) 반환
 func EffectSize(suspect, victim []float64, minSamples int) (float64, bool) {
+	// minSamples 가 1 미만이면 high / low 구간 표본 가드가 무력화되어 빈 구간의 0 division 이나
+	// medianOf 의 빈 슬라이스 접근으로 NaN / panic 이 전파될 수 있다. exported API 방어로 즉시 skip 한다.
+	if minSamples < 1 {
+		return 0, false
+	}
+
 	n := len(suspect)
 	if len(victim) < n {
 		n = len(victim)
@@ -66,8 +73,10 @@ func EffectSize(suspect, victim []float64, minSamples int) (float64, bool) {
 	}
 
 	diff := highSum/float64(highCount) - lowSum/float64(lowCount)
-	if diff < 0 {
-		diff = 0
+	if diff <= 0 {
+		// 압박 구간이 비압박 구간보다 빠르거나 (음의 차이) 차이가 없는 (0) 비-간섭 케이스는 false 로
+		// 두어 collector 가 impact 시리즈를 emit 하지 않게 한다. 0-value noise 시리즈를 방지한다.
+		return 0, false
 	}
 	return diff, true
 }

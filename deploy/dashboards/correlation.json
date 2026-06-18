@@ -150,7 +150,8 @@
             },
             "renameByName": {
               "Value #A": "score",
-              "Value #B": "lag_seconds"
+              "Value #B": "lag_seconds",
+              "Value #C": "impact_seconds"
             }
           }
         },
