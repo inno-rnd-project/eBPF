@@ -370,3 +370,33 @@ func TestHealth_RecordErrorDoesNotTouchSuccessTimestamp(t *testing.T) {
 		t.Errorf("last_success_timestamp=%v want 0 (error 가 timestamp 를 갱신해서는 안 됨)", v)
 	}
 }
+
+// TestCollector_EmitsImpact 는 #146 의 effect size 가 ImpactOK=true 일 때 correlation_noisy_neighbor_
+// impact_seconds series 로 emit 되고, ImpactOK=false 일 때는 emit 되지 않아 0 noise 가 끼지 않는지
+// 검증한다.
+func TestCollector_EmitsImpact(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+
+	withImpact := neighbor("v1", "s1", correlation.DimensionCPU, 1, 0.85, 2)
+	withImpact.Impact = 0.042
+	withImpact.ImpactOK = true
+	noImpact := neighbor("v2", "s2", correlation.DimensionCPU, 1, 0.80, 1)
+	noImpact.ImpactOK = false
+	c.Replace([]correlation.NoisyNeighbor{withImpact, noImpact})
+
+	// ImpactOK=true 인 1 개만 emit 되어야 한다.
+	if count := testutil.CollectAndCount(c, "correlation_noisy_neighbor_impact_seconds"); count != 1 {
+		t.Fatalf("impact series=%d want 1 (ImpactOK=true 만 emit)", count)
+	}
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+	expected := `
+# HELP correlation_noisy_neighbor_impact_seconds #146 의 effect size. suspect 압박 구간과 비압박 구간의 victim latency 차이 (seconds) 로 간섭의 절대 영향 크기다. score (상관 강도) 가 동조 여부를 본다면 본 메트릭은 victim 을 실제로 얼마나 느리게 만들었는지의 크기를 노출해 운영자가 우선순위를 판단하게 한다. 표본 부족 등으로 산정이 skip (ImpactOK=false) 된 시리즈는 emit 되지 않아 0 noise 가 끼지 않는다.
+# TYPE correlation_noisy_neighbor_impact_seconds gauge
+correlation_noisy_neighbor_impact_seconds{rank="1",resource_dimension="cpu",suspect_namespace="default",suspect_pod="s1",suspect_pod_uid="uid-s1",victim_namespace="default",victim_pod="v1",victim_pod_uid="uid-v1"} 0.042
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "correlation_noisy_neighbor_impact_seconds"); err != nil {
+		t.Errorf("impact metric mismatch: %v", err)
+	}
+}

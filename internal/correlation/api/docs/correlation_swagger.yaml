@@ -227,6 +227,14 @@ definitions:
         $ref: '#/definitions/netobs_internal_correlation.ResourceDimension'
       granger_ok:
         type: boolean
+      impact_ok:
+        type: boolean
+      impact_seconds:
+        description: |-
+          #146 effect size 결과. Impact 는 suspect 압박 시 victim latency 증가량 (seconds) 으로 간섭의
+          절대 영향 크기다. Score (상관 강도) 와 독립된 지표라 운영자가 우선순위 판단에 함께 활용한다.
+          ImpactOK=false 면 표본 부족 등으로 산정이 skip 되어 Impact 는 0 이다.
+        type: number
       lag_steps:
         type: integer
       p_value:

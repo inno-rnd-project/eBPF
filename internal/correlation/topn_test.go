@@ -300,3 +300,24 @@ func TestSelectTopN_EmptyInput(t *testing.T) {
 		t.Errorf("empty input len=%d want 0", len(got))
 	}
 }
+
+// TestSelectTopN_ImpactPropagation 은 #146 의 effect size 가 CorrelationResult 에서 NoisyNeighbor
+// 로 전파되는지 검증한다. Impact 와 ImpactOK 는 Score 와 독립이라 채택된 candidate 의 값을 그대로
+// 따라가야 한다.
+func TestSelectTopN_ImpactPropagation(t *testing.T) {
+	r := makeResult("ns", "suspect", "uid-s", "pod:cpu_throttle_score:5m",
+		"ns", "victim", "uid-v", latencyMetric, 0.8, 1, StatusOK)
+	r.Impact = 0.042
+	r.ImpactOK = true
+
+	got := SelectTopN([]CorrelationResult{r}, 10)
+	if len(got) != 1 {
+		t.Fatalf("got %d neighbors want 1", len(got))
+	}
+	if !got[0].ImpactOK {
+		t.Errorf("ImpactOK=false want true")
+	}
+	if got[0].Impact != 0.042 {
+		t.Errorf("Impact=%v want 0.042", got[0].Impact)
+	}
+}

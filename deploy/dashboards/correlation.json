@@ -101,7 +101,7 @@
       "id": 1,
       "type": "table",
       "title": "Top noisy neighbors (victim x suspect x dimension x rank)",
-      "description": "현재 snapshot 의 noisy neighbor 페어. score 내림차순 정렬 후 rank 가 부여된다. lag_seconds 양수는 suspect 가 victim latency 를 선행하는 인과 방향.",
+      "description": "현재 snapshot 의 noisy neighbor 페어. score 내림차순 정렬 후 rank 가 부여된다. lag_seconds 양수는 suspect 가 victim latency 를 선행하는 인과 방향. impact_seconds (#146) 는 suspect 압박 시 victim latency 증가량으로 score (동조 강도) 와 별개의 절대 영향 크기다. score 가 높아도 impact 가 작으면 동조는 강하나 실제 latency 손해는 작은 케이스다.",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 12,
@@ -121,6 +121,12 @@
           "instant": true,
           "format": "table",
           "refId": "B"
+        },
+        {
+          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_impact_seconds{victim_namespace=~\"$victim_namespace\",victim_pod=~\"$victim_pod\",resource_dimension=~\"$resource_dimension\"})",
+          "instant": true,
+          "format": "table",
+          "refId": "C"
         }
       ],
       "transformations": [
@@ -144,7 +150,8 @@
             },
             "renameByName": {
               "Value #A": "score",
-              "Value #B": "lag_seconds"
+              "Value #B": "lag_seconds",
+              "Value #C": "impact_seconds"
             }
           }
         },
