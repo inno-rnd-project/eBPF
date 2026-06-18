@@ -81,4 +81,9 @@ type CorrelationResult struct {
 	FStatistic float64 `json:"f_statistic"`
 	PValue     float64 `json:"p_value"`
 	GrangerOK  bool    `json:"granger_ok"`
+	// Impact 와 ImpactOK 는 #146 의 effect size 산정 결과다. Impact 는 suspect 압박 구간과 비압박
+	// 구간의 victim latency 차이 (seconds) 로 간섭의 절대 영향 크기다. ImpactOK 가 false 면 표본
+	// 부족 또는 suspect 상수로 산정이 자연 skip 된 상태이며 Impact 는 0 으로 둔다.
+	Impact   float64 `json:"impact_seconds"`
+	ImpactOK bool    `json:"impact_ok"`
 }

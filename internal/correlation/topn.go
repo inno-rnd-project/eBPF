@@ -49,6 +49,11 @@ type NoisyNeighbor struct {
 	// GrangerOK=false 면 표본 부족 또는 행렬 singular 로 산정이 자연 skip 되었다.
 	PValue    float64 `json:"p_value"`
 	GrangerOK bool    `json:"granger_ok"`
+	// #146 effect size 결과. Impact 는 suspect 압박 시 victim latency 증가량 (seconds) 으로 간섭의
+	// 절대 영향 크기다. Score (상관 강도) 와 독립된 지표라 운영자가 우선순위 판단에 함께 활용한다.
+	// ImpactOK=false 면 표본 부족 등으로 산정이 skip 되어 Impact 는 0 이다.
+	Impact   float64 `json:"impact_seconds"`
+	ImpactOK bool    `json:"impact_ok"`
 }
 
 // classifyDimension 은 query 문자열에서 ResourceDimension 을 결정한다. 매칭 우선순위는 더 구체적인
@@ -116,6 +121,10 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		// 않다).
 		pvalue    float64
 		grangerOK bool
+		// #146 effect size. Score (상관 강도) 와 독립이라 dedup 의 max score 비교에는 영향을 주지
+		// 않고 채택된 candidate 의 Impact 를 그대로 따라간다.
+		impact   float64
+		impactOK bool
 	}
 
 	candidates := make([]candidate, 0, len(results))
@@ -165,6 +174,8 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 			samples:       r.SampleCount,
 			pvalue:        r.PValue,
 			grangerOK:     r.GrangerOK,
+			impact:        r.Impact,
+			impactOK:      r.ImpactOK,
 		})
 	}
 
@@ -264,6 +275,8 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 				SampleCount:   c.samples,
 				PValue:        c.pvalue,
 				GrangerOK:     c.grangerOK,
+				Impact:        c.impact,
+				ImpactOK:      c.impactOK,
 			})
 		}
 	}
