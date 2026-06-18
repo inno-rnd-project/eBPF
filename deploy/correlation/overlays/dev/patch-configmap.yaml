@@ -8,8 +8,7 @@ data:
   # 관측하며 prod 의 5 분 / 1 시간 default 보다 짧다.
   RECONCILE_INTERVAL: "1m"
   WINDOW: "30m"
-  # #84 cross-node interference layer 를 dev 검증 환경 default 로 활성 한다. correlation_cross_node_
-  # score series 가 emit 되어 #119 의 /api/v1/cross-node-interference endpoint 와 cross-node row
-  # dashboard panel 과 verify.sh 3 차 가드 가 모두 정상 동작 한다. prod overlay 는 운영자가 명시
-  # 활성 결정 할 때 까지 default off 유지.
-  CROSS_NODE: "true"
+  # #147 부터 cross-node interference layer 가 default 활성 (config.DefaultConfig) 이라 dev 에서도
+  # 별도 CROSS_NODE env 없이 correlation_cross_node_score series 가 emit 된다. /api/v1/cross-node-
+  # interference endpoint 와 dashboard panel 과 verify.sh 가드 가 기본 활성 경로 로 동작 한다.
+  # cardinality 부담 시 CROSS_NODE: "false" 로 opt-out 한다.

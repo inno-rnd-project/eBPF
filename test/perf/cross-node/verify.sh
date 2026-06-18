@@ -41,19 +41,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# correlation-exporter 의 CrossNodeEnabled 가 true 인지 사전 검증 한다. yaml 의 env block 은 name 과
-# value 가 두 줄 로 나뉘어 grep -E 의 단일 라인 매칭 으로 잡을 수 없 으므로 jsonpath 로 env value
-# 또는 args flag 를 정확히 추출 한다.
-echo "[setup] checking correlation-exporter CrossNodeEnabled flag"
+# correlation-exporter 의 cross-node layer 가 opt-out 되지 않았는지 사전 검증 한다. #147 부터
+# CrossNodeEnabled 가 default true 라 env / flag 미설정 이 정상 활성 상태 다. yaml 의 env block 은
+# name 과 value 가 두 줄 로 나뉘어 grep -E 의 단일 라인 매칭 으로 잡을 수 없 으므로 jsonpath 로 env
+# value 또는 args flag 를 정확히 추출 한다.
+echo "[setup] checking correlation-exporter cross-node 가 opt-out 되지 않았는지 확인 (default 활성)"
 cross_env=$(kubectl get deploy -n "${NAMESPACE}" correlation-exporter \
   -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CROSS_NODE")].value}' 2>/dev/null || true)
 cross_arg=$(kubectl get deploy -n "${NAMESPACE}" correlation-exporter \
   -o jsonpath='{range .spec.template.spec.containers[0].args[*]}{@}{"\n"}{end}' 2>/dev/null | grep -E '^--?cross-node' || true)
-# correlation-exporter 의 main.go 가 "1" 과 "true" 둘 다 활성 값으로 수용 하므로 검증 도 양쪽을 통과
-# 시킨다.
-if [[ "${cross_env}" != "true" && "${cross_env}" != "1" && -z "${cross_arg}" ]]; then
-  echo "[warn] correlation-exporter 에 CROSS_NODE=true/1 env 또는 --cross-node flag 가 설정 되어 있지 않다."
-  echo "       opt-in 활성 후 재시도 하라: kubectl set env -n ${NAMESPACE} deploy/correlation-exporter CROSS_NODE=true"
+# 명시적 opt-out (CROSS_NODE=false/0 env 또는 --cross-node=false flag) 인 경우 만 cross-node series
+# 가 emit 되지 않아 본 검증 이 불가 하므로 warn 후 기본 활성 복귀 를 안내 한다.
+if [[ "${cross_env}" == "false" || "${cross_env}" == "0" || "${cross_arg}" == *"=false"* ]]; then
+  echo "[warn] correlation-exporter 가 cross-node opt-out (CROSS_NODE=false 또는 --cross-node=false) 상태 다."
+  echo "       기본 활성 으로 복귀 후 재시도 하라: kubectl set env -n ${NAMESPACE} deploy/correlation-exporter CROSS_NODE-"
 fi
 
 # suspect-cpu.yaml 의 TARGET_NODE 는 __CROSS_NODE_SUSPECT__ placeholder 다. verify.sh 가 SUSPECT_NODE
