@@ -58,6 +58,7 @@ type Collector struct {
 	scoreDesc          *prometheus.Desc
 	lagDesc            *prometheus.Desc
 	pvalueDesc         *prometheus.Desc
+	impactDesc         *prometheus.Desc
 	dominantDesc       *prometheus.Desc
 	crossNodeScoreDesc *prometheus.Desc
 }
@@ -81,6 +82,11 @@ func NewCollector(step time.Duration) *Collector {
 		pvalueDesc: prometheus.NewDesc(
 			"correlation_noisy_neighbor_pvalue",
 			"#69 의 Granger causality p-value. src (suspect) 가 dst (victim latency) 를 Granger-cause 하는지의 통계적 유의성. 0.05 미만이면 high-confidence 인과 신호로 본다. continuous 값이라 라벨이 아닌 별개 메트릭으로 분리해 cardinality 폭증을 차단한다.",
+			neighborLabels, nil,
+		),
+		impactDesc: prometheus.NewDesc(
+			"correlation_noisy_neighbor_impact_seconds",
+			"#146 의 effect size. suspect 압박 구간과 비압박 구간의 victim latency 차이 (seconds) 로 간섭의 절대 영향 크기다. score (상관 강도) 가 동조 여부를 본다면 본 메트릭은 victim 을 실제로 얼마나 느리게 만들었는지의 크기를 노출해 운영자가 우선순위를 판단하게 한다. 표본 부족 등으로 산정이 skip (ImpactOK=false) 된 시리즈는 emit 되지 않아 0 noise 가 끼지 않는다.",
 			neighborLabels, nil,
 		),
 		dominantDesc: prometheus.NewDesc(
@@ -151,6 +157,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.scoreDesc
 	ch <- c.lagDesc
 	ch <- c.pvalueDesc
+	ch <- c.impactDesc
 	ch <- c.dominantDesc
 	ch <- c.crossNodeScoreDesc
 }
@@ -185,6 +192,9 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		if n.GrangerOK {
 			ch <- prometheus.MustNewConstMetric(c.pvalueDesc, prometheus.GaugeValue, n.PValue, labels...)
 		}
+		if n.ImpactOK {
+			ch <- prometheus.MustNewConstMetric(c.impactDesc, prometheus.GaugeValue, n.Impact, labels...)
+		}
 	}
 	// dominant dimension 은 Replace 시점에 1 회 산정되어 c.dominant 에 캐시된 결과를 그대로 emit
 	// 한다. scrape 마다 victim 단위 dimension max 집계 + sum 정규화 비용을 피해 Collect hot path 가
@@ -218,15 +228,15 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 // Health 는 exporter 자체의 동작 가시성을 위한 self-health 메트릭 셋이다. reconcile 루프가 매 cycle
 // 결과에 따라 본 필드들을 갱신한다.
 type Health struct {
-	ReconcileDuration         prometheus.Gauge
-	ReconcilePairs            prometheus.Counter
-	ReconcileNeighbors        prometheus.Counter
-	ReconcileSkipped          *prometheus.CounterVec
-	ReconcilePartial          prometheus.Counter
-	ReconcileMetricsExpected  prometheus.Gauge
-	ReconcileMetricsObserved  prometheus.Gauge
-	LastSuccessTimestamp      prometheus.Gauge
-	ReconcileErrors           prometheus.Counter
+	ReconcileDuration        prometheus.Gauge
+	ReconcilePairs           prometheus.Counter
+	ReconcileNeighbors       prometheus.Counter
+	ReconcileSkipped         *prometheus.CounterVec
+	ReconcilePartial         prometheus.Counter
+	ReconcileMetricsExpected prometheus.Gauge
+	ReconcileMetricsObserved prometheus.Gauge
+	LastSuccessTimestamp     prometheus.Gauge
+	ReconcileErrors          prometheus.Counter
 }
 
 // NewHealth 는 self-health 메트릭들을 생성해 reg 에 등록한 뒤 반환한다.
