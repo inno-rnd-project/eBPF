@@ -100,10 +100,16 @@ func main() {
 	if v := strings.TrimSpace(os.Getenv("LISTEN_ADDR")); v != "" {
 		listenAddr = v
 	}
-	// #84 cross-node interference layer 의 토글. CROSS_NODE 환경변수 가 "1" / "true" 일 때 opt-in
-	// 활성 으로 둔다. -cross-node flag 가 우선순위 가 더 높다.
-	if v := strings.TrimSpace(os.Getenv("CROSS_NODE")); v == "1" || strings.EqualFold(v, "true") {
-		cfg.CrossNodeEnabled = true
+	// #84/#147 cross-node interference layer 의 토글. #147 부터 default 활성 (config.DefaultConfig)
+	// 이며 CROSS_NODE 환경변수 로 양방향 override 한다. 값이 있으면 strconv.ParseBool 로 해석 해
+	// "1"/"true" 는 활성, "0"/"false" 는 opt-out (cardinality 부담 환경) 으로 둔다. parse 실패 값은
+	// default 를 유지 하고 warn 로깅 한다. -cross-node flag 가 우선순위 가 더 높다.
+	if v := strings.TrimSpace(os.Getenv("CROSS_NODE")); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			cfg.CrossNodeEnabled = parsed
+		} else {
+			log.Printf("warn: invalid CROSS_NODE=%q; using default %v", v, cfg.CrossNodeEnabled)
+		}
 	}
 
 	fs := flag.NewFlagSet("correlation-exporter", flag.ContinueOnError)
@@ -115,7 +121,7 @@ func main() {
 	fs.DurationVar(&reconcileInterval, "reconcile-interval", reconcileInterval, "interval between reconcile cycles")
 	fs.StringVar(&listenAddr, "listen", listenAddr, "metrics server listen address")
 	fs.IntVar(&topN, "top-n", topN, fmt.Sprintf("Top-N noisy neighbors per (victim, dimension), max %d", maxTopN))
-	fs.BoolVar(&cfg.CrossNodeEnabled, "cross-node", cfg.CrossNodeEnabled, "#84: enable cross-node interference layer (node-level pair enumeration, correlation_cross_node_score gauge)")
+	fs.BoolVar(&cfg.CrossNodeEnabled, "cross-node", cfg.CrossNodeEnabled, "#84/#147: cross-node interference layer (node-level pair enumeration, correlation_cross_node_score gauge). Default enabled; set -cross-node=false or CROSS_NODE=false to opt out on very large clusters")
 
 	var extra stringSlice
 	fs.Var(&extra, "extra-metric", "additional Prometheus query (repeat for multiple)")

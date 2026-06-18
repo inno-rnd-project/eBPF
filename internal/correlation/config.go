@@ -49,7 +49,9 @@ type Config struct {
 
 	// CrossNodeEnabled 는 #84 의 cross-node interference layer 토글 이다. true 일 때 Correlate 가
 	// node 단위 시계열 페어 도 함께 산출 해 결과 슬라이스 에 IsCrossNode=true 항목 으로 append 한다.
-	// default false 라 본 layer 가 운영자 의 명시 opt-in 없이는 비활성 으로 유지 된다.
+	// #147 부터 default true 로 두어 zero-config 에서도 node 단위 간섭 Top-N 이 emit 된다. emit
+	// cardinality 는 SelectTopNCrossNode 의 topN 으로, fetch 비용 은 CrossNodeMaxPairs 로 통제 된다.
+	// 노드 수 가 매우 많아 부담 인 환경 은 CROSS_NODE=false env 또는 -cross-node=false flag 로 opt-out 한다.
 	CrossNodeEnabled bool
 
 	// CrossNodeMaxPairs 는 cross-node 페어 enumerate 의 상한 이다. 노드 수 가 제한적 이라 (dev 4,
@@ -90,7 +92,7 @@ func DefaultConfig() Config {
 		FetchTimeout:      30 * time.Second,
 		GrangerLag:        2,
 		GrangerMinSamples: 30,
-		CrossNodeEnabled:  false,
+		CrossNodeEnabled:  true,
 		CrossNodeMaxPairs: 1024,
 		// #84 cross-node interference layer 의 node 단위 입력 시계열 5종. CrossNodeEnabled opt-in
 		// 시에만 Correlate 가 fetcher 호출 셋에 합류시킨다.
