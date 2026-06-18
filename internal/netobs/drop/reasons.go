@@ -106,11 +106,26 @@ func (m *Mapper) Name(code uint32) string {
 	return fmt.Sprintf("REASON_%d", code)
 }
 
+// hasToken 은 reason 이름을 '_' 토큰으로 분해해 정확한 토큰 일치를 검사한다. 부분문자열 매칭이
+// SOCK 과 SOCKET 같은 인접 토큰을 구분하지 못해 PACKET_SOCK_ERROR (토큰 SOCK) 가 socket 으로 분류
+// 되지 못하고 unknown 으로 빠지던 오분류를 제거한다. SOCK 또는 SOCKET 토큰을 가진 reason 은
+// 모두 socket 으로 분류된다.
+func hasToken(name string, tokens ...string) bool {
+	for _, tok := range strings.Split(name, "_") {
+		for _, want := range tokens {
+			if tok == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (m *Mapper) Category(name string) string {
 	n := strings.ToUpper(strings.TrimSpace(name))
 
 	switch {
-	case strings.Contains(n, "SOCKET"):
+	case hasToken(n, "SOCK", "SOCKET"):
 		return "socket"
 	case strings.Contains(n, "CSUM"):
 		return "checksum"
