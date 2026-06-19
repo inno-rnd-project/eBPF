@@ -101,6 +101,10 @@ func EnumerateCrossLevelPairs(items []LabeledSeries, allowNamespaces []string) [
 	nodeLatency := make(map[string][]LabeledSeries)
 	podPressure := make(map[string][]podSeries)
 	podLatency := make(map[string][]podSeries)
+	// nodeSeen 은 분류 맵에 실제로 합류한 시계열의 node 키 집합이다. 분류 맵 4개를 다시 순회하지
+	// 않도록 items 순회 중에 함께 채운다. allow-list 에 막힌 pod 는 continue 가 본 기록 앞에 있어
+	// node 가 등록되지 않으므로 기존과 동일하게 페어에서 제외된다.
+	nodeSeen := make(map[string]struct{})
 
 	for _, item := range items {
 		node := item.Series.Labels["node"]
@@ -118,6 +122,7 @@ func EnumerateCrossLevelPairs(items []LabeledSeries, allowNamespaces []string) [
 			} else {
 				nodePressure[node] = append(nodePressure[node], item)
 			}
+			nodeSeen[node] = struct{}{}
 		case ns != "" && pod != "":
 			// pod-level 시계열. allow-list 에 막히면 양방향 모두에서 제외된다.
 			if !namespaceAllowed(ns) {
@@ -135,23 +140,11 @@ func EnumerateCrossLevelPairs(items []LabeledSeries, allowNamespaces []string) [
 			} else {
 				podPressure[node] = append(podPressure[node], ps)
 			}
+			nodeSeen[node] = struct{}{}
 		}
 	}
 
-	// 네 부류 맵의 node 키 합집합을 정렬해 출력 순서를 결정적으로 만든다.
-	nodeSeen := make(map[string]struct{})
-	for k := range nodePressure {
-		nodeSeen[k] = struct{}{}
-	}
-	for k := range nodeLatency {
-		nodeSeen[k] = struct{}{}
-	}
-	for k := range podPressure {
-		nodeSeen[k] = struct{}{}
-	}
-	for k := range podLatency {
-		nodeSeen[k] = struct{}{}
-	}
+	// node 키를 정렬해 출력 순서를 결정적으로 만든다.
 	nodeKeys := make([]string, 0, len(nodeSeen))
 	for k := range nodeSeen {
 		nodeKeys = append(nodeKeys, k)
