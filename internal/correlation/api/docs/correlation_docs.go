@@ -15,6 +15,82 @@ const docTemplatecorrelation = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/api/v1/cross-level": {
+            "get": {
+                "description": "node 와 pod 와 direction 과 dimension 과 rank 필터 후 pagination 적용한 cross-level 시리즈 반환",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "correlation"
+                ],
+                "summary": "List cross-level interference top-N",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "공유 node 이름 필터",
+                        "name": "node",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "pod 의 namespace 필터",
+                        "name": "pod_namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "pod 이름 필터",
+                        "name": "pod",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "방향 필터 (node_to_pod/pod_to_node)",
+                        "name": "direction",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "리소스 차원 필터 (cpu/memory/network/gpu)",
+                        "name": "dimension",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "max rank (기본 무제한)",
+                        "name": "rank_max",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 item 최대 개수 (기본 100, 최대 1000)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 시작 offset (기본 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.CrossLevelListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/cross-node-interference": {
             "get": {
                 "description": "victim_node 와 suspect_node 와 dimension 과 rank 필터 후 pagination 적용한 cross-node interference 시리즈 반환",
@@ -626,6 +702,20 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "internal_correlation_api.CrossLevelListResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/netobs_internal_correlation.CrossLevel"
+                    }
+                },
+                "page": {
+                    "$ref": "#/definitions/netobs_internal_apicommon.Page"
+                }
+            }
+        },
         "internal_correlation_api.CrossNodeListResponse": {
             "type": "object",
             "properties": {
@@ -766,6 +856,64 @@ const docTemplatecorrelation = `{
                     "type": "integer"
                 }
             }
+        },
+        "netobs_internal_correlation.CrossLevel": {
+            "type": "object",
+            "properties": {
+                "dimension": {
+                    "$ref": "#/definitions/netobs_internal_correlation.ResourceDimension"
+                },
+                "direction": {
+                    "$ref": "#/definitions/netobs_internal_correlation.CrossLevelDirection"
+                },
+                "granger_ok": {
+                    "type": "boolean"
+                },
+                "lag_steps": {
+                    "type": "integer"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "p_value": {
+                    "type": "number"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "pod_namespace": {
+                    "type": "string"
+                },
+                "pod_uid": {
+                    "type": "string"
+                },
+                "rank": {
+                    "type": "integer"
+                },
+                "sample_count": {
+                    "type": "integer"
+                },
+                "score": {
+                    "type": "number"
+                },
+                "suspect_metric": {
+                    "type": "string"
+                },
+                "victim_metric": {
+                    "type": "string"
+                }
+            }
+        },
+        "netobs_internal_correlation.CrossLevelDirection": {
+            "type": "string",
+            "enum": [
+                "node_to_pod",
+                "pod_to_node"
+            ],
+            "x-enum-varnames": [
+                "DirectionNodeToPod",
+                "DirectionPodToNode"
+            ]
         },
         "netobs_internal_correlation.NodeInterference": {
             "type": "object",

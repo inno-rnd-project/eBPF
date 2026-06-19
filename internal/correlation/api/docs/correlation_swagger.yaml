@@ -115,6 +115,15 @@ definitions:
       page:
         $ref: '#/definitions/internal_gpuobs_api.PageInfo'
     type: object
+  internal_correlation_api.CrossLevelListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/netobs_internal_correlation.CrossLevel'
+        type: array
+      page:
+        $ref: '#/definitions/netobs_internal_apicommon.Page'
+    type: object
   internal_correlation_api.CrossNodeListResponse:
     properties:
       items:
@@ -205,6 +214,45 @@ definitions:
       total:
         type: integer
     type: object
+  netobs_internal_correlation.CrossLevel:
+    properties:
+      dimension:
+        $ref: '#/definitions/netobs_internal_correlation.ResourceDimension'
+      direction:
+        $ref: '#/definitions/netobs_internal_correlation.CrossLevelDirection'
+      granger_ok:
+        type: boolean
+      lag_steps:
+        type: integer
+      node:
+        type: string
+      p_value:
+        type: number
+      pod:
+        type: string
+      pod_namespace:
+        type: string
+      pod_uid:
+        type: string
+      rank:
+        type: integer
+      sample_count:
+        type: integer
+      score:
+        type: number
+      suspect_metric:
+        type: string
+      victim_metric:
+        type: string
+    type: object
+  netobs_internal_correlation.CrossLevelDirection:
+    enum:
+    - node_to_pod
+    - pod_to_node
+    type: string
+    x-enum-varnames:
+    - DirectionNodeToPod
+    - DirectionPodToNode
   netobs_internal_correlation.NodeInterference:
     properties:
       dimension:
@@ -321,6 +369,57 @@ definitions:
 info:
   contact: {}
 paths:
+  /api/v1/cross-level:
+    get:
+      description: node 와 pod 와 direction 과 dimension 과 rank 필터 후 pagination 적용한 cross-level
+        시리즈 반환
+      parameters:
+      - description: 공유 node 이름 필터
+        in: query
+        name: node
+        type: string
+      - description: pod 의 namespace 필터
+        in: query
+        name: pod_namespace
+        type: string
+      - description: pod 이름 필터
+        in: query
+        name: pod
+        type: string
+      - description: 방향 필터 (node_to_pod/pod_to_node)
+        in: query
+        name: direction
+        type: string
+      - description: 리소스 차원 필터 (cpu/memory/network/gpu)
+        in: query
+        name: dimension
+        type: string
+      - description: max rank (기본 무제한)
+        in: query
+        name: rank_max
+        type: integer
+      - description: 응답 item 최대 개수 (기본 100, 최대 1000)
+        in: query
+        name: limit
+        type: integer
+      - description: 응답 시작 offset (기본 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.CrossLevelListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+      summary: List cross-level interference top-N
+      tags:
+      - correlation
   /api/v1/cross-node-interference:
     get:
       description: victim_node 와 suspect_node 와 dimension 과 rank 필터 후 pagination 적용한

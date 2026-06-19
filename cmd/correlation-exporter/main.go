@@ -223,11 +223,12 @@ func main() {
 	})
 
 	// #100 REST API layer 도입. /api/v1/noisy-neighbor 와 #119 의 /api/v1/cross-node-interference 와
-	// #148 의 /api/v1/service-impact 와 swagger UI 부착. handler 는 collector 의 Snapshot() 과
-	// CrossNodeSnapshot() 과 ServiceImpactSnapshot() 을 in-memory read 로만 사용 하므로 scrape hot path
-	// 와 분리 되고 추가 부담 없음. collector 가 세 인터페이스 (SnapshotSource / CrossNodeSnapshotSource /
-	// ServiceImpactSnapshotSource) 를 모두 만족 하므로 동일 인스턴스 를 세 번 전달 한다.
-	api.NewHandler(collector, collector, collector).Register(mux)
+	// #148 의 /api/v1/service-impact 와 #149 의 /api/v1/cross-level 와 swagger UI 부착. handler 는
+	// collector 의 Snapshot() 과 CrossNodeSnapshot() 과 ServiceImpactSnapshot() 과 CrossLevelSnapshot()
+	// 을 in-memory read 로만 사용 하므로 scrape hot path 와 분리 되고 추가 부담 없음. collector 가 네
+	// 인터페이스 (SnapshotSource / CrossNodeSnapshotSource / ServiceImpactSnapshotSource /
+	// CrossLevelSnapshotSource) 를 모두 만족 하므로 동일 인스턴스 를 네 번 전달 한다.
+	api.NewHandler(collector, collector, collector, collector).Register(mux)
 	correlationdocs.SwaggerInfocorrelation.BasePath = "/"
 	mux.Handle("/api/v1/swagger/", httpSwagger.Handler(httpSwagger.URL("/api/v1/swagger.json"), httpSwagger.InstanceName("correlation")))
 	mux.HandleFunc("/api/v1/swagger.json", func(w http.ResponseWriter, _ *http.Request) {

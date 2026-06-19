@@ -33,20 +33,28 @@ type ServiceImpactSnapshotSource interface {
 	ServiceImpactSnapshot() []correlation.ServiceImpact
 }
 
-// Handler 는 correlation API endpoint 들 의 의존성을 모은다. SnapshotSource 세 종 외 별도 상태가
+// CrossLevelSnapshotSource 는 #149 의 cross-level snapshot 을 제공하는 추상 인터페이스다.
+// exporter.Collector 의 CrossLevelSnapshot() 메서드가 본 인터페이스를 만족한다. test 측에서 fake
+// snapshot 주입 시 사용한다.
+type CrossLevelSnapshotSource interface {
+	CrossLevelSnapshot() []correlation.CrossLevel
+}
+
+// Handler 는 correlation API endpoint 들 의 의존성을 모은다. SnapshotSource 네 종 외 별도 상태가
 // 없어 동시 호출 안전 (각 Snapshot() 내부 RLock).
 type Handler struct {
 	source              SnapshotSource
 	crossNodeSource     CrossNodeSnapshotSource
 	serviceImpactSource ServiceImpactSnapshotSource
+	crossLevelSource    CrossLevelSnapshotSource
 }
 
-// NewHandler 는 세 SnapshotSource 를 주입 받아 API handler 를 만든다. cmd/correlation-exporter/main.go
-// 의 main 함수 에서 exporter.Collector 가 세 인터페이스 를 모두 만족 하므로 동일 인스턴스 를 세 번
-// 전달 한다. crossNodeSource / serviceImpactSource 가 nil 이면 해당 endpoint 가 graceful empty
-// response 를 돌려 준다.
-func NewHandler(source SnapshotSource, crossNodeSource CrossNodeSnapshotSource, serviceImpactSource ServiceImpactSnapshotSource) *Handler {
-	return &Handler{source: source, crossNodeSource: crossNodeSource, serviceImpactSource: serviceImpactSource}
+// NewHandler 는 네 SnapshotSource 를 주입 받아 API handler 를 만든다. cmd/correlation-exporter/main.go
+// 의 main 함수 에서 exporter.Collector 가 네 인터페이스 를 모두 만족 하므로 동일 인스턴스 를 네 번
+// 전달 한다. crossNodeSource / serviceImpactSource / crossLevelSource 가 nil 이면 해당 endpoint 가
+// graceful empty response 를 돌려 준다.
+func NewHandler(source SnapshotSource, crossNodeSource CrossNodeSnapshotSource, serviceImpactSource ServiceImpactSnapshotSource, crossLevelSource CrossLevelSnapshotSource) *Handler {
+	return &Handler{source: source, crossNodeSource: crossNodeSource, serviceImpactSource: serviceImpactSource, crossLevelSource: crossLevelSource}
 }
 
 // Register 는 ServeMux 에 /api/v1/noisy-neighbor 와 /api/v1/cross-node-interference 두 라우트 를 등록
@@ -67,6 +75,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	))
 	mux.Handle("/api/v1/service-impact", apicommon.Chain(
 		http.HandlerFunc(h.ListServiceImpact),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
+	mux.Handle("/api/v1/cross-level", apicommon.Chain(
+		http.HandlerFunc(h.ListCrossLevel),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
@@ -95,6 +109,14 @@ type CrossNodeListResponse struct {
 type ServiceImpactListResponse struct {
 	Items []correlation.ServiceImpact `json:"items"`
 	Page  apicommon.Page              `json:"page"`
+}
+
+// CrossLevelListResponse 는 /api/v1/cross-level 응답의 typed 표현이다 (#149). swaggo 가 본 구조체를
+// OpenAPI schema 로 생성한다. items 는 CrossLevel 슬라이스, page 는 공용 pagination 메타데이터이며
+// 다른 List 응답과 형식 일관성을 유지한다.
+type CrossLevelListResponse struct {
+	Items []correlation.CrossLevel `json:"items"`
+	Page  apicommon.Page           `json:"page"`
 }
 
 // ErrorResponse 는 swaggo cross-package type resolution 한계 회피 용 으로 ErrorResponse 와
@@ -358,6 +380,109 @@ func (h *Handler) ListServiceImpact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := ServiceImpactListResponse{
+		Items: paged,
+		Page: apicommon.Page{
+			Limit:  limit,
+			Offset: offset,
+			Total:  len(filtered),
+		},
+	}
+	apicommon.WriteJSON(w, resp)
+}
+
+// validDirection 은 쿼리 파라미터의 direction 값을 검증한다. CrossLevelDirection 정의와 정합한 두
+// 값만 허용한다.
+func validDirection(d string) bool {
+	switch d {
+	case string(correlation.DirectionNodeToPod), string(correlation.DirectionPodToNode):
+		return true
+	}
+	return false
+}
+
+// ListCrossLevel 은 /api/v1/cross-level 의 GET 핸들러다 (#149). cross-level snapshot 을 node 와 pod_
+// namespace 와 pod 와 direction 과 dimension 과 rank_max filter 적용 후 pagination 응답으로 반환한다.
+// 다른 List 핸들러와 동일 패턴을 따르며 라벨 셋만 cross-level 로 교체된다.
+//
+// @Summary      List cross-level interference top-N
+// @Description  node 와 pod 와 direction 과 dimension 과 rank 필터 후 pagination 적용한 cross-level 시리즈 반환
+// @Tags         correlation
+// @Produce      json
+// @Param        node            query  string  false  "공유 node 이름 필터"
+// @Param        pod_namespace   query  string  false  "pod 의 namespace 필터"
+// @Param        pod             query  string  false  "pod 이름 필터"
+// @Param        direction       query  string  false  "방향 필터 (node_to_pod/pod_to_node)"
+// @Param        dimension       query  string  false  "리소스 차원 필터 (cpu/memory/network/gpu)"
+// @Param        rank_max        query  int     false  "max rank (기본 무제한)"
+// @Param        limit           query  int     false  "응답 item 최대 개수 (기본 100, 최대 1000)"
+// @Param        offset          query  int     false  "응답 시작 offset (기본 0)"
+// @Success      200  {object}  CrossLevelListResponse
+// @Failure      400  {object}  ErrorResponse
+// @Router       /api/v1/cross-level [get]
+func (h *Handler) ListCrossLevel(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	dimension := strings.ToLower(strings.TrimSpace(q.Get("dimension")))
+	if dimension != "" && !validDimension(dimension) {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_dimension", "dimension 은 cpu / memory / network / gpu 중 하나여야 합니다")
+		return
+	}
+	direction := strings.ToLower(strings.TrimSpace(q.Get("direction")))
+	if direction != "" && !validDirection(direction) {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_direction", "direction 은 node_to_pod / pod_to_node 중 하나여야 합니다")
+		return
+	}
+
+	var rankMax int
+	if raw := strings.TrimSpace(q.Get("rank_max")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			apicommon.WriteError(w, http.StatusBadRequest, "invalid_rank_max", "rank_max 는 양의 정수여야 합니다")
+			return
+		}
+		rankMax = v
+	}
+
+	node := strings.TrimSpace(q.Get("node"))
+	podNamespace := strings.TrimSpace(q.Get("pod_namespace"))
+	pod := strings.TrimSpace(q.Get("pod"))
+
+	var all []correlation.CrossLevel
+	if h.crossLevelSource != nil {
+		all = h.crossLevelSource.CrossLevelSnapshot()
+	}
+	filtered := make([]correlation.CrossLevel, 0, len(all))
+	for _, cl := range all {
+		if dimension != "" && !strings.EqualFold(string(cl.Dimension), dimension) {
+			continue
+		}
+		if direction != "" && !strings.EqualFold(string(cl.Direction), direction) {
+			continue
+		}
+		if rankMax > 0 && cl.Rank > rankMax {
+			continue
+		}
+		if node != "" && cl.Node != node {
+			continue
+		}
+		if podNamespace != "" && cl.PodNamespace != podNamespace {
+			continue
+		}
+		if pod != "" && cl.Pod != pod {
+			continue
+		}
+		filtered = append(filtered, cl)
+	}
+
+	limit, offset := apicommon.ParsePagination(r)
+	paged := apicommon.ApplyPagination(filtered, limit, offset)
+	// apicommon.ApplyPagination 이 빈 입력 또는 offset 초과 시 nil 슬라이스를 반환할 수 있어 JSON
+	// 직렬화가 "items": null 로 떨어질 위험이 있다. graceful empty response 보장을 위해 nil 시 빈
+	// 슬라이스로 정규화해 응답 schema 가 항상 "items": [] 형태를 유지하게 한다.
+	if paged == nil {
+		paged = []correlation.CrossLevel{}
+	}
+
+	resp := CrossLevelListResponse{
 		Items: paged,
 		Page: apicommon.Page{
 			Limit:  limit,
