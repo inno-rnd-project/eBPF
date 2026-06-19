@@ -239,7 +239,10 @@ func SelectTopNServiceImpact(results []CorrelationResult, topN int) []ServiceImp
 		return a.dimension < b.dimension
 	})
 
-	out := make([]ServiceImpact, 0)
+	// out 의 capacity 는 deduped 길이로 잡는다. 각 그룹이 min(topN, 그룹 크기) 개만 채택하므로 출력
+	// 총합은 그룹 크기 합 (= len(deduped)) 이하이며, suspect node 수가 그룹당 topN 보다 작은 흔한
+	// 케이스에서 len(groupKeys)*topN 보다 과다 할당을 줄이는 정확한 상한이다.
+	out := make([]ServiceImpact, 0, len(deduped))
 	for _, gk := range groupKeys {
 		cands := groups[gk]
 		sort.Slice(cands, func(i, j int) bool {
