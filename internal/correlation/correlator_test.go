@@ -241,10 +241,10 @@ func TestDefaultConfigContainsCorrelationInputs(t *testing.T) {
 	if cfg.Window <= 0 || cfg.Step <= 0 || cfg.MinSamples <= 0 {
 		t.Errorf("default window/step/minSamples must be positive, got %+v", cfg)
 	}
-	// CrossNodeEnabled 는 default false 로 두어 운영자 의 명시 opt-in 이 없는 한 cross-node 결과 가
-	// emit 되지 않는 회귀 가드.
-	if cfg.CrossNodeEnabled {
-		t.Errorf("CrossNodeEnabled default must be false for opt-in policy")
+	// #147 CrossNodeEnabled 는 default true 로 두어 zero-config 에서도 node 단위 간섭 Top-N 이 emit
+	// 되는 회귀 가드. 운영자는 CROSS_NODE=false env 또는 -cross-node=false flag 로 opt-out 한다.
+	if !cfg.CrossNodeEnabled {
+		t.Errorf("CrossNodeEnabled default must be true for zero-config cross-node policy")
 	}
 	if cfg.CrossNodeMaxPairs <= 0 {
 		t.Errorf("CrossNodeMaxPairs default must be positive, got %d", cfg.CrossNodeMaxPairs)
