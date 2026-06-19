@@ -50,11 +50,17 @@ cross_env=$(kubectl get deploy -n "${NAMESPACE}" correlation-exporter \
   -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CROSS_NODE")].value}' 2>/dev/null || true)
 cross_arg=$(kubectl get deploy -n "${NAMESPACE}" correlation-exporter \
   -o jsonpath='{range .spec.template.spec.containers[0].args[*]}{@}{"\n"}{end}' 2>/dev/null | grep -E '^--?cross-node' || true)
-# 명시적 opt-out (CROSS_NODE=false/0 env 또는 --cross-node=false flag) 인 경우 만 cross-node series
-# 가 emit 되지 않아 본 검증 이 불가 하므로 warn 후 기본 활성 복귀 를 안내 한다.
-if [[ "${cross_env}" == "false" || "${cross_env}" == "0" || "${cross_arg}" == *"=false"* ]]; then
-  echo "[warn] correlation-exporter 가 cross-node opt-out (CROSS_NODE=false 또는 --cross-node=false) 상태 다."
+# 명시적 opt-out (CROSS_NODE 또는 --cross-node 가 falsy) 면 cross-node series 가 emit 되지 않아 본
+# 검증 이 원천 불가 하므로 540s polling 낭비 없이 즉시 fail 시킨다. main.go 가 strconv.ParseBool 로
+# 파싱 하므로 false / 0 외에 f / F / FALSE / False 도 falsy 다. 대소문자 변형 을 모두 잡도록 소문자
+# 정규화 후 비교 하며, flag 는 --cross-node=false / =0 / =f 형태 (값 없는 --cross-node 는 활성) 를 본다.
+cross_env_lc="${cross_env,,}"
+cross_arg_lc="${cross_arg,,}"
+if [[ "${cross_env_lc}" == "false" || "${cross_env_lc}" == "0" || "${cross_env_lc}" == "f" \
+   || "${cross_arg_lc}" == *"=false"* || "${cross_arg_lc}" == *"=0"* || "${cross_arg_lc}" == *"=f"* ]]; then
+  echo "[fail] correlation-exporter 가 cross-node opt-out (CROSS_NODE / --cross-node falsy) 상태 라 본 검증 이 불가 하다."
   echo "       기본 활성 으로 복귀 후 재시도 하라: kubectl set env -n ${NAMESPACE} deploy/correlation-exporter CROSS_NODE-"
+  exit 1
 fi
 
 # suspect-cpu.yaml 의 TARGET_NODE 는 __CROSS_NODE_SUSPECT__ placeholder 다. verify.sh 가 SUSPECT_NODE

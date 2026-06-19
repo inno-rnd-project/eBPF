@@ -103,11 +103,12 @@ func main() {
 	// #84/#147 cross-node interference layer 의 토글. #147 부터 default 활성 (config.DefaultConfig)
 	// 이며 CROSS_NODE 환경변수 로 양방향 override 한다. 값이 있으면 strconv.ParseBool 로 해석 해
 	// "1"/"true" 는 활성, "0"/"false" 는 opt-out (cardinality 부담 환경) 으로 둔다. parse 실패 값은
-	// default 를 유지 하고 warn 로깅 한다. -cross-node flag 가 우선순위 가 더 높다.
+	// default 를 유지 하고 warn 로깅 한다. 단 -cross-node flag 가 제공되면 그 값이 env 를 덮어쓰므로
+	// warn 을 생략 해 applyEnvDuration / applyEnvInt / LAG_STEPS 와 동일 정책 을 따른다.
 	if v := strings.TrimSpace(os.Getenv("CROSS_NODE")); v != "" {
 		if parsed, err := strconv.ParseBool(v); err == nil {
 			cfg.CrossNodeEnabled = parsed
-		} else {
+		} else if !hasCLIFlag(os.Args[1:], "cross-node") {
 			log.Printf("warn: invalid CROSS_NODE=%q; using default %v", v, cfg.CrossNodeEnabled)
 		}
 	}
