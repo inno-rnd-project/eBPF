@@ -216,10 +216,13 @@ func TestConfigPlannedQueries_Dedup(t *testing.T) {
 }
 
 // TestConfigPlannedQueries_RespectsToggles 는 토글 off 시 해당 layer query 가 빠지는지 검증한다.
+// node 입도 입력 (node:netobs_pod_stage_latency_p99:5m) 은 cross-node 와 cross-level (#149) 둘 다의
+// 입력이라 두 토글을 모두 꺼야 빠진다.
 func TestConfigPlannedQueries_RespectsToggles(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.CrossNodeEnabled = false
 	cfg.ServiceImpactEnabled = false
+	cfg.CrossLevelEnabled = false
 	queries := cfg.PlannedQueries()
 	for _, q := range queries {
 		if q == "workload:netobs_stage_latency_p99:5m" || q == "node:netobs_pod_stage_latency_p99:5m" {

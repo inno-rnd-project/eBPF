@@ -194,6 +194,33 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 		}
 	}
 
+	// #149 cross-level layer. CrossLevelEnabled opt-in 시 동일 node 안에서 node 압박과 pod latency 를
+	// 잇는 양방향 페어를 추가 산출해 IsCrossLevel=true 로 마킹한 결과를 동일 슬라이스에 append 한다.
+	// EnumerateCrossLevelPairs 가 node-level 과 pod-level 시계열을 동일 node 로만 매칭하므로 기존 세
+	// layer 의 페어 산출과 분리되며, allow-list 와 max-pairs 캡으로 카디널리티를 통제한다.
+	if c.config.CrossLevelEnabled {
+		crossLevelPairs := EnumerateCrossLevelPairs(all, c.config.CrossLevelAllowNamespaces)
+		maxPairs := c.config.CrossLevelMaxPairs
+		if maxPairs <= 0 {
+			maxPairs = 4096
+		}
+		if len(crossLevelPairs) > maxPairs {
+			crossLevelPairs = crossLevelPairs[:maxPairs]
+		}
+		for _, p := range crossLevelPairs {
+			r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
+			r.CrossLevelPair = p.Key
+			r.IsCrossLevel = true
+			srcVals := getValues(p.Src)
+			dstVals := getValues(p.Dst)
+			g := granger.Test(srcVals, dstVals, c.config.GrangerLag, c.config.GrangerMinSamples)
+			r.FStatistic = g.F
+			r.PValue = g.PValue
+			r.GrangerOK = g.OK
+			results = append(results, r)
+		}
+	}
+
 	return results, nil
 }
 

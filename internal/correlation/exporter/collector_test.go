@@ -480,3 +480,82 @@ func TestHealth_RecordCycleServiceImpactObserved(t *testing.T) {
 		t.Errorf("partial=%v want 0 (observed==expected 인데 거짓 증가)", v)
 	}
 }
+
+// TestCollector_EmitsCrossLevelScore 는 ReplaceCrossLevel 가 보관한 CrossLevel snapshot 이
+// correlation_cross_level_score gauge 로 정확히 emit 되는지 검증한다. node, pod_namespace, pod,
+// direction, dimension 5 라벨 셋이 라벨 셋 분리 정책에 정합하는지 회귀 가드다.
+func TestCollector_EmitsCrossLevelScore(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	c.ReplaceCrossLevel([]correlation.CrossLevel{
+		{
+			Node:         "ebpf-worker1",
+			Direction:    correlation.DirectionNodeToPod,
+			PodNamespace: "default",
+			Pod:          "api-0",
+			Dimension:    correlation.DimensionCPU,
+			Rank:         1,
+			Score:        0.82,
+			LagSteps:     1,
+			SampleCount:  60,
+		},
+	})
+	want := `# HELP correlation_cross_level_score #149 cross-level layer 의 Pearson 상관계수 최대 절대값. 동일 node 안에서 node 압박과 pod latency 사이의 동조 정도다. direction=node_to_pod 면 node 압박이 pod latency 에 주는 영향, pod_to_node 면 pod 압박이 node latency 에 주는 영향이며 dimension 은 압박 쪽에서 분류된다. CrossLevelEnabled opt-in 시 만 emit 된다.
+# TYPE correlation_cross_level_score gauge
+correlation_cross_level_score{dimension="cpu",direction="node_to_pod",node="ebpf-worker1",pod="api-0",pod_namespace="default"} 0.82
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want), "correlation_cross_level_score"); err != nil {
+		t.Errorf("cross_level_score emit mismatch:\n%v", err)
+	}
+}
+
+// TestCollector_CrossLevelEmptySnapshot 은 ReplaceCrossLevel 미호출 또는 빈 슬라이스 호출 시 series 가
+// 0 개 emit 되어 CrossLevelEnabled=false opt-out 운영 모드가 series 폭주 없이 유지되는지 확인한다.
+func TestCollector_CrossLevelEmptySnapshot(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	if count := testutil.CollectAndCount(c, "correlation_cross_level_score"); count != 0 {
+		t.Errorf("nil cross_level count=%d want 0", count)
+	}
+	c.ReplaceCrossLevel(nil)
+	if count := testutil.CollectAndCount(c, "correlation_cross_level_score"); count != 0 {
+		t.Errorf("nil replace count=%d want 0", count)
+	}
+	c.ReplaceCrossLevel([]correlation.CrossLevel{})
+	if count := testutil.CollectAndCount(c, "correlation_cross_level_score"); count != 0 {
+		t.Errorf("empty replace count=%d want 0", count)
+	}
+}
+
+// TestHealth_RecordCycleCrossLevelObserved 는 IsCrossLevel 결과의 CrossLevelPair metric 이 observed
+// distinct metric 집계에 정확히 반영되어 ReconcilePartial 이 거짓 증가하지 않는지 검증한다. 분기가
+// 빠지면 빈 r.Pair metric ("") 이 끼어 observed 가 왜곡된다.
+func TestHealth_RecordCycleCrossLevelObserved(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	h := NewHealth(reg)
+
+	// node 압박 + pod latency + pod 압박 + node latency = distinct 4종.
+	results := []correlation.CorrelationResult{
+		{
+			Status:       correlation.StatusOK,
+			IsCrossLevel: true,
+			CrossLevelPair: correlation.CrossLevelPairKey{
+				SrcMetric: "node:cpu_pressure_score:5m",
+				DstMetric: "pod_latency_q99",
+			},
+		},
+		{
+			Status:       correlation.StatusOK,
+			IsCrossLevel: true,
+			CrossLevelPair: correlation.CrossLevelPairKey{
+				SrcMetric: "pod:cpu_throttle_score:5m",
+				DstMetric: "node:netobs_pod_stage_latency_p99:5m",
+			},
+		},
+	}
+	h.RecordCycle(10*time.Millisecond, results, nil, 4)
+	if v := testutil.ToFloat64(h.ReconcileMetricsObserved); v != 4 {
+		t.Errorf("observed=%v want 4 (cross-level 분기 미반영)", v)
+	}
+	if v := testutil.ToFloat64(h.ReconcilePartial); v != 0 {
+		t.Errorf("partial=%v want 0 (observed==expected 인데 거짓 증가)", v)
+	}
+}

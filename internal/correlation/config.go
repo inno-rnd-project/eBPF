@@ -82,6 +82,24 @@ type Config struct {
 	// 와 query 문자열이 겹치면 PlannedQueries 가 dedup 해 중복 fetch 를 회피하며, CrossNodeEnabled 와
 	// 무관하게 본 layer 가 자체적으로 suspect 입력을 확보하도록 node 압박 score 를 포함한다.
 	ServiceImpactMetrics []string
+
+	// CrossLevelEnabled 는 #149 의 cross-granularity layer 토글이다. true 일 때 Correlate 가 동일 node
+	// 안에서 node 압박과 pod latency 를 잇는 양방향 (node_to_pod / pod_to_node) 페어를 추가 산출해
+	// 결과 슬라이스에 IsCrossLevel=true 항목으로 append 한다. #149 부터 default true 로 두어 zero-config
+	// 에서도 cross-level 영향 Top-N 이 emit 된다. 입력은 pod 압박/latency (DefaultMetrics) 와 node
+	// 압박/latency (CrossNodeMetrics) 를 그대로 재사용하므로 새 query 가 없다. 카디널리티 부담 환경은
+	// CROSS_LEVEL=false env 또는 -cross-level=false flag 로 opt-out 한다.
+	CrossLevelEnabled bool
+
+	// CrossLevelMaxPairs 는 cross-level 페어 enumerate 의 상한이다. node 압박 dimension 수 * 동일 node
+	// pod 수 * 두 방향이라 pod 수가 많은 대형 cluster 에서 폭증할 수 있어 본 캡으로 트림한다. 0 이하면
+	// 4096 으로 fallback 한다. CrossLevelAllowNamespaces 와 함께 카디널리티를 통제한다.
+	CrossLevelMaxPairs int
+
+	// CrossLevelAllowNamespaces 는 cross-level 페어에 참여할 pod 의 src_namespace allow-list 다. 비어
+	// 있으면 모든 namespace 를 허용하고 CrossLevelMaxPairs 캡이 backstop 이 된다. 운영자가 특정
+	// namespace (예: latency-sensitive app) 로 좁혀 페어 수를 줄이는 카디널리티 통제 수단이다.
+	CrossLevelAllowNamespaces []string
 }
 
 // PlannedQueries 는 활성 layer 를 반영해 Correlate 가 fetch 할 query 의 dedup 합집합을 반환한다.
@@ -104,7 +122,10 @@ func (c Config) PlannedQueries() []string {
 	}
 	add(c.DefaultMetrics)
 	add(c.ExtraMetrics)
-	if c.CrossNodeEnabled {
+	// CrossNodeMetrics (node 압박 + node latency) 는 cross-node 뿐 아니라 cross-level (#149) 의 입력
+	// 이기도 하다. CrossNodeEnabled 가 false 라도 CrossLevelEnabled 면 node 입도 시계열을 fetch 해야
+	// 동일 node 의 node↔pod 페어가 성립하므로 둘 중 하나라도 활성이면 합류시킨다.
+	if c.CrossNodeEnabled || c.CrossLevelEnabled {
 		add(c.CrossNodeMetrics)
 	}
 	if c.ServiceImpactEnabled {
@@ -164,5 +185,11 @@ func DefaultConfig() Config {
 			"node:gpu_pressure_score:5m",
 			"workload:netobs_stage_latency_p99:5m",
 		},
+		// #149 cross-level layer 는 새 입력 query 가 없다. pod 압박/latency 는 DefaultMetrics, node
+		// 압박/latency 는 CrossNodeMetrics 를 그대로 재사용한다. allow-list 는 기본 비워 모든 namespace
+		// 를 허용하고 MaxPairs 캡을 backstop 으로 둔다.
+		CrossLevelEnabled:         true,
+		CrossLevelMaxPairs:        4096,
+		CrossLevelAllowNamespaces: nil,
 	}
 }

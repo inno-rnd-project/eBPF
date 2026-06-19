@@ -92,4 +92,10 @@ type CorrelationResult struct {
 	// NodePair 는 비어 있다.
 	ServiceImpactPair ServiceImpactPairKey `json:"service_impact_pair,omitempty"`
 	IsServiceImpact   bool                 `json:"is_service_impact,omitempty"`
+	// CrossLevelPair 와 IsCrossLevel 는 #149 의 cross-granularity layer (동일 node 내 node 압박과 pod
+	// latency 를 잇는) 결과다. 위 세 분기와 동일한 마킹 패턴으로 caller 가 네 입도 (pod / node /
+	// workload / cross-level) 를 단일 슬라이스에서 식별 가능하다. IsCrossLevel=true 일 때만 CrossLevelPair
+	// 가 유효하며 이때 나머지 Pair 필드는 비어 있다.
+	CrossLevelPair CrossLevelPairKey `json:"cross_level_pair,omitempty"`
+	IsCrossLevel   bool              `json:"is_cross_level,omitempty"`
 }
