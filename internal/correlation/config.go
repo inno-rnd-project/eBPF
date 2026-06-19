@@ -64,6 +64,53 @@ type Config struct {
 	// default 활성 이며 CROSS_NODE=false / -cross-node=false 로 opt-out 하면 본 query들의 매 cycle
 	// Prometheus 부하를 회피한다.
 	CrossNodeMetrics []string
+
+	// ServiceImpactEnabled 는 #148 의 service-impact layer 토글이다. true 일 때 Correlate 가 suspect
+	// node 자원 압박과 victim workload (Service 근사) latency 페어도 함께 산출해 결과 슬라이스에
+	// IsServiceImpact=true 항목으로 append 한다. #148 부터 default true 로 두어 zero-config 에서도
+	// service 단위 영향 Top-N 이 emit 된다. 노드 / workload 수가 매우 많아 부담인 환경은
+	// SERVICE_IMPACT=false env 또는 -service-impact=false flag 로 opt-out 한다.
+	ServiceImpactEnabled bool
+
+	// ServiceImpactMaxPairs 는 service-impact 페어 enumerate 의 상한이다. 노드 수 * pressure dimension
+	// 수 * workload 수라 노드 수가 제한적인 환경에서는 cap 발동이 드물다. 0 이하면 4096 으로 fallback
+	// 한다.
+	ServiceImpactMaxPairs int
+
+	// ServiceImpactMetrics 는 #148 의 service-impact 입력 시계열 query 리스트다. suspect 는 node 단위
+	// 압박 score 4종, victim 은 workload 단위 p99 latency 1종이다. CrossNodeMetrics 의 node 압박 score
+	// 와 query 문자열이 겹치면 PlannedQueries 가 dedup 해 중복 fetch 를 회피하며, CrossNodeEnabled 와
+	// 무관하게 본 layer 가 자체적으로 suspect 입력을 확보하도록 node 압박 score 를 포함한다.
+	ServiceImpactMetrics []string
+}
+
+// PlannedQueries 는 활성 layer 를 반영해 Correlate 가 fetch 할 query 의 dedup 합집합을 반환한다.
+// DefaultMetrics 와 ExtraMetrics 에 더해 CrossNodeEnabled / ServiceImpactEnabled 토글에 따라 각 layer
+// 의 입력 query 를 합치되, layer 간 동일 query (예: node 압박 score 는 cross-node 와 service-impact 가
+// 공유) 는 한 번만 남겨 중복 fetch 를 회피한다. exporter 의 self-health (expected vs observed metric
+// 수) 가 본 dedup 후 count 와 정합해야 ReconcilePartial 이 거짓 증가하지 않으므로 fetch 측과 expected
+// 측이 본 함수를 공유한다.
+func (c Config) PlannedQueries() []string {
+	out := make([]string, 0, len(c.DefaultMetrics)+len(c.ExtraMetrics)+len(c.CrossNodeMetrics)+len(c.ServiceImpactMetrics))
+	seen := make(map[string]struct{}, cap(out))
+	add := func(qs []string) {
+		for _, q := range qs {
+			if _, ok := seen[q]; ok {
+				continue
+			}
+			seen[q] = struct{}{}
+			out = append(out, q)
+		}
+	}
+	add(c.DefaultMetrics)
+	add(c.ExtraMetrics)
+	if c.CrossNodeEnabled {
+		add(c.CrossNodeMetrics)
+	}
+	if c.ServiceImpactEnabled {
+		add(c.ServiceImpactMetrics)
+	}
+	return out
 }
 
 // DefaultConfig 는 운영자가 zero-config 로 본 라이브러리를 호출할 때 쓰이는 default Config 다.
@@ -103,6 +150,19 @@ func DefaultConfig() Config {
 			"node:network_pressure_score:5m",
 			"node:gpu_pressure_score:5m",
 			"node:netobs_pod_stage_latency_p99:5m",
+		},
+		ServiceImpactEnabled:  true,
+		ServiceImpactMaxPairs: 4096,
+		// #148 service-impact layer 의 입력 시계열. suspect 는 node 압박 score 4종 (cross-node 와 공유,
+		// PlannedQueries 가 dedup), victim 은 workload 단위 p99 latency 1종이다. workload:netobs_stage_
+		// latency_p99:5m 은 netobs 의 src_workload (owner) 라벨로 집계되어 service 단위 latency 를 근사
+		// 한다. CrossNodeEnabled=true (#147 부터 default) 일 때 Correlate 가 fetcher 호출 셋에 합류시킨다.
+		ServiceImpactMetrics: []string{
+			"node:cpu_pressure_score:5m",
+			"node:memory_pressure_score:5m",
+			"node:network_pressure_score:5m",
+			"node:gpu_pressure_score:5m",
+			"workload:netobs_stage_latency_p99:5m",
 		},
 	}
 }

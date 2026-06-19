@@ -45,14 +45,11 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 	end := endTime
 	start := end.Add(-c.config.Window)
 
-	queries := append([]string{}, c.config.DefaultMetrics...)
-	queries = append(queries, c.config.ExtraMetrics...)
-	// #84 cross-node interference layer 의 node 단위 입력 시계열은 CrossNodeEnabled opt-in 시에만
-	// fetcher 호출 셋에 합류한다. opt-in 비활성 운영 모드에서 본 query 5종이 매 cycle Prometheus
-	// 부하를 추가하는 것을 회피하기 위해 본 자리에서 조건부로 append 한다.
-	if c.config.CrossNodeEnabled {
-		queries = append(queries, c.config.CrossNodeMetrics...)
-	}
+	// 활성 layer (pod-level + cross-node #84 + service-impact #148) 의 입력 query 를 dedup 합집합으로
+	// 모은다. CrossNodeEnabled / ServiceImpactEnabled 가 false 면 해당 layer 의 query 가 fetch 셋에서
+	// 빠져 매 cycle Prometheus 부하를 추가하지 않는다. node 압박 score 처럼 cross-node 와 service-impact
+	// 가 공유하는 query 는 PlannedQueries 가 한 번만 남겨 중복 fetch 를 회피한다.
+	queries := c.config.PlannedQueries()
 
 	// 각 query 를 goroutine 으로 병렬 fetch 한다. 표준 라이브러리 sync.WaitGroup + 인덱스 기반
 	// 사전 할당 슬라이스로 query 순서를 보존하고 비결정성을 차단한다. 모든 query 가 독립적이고
@@ -160,6 +157,33 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 			r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
 			r.NodePair = p.Key
 			r.IsCrossNode = true
+			srcVals := getValues(p.Src)
+			dstVals := getValues(p.Dst)
+			g := granger.Test(srcVals, dstVals, c.config.GrangerLag, c.config.GrangerMinSamples)
+			r.FStatistic = g.F
+			r.PValue = g.PValue
+			r.GrangerOK = g.OK
+			results = append(results, r)
+		}
+	}
+
+	// #148 service-impact layer. ServiceImpactEnabled opt-in 시 suspect node 압박과 victim workload
+	// (Service 근사) latency 페어를 추가 산출해 IsServiceImpact=true 로 마킹한 결과를 동일 슬라이스에
+	// append 한다. EnumerateServiceImpactPairs 가 node-level suspect 와 workload-level victim 만 후보로
+	// 인정하므로 pod-level / cross-node 페어 산출과 완전히 분리된다.
+	if c.config.ServiceImpactEnabled {
+		servicePairs := EnumerateServiceImpactPairs(all)
+		maxPairs := c.config.ServiceImpactMaxPairs
+		if maxPairs <= 0 {
+			maxPairs = 4096
+		}
+		if len(servicePairs) > maxPairs {
+			servicePairs = servicePairs[:maxPairs]
+		}
+		for _, p := range servicePairs {
+			r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
+			r.ServiceImpactPair = p.Key
+			r.IsServiceImpact = true
 			srcVals := getValues(p.Src)
 			dstVals := getValues(p.Dst)
 			g := granger.Test(srcVals, dstVals, c.config.GrangerLag, c.config.GrangerMinSamples)
