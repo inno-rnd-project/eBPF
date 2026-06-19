@@ -376,6 +376,76 @@ const docTemplatecorrelation = `{
                     }
                 }
             }
+        },
+        "/api/v1/service-impact": {
+            "get": {
+                "description": "victim_namespace 와 victim_workload 와 suspect_node 와 dimension 과 rank 필터 후 pagination 적용한 service-impact 시리즈 반환",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "correlation"
+                ],
+                "summary": "List service-impact top-N",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "victim workload 의 namespace 필터",
+                        "name": "victim_namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "victim workload (Service 근사) 이름 필터",
+                        "name": "victim_workload",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "suspect node 이름 필터",
+                        "name": "suspect_node",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "리소스 차원 필터 (cpu/memory/network/gpu)",
+                        "name": "dimension",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "max rank (기본 무제한)",
+                        "name": "rank_max",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 item 최대 개수 (기본 100, 최대 1000)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "응답 시작 offset (기본 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.ServiceImpactListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -603,6 +673,20 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "internal_correlation_api.ServiceImpactListResponse": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/netobs_internal_correlation.ServiceImpact"
+                    }
+                },
+                "page": {
+                    "$ref": "#/definitions/netobs_internal_apicommon.Page"
+                }
+            }
+        },
         "internal_gpuobs_api.ErrorDetail": {
             "type": "object",
             "properties": {
@@ -798,6 +882,47 @@ const docTemplatecorrelation = `{
                 "DimensionGPU",
                 "DimensionUnknown"
             ]
+        },
+        "netobs_internal_correlation.ServiceImpact": {
+            "type": "object",
+            "properties": {
+                "dimension": {
+                    "$ref": "#/definitions/netobs_internal_correlation.ResourceDimension"
+                },
+                "granger_ok": {
+                    "type": "boolean"
+                },
+                "lag_steps": {
+                    "type": "integer"
+                },
+                "p_value": {
+                    "type": "number"
+                },
+                "rank": {
+                    "type": "integer"
+                },
+                "sample_count": {
+                    "type": "integer"
+                },
+                "score": {
+                    "type": "number"
+                },
+                "suspect_metric": {
+                    "type": "string"
+                },
+                "suspect_node": {
+                    "type": "string"
+                },
+                "victim_metric": {
+                    "type": "string"
+                },
+                "victim_namespace": {
+                    "type": "string"
+                },
+                "victim_workload": {
+                    "type": "string"
+                }
+            }
         }
     }
 }`

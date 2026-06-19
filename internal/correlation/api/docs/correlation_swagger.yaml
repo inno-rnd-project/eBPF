@@ -145,6 +145,15 @@ definitions:
       page:
         $ref: '#/definitions/netobs_internal_apicommon.Page'
     type: object
+  internal_correlation_api.ServiceImpactListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/netobs_internal_correlation.ServiceImpact'
+        type: array
+      page:
+        $ref: '#/definitions/netobs_internal_apicommon.Page'
+    type: object
   internal_gpuobs_api.ErrorDetail:
     properties:
       code:
@@ -282,6 +291,33 @@ definitions:
     - DimensionNetwork
     - DimensionGPU
     - DimensionUnknown
+  netobs_internal_correlation.ServiceImpact:
+    properties:
+      dimension:
+        $ref: '#/definitions/netobs_internal_correlation.ResourceDimension'
+      granger_ok:
+        type: boolean
+      lag_steps:
+        type: integer
+      p_value:
+        type: number
+      rank:
+        type: integer
+      sample_count:
+        type: integer
+      score:
+        type: number
+      suspect_metric:
+        type: string
+      suspect_node:
+        type: string
+      victim_metric:
+        type: string
+      victim_namespace:
+        type: string
+      victim_workload:
+        type: string
+    type: object
 info:
   contact: {}
 paths:
@@ -526,6 +562,53 @@ paths:
           schema:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
       summary: List noisy neighbor top-N
+      tags:
+      - correlation
+  /api/v1/service-impact:
+    get:
+      description: victim_namespace 와 victim_workload 와 suspect_node 와 dimension 과
+        rank 필터 후 pagination 적용한 service-impact 시리즈 반환
+      parameters:
+      - description: victim workload 의 namespace 필터
+        in: query
+        name: victim_namespace
+        type: string
+      - description: victim workload (Service 근사) 이름 필터
+        in: query
+        name: victim_workload
+        type: string
+      - description: suspect node 이름 필터
+        in: query
+        name: suspect_node
+        type: string
+      - description: 리소스 차원 필터 (cpu/memory/network/gpu)
+        in: query
+        name: dimension
+        type: string
+      - description: max rank (기본 무제한)
+        in: query
+        name: rank_max
+        type: integer
+      - description: 응답 item 최대 개수 (기본 100, 최대 1000)
+        in: query
+        name: limit
+        type: integer
+      - description: 응답 시작 offset (기본 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.ServiceImpactListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+      summary: List service-impact top-N
       tags:
       - correlation
 swagger: "2.0"
