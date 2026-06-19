@@ -400,3 +400,83 @@ correlation_noisy_neighbor_impact_seconds{rank="1",resource_dimension="cpu",susp
 		t.Errorf("impact metric mismatch: %v", err)
 	}
 }
+
+// TestCollector_EmitsServiceImpactScore 는 ReplaceServiceImpact 가 보관한 ServiceImpact snapshot 이
+// correlation_service_impact_score gauge 로 정확히 emit 되는지 검증한다. victim_namespace,
+// victim_workload, suspect_node, dimension 4 라벨 셋이 라벨 셋 분리 정책에 정합하는지 회귀 가드다.
+func TestCollector_EmitsServiceImpactScore(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	c.ReplaceServiceImpact([]correlation.ServiceImpact{
+		{
+			VictimNamespace: "default",
+			VictimWorkload:  "api",
+			SuspectNode:     "ebpf-worker1",
+			Dimension:       correlation.DimensionCPU,
+			Rank:            1,
+			Score:           0.82,
+			LagSteps:        1,
+			SampleCount:     60,
+		},
+	})
+	want := `# HELP correlation_service_impact_score #148 service-impact layer 의 Pearson 상관계수 최대 절대값. suspect_node 의 자원 압박 (dimension) 과 victim workload (K8s Service 근사, namespace/workload) 의 p99 latency 사이의 동조 정도다. victim 은 netobs 의 src_workload 라벨로 집계되며 ServiceImpactEnabled opt-in 시 만 emit 된다.
+# TYPE correlation_service_impact_score gauge
+correlation_service_impact_score{dimension="cpu",suspect_node="ebpf-worker1",victim_namespace="default",victim_workload="api"} 0.82
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want), "correlation_service_impact_score"); err != nil {
+		t.Errorf("service_impact_score emit mismatch:\n%v", err)
+	}
+}
+
+// TestCollector_ServiceImpactEmptySnapshot 은 ReplaceServiceImpact 미호출 또는 빈 슬라이스 호출 시
+// series 가 0 개 emit 되어 ServiceImpactEnabled=false opt-out 운영 모드가 series 폭주 없이 유지되는지
+// 확인한다.
+func TestCollector_ServiceImpactEmptySnapshot(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	if count := testutil.CollectAndCount(c, "correlation_service_impact_score"); count != 0 {
+		t.Errorf("nil service_impact count=%d want 0", count)
+	}
+	c.ReplaceServiceImpact(nil)
+	if count := testutil.CollectAndCount(c, "correlation_service_impact_score"); count != 0 {
+		t.Errorf("nil replace count=%d want 0", count)
+	}
+	c.ReplaceServiceImpact([]correlation.ServiceImpact{})
+	if count := testutil.CollectAndCount(c, "correlation_service_impact_score"); count != 0 {
+		t.Errorf("empty replace count=%d want 0", count)
+	}
+}
+
+// TestHealth_RecordCycleServiceImpactObserved 는 IsServiceImpact 결과의 ServiceImpactPair metric 이
+// observed distinct metric 집계에 정확히 반영되어 ReconcilePartial 이 거짓 증가하지 않는지 검증한다.
+// 분기가 빠지면 빈 r.Pair metric ("") 이 끼어 observed 가 왜곡된다.
+func TestHealth_RecordCycleServiceImpactObserved(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	h := NewHealth(reg)
+
+	// suspect node 압박 2종 + victim workload latency 1종 = distinct 3종.
+	results := []correlation.CorrelationResult{
+		{
+			Status:          correlation.StatusOK,
+			IsServiceImpact: true,
+			ServiceImpactPair: correlation.ServiceImpactPairKey{
+				SuspectMetric: "node:cpu_pressure_score:5m",
+				VictimMetric:  "workload:netobs_stage_latency_p99:5m",
+			},
+		},
+		{
+			Status:          correlation.StatusOK,
+			IsServiceImpact: true,
+			ServiceImpactPair: correlation.ServiceImpactPairKey{
+				SuspectMetric: "node:memory_pressure_score:5m",
+				VictimMetric:  "workload:netobs_stage_latency_p99:5m",
+			},
+		},
+	}
+	// expected=3 (distinct) 이면 observed=3 과 일치해 partial 이 증가하지 않아야 한다.
+	h.RecordCycle(10*time.Millisecond, results, nil, 3)
+	if v := testutil.ToFloat64(h.ReconcileMetricsObserved); v != 3 {
+		t.Errorf("observed=%v want 3 (service-impact 분기 미반영)", v)
+	}
+	if v := testutil.ToFloat64(h.ReconcilePartial); v != 0 {
+		t.Errorf("partial=%v want 0 (observed==expected 인데 거짓 증가)", v)
+	}
+}
