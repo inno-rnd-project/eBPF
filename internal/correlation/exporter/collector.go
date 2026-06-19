@@ -47,6 +47,18 @@ var serviceImpactLabels = []string{
 	"dimension",
 }
 
+// crossLevelLabels 는 #149 의 correlation_cross_level_score 메트릭 라벨 셋이다. 동일 node 안의 node↔pod
+// 영향을 node 와 pod (namespace, pod) 와 direction (node_to_pod / pod_to_node) 과 dimension 으로 식별
+// 한다. 한 (node, direction, dimension) 그룹 안에서 pod 가 달라 라벨 셋이 유일하므로 rank 는 라벨에
+// 넣지 않는다. 다른 layer 의 라벨 셋과 분리해 네 view 가 독립적으로 다뤄진다.
+var crossLevelLabels = []string{
+	"node",
+	"pod_namespace",
+	"pod",
+	"direction",
+	"dimension",
+}
+
 // Collector 는 마지막 reconcile cycle 의 NoisyNeighbor snapshot 을 보관해 Prometheus scrape 시점에
 // score 와 lag 메트릭으로 emit 한다. prometheus.Collector 인터페이스를 직접 구현해 snapshot 교체
 // 시 GaugeVec.Reset() 패턴이 가질 race 위험을 차단하고 stale series 가 코드 경로상 존재하지 않게
@@ -66,6 +78,10 @@ type Collector struct {
 	// 마다 갱신하고 Collect 가 correlation_service_impact_score gauge 로 emit 한다. nil 또는 빈 슬라이스
 	// 면 series 가 0 개 emit 되어 service-impact opt-out 운영 모드와 정합한다.
 	serviceImpact []correlation.ServiceImpact
+	// crossLevel 는 #149 의 cross-level snapshot 이다. ReplaceCrossLevel 가 reconcile cycle 마다 갱신
+	// 하고 Collect 가 correlation_cross_level_score gauge 로 emit 한다. nil 또는 빈 슬라이스면 series 가
+	// 0 개 emit 되어 cross-level opt-out 운영 모드와 정합한다.
+	crossLevel []correlation.CrossLevel
 	// step 은 LagSteps 를 초 단위로 변환할 때 곱해진다. exporter 가 Correlator 의 Config.Step 과
 	// 동일 값을 받아 lag step 의 시간 의미를 보존한다.
 	step time.Duration
@@ -77,6 +93,7 @@ type Collector struct {
 	dominantDesc           *prometheus.Desc
 	crossNodeScoreDesc     *prometheus.Desc
 	serviceImpactScoreDesc *prometheus.Desc
+	crossLevelScoreDesc    *prometheus.Desc
 }
 
 // NewCollector 는 Prometheus scrape 시 emit 할 metric desc 두 개를 미리 만들어 두는 Collector 를
@@ -119,6 +136,11 @@ func NewCollector(step time.Duration) *Collector {
 			"correlation_service_impact_score",
 			"#148 service-impact layer 의 Pearson 상관계수 최대 절대값. suspect_node 의 자원 압박 (dimension) 과 victim workload (K8s Service 근사, namespace/workload) 의 p99 latency 사이의 동조 정도다. victim 은 netobs 의 src_workload 라벨로 집계되며 ServiceImpactEnabled opt-in 시 만 emit 된다.",
 			serviceImpactLabels, nil,
+		),
+		crossLevelScoreDesc: prometheus.NewDesc(
+			"correlation_cross_level_score",
+			"#149 cross-level layer 의 Pearson 상관계수 최대 절대값. 동일 node 안에서 node 압박과 pod latency 사이의 동조 정도다. direction=node_to_pod 면 node 압박이 pod latency 에 주는 영향, pod_to_node 면 pod 압박이 node latency 에 주는 영향이며 dimension 은 압박 쪽에서 분류된다. CrossLevelEnabled opt-in 시 만 emit 된다.",
+			crossLevelLabels, nil,
 		),
 	}
 }
@@ -197,6 +219,29 @@ func (c *Collector) ServiceImpactSnapshot() []correlation.ServiceImpact {
 	return append([]correlation.ServiceImpact(nil), c.serviceImpact...)
 }
 
+// ReplaceCrossLevel 는 #149 cross-level 의 snapshot 을 교체한다. main 의 reconcileOnce 가 CrossLevelEnabled
+// 와 무관하게 매 cycle 본 함수를 호출하나, opt-out 운영 모드에서는 SelectTopNCrossLevel 가 IsCrossLevel=
+// true 항목 0 개 결과 (빈 슬라이스) 를 돌려 주므로 crossLevel 이 비어 있어 series 가 emit 되지 않는다.
+func (c *Collector) ReplaceCrossLevel(crossLevel []correlation.CrossLevel) {
+	copied := append([]correlation.CrossLevel(nil), crossLevel...)
+	c.mu.Lock()
+	c.crossLevel = copied
+	c.mu.Unlock()
+}
+
+// CrossLevelSnapshot 은 가장 최근 ReplaceCrossLevel 가 보관한 CrossLevel 리스트의 안전한 복사본을
+// 반환한다. #149 의 /api/v1/cross-level endpoint 가 본 메서드를 in-memory read 로 호출해 Prometheus
+// query 재계산 없이 cross-level snapshot 을 외부 시스템에 노출한다. CrossLevelEnabled=false 또는 첫
+// reconcile 전이면 nil 을 돌려 주어 호출 측이 빈 응답으로 graceful degradation 한다.
+func (c *Collector) CrossLevelSnapshot() []correlation.CrossLevel {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.crossLevel) == 0 {
+		return nil
+	}
+	return append([]correlation.CrossLevel(nil), c.crossLevel...)
+}
+
 // Describe 는 prometheus.Collector 인터페이스를 만족한다.
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.scoreDesc
@@ -206,6 +251,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.dominantDesc
 	ch <- c.crossNodeScoreDesc
 	ch <- c.serviceImpactScoreDesc
+	ch <- c.crossLevelScoreDesc
 }
 
 // Collect 는 현재 snapshot 의 모든 NoisyNeighbor 를 score / lag 두 메트릭으로 emit 한다. snapshot
@@ -218,6 +264,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	dominant := c.dominant
 	crossNode := c.crossNode
 	serviceImpact := c.serviceImpact
+	crossLevel := c.crossLevel
 	step := c.step
 	c.mu.RUnlock()
 
@@ -282,6 +329,21 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			s.VictimWorkload,
 			s.SuspectNode,
 			string(s.Dimension),
+		)
+	}
+	// #149 cross-level. CrossLevel 슬라이스의 각 항목을 correlation_cross_level_score gauge 로 emit
+	// 한다. SelectTopNCrossLevel 단계에서 방향 / dimension 미분류 제외와 (node, direction, dimension)
+	// 그룹별 top-N 이 이미 적용되어 본 자리에서 추가 가드가 필요 없다.
+	for _, cl := range crossLevel {
+		ch <- prometheus.MustNewConstMetric(
+			c.crossLevelScoreDesc,
+			prometheus.GaugeValue,
+			cl.Score,
+			cl.Node,
+			cl.PodNamespace,
+			cl.Pod,
+			string(cl.Direction),
+			string(cl.Dimension),
 		)
 	}
 }
@@ -392,6 +454,12 @@ func (h *Health) RecordCycle(duration time.Duration, results []correlation.Corre
 			// ("") 이 끼어 들어 ReconcilePartial 카운터가 매 cycle 거짓 증가한다.
 			observedMetrics[r.ServiceImpactPair.SuspectMetric] = struct{}{}
 			observedMetrics[r.ServiceImpactPair.VictimMetric] = struct{}{}
+		case r.IsCrossLevel:
+			// #149 cross-level 결과는 CrossLevelPair 에 metric 이 담긴다. src/dst metric 은 모두 기존
+			// layer 의 입력 (pod 압박/latency, node 압박/latency) 과 동일해 observed 집합에 새로 더하는
+			// 것은 없으나, 본 분기가 없으면 빈 r.Pair metric ("") 이 끼어 들어 observed 가 왜곡된다.
+			observedMetrics[r.CrossLevelPair.SrcMetric] = struct{}{}
+			observedMetrics[r.CrossLevelPair.DstMetric] = struct{}{}
 		default:
 			observedMetrics[r.Pair.SrcMetric] = struct{}{}
 			observedMetrics[r.Pair.DstMetric] = struct{}{}

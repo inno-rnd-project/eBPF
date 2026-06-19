@@ -122,6 +122,16 @@ func main() {
 			log.Printf("warn: invalid SERVICE_IMPACT=%q; using default %v", v, cfg.ServiceImpactEnabled)
 		}
 	}
+	// #149 cross-level layer 의 토글. default 활성 (config.DefaultConfig) 이며 CROSS_LEVEL 환경변수로
+	// 양방향 override 한다. CROSS_NODE / SERVICE_IMPACT 와 동일하게 strconv.ParseBool 로 해석하고 parse
+	// 실패 값은 default 를 유지한다. -cross-level flag 가 제공되면 그 값이 env 를 덮어쓰므로 warn 을 생략한다.
+	if v := strings.TrimSpace(os.Getenv("CROSS_LEVEL")); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			cfg.CrossLevelEnabled = parsed
+		} else if !hasCLIFlag(os.Args[1:], "cross-level") {
+			log.Printf("warn: invalid CROSS_LEVEL=%q; using default %v", v, cfg.CrossLevelEnabled)
+		}
+	}
 
 	fs := flag.NewFlagSet("correlation-exporter", flag.ContinueOnError)
 	fs.StringVar(&cfg.PrometheusURL, "prometheus-url", cfg.PrometheusURL, "Prometheus base URL (env PROMETHEUS_URL fallback)")
@@ -134,6 +144,7 @@ func main() {
 	fs.IntVar(&topN, "top-n", topN, fmt.Sprintf("Top-N noisy neighbors per (victim, dimension), max %d", maxTopN))
 	fs.BoolVar(&cfg.CrossNodeEnabled, "cross-node", cfg.CrossNodeEnabled, "#84/#147: cross-node interference layer (node-level pair enumeration, correlation_cross_node_score gauge). Default enabled; set -cross-node=false or CROSS_NODE=false to opt out on very large clusters")
 	fs.BoolVar(&cfg.ServiceImpactEnabled, "service-impact", cfg.ServiceImpactEnabled, "#148: service-impact layer (node pressure vs workload-level latency, correlation_service_impact_score gauge). Default enabled; set -service-impact=false or SERVICE_IMPACT=false to opt out on very large clusters")
+	fs.BoolVar(&cfg.CrossLevelEnabled, "cross-level", cfg.CrossLevelEnabled, "#149: cross-level layer (same-node node pressure vs pod latency, both directions, correlation_cross_level_score gauge). Default enabled; set -cross-level=false or CROSS_LEVEL=false to opt out on very large clusters")
 
 	var extra stringSlice
 	fs.Var(&extra, "extra-metric", "additional Prometheus query (repeat for multiple)")
@@ -303,6 +314,10 @@ func reconcileOnce(
 	// 되지 않는다.
 	serviceImpact := correlation.SelectTopNServiceImpact(results, topN)
 	collector.ReplaceServiceImpact(serviceImpact)
+	// #149 cross-level snapshot 도 동일 reconcile cycle 에서 갱신한다. CrossLevelEnabled 가 false 면
+	// results 에 IsCrossLevel=true 항목이 없으므로 빈 슬라이스가 전달되어 series 가 emit 되지 않는다.
+	crossLevel := correlation.SelectTopNCrossLevel(results, topN)
+	collector.ReplaceCrossLevel(crossLevel)
 	duration := time.Since(cycleStart)
 	cfg := corr.Config()
 	// expectedMetrics 는 활성 layer 가 fetch 하는 distinct query 수다. PlannedQueries 가 layer 간 공유
@@ -311,7 +326,7 @@ func reconcileOnce(
 	expectedMetrics := len(cfg.PlannedQueries())
 	health.RecordCycle(duration, results, neighbors, expectedMetrics)
 	ready.Store(true)
-	log.Printf("reconcile ok: pairs=%d neighbors=%d cross_node=%d service_impact=%d duration=%s", len(results), len(neighbors), len(crossNode), len(serviceImpact), duration)
+	log.Printf("reconcile ok: pairs=%d neighbors=%d cross_node=%d service_impact=%d cross_level=%d duration=%s", len(results), len(neighbors), len(crossNode), len(serviceImpact), len(crossLevel), duration)
 }
 
 // hasCLIFlag 는 args 에 -flag, --flag, -flag=, --flag= 패턴이 있는지 검사한다. flag 우선 정책을
