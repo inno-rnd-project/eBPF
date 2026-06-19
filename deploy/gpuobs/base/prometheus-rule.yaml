@@ -302,6 +302,20 @@ spec:
               )
             )
 
+        # #148 service-impact correlator 의 victim 후보 latency 다. 위 node 단위 rule 의 conflate 대신
+        # netobs 의 src_workload (resolver 의 owner 해석 결과) 라벨로 집계해 workload (K8s Service 근사)
+        # 단위 p99 를 산출한다. 위 node rule 주석이 예고한 workload-label 보강을 실현하며 correlation-
+        # exporter 의 service-impact layer 가 본 시계열을 victim 으로 입력받아 suspect node 압박과의
+        # Pearson 상관을 산정한다. 입력은 src_workload 라벨을 보유한 workload-level 메트릭 netobs_stage_
+        # latency_labeled_seconds 이며 src_pod 를 쓰는 netobs_pod_stage_latency_labeled_seconds 와 구분된다.
+        - record: workload:netobs_stage_latency_p99:5m
+          expr: |
+            histogram_quantile(0.99,
+              sum by(src_namespace, src_workload, le) (
+                rate(netobs_stage_latency_labeled_seconds_bucket[5m])
+              )
+            )
+
     # netobs-gpuobs.dominant-cause.recording 그룹은 #66 의 GPU 유휴 dominant cause 가중치 산정에
     # 사용하는 recording rule 을 모은다. 본 그룹의 첫 5 종은 node 와 Pod 차원으로 흩어진 cause score
     # 5 종을 cluster 단위 단일 값으로 max rollup 해 dominant cause weight 산정 단계에서 동일한 차원
