@@ -54,7 +54,9 @@ func BuildImpactGraph(neighbors []NoisyNeighbor) ImpactGraph {
 		pod       string
 		podUID    string
 	}
-	nodes := make(map[nodeKey]*ImpactGraphNode)
+	// 정점 수는 최대 2*len(neighbors) (엣지마다 suspect + victim) 이나 hub 중복으로 보통 그보다 적다.
+	// len(neighbors) 를 초기 용량 힌트로 줘 맵 확장 시의 재할당 / 재해싱을 줄인다.
+	nodes := make(map[nodeKey]*ImpactGraphNode, len(neighbors))
 	getNode := func(id PodIdentity) *ImpactGraphNode {
 		k := nodeKey{id.Namespace, id.Pod, id.PodUID}
 		n, ok := nodes[k]
@@ -95,6 +97,9 @@ func BuildImpactGraph(neighbors []NoisyNeighbor) ImpactGraph {
 		return outNodes[i].PodUID < outNodes[j].PodUID
 	})
 
+	// 엣지 정렬 키는 (suspect ns/pod/uid, victim ns/pod/uid, victim_signal, dimension) 다. SelectTopN
+	// 이 동일 키로 dedup 하므로 본 키가 엣지마다 유일해 결정적이다. 동명 pod 가 재생성되어 UID 만
+	// 다르게 공존하는 경우에도 순서가 흔들리지 않도록 정점 정렬과 동일하게 PodUID 까지 비교한다.
 	sort.Slice(edges, func(i, j int) bool {
 		a, b := edges[i], edges[j]
 		if a.Suspect.Namespace != b.Suspect.Namespace {
@@ -103,11 +108,17 @@ func BuildImpactGraph(neighbors []NoisyNeighbor) ImpactGraph {
 		if a.Suspect.Pod != b.Suspect.Pod {
 			return a.Suspect.Pod < b.Suspect.Pod
 		}
+		if a.Suspect.PodUID != b.Suspect.PodUID {
+			return a.Suspect.PodUID < b.Suspect.PodUID
+		}
 		if a.Victim.Namespace != b.Victim.Namespace {
 			return a.Victim.Namespace < b.Victim.Namespace
 		}
 		if a.Victim.Pod != b.Victim.Pod {
 			return a.Victim.Pod < b.Victim.Pod
+		}
+		if a.Victim.PodUID != b.Victim.PodUID {
+			return a.Victim.PodUID < b.Victim.PodUID
 		}
 		if a.VictimSignal != b.VictimSignal {
 			return a.VictimSignal < b.VictimSignal

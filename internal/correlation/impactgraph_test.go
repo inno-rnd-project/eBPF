@@ -90,6 +90,36 @@ func TestBuildImpactGraph_Deterministic(t *testing.T) {
 	}
 }
 
+// TestBuildImpactGraph_DeterministicByPodUID 는 동명 pod 가 UID 만 다르게 공존할 때 (재생성 전후)
+// 엣지 정렬이 PodUID 까지 비교해 결정적인지 검증한다. namespace / pod / dimension / signal 이 같고
+// UID 만 다른 두 엣지가 입력 순서와 무관하게 항상 같은 순서로 정렬돼야 한다.
+func TestBuildImpactGraph_DeterministicByPodUID(t *testing.T) {
+	mk := func(victimUID, suspectUID string) NoisyNeighbor {
+		return NoisyNeighbor{
+			Victim:       PodIdentity{Namespace: "ns", Pod: "v", PodUID: victimUID},
+			Suspect:      PodIdentity{Namespace: "ns", Pod: "s", PodUID: suspectUID},
+			Dimension:    DimensionCPU,
+			VictimSignal: SignalLatency,
+			Score:        0.8,
+		}
+	}
+	// suspect UID 만 다른 두 엣지를 서로 다른 입력 순서로 빌드.
+	g1 := BuildImpactGraph([]NoisyNeighbor{mk("uv", "s2"), mk("uv", "s1")})
+	g2 := BuildImpactGraph([]NoisyNeighbor{mk("uv", "s1"), mk("uv", "s2")})
+	if len(g1.Edges) != 2 || len(g2.Edges) != 2 {
+		t.Fatalf("edges g1=%d g2=%d want 2/2", len(g1.Edges), len(g2.Edges))
+	}
+	for i := range g1.Edges {
+		if g1.Edges[i].Suspect.PodUID != g2.Edges[i].Suspect.PodUID {
+			t.Errorf("edge[%d] suspect uid g1=%s g2=%s (UID 정렬 비결정적)", i, g1.Edges[i].Suspect.PodUID, g2.Edges[i].Suspect.PodUID)
+		}
+	}
+	// UID 사전순 (s1 < s2) 이 보장돼야 한다.
+	if g1.Edges[0].Suspect.PodUID != "s1" || g1.Edges[1].Suspect.PodUID != "s2" {
+		t.Errorf("정렬 순서=%s,%s want s1,s2", g1.Edges[0].Suspect.PodUID, g1.Edges[1].Suspect.PodUID)
+	}
+}
+
 // TestBuildImpactGraph_Empty 는 빈 입력에서 빈 그래프를 반환하는지 검증한다.
 func TestBuildImpactGraph_Empty(t *testing.T) {
 	g := BuildImpactGraph(nil)
