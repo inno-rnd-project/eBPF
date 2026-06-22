@@ -49,20 +49,27 @@ type ImpactGraph struct {
 // 입력이 이미 SelectTopN 으로 필터 / 데듀프 / topN 컷된 결과라 그래프 크기가 통제되며, 본 Phase 1 은
 // pod-level noisy neighbor 만 정점으로 둔다 (node / workload 입도 그래프는 Phase 2 확장 대상).
 func BuildImpactGraph(neighbors []NoisyNeighbor) ImpactGraph {
+	// 정점 동일성은 (namespace, pod) 다. src_pod_uid 가 suspect 측 score (sum by(node,namespace,pod))
+	// 와 victim 측 latency 에서 일관되게 채워지지 않아, 같은 pod 가 uid="" 노드와 uid=set 노드로 갈라져
+	// 정점이 중복되고 경로에 의사 사이클이 생기는 것을 막는다. PodUID 는 best-effort 메타데이터로 여러
+	// 역할 중 비어 있지 않은 최소 uid 를 보관해 입력 순서와 무관하게 결정적이다.
 	type nodeKey struct {
 		namespace string
 		pod       string
-		podUID    string
 	}
 	// 정점 수는 최대 2*len(neighbors) (엣지마다 suspect + victim) 이나 hub 중복으로 보통 그보다 적다.
 	// len(neighbors) 를 초기 용량 힌트로 줘 맵 확장 시의 재할당 / 재해싱을 줄인다.
 	nodes := make(map[nodeKey]*ImpactGraphNode, len(neighbors))
 	getNode := func(id PodIdentity) *ImpactGraphNode {
-		k := nodeKey{id.Namespace, id.Pod, id.PodUID}
+		k := nodeKey{id.Namespace, id.Pod}
 		n, ok := nodes[k]
 		if !ok {
 			n = &ImpactGraphNode{Namespace: id.Namespace, Pod: id.Pod, PodUID: id.PodUID}
 			nodes[k] = n
+		}
+		// best-effort: 비어 있지 않은 최소 uid 를 채택해 결정적으로 둔다.
+		if id.PodUID != "" && (n.PodUID == "" || id.PodUID < n.PodUID) {
+			n.PodUID = id.PodUID
 		}
 		return n
 	}

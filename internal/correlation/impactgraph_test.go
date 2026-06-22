@@ -120,6 +120,41 @@ func TestBuildImpactGraph_DeterministicByPodUID(t *testing.T) {
 	}
 }
 
+// TestBuildImpactGraph_PodIdentityMergesUIDVariants 는 같은 pod 가 suspect 역할 (uid="", cause score
+// 가 src_pod_uid 없이 집계) 과 victim 역할 (uid=set, latency 가 uid 보유) 로 등장해도 (namespace, pod)
+// 동일성으로 단일 정점으로 병합되고 degree 가 합산되는지 검증한다. 병합하지 않으면 같은 pod 가 두
+// 정점으로 갈라져 경로에 의사 사이클이 생긴다.
+func TestBuildImpactGraph_PodIdentityMergesUIDVariants(t *testing.T) {
+	mk := func(sPod, sUID, vPod, vUID string) NoisyNeighbor {
+		return NoisyNeighbor{
+			Suspect:      PodIdentity{Namespace: "ns", Pod: sPod, PodUID: sUID},
+			Victim:       PodIdentity{Namespace: "ns", Pod: vPod, PodUID: vUID},
+			Dimension:    DimensionCPU,
+			VictimSignal: SignalLatency,
+			Score:        0.9,
+		}
+	}
+	// a 가 suspect (uid="") 로 b 에, victim (uid="ua") 으로 c 로부터 등장.
+	g := BuildImpactGraph([]NoisyNeighbor{
+		mk("a", "", "b", "ub"),
+		mk("c", "uc", "a", "ua"),
+	})
+	if len(g.Nodes) != 3 {
+		t.Fatalf("nodes=%d want 3 (a/b/c, a 는 uid 변형 병합)", len(g.Nodes))
+	}
+	for _, n := range g.Nodes {
+		if n.Pod != "a" {
+			continue
+		}
+		if n.OutDegree != 1 || n.InDegree != 1 {
+			t.Errorf("a degree out=%d in=%d want 1/1 (suspect/victim 역할 합산)", n.OutDegree, n.InDegree)
+		}
+		if n.PodUID != "ua" {
+			t.Errorf("a uid=%q want ua (best-effort 비어있지 않은 최소 uid)", n.PodUID)
+		}
+	}
+}
+
 // TestBuildImpactGraph_Empty 는 빈 입력에서 빈 그래프를 반환하는지 검증한다.
 func TestBuildImpactGraph_Empty(t *testing.T) {
 	g := BuildImpactGraph(nil)

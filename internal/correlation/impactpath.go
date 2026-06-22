@@ -38,14 +38,16 @@ type RootSuspect struct {
 	PathCount int         `json:"path_count"`
 }
 
+// pathNodeKey 는 경로 순회의 정점 동일성이다. BuildImpactGraph 와 동일하게 (namespace, pod) 로 둬,
+// uid 불일치로 같은 pod 가 여러 정점으로 갈라져 한 경로가 동일 pod 를 재방문 (의사 사이클) 하는 것을
+// 막는다.
 type pathNodeKey struct {
 	namespace string
 	pod       string
-	podUID    string
 }
 
 func podKey(id PodIdentity) pathNodeKey {
-	return pathNodeKey{id.Namespace, id.Pod, id.PodUID}
+	return pathNodeKey{id.Namespace, id.Pod}
 }
 
 // ExtractImpactPaths 는 ImpactGraph 에서 근원 suspect 별 다단계 전파 경로를 추출한다. 정책은 다음과
@@ -78,6 +80,10 @@ func ExtractImpactPaths(g ImpactGraph, maxDepth int, minScore float64, maxPaths 
 		k := podKey(e.Suspect)
 		adj[k] = append(adj[k], e)
 	}
+	// victim pod 별로 정렬한다. 정점 동일성이 (namespace, pod) 라 같은 pod 쌍에 dimension / signal 만
+	// 다른 평행 엣지가 있을 수 있어, victim pod 가 같으면 score 내림차순 (최강 엣지 우선) 으로 두고
+	// 이어서 signal / dimension 으로 완전 결정적 순서를 만든다. 순회 시 victim pod 당 최강 엣지 1 개만
+	// hop 으로 채택한다.
 	for k := range adj {
 		es := adj[k]
 		sort.Slice(es, func(i, j int) bool {
@@ -87,7 +93,13 @@ func ExtractImpactPaths(g ImpactGraph, maxDepth int, minScore float64, maxPaths 
 			if es[i].Victim.Pod != es[j].Victim.Pod {
 				return es[i].Victim.Pod < es[j].Victim.Pod
 			}
-			return es[i].Victim.PodUID < es[j].Victim.PodUID
+			if es[i].Score != es[j].Score {
+				return es[i].Score > es[j].Score
+			}
+			if es[i].VictimSignal != es[j].VictimSignal {
+				return es[i].VictimSignal < es[j].VictimSignal
+			}
+			return es[i].Dimension < es[j].Dimension
 		})
 	}
 
@@ -109,12 +121,17 @@ func ExtractImpactPaths(g ImpactGraph, maxDepth int, minScore float64, maxPaths 
 			if len(out) >= maxPaths {
 				return
 			}
-			// 다음 후보: 방문하지 않은 victim 으로 가는 엣지.
+			// 다음 후보: 방문하지 않은 victim pod 로 가는 엣지. 같은 victim pod 로 가는 평행 엣지는
+			// 정렬상 최강 (score 최대) 인 첫 엣지 1 개만 채택해 동일 pod 를 통한 중복 경로를 막는다.
 			next := make([]ImpactGraphEdge, 0, len(adj[cur]))
+			seenVictim := make(map[pathNodeKey]bool)
 			for _, e := range adj[cur] {
-				if !visited[podKey(e.Victim)] {
-					next = append(next, e)
+				vk := podKey(e.Victim)
+				if visited[vk] || seenVictim[vk] {
+					continue
 				}
+				seenVictim[vk] = true
+				next = append(next, e)
 			}
 			// terminal 조건: 진행할 엣지가 없거나 깊이 한계 도달. hop 이 1 개 이상일 때만 경로다.
 			if len(hops) > 0 && (len(next) == 0 || len(hops) >= maxDepth) {
