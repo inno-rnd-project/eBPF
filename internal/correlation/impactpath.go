@@ -1,0 +1,228 @@
+package correlation
+
+import "sort"
+
+// #151 Phase 2: 다단계 영향 전파 경로 추출. Phase 1 의 ImpactGraph (정점 + suspect → victim 방향 엣지)
+// 를 입력으로 받아 transitive 전파 경로를 추출하고 근원 suspect 를 식별한다. 한 suspect 의 영향이
+// 중간 victim 을 거쳐 다른 대상으로 전파되는 다단계 경로를 명시적 경로 객체로 표현해 1-hop 페어
+// 상관만으로는 보이지 않던 근본 원인 사슬을 드러낸다.
+
+// ImpactPathHop 은 경로의 한 hop (한 엣지) 다. ImpactGraphEdge 에서 경로 표현에 필요한 필드만 추린다.
+type ImpactPathHop struct {
+	Suspect      PodIdentity       `json:"suspect"`
+	Victim       PodIdentity       `json:"victim"`
+	Dimension    ResourceDimension `json:"dimension"`
+	VictimSignal VictimSignal      `json:"victim_signal"`
+	Score        float64           `json:"score"`
+	LagSteps     int               `json:"lag_steps"`
+}
+
+// ImpactPath 는 근원 suspect (root) 에서 시작해 종착 victim (terminal) 으로 이어지는 다단계 전파
+// 경로다. Hops 는 root 에서 terminal 까지의 순서 있는 엣지 열이며 같은 정점을 두 번 거치지 않는
+// 단순 경로다. Score 는 weakest-link (hop 최소 score) 로, 경로 전체가 적어도 이 강도로 이어진다는
+// 보수적 지표다.
+type ImpactPath struct {
+	Root     PodIdentity     `json:"root"`
+	Terminal PodIdentity     `json:"terminal"`
+	Hops     []ImpactPathHop `json:"hops"`
+	Depth    int             `json:"depth"`
+	Score    float64         `json:"score"`
+}
+
+// RootSuspect 는 근원 suspect (in-degree 0, out-degree>0 정점) 와 그 영향 범위다. Reach 는 본 root
+// 에서 도달 가능한 distinct 종착 victim 수, PathCount 는 본 root 에서 시작하는 경로 수다. Reach 가
+// 큰 root 는 가장 넓게 영향을 퍼뜨리는 근본 원인 후보다.
+type RootSuspect struct {
+	Root      PodIdentity `json:"root"`
+	Reach     int         `json:"reach"`
+	PathCount int         `json:"path_count"`
+}
+
+type pathNodeKey struct {
+	namespace string
+	pod       string
+	podUID    string
+}
+
+func podKey(id PodIdentity) pathNodeKey {
+	return pathNodeKey{id.Namespace, id.Pod, id.PodUID}
+}
+
+// ExtractImpactPaths 는 ImpactGraph 에서 근원 suspect 별 다단계 전파 경로를 추출한다. 정책은 다음과
+// 같다.
+//
+//   - 근원 (root) 은 in-degree 0 이고 out-degree>0 인 정점이다. 들어오는 영향이 없는 전파 출발점이며,
+//     순환만 있는 (root 가 없는) 컴포넌트는 추출 대상에서 자연 제외된다.
+//   - 각 root 에서 out 엣지를 따라 DFS 로 단순 경로를 enumerate 한다. 같은 정점을 두 번 거치지 않아
+//     사이클 (A→B→A) 에서 무한 순회하지 않는다.
+//   - score 가 minScore 미만인 엣지는 약한 전파로 보고 가지치기한다.
+//   - 더 따라갈 엣지가 없거나 maxDepth 에 도달하면 root→terminal maximal 경로 1 개를 emit 한다.
+//   - 누적 경로 수가 maxPairs 캡에 도달하면 추출을 중단한다 (조밀 그래프의 조합 폭발 방어).
+//
+// 결과는 (root, terminal, score 내림차순) 정렬로 결정적이다. maxDepth<=0 면 5, maxPaths<=0 면 1024
+// 로 fallback 한다.
+func ExtractImpactPaths(g ImpactGraph, maxDepth int, minScore float64, maxPaths int) []ImpactPath {
+	if maxDepth <= 0 {
+		maxDepth = 5
+	}
+	if maxPaths <= 0 {
+		maxPaths = 1024
+	}
+
+	// out 인접 리스트. minScore 이상 엣지만 후보로 둔다. 결정적 순회를 위해 victim 키 순 정렬한다.
+	adj := make(map[pathNodeKey][]ImpactGraphEdge, len(g.Nodes))
+	for _, e := range g.Edges {
+		if e.Score < minScore {
+			continue
+		}
+		k := podKey(e.Suspect)
+		adj[k] = append(adj[k], e)
+	}
+	for k := range adj {
+		es := adj[k]
+		sort.Slice(es, func(i, j int) bool {
+			if es[i].Victim.Namespace != es[j].Victim.Namespace {
+				return es[i].Victim.Namespace < es[j].Victim.Namespace
+			}
+			if es[i].Victim.Pod != es[j].Victim.Pod {
+				return es[i].Victim.Pod < es[j].Victim.Pod
+			}
+			return es[i].Victim.PodUID < es[j].Victim.PodUID
+		})
+	}
+
+	// root = in-degree 0, out-degree>0. g.Nodes 는 namespace/pod/uid 정렬 상태라 root 순회도 결정적.
+	roots := make([]ImpactGraphNode, 0)
+	for _, n := range g.Nodes {
+		if n.InDegree == 0 && n.OutDegree > 0 {
+			roots = append(roots, n)
+		}
+	}
+
+	out := make([]ImpactPath, 0)
+	for _, r := range roots {
+		rootID := PodIdentity{Namespace: r.Namespace, Pod: r.Pod, PodUID: r.PodUID}
+		visited := map[pathNodeKey]bool{podKey(rootID): true}
+		hops := make([]ImpactPathHop, 0, maxDepth)
+		var dfs func(cur pathNodeKey)
+		dfs = func(cur pathNodeKey) {
+			if len(out) >= maxPaths {
+				return
+			}
+			// 다음 후보: 방문하지 않은 victim 으로 가는 엣지.
+			next := make([]ImpactGraphEdge, 0, len(adj[cur]))
+			for _, e := range adj[cur] {
+				if !visited[podKey(e.Victim)] {
+					next = append(next, e)
+				}
+			}
+			// terminal 조건: 진행할 엣지가 없거나 깊이 한계 도달. hop 이 1 개 이상일 때만 경로다.
+			if len(hops) > 0 && (len(next) == 0 || len(hops) >= maxDepth) {
+				out = append(out, makePath(rootID, hops))
+				return
+			}
+			for _, e := range next {
+				if len(out) >= maxPaths {
+					return
+				}
+				vk := podKey(e.Victim)
+				visited[vk] = true
+				hops = append(hops, ImpactPathHop{
+					Suspect:      e.Suspect,
+					Victim:       e.Victim,
+					Dimension:    e.Dimension,
+					VictimSignal: e.VictimSignal,
+					Score:        e.Score,
+					LagSteps:     e.LagSteps,
+				})
+				dfs(vk)
+				hops = hops[:len(hops)-1]
+				visited[vk] = false
+			}
+		}
+		dfs(podKey(rootID))
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Root.Namespace != b.Root.Namespace {
+			return a.Root.Namespace < b.Root.Namespace
+		}
+		if a.Root.Pod != b.Root.Pod {
+			return a.Root.Pod < b.Root.Pod
+		}
+		if a.Root.PodUID != b.Root.PodUID {
+			return a.Root.PodUID < b.Root.PodUID
+		}
+		if a.Terminal.Namespace != b.Terminal.Namespace {
+			return a.Terminal.Namespace < b.Terminal.Namespace
+		}
+		if a.Terminal.Pod != b.Terminal.Pod {
+			return a.Terminal.Pod < b.Terminal.Pod
+		}
+		if a.Terminal.PodUID != b.Terminal.PodUID {
+			return a.Terminal.PodUID < b.Terminal.PodUID
+		}
+		return a.Score > b.Score
+	})
+	return out
+}
+
+// makePath 는 hop 열에서 ImpactPath 를 만든다. Score 는 weakest-link (hop 최소), Terminal 은 마지막
+// hop 의 victim 이다. hops 슬라이스는 caller 가 재사용 (truncate) 하므로 복사본을 보관한다.
+func makePath(root PodIdentity, hops []ImpactPathHop) ImpactPath {
+	copied := append([]ImpactPathHop(nil), hops...)
+	score := copied[0].Score
+	for _, h := range copied[1:] {
+		if h.Score < score {
+			score = h.Score
+		}
+	}
+	return ImpactPath{
+		Root:     root,
+		Terminal: copied[len(copied)-1].Victim,
+		Hops:     copied,
+		Depth:    len(copied),
+		Score:    score,
+	}
+}
+
+// RootSuspects 는 추출된 경로를 root 별로 집계해 영향 범위 (distinct 종착 victim 수) 와 경로 수를
+// 산정한다. Reach 내림차순, 동률 시 (namespace, pod) 순으로 정렬되어 가장 넓게 퍼뜨리는 근본 원인
+// 후보가 앞에 온다.
+func RootSuspects(paths []ImpactPath) []RootSuspect {
+	type agg struct {
+		root      PodIdentity
+		terminals map[pathNodeKey]struct{}
+		pathCount int
+	}
+	byRoot := make(map[pathNodeKey]*agg)
+	for _, p := range paths {
+		k := podKey(p.Root)
+		a, ok := byRoot[k]
+		if !ok {
+			a = &agg{root: p.Root, terminals: make(map[pathNodeKey]struct{})}
+			byRoot[k] = a
+		}
+		a.terminals[podKey(p.Terminal)] = struct{}{}
+		a.pathCount++
+	}
+
+	out := make([]RootSuspect, 0, len(byRoot))
+	for _, a := range byRoot {
+		out = append(out, RootSuspect{Root: a.root, Reach: len(a.terminals), PathCount: a.pathCount})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Reach != out[j].Reach {
+			return out[i].Reach > out[j].Reach
+		}
+		if out[i].Root.Namespace != out[j].Root.Namespace {
+			return out[i].Root.Namespace < out[j].Root.Namespace
+		}
+		if out[i].Root.Pod != out[j].Root.Pod {
+			return out[i].Root.Pod < out[j].Root.Pod
+		}
+		return out[i].Root.PodUID < out[j].Root.PodUID
+	})
+	return out
+}
