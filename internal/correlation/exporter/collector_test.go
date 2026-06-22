@@ -217,6 +217,50 @@ func TestCollector_EmitsImpactGraphNodeDegree(t *testing.T) {
 	}
 }
 
+// TestCollector_EmitsImpactRootReach 는 #151 Phase 2 의 ReplaceImpactPaths 가 근원 suspect 의 영향
+// 범위 (reach) 를 correlation_impact_root_reach gauge 로 emit 하는지 검증한다. root a 가 b, c 두
+// terminal 로 분기하면 reach=2 다.
+func TestCollector_EmitsImpactRootReach(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	g := correlation.BuildImpactGraph([]correlation.NoisyNeighbor{
+		neighbor("b", "a", correlation.DimensionCPU, 1, 0.9, 1),
+		neighbor("c", "a", correlation.DimensionCPU, 1, 0.9, 1),
+	})
+	c.ReplaceImpactPaths(correlation.ExtractImpactPaths(g, 5, 0.5, 1024))
+
+	if count := testutil.CollectAndCount(c, "correlation_impact_root_reach"); count != 1 {
+		t.Fatalf("root_reach series=%d want 1 (root a 하나)", count)
+	}
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+	mfs, _ := reg.Gather()
+	var reach float64 = -1
+	for _, mf := range mfs {
+		if mf.GetName() != "correlation_impact_root_reach" {
+			continue
+		}
+		for _, m := range mf.Metric {
+			reach = m.GetGauge().GetValue()
+		}
+	}
+	if reach != 2 {
+		t.Errorf("root a reach=%v want 2 (b, c 두 terminal)", reach)
+	}
+}
+
+// TestCollector_ImpactRootReachEmpty 는 root 가 없을 때 (빈 경로) root_reach series 가 0 개인지
+// 검증한다.
+func TestCollector_ImpactRootReachEmpty(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	if count := testutil.CollectAndCount(c, "correlation_impact_root_reach"); count != 0 {
+		t.Errorf("초기 root_reach count=%d want 0", count)
+	}
+	c.ReplaceImpactPaths(nil)
+	if count := testutil.CollectAndCount(c, "correlation_impact_root_reach"); count != 0 {
+		t.Errorf("빈 경로 root_reach count=%d want 0", count)
+	}
+}
+
 // TestCollector_ImpactGraphEmptySnapshot 은 빈 그래프 (ImpactGraphEnabled=false 또는 첫 reconcile 전)
 // 에서 degree series 가 0 개 emit 되는지 검증한다.
 func TestCollector_ImpactGraphEmptySnapshot(t *testing.T) {

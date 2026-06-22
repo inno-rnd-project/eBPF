@@ -73,6 +73,15 @@ var impactGraphLabels = []string{
 	"direction",
 }
 
+// impactRootReachLabels 는 #151 Phase 2 의 correlation_impact_root_reach 메트릭 라벨 셋이다. 근원
+// suspect (in-degree 0 정점) 의 (namespace, pod, pod_uid) 로 식별하며 root 수가 적어 cardinality 가
+// 작다.
+var impactRootReachLabels = []string{
+	"namespace",
+	"pod",
+	"pod_uid",
+}
+
 // Collector 는 마지막 reconcile cycle 의 NoisyNeighbor snapshot 을 보관해 Prometheus scrape 시점에
 // score 와 lag 메트릭으로 emit 한다. prometheus.Collector 인터페이스를 직접 구현해 snapshot 교체
 // 시 GaugeVec.Reset() 패턴이 가질 race 위험을 차단하고 stale series 가 코드 경로상 존재하지 않게
@@ -100,6 +109,11 @@ type Collector struct {
 	// cycle 마다 갱신하고 Collect 가 correlation_impact_graph_node_degree gauge 로, API 가 nodes / edges
 	// 로 노출한다. 빈 그래프면 series 가 0 개 emit 되어 ImpactGraphEnabled=false opt-out 과 정합한다.
 	impactGraph correlation.ImpactGraph
+	// impactPaths 와 rootSuspects 는 #151 Phase 2 의 다단계 경로와 근원 suspect 집계다. ReplaceImpactPaths
+	// 가 reconcile cycle 마다 paths 를 받아 RootSuspects 로 root 를 함께 산정해 캐시하고, Collect 가
+	// correlation_impact_root_reach gauge 로, API 가 paths / roots 로 노출한다.
+	impactPaths  []correlation.ImpactPath
+	rootSuspects []correlation.RootSuspect
 	// step 은 LagSteps 를 초 단위로 변환할 때 곱해진다. exporter 가 Correlator 의 Config.Step 과
 	// 동일 값을 받아 lag step 의 시간 의미를 보존한다.
 	step time.Duration
@@ -113,6 +127,7 @@ type Collector struct {
 	serviceImpactScoreDesc *prometheus.Desc
 	crossLevelScoreDesc    *prometheus.Desc
 	impactGraphDegreeDesc  *prometheus.Desc
+	impactRootReachDesc    *prometheus.Desc
 }
 
 // NewCollector 는 Prometheus scrape 시 emit 할 metric desc 두 개를 미리 만들어 두는 Collector 를
@@ -165,6 +180,11 @@ func NewCollector(step time.Duration) *Collector {
 			"correlation_impact_graph_node_degree",
 			"#151 Phase 1 영향 전파 그래프 정점의 차수. direction=out 은 이 pod 가 suspect 인 엣지 수 (영향을 주는 관계), in 은 victim 인 엣지 수 (영향을 받는 관계) 다. out 이 크고 in 이 작은 pod 는 다단계 전파의 근원 suspect 후보, in 이 큰 pod 는 영향이 모이는 victim hub 다. ImpactGraphEnabled opt-in 시 만 emit 된다.",
 			impactGraphLabels, nil,
+		),
+		impactRootReachDesc: prometheus.NewDesc(
+			"correlation_impact_root_reach",
+			"#151 Phase 2 근원 suspect (in-degree 0 정점) 의 영향 범위. 본 root 에서 다단계 전파 경로로 도달 가능한 distinct 종착 victim 수다. 값이 클수록 가장 넓게 영향을 퍼뜨리는 근본 원인 후보다. ImpactGraphEnabled opt-in 시 경로 추출과 함께 emit 된다.",
+			impactRootReachLabels, nil,
 		),
 	}
 }
@@ -288,6 +308,41 @@ func (c *Collector) ImpactGraphSnapshot() correlation.ImpactGraph {
 	}
 }
 
+// ReplaceImpactPaths 는 #151 Phase 2 의 다단계 경로 snapshot 을 교체하고 root 영향 범위를 함께
+// 산정해 캐시한다. main 의 reconcileOnce 가 ImpactGraphEnabled 와 무관하게 매 cycle 본 함수를
+// 호출하나, opt-out 또는 root 부재 (순환만 있는 그래프) 면 빈 슬라이스가 전달되어 root_reach series
+// 가 emit 되지 않는다.
+func (c *Collector) ReplaceImpactPaths(paths []correlation.ImpactPath) {
+	copied := append([]correlation.ImpactPath(nil), paths...)
+	roots := correlation.RootSuspects(copied)
+	c.mu.Lock()
+	c.impactPaths = copied
+	c.rootSuspects = roots
+	c.mu.Unlock()
+}
+
+// ImpactPathsSnapshot 은 가장 최근 ReplaceImpactPaths 가 보관한 다단계 경로의 안전한 복사본을
+// 반환한다. #151 의 /api/v1/impact-paths endpoint 가 본 메서드를 in-memory read 로 호출한다.
+func (c *Collector) ImpactPathsSnapshot() []correlation.ImpactPath {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.impactPaths) == 0 {
+		return nil
+	}
+	return append([]correlation.ImpactPath(nil), c.impactPaths...)
+}
+
+// RootSuspectsSnapshot 은 가장 최근 산정한 근원 suspect 집계의 안전한 복사본을 반환한다.
+// /api/v1/impact-paths 응답의 roots summary 로 노출된다.
+func (c *Collector) RootSuspectsSnapshot() []correlation.RootSuspect {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.rootSuspects) == 0 {
+		return nil
+	}
+	return append([]correlation.RootSuspect(nil), c.rootSuspects...)
+}
+
 // Describe 는 prometheus.Collector 인터페이스를 만족한다.
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.scoreDesc
@@ -299,6 +354,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.serviceImpactScoreDesc
 	ch <- c.crossLevelScoreDesc
 	ch <- c.impactGraphDegreeDesc
+	ch <- c.impactRootReachDesc
 }
 
 // Collect 는 현재 snapshot 의 모든 NoisyNeighbor 를 score / lag 두 메트릭으로 emit 한다. snapshot
@@ -313,6 +369,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	serviceImpact := c.serviceImpact
 	crossLevel := c.crossLevel
 	impactGraph := c.impactGraph
+	rootSuspects := c.rootSuspects
 	step := c.step
 	c.mu.RUnlock()
 
@@ -406,6 +463,14 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(
 			c.impactGraphDegreeDesc, prometheus.GaugeValue, float64(n.InDegree),
 			n.Namespace, n.Pod, n.PodUID, "in",
+		)
+	}
+	// #151 Phase 2 근원 suspect 의 영향 범위 (reach). root 별 도달 가능 distinct 종착 victim 수를 emit
+	// 해 dashboard 가 가장 넓게 퍼뜨리는 근본 원인을 랭킹 가능하게 한다. root 가 없으면 0 series 다.
+	for _, rs := range rootSuspects {
+		ch <- prometheus.MustNewConstMetric(
+			c.impactRootReachDesc, prometheus.GaugeValue, float64(rs.Reach),
+			rs.Root.Namespace, rs.Root.Pod, rs.Root.PodUID,
 		)
 	}
 }
