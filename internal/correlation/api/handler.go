@@ -40,21 +40,29 @@ type CrossLevelSnapshotSource interface {
 	CrossLevelSnapshot() []correlation.CrossLevel
 }
 
-// Handler 는 correlation API endpoint 들 의 의존성을 모은다. SnapshotSource 네 종 외 별도 상태가
+// ImpactGraphSnapshotSource 는 #151 Phase 1 의 영향 전파 그래프 snapshot 을 제공하는 추상 인터페이스다.
+// exporter.Collector 의 ImpactGraphSnapshot() 메서드가 본 인터페이스를 만족한다. test 측에서 fake
+// 그래프 주입 시 사용한다.
+type ImpactGraphSnapshotSource interface {
+	ImpactGraphSnapshot() correlation.ImpactGraph
+}
+
+// Handler 는 correlation API endpoint 들 의 의존성을 모은다. SnapshotSource 다섯 종 외 별도 상태가
 // 없어 동시 호출 안전 (각 Snapshot() 내부 RLock).
 type Handler struct {
 	source              SnapshotSource
 	crossNodeSource     CrossNodeSnapshotSource
 	serviceImpactSource ServiceImpactSnapshotSource
 	crossLevelSource    CrossLevelSnapshotSource
+	impactGraphSource   ImpactGraphSnapshotSource
 }
 
-// NewHandler 는 네 SnapshotSource 를 주입 받아 API handler 를 만든다. cmd/correlation-exporter/main.go
-// 의 main 함수 에서 exporter.Collector 가 네 인터페이스 를 모두 만족 하므로 동일 인스턴스 를 네 번
-// 전달 한다. crossNodeSource / serviceImpactSource / crossLevelSource 가 nil 이면 해당 endpoint 가
-// graceful empty response 를 돌려 준다.
-func NewHandler(source SnapshotSource, crossNodeSource CrossNodeSnapshotSource, serviceImpactSource ServiceImpactSnapshotSource, crossLevelSource CrossLevelSnapshotSource) *Handler {
-	return &Handler{source: source, crossNodeSource: crossNodeSource, serviceImpactSource: serviceImpactSource, crossLevelSource: crossLevelSource}
+// NewHandler 는 다섯 SnapshotSource 를 주입 받아 API handler 를 만든다. cmd/correlation-exporter/main.go
+// 의 main 함수 에서 exporter.Collector 가 다섯 인터페이스 를 모두 만족 하므로 동일 인스턴스 를 다섯 번
+// 전달 한다. crossNodeSource / serviceImpactSource / crossLevelSource / impactGraphSource 가 nil 이면
+// 해당 endpoint 가 graceful empty response 를 돌려 준다.
+func NewHandler(source SnapshotSource, crossNodeSource CrossNodeSnapshotSource, serviceImpactSource ServiceImpactSnapshotSource, crossLevelSource CrossLevelSnapshotSource, impactGraphSource ImpactGraphSnapshotSource) *Handler {
+	return &Handler{source: source, crossNodeSource: crossNodeSource, serviceImpactSource: serviceImpactSource, crossLevelSource: crossLevelSource, impactGraphSource: impactGraphSource}
 }
 
 // Register 는 ServeMux 에 /api/v1/noisy-neighbor 와 /api/v1/cross-node-interference 두 라우트 를 등록
@@ -81,6 +89,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	))
 	mux.Handle("/api/v1/cross-level", apicommon.Chain(
 		http.HandlerFunc(h.ListCrossLevel),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
+	mux.Handle("/api/v1/impact-graph", apicommon.Chain(
+		http.HandlerFunc(h.GetImpactGraph),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
@@ -117,6 +131,22 @@ type ServiceImpactListResponse struct {
 type CrossLevelListResponse struct {
 	Items []correlation.CrossLevel `json:"items"`
 	Page  apicommon.Page           `json:"page"`
+}
+
+// ImpactGraphResponse 는 /api/v1/impact-graph 응답의 typed 표현이다 (#151 Phase 1). 그래프는 페어
+// 리스트가 아니라 정점과 엣지로 구성된 단일 객체라 다른 List 응답의 items/page 형식 대신 nodes /
+// edges / summary 형식을 쓴다. 그래프 크기가 noisy neighbor Top-N 으로 통제되어 전체를 한 번에
+// 반환한다.
+type ImpactGraphResponse struct {
+	Nodes   []correlation.ImpactGraphNode `json:"nodes"`
+	Edges   []correlation.ImpactGraphEdge `json:"edges"`
+	Summary ImpactGraphSummary            `json:"summary"`
+}
+
+// ImpactGraphSummary 는 그래프 규모 요약이다. dashboard 가 정점 / 엣지 수를 빠르게 파악하게 한다.
+type ImpactGraphSummary struct {
+	NodeCount int `json:"node_count"`
+	EdgeCount int `json:"edge_count"`
 }
 
 // ErrorResponse 는 swaggo cross-package type resolution 한계 회피 용 으로 ErrorResponse 와
@@ -510,4 +540,38 @@ func (h *Handler) ListCrossLevel(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	apicommon.WriteJSON(w, resp)
+}
+
+// GetImpactGraph 는 /api/v1/impact-graph 의 GET 핸들러다 (#151 Phase 1). 영향 전파 그래프의 정점과
+// 엣지 전체를 nodes / edges / summary 형식으로 반환한다. 그래프 크기가 noisy neighbor Top-N 으로
+// 통제되어 pagination 없이 한 번에 돌려 준다. 첫 reconcile 전이거나 ImpactGraphEnabled=false 면 빈
+// 그래프를 graceful 하게 반환한다. transitive 경로 추출과 필터는 Phase 2 에서 추가한다.
+//
+// @Summary      Get impact propagation graph
+// @Description  suspect → victim 1-hop 엣지로 구성된 영향 전파 그래프의 정점 (out/in degree 포함) 과 엣지 전체 반환
+// @Tags         correlation
+// @Produce      json
+// @Success      200  {object}  ImpactGraphResponse
+// @Router       /api/v1/impact-graph [get]
+func (h *Handler) GetImpactGraph(w http.ResponseWriter, _ *http.Request) {
+	var g correlation.ImpactGraph
+	if h.impactGraphSource != nil {
+		g = h.impactGraphSource.ImpactGraphSnapshot()
+	}
+	// nil 슬라이스는 JSON 에서 null 로 직렬화되므로 빈 슬라이스로 정규화해 응답이 항상 nodes:[] /
+	// edges:[] 형태를 유지하게 한다 (graceful empty).
+	if g.Nodes == nil {
+		g.Nodes = []correlation.ImpactGraphNode{}
+	}
+	if g.Edges == nil {
+		g.Edges = []correlation.ImpactGraphEdge{}
+	}
+	apicommon.WriteJSON(w, ImpactGraphResponse{
+		Nodes: g.Nodes,
+		Edges: g.Edges,
+		Summary: ImpactGraphSummary{
+			NodeCount: len(g.Nodes),
+			EdgeCount: len(g.Edges),
+		},
+	})
 }

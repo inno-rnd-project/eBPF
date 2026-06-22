@@ -145,6 +145,26 @@ definitions:
       error:
         $ref: '#/definitions/internal_correlation_api.ErrorDetail'
     type: object
+  internal_correlation_api.ImpactGraphResponse:
+    properties:
+      edges:
+        items:
+          $ref: '#/definitions/netobs_internal_correlation.ImpactGraphEdge'
+        type: array
+      nodes:
+        items:
+          $ref: '#/definitions/netobs_internal_correlation.ImpactGraphNode'
+        type: array
+      summary:
+        $ref: '#/definitions/internal_correlation_api.ImpactGraphSummary'
+    type: object
+  internal_correlation_api.ImpactGraphSummary:
+    properties:
+      edge_count:
+        type: integer
+      node_count:
+        type: integer
+    type: object
   internal_correlation_api.NoisyNeighborListResponse:
     properties:
       items:
@@ -253,6 +273,38 @@ definitions:
     x-enum-varnames:
     - DirectionNodeToPod
     - DirectionPodToNode
+  netobs_internal_correlation.ImpactGraphEdge:
+    properties:
+      dimension:
+        $ref: '#/definitions/netobs_internal_correlation.ResourceDimension'
+      granger_ok:
+        type: boolean
+      lag_steps:
+        type: integer
+      p_value:
+        type: number
+      score:
+        type: number
+      suspect:
+        $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
+      victim:
+        $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
+      victim_signal:
+        $ref: '#/definitions/netobs_internal_correlation.VictimSignal'
+    type: object
+  netobs_internal_correlation.ImpactGraphNode:
+    properties:
+      in_degree:
+        type: integer
+      namespace:
+        type: string
+      out_degree:
+        type: integer
+      pod:
+        type: string
+      pod_uid:
+        type: string
+    type: object
   netobs_internal_correlation.NodeInterference:
     properties:
       dimension:
@@ -631,6 +683,20 @@ paths:
       summary: List GPU resource usage
       tags:
       - gpuobs
+  /api/v1/impact-graph:
+    get:
+      description: suspect → victim 1-hop 엣지로 구성된 영향 전파 그래프의 정점 (out/in degree 포함)
+        과 엣지 전체 반환
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.ImpactGraphResponse'
+      summary: Get impact propagation graph
+      tags:
+      - correlation
   /api/v1/noisy-neighbor:
     get:
       description: victim/suspect 와 dimension 과 rank 필터 후 pagination 적용한 noisy neighbor

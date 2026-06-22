@@ -15,12 +15,14 @@ type fakeSource struct {
 	crossNode     []correlation.NodeInterference
 	serviceImpact []correlation.ServiceImpact
 	crossLevel    []correlation.CrossLevel
+	impactGraph   correlation.ImpactGraph
 }
 
 func (f *fakeSource) Snapshot() []correlation.NoisyNeighbor              { return f.data }
 func (f *fakeSource) CrossNodeSnapshot() []correlation.NodeInterference  { return f.crossNode }
 func (f *fakeSource) ServiceImpactSnapshot() []correlation.ServiceImpact { return f.serviceImpact }
 func (f *fakeSource) CrossLevelSnapshot() []correlation.CrossLevel       { return f.crossLevel }
+func (f *fakeSource) ImpactGraphSnapshot() correlation.ImpactGraph       { return f.impactGraph }
 
 func newFakeCrossLevel(node string, dir correlation.CrossLevelDirection, ns, pod string, dim correlation.ResourceDimension, rank int, score float64) correlation.CrossLevel {
 	return correlation.CrossLevel{
@@ -71,7 +73,7 @@ func TestListNoisyNeighbors_HappyPath(t *testing.T) {
 		newFakeNeighbor("ns-a", "victim-2", "ns-b", "suspect-2", correlation.DimensionNetwork, 1),
 		newFakeNeighbor("ns-c", "victim-3", "ns-b", "suspect-3", correlation.DimensionGPU, 2),
 	}}
-	h := NewHandler(source, source, source, source)
+	h := NewHandler(source, source, source, source, source)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/noisy-neighbor", nil)
 	w := httptest.NewRecorder()
@@ -97,7 +99,7 @@ func TestListNoisyNeighbors_DimensionFilter(t *testing.T) {
 		newFakeNeighbor("ns-a", "victim-1", "ns-b", "suspect-1", correlation.DimensionCPU, 1),
 		newFakeNeighbor("ns-a", "victim-2", "ns-b", "suspect-2", correlation.DimensionNetwork, 1),
 	}}
-	h := NewHandler(source, source, source, source)
+	h := NewHandler(source, source, source, source, source)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/noisy-neighbor?dimension=cpu", nil)
 	w := httptest.NewRecorder()
@@ -124,7 +126,7 @@ func TestListNoisyNeighbors_VictimSignalFilter(t *testing.T) {
 		mk("v-tput", correlation.SignalThroughput),
 		mk("v-err", correlation.SignalError),
 	}}
-	h := NewHandler(source, source, source, source)
+	h := NewHandler(source, source, source, source, source)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/noisy-neighbor?victim_signal=throughput", nil)
 	w := httptest.NewRecorder()
@@ -143,7 +145,7 @@ func TestListNoisyNeighbors_VictimSignalFilter(t *testing.T) {
 }
 
 func TestListNoisyNeighbors_InvalidVictimSignal(t *testing.T) {
-	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
+	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/noisy-neighbor?victim_signal=bogus", nil)
 	w := httptest.NewRecorder()
 	h.ListNoisyNeighbors(w, req)
@@ -153,7 +155,7 @@ func TestListNoisyNeighbors_InvalidVictimSignal(t *testing.T) {
 }
 
 func TestListNoisyNeighbors_InvalidDimension(t *testing.T) {
-	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
+	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/noisy-neighbor?dimension=invalid", nil)
 	w := httptest.NewRecorder()
 	h.ListNoisyNeighbors(w, req)
@@ -168,7 +170,7 @@ func TestListNoisyNeighbors_Pagination(t *testing.T) {
 		data[i] = newFakeNeighbor("ns", "victim", "ns", "suspect", correlation.DimensionCPU, i+1)
 	}
 	source := &fakeSource{data: data}
-	h := NewHandler(source, source, source, source)
+	h := NewHandler(source, source, source, source, source)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/noisy-neighbor?limit=2&offset=1", nil)
 	w := httptest.NewRecorder()
 	h.ListNoisyNeighbors(w, req)
@@ -191,7 +193,7 @@ func TestListCrossNode_HappyPath(t *testing.T) {
 		newFakeNodeInterference("gpu", "ebpf-worker2", correlation.DimensionNetwork, 1, 0.55),
 		newFakeNodeInterference("ebpf-worker1", "gpu", correlation.DimensionGPU, 2, 0.31),
 	}}
-	h := NewHandler(source, source, source, source)
+	h := NewHandler(source, source, source, source, source)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/cross-node-interference", nil)
 	w := httptest.NewRecorder()
@@ -218,7 +220,7 @@ func TestListCrossNode_VictimNodeAndDimensionFilter(t *testing.T) {
 		newFakeNodeInterference("gpu", "ebpf-worker2", correlation.DimensionNetwork, 1, 0.55),
 		newFakeNodeInterference("ebpf-worker1", "gpu", correlation.DimensionCPU, 1, 0.41),
 	}}
-	h := NewHandler(source, source, source, source)
+	h := NewHandler(source, source, source, source, source)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/cross-node-interference?victim_node=gpu&dimension=cpu", nil)
 	w := httptest.NewRecorder()
@@ -238,7 +240,7 @@ func TestListCrossNode_VictimNodeAndDimensionFilter(t *testing.T) {
 }
 
 func TestListCrossNode_InvalidDimension(t *testing.T) {
-	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
+	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/cross-node-interference?dimension=invalid", nil)
 	w := httptest.NewRecorder()
 	h.ListCrossNode(w, req)
@@ -253,7 +255,7 @@ func TestListCrossNode_Pagination(t *testing.T) {
 		data[i] = newFakeNodeInterference("gpu", "ebpf-worker1", correlation.DimensionCPU, i+1, 0.9-float64(i)*0.1)
 	}
 	source := &fakeSource{crossNode: data}
-	h := NewHandler(source, source, source, source)
+	h := NewHandler(source, source, source, source, source)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/cross-node-interference?limit=2&offset=1", nil)
 	w := httptest.NewRecorder()
 	h.ListCrossNode(w, req)
@@ -271,7 +273,7 @@ func TestListCrossNode_Pagination(t *testing.T) {
 }
 
 func TestListCrossNode_NilSourceGracefulEmpty(t *testing.T) {
-	h := NewHandler(&fakeSource{}, nil, nil, nil)
+	h := NewHandler(&fakeSource{}, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/cross-node-interference", nil)
 	w := httptest.NewRecorder()
 	h.ListCrossNode(w, req)
@@ -300,7 +302,7 @@ func TestListServiceImpact_HappyPath(t *testing.T) {
 		newFakeServiceImpact("ns-a", "web", "ebpf-worker2", correlation.DimensionNetwork, 1, 0.55),
 		newFakeServiceImpact("ns-b", "batch", "gpu", correlation.DimensionGPU, 2, 0.31),
 	}}
-	h := NewHandler(source, source, source, source)
+	h := NewHandler(source, source, source, source, source)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/service-impact", nil)
 	w := httptest.NewRecorder()
@@ -327,7 +329,7 @@ func TestListServiceImpact_VictimWorkloadAndDimensionFilter(t *testing.T) {
 		newFakeServiceImpact("ns-a", "api", "ebpf-worker2", correlation.DimensionNetwork, 1, 0.55),
 		newFakeServiceImpact("ns-a", "web", "gpu", correlation.DimensionCPU, 1, 0.41),
 	}}
-	h := NewHandler(source, source, source, source)
+	h := NewHandler(source, source, source, source, source)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/service-impact?victim_workload=api&dimension=cpu", nil)
 	w := httptest.NewRecorder()
@@ -347,7 +349,7 @@ func TestListServiceImpact_VictimWorkloadAndDimensionFilter(t *testing.T) {
 }
 
 func TestListServiceImpact_InvalidDimension(t *testing.T) {
-	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
+	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/service-impact?dimension=invalid", nil)
 	w := httptest.NewRecorder()
 	h.ListServiceImpact(w, req)
@@ -357,7 +359,7 @@ func TestListServiceImpact_InvalidDimension(t *testing.T) {
 }
 
 func TestListServiceImpact_NilSourceGracefulEmpty(t *testing.T) {
-	h := NewHandler(&fakeSource{}, nil, nil, nil)
+	h := NewHandler(&fakeSource{}, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/service-impact", nil)
 	w := httptest.NewRecorder()
 	h.ListServiceImpact(w, req)
@@ -383,7 +385,7 @@ func TestListCrossLevel_HappyPath(t *testing.T) {
 		newFakeCrossLevel("ebpf-worker1", correlation.DirectionPodToNode, "ns-a", "batch-1", correlation.DimensionMemory, 1, 0.55),
 		newFakeCrossLevel("gpu", correlation.DirectionNodeToPod, "ns-b", "web-2", correlation.DimensionGPU, 2, 0.31),
 	}}
-	h := NewHandler(source, source, source, source)
+	h := NewHandler(source, source, source, source, source)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/cross-level", nil)
 	w := httptest.NewRecorder()
@@ -410,7 +412,7 @@ func TestListCrossLevel_NodeDirectionDimensionFilter(t *testing.T) {
 		newFakeCrossLevel("ebpf-worker1", correlation.DirectionPodToNode, "ns-a", "api-0", correlation.DimensionCPU, 1, 0.40),
 		newFakeCrossLevel("gpu", correlation.DirectionNodeToPod, "ns-b", "web-2", correlation.DimensionCPU, 1, 0.31),
 	}}
-	h := NewHandler(source, source, source, source)
+	h := NewHandler(source, source, source, source, source)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/cross-level?node=ebpf-worker1&direction=node_to_pod&dimension=cpu", nil)
 	w := httptest.NewRecorder()
@@ -430,7 +432,7 @@ func TestListCrossLevel_NodeDirectionDimensionFilter(t *testing.T) {
 }
 
 func TestListCrossLevel_InvalidDirection(t *testing.T) {
-	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
+	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/cross-level?direction=bogus", nil)
 	w := httptest.NewRecorder()
 	h.ListCrossLevel(w, req)
@@ -440,7 +442,7 @@ func TestListCrossLevel_InvalidDirection(t *testing.T) {
 }
 
 func TestListCrossLevel_InvalidDimension(t *testing.T) {
-	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
+	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/cross-level?dimension=invalid", nil)
 	w := httptest.NewRecorder()
 	h.ListCrossLevel(w, req)
@@ -450,7 +452,7 @@ func TestListCrossLevel_InvalidDimension(t *testing.T) {
 }
 
 func TestListCrossLevel_NilSourceGracefulEmpty(t *testing.T) {
-	h := NewHandler(&fakeSource{}, nil, nil, nil)
+	h := NewHandler(&fakeSource{}, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/cross-level", nil)
 	w := httptest.NewRecorder()
 	h.ListCrossLevel(w, req)
@@ -467,5 +469,55 @@ func TestListCrossLevel_NilSourceGracefulEmpty(t *testing.T) {
 	}
 	if resp.Items == nil {
 		t.Errorf("items is nil, want empty slice []")
+	}
+}
+
+func TestGetImpactGraph_HappyPath(t *testing.T) {
+	// suspect a → victim b, a → c. nodes a/b/c, edges 2.
+	graph := correlation.BuildImpactGraph([]correlation.NoisyNeighbor{
+		newFakeNeighbor("ns", "b", "ns", "a", correlation.DimensionCPU, 1),
+		newFakeNeighbor("ns", "c", "ns", "a", correlation.DimensionMemory, 1),
+	})
+	source := &fakeSource{impactGraph: graph}
+	h := NewHandler(source, source, source, source, source)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/impact-graph", nil)
+	w := httptest.NewRecorder()
+	h.GetImpactGraph(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200, body=%s", w.Code, w.Body.String())
+	}
+	var resp ImpactGraphResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Summary.NodeCount != 3 || resp.Summary.EdgeCount != 2 {
+		t.Errorf("summary nodes=%d edges=%d want 3/2", resp.Summary.NodeCount, resp.Summary.EdgeCount)
+	}
+	if len(resp.Nodes) != 3 || len(resp.Edges) != 2 {
+		t.Errorf("nodes=%d edges=%d want 3/2", len(resp.Nodes), len(resp.Edges))
+	}
+}
+
+func TestGetImpactGraph_NilSourceGracefulEmpty(t *testing.T) {
+	h := NewHandler(&fakeSource{}, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/impact-graph", nil)
+	w := httptest.NewRecorder()
+	h.GetImpactGraph(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 (nil source graceful empty)", w.Code)
+	}
+	// nil 그래프가 nodes:[] / edges:[] wire format 으로 정규화되는지 직접 단언한다.
+	if !strings.Contains(w.Body.String(), `"nodes":[]`) || !strings.Contains(w.Body.String(), `"edges":[]`) {
+		t.Errorf("body=%s, want nodes:[] edges:[] (graceful empty)", w.Body.String())
+	}
+	var resp ImpactGraphResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Summary.NodeCount != 0 || resp.Summary.EdgeCount != 0 {
+		t.Errorf("summary=%+v want 0/0", resp.Summary)
+	}
+	if resp.Nodes == nil || resp.Edges == nil {
+		t.Errorf("nodes/edges nil, want empty slices")
 	}
 }
