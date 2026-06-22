@@ -16,6 +16,8 @@ type fakeSource struct {
 	serviceImpact []correlation.ServiceImpact
 	crossLevel    []correlation.CrossLevel
 	impactGraph   correlation.ImpactGraph
+	impactPaths   []correlation.ImpactPath
+	rootSuspects  []correlation.RootSuspect
 }
 
 func (f *fakeSource) Snapshot() []correlation.NoisyNeighbor              { return f.data }
@@ -23,6 +25,8 @@ func (f *fakeSource) CrossNodeSnapshot() []correlation.NodeInterference  { retur
 func (f *fakeSource) ServiceImpactSnapshot() []correlation.ServiceImpact { return f.serviceImpact }
 func (f *fakeSource) CrossLevelSnapshot() []correlation.CrossLevel       { return f.crossLevel }
 func (f *fakeSource) ImpactGraphSnapshot() correlation.ImpactGraph       { return f.impactGraph }
+func (f *fakeSource) ImpactPathsSnapshot() []correlation.ImpactPath      { return f.impactPaths }
+func (f *fakeSource) RootSuspectsSnapshot() []correlation.RootSuspect    { return f.rootSuspects }
 
 func newFakeCrossLevel(node string, dir correlation.CrossLevelDirection, ns, pod string, dim correlation.ResourceDimension, rank int, score float64) correlation.CrossLevel {
 	return correlation.CrossLevel{
@@ -519,5 +523,88 @@ func TestGetImpactGraph_NilSourceGracefulEmpty(t *testing.T) {
 	}
 	if resp.Nodes == nil || resp.Edges == nil {
 		t.Errorf("nodes/edges nil, want empty slices")
+	}
+}
+
+// pathsFakeSource 는 a→b, a→c 그래프에서 경로와 root 를 채운 fakeSource 를 만든다.
+func pathsFakeSource() *fakeSource {
+	g := correlation.BuildImpactGraph([]correlation.NoisyNeighbor{
+		newFakeNeighbor("ns", "b", "ns", "a", correlation.DimensionCPU, 1),
+		newFakeNeighbor("ns", "c", "ns", "a", correlation.DimensionCPU, 1),
+	})
+	paths := correlation.ExtractImpactPaths(g, 5, 0.5, 1024)
+	return &fakeSource{impactPaths: paths, rootSuspects: correlation.RootSuspects(paths)}
+}
+
+func TestListImpactPaths_HappyPath(t *testing.T) {
+	source := pathsFakeSource()
+	h := NewHandler(source, source, source, source, source)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/impact-paths", nil)
+	w := httptest.NewRecorder()
+	h.ListImpactPaths(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200, body=%s", w.Code, w.Body.String())
+	}
+	var resp ImpactPathsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Summary.PathCount != 2 || resp.Summary.RootCount != 1 {
+		t.Errorf("summary paths=%d roots=%d want 2/1", resp.Summary.PathCount, resp.Summary.RootCount)
+	}
+	if len(resp.Roots) == 1 && resp.Roots[0].Reach != 2 {
+		t.Errorf("root reach=%d want 2", resp.Roots[0].Reach)
+	}
+}
+
+func TestListImpactPaths_TerminalFilter(t *testing.T) {
+	source := pathsFakeSource()
+	h := NewHandler(source, source, source, source, source)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/impact-paths?terminal_pod=b", nil)
+	w := httptest.NewRecorder()
+	h.ListImpactPaths(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	var resp ImpactPathsResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Summary.PathCount != 1 {
+		t.Errorf("path_count=%d want 1 (terminal_pod=b)", resp.Summary.PathCount)
+	}
+	if len(resp.Paths) == 1 && resp.Paths[0].Terminal.Pod != "b" {
+		t.Errorf("terminal=%s want b", resp.Paths[0].Terminal.Pod)
+	}
+}
+
+func TestListImpactPaths_InvalidMinScore(t *testing.T) {
+	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/impact-paths?min_score=abc", nil)
+	w := httptest.NewRecorder()
+	h.ListImpactPaths(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d want 400 (invalid min_score)", w.Code)
+	}
+}
+
+func TestListImpactPaths_NilSourceGracefulEmpty(t *testing.T) {
+	h := NewHandler(&fakeSource{}, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/impact-paths", nil)
+	w := httptest.NewRecorder()
+	h.ListImpactPaths(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 (nil source graceful empty)", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `"paths":[]`) || !strings.Contains(w.Body.String(), `"roots":[]`) {
+		t.Errorf("body=%s, want paths:[] roots:[] (graceful empty)", w.Body.String())
+	}
+	var resp ImpactPathsResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Summary.PathCount != 0 || resp.Summary.RootCount != 0 {
+		t.Errorf("summary=%+v want 0/0", resp.Summary)
+	}
+	if resp.Paths == nil || resp.Roots == nil {
+		t.Errorf("paths/roots nil, want empty slices")
 	}
 }

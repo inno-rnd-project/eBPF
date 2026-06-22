@@ -165,6 +165,26 @@ definitions:
       node_count:
         type: integer
     type: object
+  internal_correlation_api.ImpactPathsResponse:
+    properties:
+      paths:
+        items:
+          $ref: '#/definitions/netobs_internal_correlation.ImpactPath'
+        type: array
+      roots:
+        items:
+          $ref: '#/definitions/netobs_internal_correlation.RootSuspect'
+        type: array
+      summary:
+        $ref: '#/definitions/internal_correlation_api.ImpactPathsSummary'
+    type: object
+  internal_correlation_api.ImpactPathsSummary:
+    properties:
+      path_count:
+        type: integer
+      root_count:
+        type: integer
+    type: object
   internal_correlation_api.NoisyNeighborListResponse:
     properties:
       items:
@@ -305,6 +325,36 @@ definitions:
       pod_uid:
         type: string
     type: object
+  netobs_internal_correlation.ImpactPath:
+    properties:
+      depth:
+        type: integer
+      hops:
+        items:
+          $ref: '#/definitions/netobs_internal_correlation.ImpactPathHop'
+        type: array
+      root:
+        $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
+      score:
+        type: number
+      terminal:
+        $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
+    type: object
+  netobs_internal_correlation.ImpactPathHop:
+    properties:
+      dimension:
+        $ref: '#/definitions/netobs_internal_correlation.ResourceDimension'
+      lag_steps:
+        type: integer
+      score:
+        type: number
+      suspect:
+        $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
+      victim:
+        $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
+      victim_signal:
+        $ref: '#/definitions/netobs_internal_correlation.VictimSignal'
+    type: object
   netobs_internal_correlation.NodeInterference:
     properties:
       dimension:
@@ -398,6 +448,15 @@ definitions:
     - DimensionNetwork
     - DimensionGPU
     - DimensionUnknown
+  netobs_internal_correlation.RootSuspect:
+    properties:
+      path_count:
+        type: integer
+      reach:
+        type: integer
+      root:
+        $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
+    type: object
   netobs_internal_correlation.ServiceImpact:
     properties:
       dimension:
@@ -695,6 +754,41 @@ paths:
           schema:
             $ref: '#/definitions/internal_correlation_api.ImpactGraphResponse'
       summary: Get impact propagation graph
+      tags:
+      - correlation
+  /api/v1/impact-paths:
+    get:
+      description: 근원 suspect(root)에서 종착 victim(terminal)으로 이어지는 다단계 경로와 근원 요약 반환.
+        root_pod / terminal_pod / namespace / min_score 필터 지원
+      parameters:
+      - description: 근원 suspect pod 이름 필터
+        in: query
+        name: root_pod
+        type: string
+      - description: 종착 victim pod 이름 필터
+        in: query
+        name: terminal_pod
+        type: string
+      - description: root 또는 terminal 의 namespace 필터
+        in: query
+        name: namespace
+        type: string
+      - description: 경로 weakest-link score 하한 필터
+        in: query
+        name: min_score
+        type: number
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.ImpactPathsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+      summary: List multi-hop impact propagation paths
       tags:
       - correlation
   /api/v1/noisy-neighbor:

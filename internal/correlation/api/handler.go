@@ -40,11 +40,14 @@ type CrossLevelSnapshotSource interface {
 	CrossLevelSnapshot() []correlation.CrossLevel
 }
 
-// ImpactGraphSnapshotSource 는 #151 Phase 1 의 영향 전파 그래프 snapshot 을 제공하는 추상 인터페이스다.
-// exporter.Collector 의 ImpactGraphSnapshot() 메서드가 본 인터페이스를 만족한다. test 측에서 fake
-// 그래프 주입 시 사용한다.
+// ImpactGraphSnapshotSource 는 #151 의 영향 전파 그래프 (Phase 1) 와 다단계 경로 / 근원 suspect
+// (Phase 2) snapshot 을 제공하는 추상 인터페이스다. exporter.Collector 가 세 메서드를 모두 만족하므로
+// /api/v1/impact-graph 와 /api/v1/impact-paths 가 동일 source 를 공유한다. test 측에서 fake 주입 시
+// 사용한다.
 type ImpactGraphSnapshotSource interface {
 	ImpactGraphSnapshot() correlation.ImpactGraph
+	ImpactPathsSnapshot() []correlation.ImpactPath
+	RootSuspectsSnapshot() []correlation.RootSuspect
 }
 
 // Handler 는 correlation API endpoint 들 의 의존성을 모은다. SnapshotSource 다섯 종 외 별도 상태가
@@ -99,6 +102,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
 	))
+	mux.Handle("/api/v1/impact-paths", apicommon.Chain(
+		http.HandlerFunc(h.ListImpactPaths),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
 }
 
 // NoisyNeighborListResponse 는 /api/v1/noisy-neighbor 응답 의 typed 표현 이다. swaggo 가 본 구조체
@@ -147,6 +156,20 @@ type ImpactGraphResponse struct {
 type ImpactGraphSummary struct {
 	NodeCount int `json:"node_count"`
 	EdgeCount int `json:"edge_count"`
+}
+
+// ImpactPathsResponse 는 /api/v1/impact-paths 응답의 typed 표현이다 (#151 Phase 2). paths 는 근원
+// suspect 에서 종착 victim 으로 이어지는 다단계 경로, roots 는 근원 suspect 별 영향 범위 요약이다.
+type ImpactPathsResponse struct {
+	Paths   []correlation.ImpactPath  `json:"paths"`
+	Roots   []correlation.RootSuspect `json:"roots"`
+	Summary ImpactPathsSummary        `json:"summary"`
+}
+
+// ImpactPathsSummary 는 경로 / 근원 규모 요약이다.
+type ImpactPathsSummary struct {
+	PathCount int `json:"path_count"`
+	RootCount int `json:"root_count"`
 }
 
 // ErrorResponse 는 swaggo cross-package type resolution 한계 회피 용 으로 ErrorResponse 와
@@ -572,6 +595,77 @@ func (h *Handler) GetImpactGraph(w http.ResponseWriter, _ *http.Request) {
 		Summary: ImpactGraphSummary{
 			NodeCount: len(g.Nodes),
 			EdgeCount: len(g.Edges),
+		},
+	})
+}
+
+// ListImpactPaths 는 /api/v1/impact-paths 의 GET 핸들러다 (#151 Phase 2). 근원 suspect 에서 종착
+// victim 으로 이어지는 다단계 전파 경로와 근원 suspect 요약 (roots) 을 반환한다. root_pod /
+// terminal_pod / namespace / min_score 필터로 특정 근원·종착·강도의 경로만 추릴 수 있다. 그래프 크기가
+// 통제되어 pagination 없이 반환하며 빈 결과는 graceful empty 다.
+//
+// @Summary      List multi-hop impact propagation paths
+// @Description  근원 suspect(root)에서 종착 victim(terminal)으로 이어지는 다단계 경로와 근원 요약 반환. root_pod / terminal_pod / namespace / min_score 필터 지원
+// @Tags         correlation
+// @Produce      json
+// @Param        root_pod      query  string   false  "근원 suspect pod 이름 필터"
+// @Param        terminal_pod  query  string   false  "종착 victim pod 이름 필터"
+// @Param        namespace     query  string   false  "root 또는 terminal 의 namespace 필터"
+// @Param        min_score     query  number   false  "경로 weakest-link score 하한 필터"
+// @Success      200  {object}  ImpactPathsResponse
+// @Failure      400  {object}  ErrorResponse
+// @Router       /api/v1/impact-paths [get]
+func (h *Handler) ListImpactPaths(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	rootPod := strings.TrimSpace(q.Get("root_pod"))
+	terminalPod := strings.TrimSpace(q.Get("terminal_pod"))
+	namespace := strings.TrimSpace(q.Get("namespace"))
+
+	var minScore float64
+	if raw := strings.TrimSpace(q.Get("min_score")); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			apicommon.WriteError(w, http.StatusBadRequest, "invalid_min_score", "min_score 는 실수여야 합니다")
+			return
+		}
+		minScore = v
+	}
+
+	var paths []correlation.ImpactPath
+	var roots []correlation.RootSuspect
+	if h.impactGraphSource != nil {
+		paths = h.impactGraphSource.ImpactPathsSnapshot()
+		roots = h.impactGraphSource.RootSuspectsSnapshot()
+	}
+	filtered := make([]correlation.ImpactPath, 0, len(paths))
+	for _, p := range paths {
+		if rootPod != "" && p.Root.Pod != rootPod {
+			continue
+		}
+		if terminalPod != "" && p.Terminal.Pod != terminalPod {
+			continue
+		}
+		if namespace != "" && p.Root.Namespace != namespace && p.Terminal.Namespace != namespace {
+			continue
+		}
+		if minScore > 0 && p.Score < minScore {
+			continue
+		}
+		filtered = append(filtered, p)
+	}
+	if filtered == nil {
+		filtered = []correlation.ImpactPath{}
+	}
+	if roots == nil {
+		roots = []correlation.RootSuspect{}
+	}
+
+	apicommon.WriteJSON(w, ImpactPathsResponse{
+		Paths: filtered,
+		Roots: roots,
+		Summary: ImpactPathsSummary{
+			PathCount: len(filtered),
+			RootCount: len(roots),
 		},
 	})
 }
