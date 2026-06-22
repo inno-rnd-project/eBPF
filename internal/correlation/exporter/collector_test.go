@@ -41,10 +41,10 @@ func TestCollector_EmitsScoreAndLag(t *testing.T) {
 	expected := `
 # HELP correlation_noisy_neighbor_lag_seconds score 가 최대 절대값을 보인 lag 의 초 단위 환산. 양수면 suspect 변동이 victim latency 를 N 초 선행하는 인과 방향이다.
 # TYPE correlation_noisy_neighbor_lag_seconds gauge
-correlation_noisy_neighbor_lag_seconds{rank="1",resource_dimension="cpu",suspect_namespace="default",suspect_pod="s1",suspect_pod_uid="uid-s1",victim_namespace="default",victim_pod="v1",victim_pod_uid="uid-v1"} 60
+correlation_noisy_neighbor_lag_seconds{rank="1",resource_dimension="cpu",suspect_namespace="default",suspect_pod="s1",suspect_pod_uid="uid-s1",victim_namespace="default",victim_pod="v1",victim_pod_uid="uid-v1",victim_signal="latency"} 60
 # HELP correlation_noisy_neighbor_score Pearson 상관계수 최대 절대값. 1.0 에 가까울수록 suspect 자원 압박과 victim latency 가 강한 동조를 보인다.
 # TYPE correlation_noisy_neighbor_score gauge
-correlation_noisy_neighbor_score{rank="1",resource_dimension="cpu",suspect_namespace="default",suspect_pod="s1",suspect_pod_uid="uid-s1",victim_namespace="default",victim_pod="v1",victim_pod_uid="uid-v1"} 0.85
+correlation_noisy_neighbor_score{rank="1",resource_dimension="cpu",suspect_namespace="default",suspect_pod="s1",suspect_pod_uid="uid-s1",victim_namespace="default",victim_pod="v1",victim_pod_uid="uid-v1",victim_signal="latency"} 0.85
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"correlation_noisy_neighbor_score", "correlation_noisy_neighbor_lag_seconds"); err != nil {
@@ -148,6 +148,28 @@ func TestCollector_EmptySnapshot(t *testing.T) {
 	c.Replace([]correlation.NoisyNeighbor{})
 	if count := testutil.CollectAndCount(c, "correlation_noisy_neighbor_score"); count != 0 {
 		t.Errorf("empty replace count=%d want 0", count)
+	}
+}
+
+// TestCollector_EmitsVictimSignalLabel 은 #150 의 victim_signal 라벨이 latency / throughput 신호별로
+// 구분 emit 되는지 검증한다. throughput victim 은 ImpactOK=false 라 impact_seconds 시리즈가 없어야 한다.
+func TestCollector_EmitsVictimSignalLabel(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	tput := neighbor("v1", "s1", correlation.DimensionCPU, 1, 0.8, 1)
+	tput.VictimSignal = correlation.SignalThroughput
+	tput.Impact = 0.05
+	tput.ImpactOK = false // SelectTopN 이 latency 외 victim 의 impact 를 gate
+	c.Replace([]correlation.NoisyNeighbor{tput})
+
+	want := `# HELP correlation_noisy_neighbor_score Pearson 상관계수 최대 절대값. 1.0 에 가까울수록 suspect 자원 압박과 victim latency 가 강한 동조를 보인다.
+# TYPE correlation_noisy_neighbor_score gauge
+correlation_noisy_neighbor_score{rank="1",resource_dimension="cpu",suspect_namespace="default",suspect_pod="s1",suspect_pod_uid="uid-s1",victim_namespace="default",victim_pod="v1",victim_pod_uid="uid-v1",victim_signal="throughput"} 0.8
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(want), "correlation_noisy_neighbor_score"); err != nil {
+		t.Errorf("throughput victim_signal emit mismatch:\n%v", err)
+	}
+	if count := testutil.CollectAndCount(c, "correlation_noisy_neighbor_impact_seconds"); count != 0 {
+		t.Errorf("impact series=%d want 0 (throughput victim 은 impact gate)", count)
 	}
 }
 
@@ -395,7 +417,7 @@ func TestCollector_EmitsImpact(t *testing.T) {
 	expected := `
 # HELP correlation_noisy_neighbor_impact_seconds #146 의 effect size. suspect 압박 구간과 비압박 구간의 victim latency 차이 (seconds) 로 간섭의 절대 영향 크기다. score (상관 강도) 가 동조 여부를 본다면 본 메트릭은 victim 을 실제로 얼마나 느리게 만들었는지의 크기를 노출해 운영자가 우선순위를 판단하게 한다. 표본 부족 등으로 산정이 skip (ImpactOK=false) 된 시리즈는 emit 되지 않아 0 noise 가 끼지 않는다.
 # TYPE correlation_noisy_neighbor_impact_seconds gauge
-correlation_noisy_neighbor_impact_seconds{rank="1",resource_dimension="cpu",suspect_namespace="default",suspect_pod="s1",suspect_pod_uid="uid-s1",victim_namespace="default",victim_pod="v1",victim_pod_uid="uid-v1"} 0.042
+correlation_noisy_neighbor_impact_seconds{rank="1",resource_dimension="cpu",suspect_namespace="default",suspect_pod="s1",suspect_pod_uid="uid-s1",victim_namespace="default",victim_pod="v1",victim_pod_uid="uid-v1",victim_signal="latency"} 0.042
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "correlation_noisy_neighbor_impact_seconds"); err != nil {
 		t.Errorf("impact metric mismatch: %v", err)
