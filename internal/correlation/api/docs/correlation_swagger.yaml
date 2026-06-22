@@ -145,6 +145,46 @@ definitions:
       error:
         $ref: '#/definitions/internal_correlation_api.ErrorDetail'
     type: object
+  internal_correlation_api.ImpactGraphResponse:
+    properties:
+      edges:
+        items:
+          $ref: '#/definitions/netobs_internal_correlation.ImpactGraphEdge'
+        type: array
+      nodes:
+        items:
+          $ref: '#/definitions/netobs_internal_correlation.ImpactGraphNode'
+        type: array
+      summary:
+        $ref: '#/definitions/internal_correlation_api.ImpactGraphSummary'
+    type: object
+  internal_correlation_api.ImpactGraphSummary:
+    properties:
+      edge_count:
+        type: integer
+      node_count:
+        type: integer
+    type: object
+  internal_correlation_api.ImpactPathsResponse:
+    properties:
+      paths:
+        items:
+          $ref: '#/definitions/netobs_internal_correlation.ImpactPath'
+        type: array
+      roots:
+        items:
+          $ref: '#/definitions/netobs_internal_correlation.RootSuspect'
+        type: array
+      summary:
+        $ref: '#/definitions/internal_correlation_api.ImpactPathsSummary'
+    type: object
+  internal_correlation_api.ImpactPathsSummary:
+    properties:
+      path_count:
+        type: integer
+      root_count:
+        type: integer
+    type: object
   internal_correlation_api.NoisyNeighborListResponse:
     properties:
       items:
@@ -253,6 +293,70 @@ definitions:
     x-enum-varnames:
     - DirectionNodeToPod
     - DirectionPodToNode
+  netobs_internal_correlation.ImpactGraphEdge:
+    properties:
+      dimension:
+        $ref: '#/definitions/netobs_internal_correlation.ResourceDimension'
+      granger_ok:
+        type: boolean
+      lag_steps:
+        type: integer
+      p_value:
+        type: number
+      score:
+        type: number
+      suspect:
+        $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
+      victim:
+        $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
+      victim_signal:
+        $ref: '#/definitions/netobs_internal_correlation.VictimSignal'
+    type: object
+  netobs_internal_correlation.ImpactGraphNode:
+    properties:
+      in_degree:
+        type: integer
+      namespace:
+        type: string
+      out_degree:
+        type: integer
+      pod:
+        type: string
+      pod_uid:
+        type: string
+    type: object
+  netobs_internal_correlation.ImpactPath:
+    properties:
+      depth:
+        type: integer
+      hops:
+        items:
+          $ref: '#/definitions/netobs_internal_correlation.ImpactPathHop'
+        type: array
+      root:
+        $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
+      root_kind:
+        $ref: '#/definitions/netobs_internal_correlation.RootKind'
+      score:
+        type: number
+      terminal:
+        $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
+    type: object
+  netobs_internal_correlation.ImpactPathHop:
+    properties:
+      dimension:
+        $ref: '#/definitions/netobs_internal_correlation.ResourceDimension'
+      lag_steps:
+        type: integer
+      score:
+        type: number
+      suspect:
+        $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
+      victim:
+        $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
+      victim_signal:
+        $ref: '#/definitions/netobs_internal_correlation.VictimSignal'
+    type: object
   netobs_internal_correlation.NodeInterference:
     properties:
       dimension:
@@ -346,6 +450,25 @@ definitions:
     - DimensionNetwork
     - DimensionGPU
     - DimensionUnknown
+  netobs_internal_correlation.RootKind:
+    enum:
+    - source
+    - net_source
+    type: string
+    x-enum-varnames:
+    - RootKindSource
+    - RootKindNetSource
+  netobs_internal_correlation.RootSuspect:
+    properties:
+      kind:
+        $ref: '#/definitions/netobs_internal_correlation.RootKind'
+      path_count:
+        type: integer
+      reach:
+        type: integer
+      root:
+        $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
+    type: object
   netobs_internal_correlation.ServiceImpact:
     properties:
       dimension:
@@ -631,6 +754,68 @@ paths:
       summary: List GPU resource usage
       tags:
       - gpuobs
+  /api/v1/impact-graph:
+    get:
+      description: suspect → victim 1-hop 엣지로 구성된 영향 전파 그래프의 정점 (out/in degree 포함)
+        과 엣지 반환. namespace / min_score 로 유도 부분그래프를 추릴 수 있다
+      parameters:
+      - description: suspect 또는 victim 이 이 namespace 인 엣지만 (유도 부분그래프)
+        in: query
+        name: namespace
+        type: string
+      - description: score 가 이 값 이상인 엣지만
+        in: query
+        name: min_score
+        type: number
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.ImpactGraphResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+      summary: Get impact propagation graph
+      tags:
+      - correlation
+  /api/v1/impact-paths:
+    get:
+      description: 근원 suspect(root)에서 종착 victim(terminal)으로 이어지는 다단계 경로와 근원 요약 반환.
+        root_pod / terminal_pod / namespace / min_score 필터 지원
+      parameters:
+      - description: 근원 suspect pod 이름 필터
+        in: query
+        name: root_pod
+        type: string
+      - description: 종착 victim pod 이름 필터
+        in: query
+        name: terminal_pod
+        type: string
+      - description: root 또는 terminal 의 namespace 필터
+        in: query
+        name: namespace
+        type: string
+      - description: 경로 weakest-link score 하한 필터
+        in: query
+        name: min_score
+        type: number
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.ImpactPathsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+      summary: List multi-hop impact propagation paths
+      tags:
+      - correlation
   /api/v1/noisy-neighbor:
     get:
       description: victim/suspect 와 dimension 과 rank 필터 후 pagination 적용한 noisy neighbor

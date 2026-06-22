@@ -377,6 +377,98 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "/api/v1/impact-graph": {
+            "get": {
+                "description": "suspect → victim 1-hop 엣지로 구성된 영향 전파 그래프의 정점 (out/in degree 포함) 과 엣지 반환. namespace / min_score 로 유도 부분그래프를 추릴 수 있다",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "correlation"
+                ],
+                "summary": "Get impact propagation graph",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "suspect 또는 victim 이 이 namespace 인 엣지만 (유도 부분그래프)",
+                        "name": "namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "number",
+                        "description": "score 가 이 값 이상인 엣지만",
+                        "name": "min_score",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.ImpactGraphResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/impact-paths": {
+            "get": {
+                "description": "근원 suspect(root)에서 종착 victim(terminal)으로 이어지는 다단계 경로와 근원 요약 반환. root_pod / terminal_pod / namespace / min_score 필터 지원",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "correlation"
+                ],
+                "summary": "List multi-hop impact propagation paths",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "근원 suspect pod 이름 필터",
+                        "name": "root_pod",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "종착 victim pod 이름 필터",
+                        "name": "terminal_pod",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "root 또는 terminal 의 namespace 필터",
+                        "name": "namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "number",
+                        "description": "경로 weakest-link score 하한 필터",
+                        "name": "min_score",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.ImpactPathsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/noisy-neighbor": {
             "get": {
                 "description": "victim/suspect 와 dimension 과 rank 필터 후 pagination 적용한 noisy neighbor 시리즈 반환",
@@ -755,6 +847,68 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "internal_correlation_api.ImpactGraphResponse": {
+            "type": "object",
+            "properties": {
+                "edges": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/netobs_internal_correlation.ImpactGraphEdge"
+                    }
+                },
+                "nodes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/netobs_internal_correlation.ImpactGraphNode"
+                    }
+                },
+                "summary": {
+                    "$ref": "#/definitions/internal_correlation_api.ImpactGraphSummary"
+                }
+            }
+        },
+        "internal_correlation_api.ImpactGraphSummary": {
+            "type": "object",
+            "properties": {
+                "edge_count": {
+                    "type": "integer"
+                },
+                "node_count": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_correlation_api.ImpactPathsResponse": {
+            "type": "object",
+            "properties": {
+                "paths": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/netobs_internal_correlation.ImpactPath"
+                    }
+                },
+                "roots": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/netobs_internal_correlation.RootSuspect"
+                    }
+                },
+                "summary": {
+                    "$ref": "#/definitions/internal_correlation_api.ImpactPathsSummary"
+                }
+            }
+        },
+        "internal_correlation_api.ImpactPathsSummary": {
+            "type": "object",
+            "properties": {
+                "path_count": {
+                    "type": "integer"
+                },
+                "root_count": {
+                    "type": "integer"
+                }
+            }
+        },
         "internal_correlation_api.NoisyNeighborListResponse": {
             "type": "object",
             "properties": {
@@ -921,6 +1075,104 @@ const docTemplatecorrelation = `{
                 "DirectionPodToNode"
             ]
         },
+        "netobs_internal_correlation.ImpactGraphEdge": {
+            "type": "object",
+            "properties": {
+                "dimension": {
+                    "$ref": "#/definitions/netobs_internal_correlation.ResourceDimension"
+                },
+                "granger_ok": {
+                    "type": "boolean"
+                },
+                "lag_steps": {
+                    "type": "integer"
+                },
+                "p_value": {
+                    "type": "number"
+                },
+                "score": {
+                    "type": "number"
+                },
+                "suspect": {
+                    "$ref": "#/definitions/netobs_internal_correlation.PodIdentity"
+                },
+                "victim": {
+                    "$ref": "#/definitions/netobs_internal_correlation.PodIdentity"
+                },
+                "victim_signal": {
+                    "$ref": "#/definitions/netobs_internal_correlation.VictimSignal"
+                }
+            }
+        },
+        "netobs_internal_correlation.ImpactGraphNode": {
+            "type": "object",
+            "properties": {
+                "in_degree": {
+                    "type": "integer"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "out_degree": {
+                    "type": "integer"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "pod_uid": {
+                    "type": "string"
+                }
+            }
+        },
+        "netobs_internal_correlation.ImpactPath": {
+            "type": "object",
+            "properties": {
+                "depth": {
+                    "type": "integer"
+                },
+                "hops": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/netobs_internal_correlation.ImpactPathHop"
+                    }
+                },
+                "root": {
+                    "$ref": "#/definitions/netobs_internal_correlation.PodIdentity"
+                },
+                "root_kind": {
+                    "$ref": "#/definitions/netobs_internal_correlation.RootKind"
+                },
+                "score": {
+                    "type": "number"
+                },
+                "terminal": {
+                    "$ref": "#/definitions/netobs_internal_correlation.PodIdentity"
+                }
+            }
+        },
+        "netobs_internal_correlation.ImpactPathHop": {
+            "type": "object",
+            "properties": {
+                "dimension": {
+                    "$ref": "#/definitions/netobs_internal_correlation.ResourceDimension"
+                },
+                "lag_steps": {
+                    "type": "integer"
+                },
+                "score": {
+                    "type": "number"
+                },
+                "suspect": {
+                    "$ref": "#/definitions/netobs_internal_correlation.PodIdentity"
+                },
+                "victim": {
+                    "$ref": "#/definitions/netobs_internal_correlation.PodIdentity"
+                },
+                "victim_signal": {
+                    "$ref": "#/definitions/netobs_internal_correlation.VictimSignal"
+                }
+            }
+        },
         "netobs_internal_correlation.NodeInterference": {
             "type": "object",
             "properties": {
@@ -1044,6 +1296,34 @@ const docTemplatecorrelation = `{
                 "DimensionGPU",
                 "DimensionUnknown"
             ]
+        },
+        "netobs_internal_correlation.RootKind": {
+            "type": "string",
+            "enum": [
+                "source",
+                "net_source"
+            ],
+            "x-enum-varnames": [
+                "RootKindSource",
+                "RootKindNetSource"
+            ]
+        },
+        "netobs_internal_correlation.RootSuspect": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "$ref": "#/definitions/netobs_internal_correlation.RootKind"
+                },
+                "path_count": {
+                    "type": "integer"
+                },
+                "reach": {
+                    "type": "integer"
+                },
+                "root": {
+                    "$ref": "#/definitions/netobs_internal_correlation.PodIdentity"
+                }
+            }
         },
         "netobs_internal_correlation.ServiceImpact": {
             "type": "object",

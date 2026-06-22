@@ -100,6 +100,26 @@ type Config struct {
 	// 있으면 모든 namespace 를 허용하고 CrossLevelMaxPairs 캡이 backstop 이 된다. 운영자가 특정
 	// namespace (예: latency-sensitive app) 로 좁혀 페어 수를 줄이는 카디널리티 통제 수단이다.
 	CrossLevelAllowNamespaces []string
+
+	// ImpactGraphEnabled 는 #151 Phase 1 의 영향 전파 그래프 토글이다. true 일 때 exporter 가 매 reconcile
+	// cycle 의 noisy neighbor Top-N 을 정점 (pod) 과 방향 엣지 (suspect → victim) 로 하는 in-memory
+	// 그래프로 구성해 REST API 와 node degree 메트릭으로 노출한다. 같은 토글이 켜져 있으면 Phase 2 의
+	// 다단계 경로 추출 (ExtractImpactPaths) 도 함께 수행된다. 새 Prometheus fetch 없이 기존 Top-N 을
+	// 재사용하므로 비용이 작다. #151 부터 default true 이며 IMPACT_GRAPH=false env 또는
+	// -impact-graph=false flag 로 opt-out 한다.
+	ImpactGraphEnabled bool
+
+	// ImpactPathMaxDepth 는 #151 Phase 2 다단계 경로 추출의 최대 hop 수다. 깊은 경로는 의미가 흐려지고
+	// 조밀 그래프에서 경로 수가 폭증하므로 본 값으로 제한한다. 0 이하면 5 로 fallback 한다.
+	ImpactPathMaxDepth int
+
+	// ImpactPathMinScore 는 경로 엣지로 인정할 최소 상관 score 다. 이 미만 엣지는 약한 전파로 보고
+	// 가지치기해 경로의 의미와 cardinality 를 통제한다.
+	ImpactPathMinScore float64
+
+	// ImpactPathMaxPaths 는 추출 경로 수의 상한이다. 조밀 그래프의 조합 폭발을 방어하는 backstop 이며
+	// 0 이하면 1024 로 fallback 한다.
+	ImpactPathMaxPaths int
 }
 
 // PlannedQueries 는 활성 layer 를 반영해 Correlate 가 fetch 할 query 의 dedup 합집합을 반환한다.
@@ -203,5 +223,12 @@ func DefaultConfig() Config {
 		CrossLevelEnabled:         true,
 		CrossLevelMaxPairs:        4096,
 		CrossLevelAllowNamespaces: nil,
+		// #151 Phase 1 영향 전파 그래프. 기존 noisy neighbor Top-N 을 재사용해 새 입력 query 가 없다.
+		ImpactGraphEnabled: true,
+		// #151 Phase 2 다단계 경로 추출 기본값. max_depth 5 로 깊이를 제한하고 min_score 0.5 로 약한
+		// 엣지를 가지치기하며 max_paths 1024 를 조합 폭발 backstop 으로 둔다.
+		ImpactPathMaxDepth: 5,
+		ImpactPathMinScore: 0.5,
+		ImpactPathMaxPaths: 1024,
 	}
 }

@@ -40,21 +40,31 @@ type CrossLevelSnapshotSource interface {
 	CrossLevelSnapshot() []correlation.CrossLevel
 }
 
-// Handler 는 correlation API endpoint 들 의 의존성을 모은다. SnapshotSource 네 종 외 별도 상태가
+// ImpactGraphSnapshotSource 는 #151 의 영향 전파 그래프 (Phase 1) 와 다단계 경로 (Phase 2) snapshot 을
+// 제공하는 추상 인터페이스다. exporter.Collector 가 두 메서드를 모두 만족하므로 /api/v1/impact-graph 와
+// /api/v1/impact-paths 가 동일 source 를 공유한다. 근원 요약은 handler 가 필터된 경로에서 재집계하므로
+// 별도 snapshot 메서드를 두지 않는다. test 측에서 fake 주입 시 사용한다.
+type ImpactGraphSnapshotSource interface {
+	ImpactGraphSnapshot() correlation.ImpactGraph
+	ImpactPathsSnapshot() []correlation.ImpactPath
+}
+
+// Handler 는 correlation API endpoint 들 의 의존성을 모은다. SnapshotSource 다섯 종 외 별도 상태가
 // 없어 동시 호출 안전 (각 Snapshot() 내부 RLock).
 type Handler struct {
 	source              SnapshotSource
 	crossNodeSource     CrossNodeSnapshotSource
 	serviceImpactSource ServiceImpactSnapshotSource
 	crossLevelSource    CrossLevelSnapshotSource
+	impactGraphSource   ImpactGraphSnapshotSource
 }
 
-// NewHandler 는 네 SnapshotSource 를 주입 받아 API handler 를 만든다. cmd/correlation-exporter/main.go
-// 의 main 함수 에서 exporter.Collector 가 네 인터페이스 를 모두 만족 하므로 동일 인스턴스 를 네 번
-// 전달 한다. crossNodeSource / serviceImpactSource / crossLevelSource 가 nil 이면 해당 endpoint 가
-// graceful empty response 를 돌려 준다.
-func NewHandler(source SnapshotSource, crossNodeSource CrossNodeSnapshotSource, serviceImpactSource ServiceImpactSnapshotSource, crossLevelSource CrossLevelSnapshotSource) *Handler {
-	return &Handler{source: source, crossNodeSource: crossNodeSource, serviceImpactSource: serviceImpactSource, crossLevelSource: crossLevelSource}
+// NewHandler 는 다섯 SnapshotSource 를 주입 받아 API handler 를 만든다. cmd/correlation-exporter/main.go
+// 의 main 함수 에서 exporter.Collector 가 다섯 인터페이스 를 모두 만족 하므로 동일 인스턴스 를 다섯 번
+// 전달 한다. crossNodeSource / serviceImpactSource / crossLevelSource / impactGraphSource 가 nil 이면
+// 해당 endpoint 가 graceful empty response 를 돌려 준다.
+func NewHandler(source SnapshotSource, crossNodeSource CrossNodeSnapshotSource, serviceImpactSource ServiceImpactSnapshotSource, crossLevelSource CrossLevelSnapshotSource, impactGraphSource ImpactGraphSnapshotSource) *Handler {
+	return &Handler{source: source, crossNodeSource: crossNodeSource, serviceImpactSource: serviceImpactSource, crossLevelSource: crossLevelSource, impactGraphSource: impactGraphSource}
 }
 
 // Register 는 ServeMux 에 /api/v1/noisy-neighbor 와 /api/v1/cross-node-interference 두 라우트 를 등록
@@ -81,6 +91,18 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	))
 	mux.Handle("/api/v1/cross-level", apicommon.Chain(
 		http.HandlerFunc(h.ListCrossLevel),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
+	mux.Handle("/api/v1/impact-graph", apicommon.Chain(
+		http.HandlerFunc(h.GetImpactGraph),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
+	mux.Handle("/api/v1/impact-paths", apicommon.Chain(
+		http.HandlerFunc(h.ListImpactPaths),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
@@ -117,6 +139,36 @@ type ServiceImpactListResponse struct {
 type CrossLevelListResponse struct {
 	Items []correlation.CrossLevel `json:"items"`
 	Page  apicommon.Page           `json:"page"`
+}
+
+// ImpactGraphResponse 는 /api/v1/impact-graph 응답의 typed 표현이다 (#151 Phase 1). 그래프는 페어
+// 리스트가 아니라 정점과 엣지로 구성된 단일 객체라 다른 List 응답의 items/page 형식 대신 nodes /
+// edges / summary 형식을 쓴다. 그래프 크기가 noisy neighbor Top-N 으로 통제되어 전체를 한 번에
+// 반환한다.
+type ImpactGraphResponse struct {
+	Nodes   []correlation.ImpactGraphNode `json:"nodes"`
+	Edges   []correlation.ImpactGraphEdge `json:"edges"`
+	Summary ImpactGraphSummary            `json:"summary"`
+}
+
+// ImpactGraphSummary 는 그래프 규모 요약이다. dashboard 가 정점 / 엣지 수를 빠르게 파악하게 한다.
+type ImpactGraphSummary struct {
+	NodeCount int `json:"node_count"`
+	EdgeCount int `json:"edge_count"`
+}
+
+// ImpactPathsResponse 는 /api/v1/impact-paths 응답의 typed 표현이다 (#151 Phase 2). paths 는 근원
+// suspect 에서 종착 victim 으로 이어지는 다단계 경로, roots 는 근원 suspect 별 영향 범위 요약이다.
+type ImpactPathsResponse struct {
+	Paths   []correlation.ImpactPath  `json:"paths"`
+	Roots   []correlation.RootSuspect `json:"roots"`
+	Summary ImpactPathsSummary        `json:"summary"`
+}
+
+// ImpactPathsSummary 는 경로 / 근원 규모 요약이다.
+type ImpactPathsSummary struct {
+	PathCount int `json:"path_count"`
+	RootCount int `json:"root_count"`
 }
 
 // ErrorResponse 는 swaggo cross-package type resolution 한계 회피 용 으로 ErrorResponse 와
@@ -510,4 +562,127 @@ func (h *Handler) ListCrossLevel(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	apicommon.WriteJSON(w, resp)
+}
+
+// GetImpactGraph 는 /api/v1/impact-graph 의 GET 핸들러다 (#151 Phase 1). 영향 전파 그래프의 정점과
+// 엣지 전체를 nodes / edges / summary 형식으로 반환한다. 그래프 크기가 noisy neighbor Top-N 으로
+// 통제되어 pagination 없이 한 번에 돌려 준다. 첫 reconcile 전이거나 ImpactGraphEnabled=false 면 빈
+// 그래프를 graceful 하게 반환한다. transitive 경로 추출과 필터는 Phase 2 에서 추가한다.
+//
+// @Summary      Get impact propagation graph
+// @Description  suspect → victim 1-hop 엣지로 구성된 영향 전파 그래프의 정점 (out/in degree 포함) 과 엣지 반환. namespace / min_score 로 유도 부분그래프를 추릴 수 있다
+// @Tags         correlation
+// @Produce      json
+// @Param        namespace  query  string  false  "suspect 또는 victim 이 이 namespace 인 엣지만 (유도 부분그래프)"
+// @Param        min_score  query  number  false  "score 가 이 값 이상인 엣지만"
+// @Success      200  {object}  ImpactGraphResponse
+// @Failure      400  {object}  ErrorResponse
+// @Router       /api/v1/impact-graph [get]
+func (h *Handler) GetImpactGraph(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	namespace := strings.TrimSpace(q.Get("namespace"))
+	var minScore float64
+	if raw := strings.TrimSpace(q.Get("min_score")); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			apicommon.WriteError(w, http.StatusBadRequest, "invalid_min_score", "min_score 는 실수여야 합니다")
+			return
+		}
+		minScore = v
+	}
+
+	var g correlation.ImpactGraph
+	if h.impactGraphSource != nil {
+		g = h.impactGraphSource.ImpactGraphSnapshot()
+	}
+	if namespace != "" || minScore > 0 {
+		g = g.Filter(namespace, minScore)
+	}
+	// nil 슬라이스는 JSON 에서 null 로 직렬화되므로 빈 슬라이스로 정규화해 응답이 항상 nodes:[] /
+	// edges:[] 형태를 유지하게 한다 (graceful empty).
+	if g.Nodes == nil {
+		g.Nodes = []correlation.ImpactGraphNode{}
+	}
+	if g.Edges == nil {
+		g.Edges = []correlation.ImpactGraphEdge{}
+	}
+	apicommon.WriteJSON(w, ImpactGraphResponse{
+		Nodes: g.Nodes,
+		Edges: g.Edges,
+		Summary: ImpactGraphSummary{
+			NodeCount: len(g.Nodes),
+			EdgeCount: len(g.Edges),
+		},
+	})
+}
+
+// ListImpactPaths 는 /api/v1/impact-paths 의 GET 핸들러다 (#151 Phase 2). 근원 suspect 에서 종착
+// victim 으로 이어지는 다단계 전파 경로와 근원 suspect 요약 (roots) 을 반환한다. root_pod /
+// terminal_pod / namespace / min_score 필터로 특정 근원·종착·강도의 경로만 추릴 수 있다. 그래프 크기가
+// 통제되어 pagination 없이 반환하며 빈 결과는 graceful empty 다.
+//
+// @Summary      List multi-hop impact propagation paths
+// @Description  근원 suspect(root)에서 종착 victim(terminal)으로 이어지는 다단계 경로와 근원 요약 반환. root_pod / terminal_pod / namespace / min_score 필터 지원
+// @Tags         correlation
+// @Produce      json
+// @Param        root_pod      query  string   false  "근원 suspect pod 이름 필터"
+// @Param        terminal_pod  query  string   false  "종착 victim pod 이름 필터"
+// @Param        namespace     query  string   false  "root 또는 terminal 의 namespace 필터"
+// @Param        min_score     query  number   false  "경로 weakest-link score 하한 필터"
+// @Success      200  {object}  ImpactPathsResponse
+// @Failure      400  {object}  ErrorResponse
+// @Router       /api/v1/impact-paths [get]
+func (h *Handler) ListImpactPaths(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	rootPod := strings.TrimSpace(q.Get("root_pod"))
+	terminalPod := strings.TrimSpace(q.Get("terminal_pod"))
+	namespace := strings.TrimSpace(q.Get("namespace"))
+
+	var minScore float64
+	if raw := strings.TrimSpace(q.Get("min_score")); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			apicommon.WriteError(w, http.StatusBadRequest, "invalid_min_score", "min_score 는 실수여야 합니다")
+			return
+		}
+		minScore = v
+	}
+
+	var paths []correlation.ImpactPath
+	if h.impactGraphSource != nil {
+		paths = h.impactGraphSource.ImpactPathsSnapshot()
+	}
+	filtered := make([]correlation.ImpactPath, 0, len(paths))
+	for _, p := range paths {
+		if rootPod != "" && p.Root.Pod != rootPod {
+			continue
+		}
+		if terminalPod != "" && p.Terminal.Pod != terminalPod {
+			continue
+		}
+		if namespace != "" && p.Root.Namespace != namespace && p.Terminal.Namespace != namespace {
+			continue
+		}
+		if minScore > 0 && p.Score < minScore {
+			continue
+		}
+		filtered = append(filtered, p)
+	}
+	if filtered == nil {
+		filtered = []correlation.ImpactPath{}
+	}
+	// 근원 요약은 필터된 경로에서 재집계해 paths 와 roots 가 항상 같은 부분집합을 가리키게 한다.
+	roots := correlation.RootSuspects(filtered)
+	if roots == nil {
+		roots = []correlation.RootSuspect{}
+	}
+
+	apicommon.WriteJSON(w, ImpactPathsResponse{
+		Paths: filtered,
+		Roots: roots,
+		Summary: ImpactPathsSummary{
+			PathCount: len(filtered),
+			RootCount: len(roots),
+		},
+	})
 }
