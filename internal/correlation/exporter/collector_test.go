@@ -173,6 +173,82 @@ correlation_noisy_neighbor_score{rank="1",resource_dimension="cpu",suspect_names
 	}
 }
 
+// TestCollector_EmitsImpactGraphNodeDegree 는 #151 의 ReplaceImpactGraph 가 보관한 그래프 정점의
+// out / in degree 가 correlation_impact_graph_node_degree gauge 로 정점당 2 series (direction out/in)
+// emit 되고 값이 정확한지 검증한다.
+func TestCollector_EmitsImpactGraphNodeDegree(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	// suspect a → victim b. a: out=1/in=0, b: out=0/in=1.
+	g := correlation.BuildImpactGraph([]correlation.NoisyNeighbor{
+		neighbor("b", "a", correlation.DimensionCPU, 1, 0.9, 1),
+	})
+	c.ReplaceImpactGraph(g)
+
+	if count := testutil.CollectAndCount(c, "correlation_impact_graph_node_degree"); count != 4 {
+		t.Fatalf("degree series=%d want 4 (정점 2 * direction 2)", count)
+	}
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	got := map[string]float64{} // "pod/direction" -> value
+	for _, mf := range mfs {
+		if mf.GetName() != "correlation_impact_graph_node_degree" {
+			continue
+		}
+		for _, m := range mf.Metric {
+			var pod, dir string
+			for _, lp := range m.Label {
+				switch lp.GetName() {
+				case "pod":
+					pod = lp.GetValue()
+				case "direction":
+					dir = lp.GetValue()
+				}
+			}
+			got[pod+"/"+dir] = m.GetGauge().GetValue()
+		}
+	}
+	if got["a/out"] != 1 || got["a/in"] != 0 || got["b/out"] != 0 || got["b/in"] != 1 {
+		t.Errorf("degree 값 오류: %v want a/out=1 a/in=0 b/out=0 b/in=1", got)
+	}
+}
+
+// TestCollector_ImpactGraphEmptySnapshot 은 빈 그래프 (ImpactGraphEnabled=false 또는 첫 reconcile 전)
+// 에서 degree series 가 0 개 emit 되는지 검증한다.
+func TestCollector_ImpactGraphEmptySnapshot(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	if count := testutil.CollectAndCount(c, "correlation_impact_graph_node_degree"); count != 0 {
+		t.Errorf("초기 degree count=%d want 0", count)
+	}
+	c.ReplaceImpactGraph(correlation.ImpactGraph{})
+	if count := testutil.CollectAndCount(c, "correlation_impact_graph_node_degree"); count != 0 {
+		t.Errorf("빈 그래프 degree count=%d want 0", count)
+	}
+}
+
+// TestCollector_ImpactGraphSnapshotIndependentCopy 는 ImpactGraphSnapshot 이 내부 상태와 분리된
+// 복사본을 반환해 호출자가 수정해도 내부 그래프가 보존되는지 검증한다.
+func TestCollector_ImpactGraphSnapshotIndependentCopy(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+	c.ReplaceImpactGraph(correlation.BuildImpactGraph([]correlation.NoisyNeighbor{
+		neighbor("b", "a", correlation.DimensionCPU, 1, 0.9, 1),
+	}))
+	snap := c.ImpactGraphSnapshot()
+	if len(snap.Edges) != 1 || len(snap.Nodes) != 2 {
+		t.Fatalf("snapshot nodes=%d edges=%d want 2/1", len(snap.Nodes), len(snap.Edges))
+	}
+	snap.Edges[0].Score = -1
+	snap.Nodes = nil
+	again := c.ImpactGraphSnapshot()
+	if len(again.Nodes) != 2 || again.Edges[0].Score != 0.9 {
+		t.Errorf("내부 그래프가 호출자 수정에 영향받음: nodes=%d score=%v", len(again.Nodes), again.Edges[0].Score)
+	}
+}
+
 // TestCollector_EmitsCrossNodeScore 는 ReplaceCrossNode 가 보관한 NodeInterference snapshot 이
 // correlation_cross_node_score gauge 로 정확히 emit 되는지 검증한다. victim_node, suspect_node,
 // dimension 3 라벨 셋이 라벨 셋 분리 정책에 정합하는지 회귀 가드 다.

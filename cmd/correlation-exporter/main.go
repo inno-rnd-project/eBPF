@@ -132,6 +132,16 @@ func main() {
 			log.Printf("warn: invalid CROSS_LEVEL=%q; using default %v", v, cfg.CrossLevelEnabled)
 		}
 	}
+	// #151 Phase 1 영향 전파 그래프 토글. default 활성 (config.DefaultConfig) 이며 IMPACT_GRAPH 환경
+	// 변수로 양방향 override 한다. 다른 토글과 동일하게 strconv.ParseBool 로 해석하고 parse 실패 값은
+	// default 를 유지한다. -impact-graph flag 가 제공되면 그 값이 env 를 덮어쓰므로 warn 을 생략한다.
+	if v := strings.TrimSpace(os.Getenv("IMPACT_GRAPH")); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			cfg.ImpactGraphEnabled = parsed
+		} else if !hasCLIFlag(os.Args[1:], "impact-graph") {
+			log.Printf("warn: invalid IMPACT_GRAPH=%q; using default %v", v, cfg.ImpactGraphEnabled)
+		}
+	}
 
 	fs := flag.NewFlagSet("correlation-exporter", flag.ContinueOnError)
 	fs.StringVar(&cfg.PrometheusURL, "prometheus-url", cfg.PrometheusURL, "Prometheus base URL (env PROMETHEUS_URL fallback)")
@@ -145,6 +155,7 @@ func main() {
 	fs.BoolVar(&cfg.CrossNodeEnabled, "cross-node", cfg.CrossNodeEnabled, "#84/#147: cross-node interference layer (node-level pair enumeration, correlation_cross_node_score gauge). Default enabled; set -cross-node=false or CROSS_NODE=false to opt out on very large clusters")
 	fs.BoolVar(&cfg.ServiceImpactEnabled, "service-impact", cfg.ServiceImpactEnabled, "#148: service-impact layer (node pressure vs workload-level latency, correlation_service_impact_score gauge). Default enabled; set -service-impact=false or SERVICE_IMPACT=false to opt out on very large clusters")
 	fs.BoolVar(&cfg.CrossLevelEnabled, "cross-level", cfg.CrossLevelEnabled, "#149: cross-level layer (same-node node pressure vs pod latency, both directions, correlation_cross_level_score gauge). Default enabled; set -cross-level=false or CROSS_LEVEL=false to opt out on very large clusters")
+	fs.BoolVar(&cfg.ImpactGraphEnabled, "impact-graph", cfg.ImpactGraphEnabled, "#151 Phase 1: in-memory impact propagation graph (nodes=pods, edges=suspect->victim, correlation_impact_graph_node_degree gauge + /api/v1/impact-graph). Default enabled; set -impact-graph=false or IMPACT_GRAPH=false to opt out")
 
 	var extra stringSlice
 	fs.Var(&extra, "extra-metric", "additional Prometheus query (repeat for multiple)")
@@ -321,13 +332,21 @@ func reconcileOnce(
 	collector.ReplaceCrossLevel(crossLevel)
 	duration := time.Since(cycleStart)
 	cfg := corr.Config()
+	// #151 Phase 1 영향 전파 그래프. neighbors (noisy neighbor Top-N) 를 정점/엣지 그래프로 구성해
+	// 갱신한다. ImpactGraphEnabled 가 false 면 빈 그래프를 전달해 node degree series 가 emit 되지 않고
+	// API 도 빈 그래프를 돌려 준다. 새 Prometheus fetch 없이 neighbors 만 재사용한다.
+	var impactGraph correlation.ImpactGraph
+	if cfg.ImpactGraphEnabled {
+		impactGraph = correlation.BuildImpactGraph(neighbors)
+	}
+	collector.ReplaceImpactGraph(impactGraph)
 	// expectedMetrics 는 활성 layer 가 fetch 하는 distinct query 수다. PlannedQueries 가 layer 간 공유
 	// query (node 압박 score) 를 dedup 하므로 RecordCycle 의 observed distinct metric 수와 정합해
 	// ReconcilePartial 이 거짓 증가하지 않는다.
 	expectedMetrics := len(cfg.PlannedQueries())
 	health.RecordCycle(duration, results, neighbors, expectedMetrics)
 	ready.Store(true)
-	log.Printf("reconcile ok: pairs=%d neighbors=%d cross_node=%d service_impact=%d cross_level=%d duration=%s", len(results), len(neighbors), len(crossNode), len(serviceImpact), len(crossLevel), duration)
+	log.Printf("reconcile ok: pairs=%d neighbors=%d cross_node=%d service_impact=%d cross_level=%d graph_nodes=%d graph_edges=%d duration=%s", len(results), len(neighbors), len(crossNode), len(serviceImpact), len(crossLevel), len(impactGraph.Nodes), len(impactGraph.Edges), duration)
 }
 
 // hasCLIFlag 는 args 에 -flag, --flag, -flag=, --flag= 패턴이 있는지 검사한다. flag 우선 정책을
