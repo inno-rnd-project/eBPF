@@ -79,9 +79,9 @@ func EnumerateServiceImpactPairs(items []LabeledSeries) []ServiceImpactPair {
 		pod := item.Series.Labels["src_pod"]
 		wl := item.Series.Labels["src_workload"]
 		switch {
-		case node != "" && ns == "" && pod == "" && wl == "" && !isLatencyMetric(item.Metric):
+		case node != "" && ns == "" && pod == "" && wl == "" && !isVictimMetric(item.Metric):
 			suspects = append(suspects, item)
-		case ns != "" && wl != "" && pod == "" && isLatencyMetric(item.Metric):
+		case ns != "" && wl != "" && pod == "" && classifyVictimSignal(item.Metric) == SignalLatency:
 			victims = append(victims, victimSeries{namespace: ns, workload: wl, metric: item.Metric, series: item.Series})
 		}
 	}
@@ -166,12 +166,11 @@ func SelectTopNServiceImpact(results []CorrelationResult, topN int) []ServiceImp
 		if r.Status != StatusOK && r.Status != StatusPartial {
 			continue
 		}
-		srcLatency := isLatencyMetric(r.ServiceImpactPair.SuspectMetric)
-		dstLatency := isLatencyMetric(r.ServiceImpactPair.VictimMetric)
-		if srcLatency == dstLatency {
+		// #150 service-impact victim 은 workload latency 단일로 유지한다. suspect 는 victim 이 아닌 압박.
+		if isVictimMetric(r.ServiceImpactPair.SuspectMetric) {
 			continue
 		}
-		if srcLatency {
+		if classifyVictimSignal(r.ServiceImpactPair.VictimMetric) != SignalLatency {
 			continue
 		}
 		dim := classifyDimension(r.ServiceImpactPair.SuspectMetric)

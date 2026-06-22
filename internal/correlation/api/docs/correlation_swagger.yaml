@@ -300,8 +300,8 @@ definitions:
           GrangerOK=false 면 표본 부족 또는 행렬 singular 로 산정이 자연 skip 되었다.
         type: number
       rank:
-        description: Rank 는 (victim, dimension) 그룹 내 max_abs_value 내림차순 1-based 순위다.
-          1 이 가장 강한 상관.
+        description: Rank 는 (victim, victim_signal, dimension) 그룹 내 max_abs_value
+          내림차순 1-based 순위다. 1 이 가장 강한 상관.
         type: integer
       sample_count:
         type: integer
@@ -315,6 +315,13 @@ definitions:
         $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
       victim_metric:
         type: string
+      victim_signal:
+        allOf:
+        - $ref: '#/definitions/netobs_internal_correlation.VictimSignal'
+        description: |-
+          VictimSignal 은 #150 의 victim 영향 종착 차원 (latency / throughput / error) 이다. dimension 이
+          suspect 의 자원 종류라면 VictimSignal 은 victim 측 품질 저하의 종류다. Top-N 은 (victim, victim_
+          signal, dimension) 그룹별로 산정되어 한 victim 이 신호별로 독립 순위를 갖는다.
     type: object
   netobs_internal_correlation.PodIdentity:
     properties:
@@ -366,6 +373,18 @@ definitions:
       victim_workload:
         type: string
     type: object
+  netobs_internal_correlation.VictimSignal:
+    enum:
+    - latency
+    - throughput
+    - error
+    - ""
+    type: string
+    x-enum-varnames:
+    - SignalLatency
+    - SignalThroughput
+    - SignalError
+    - SignalNone
 info:
   contact: {}
 paths:
@@ -636,6 +655,10 @@ paths:
       - description: 리소스 차원 필터 (cpu/memory/network/gpu)
         in: query
         name: dimension
+        type: string
+      - description: victim 영향 종착 차원 필터 (latency/throughput/error)
+        in: query
+        name: victim_signal
         type: string
       - description: max rank (기본 무제한)
         in: query

@@ -20,6 +20,9 @@ var neighborLabels = []string{
 	"victim_namespace",
 	"victim_pod",
 	"victim_pod_uid",
+	// #150 victim_signal 은 영향 종착 차원 (latency / throughput / error) 이다. resource_dimension
+	// (suspect 자원 종류) 과 직교하며 한 victim 이 신호별로 독립 시리즈를 갖는다.
+	"victim_signal",
 	"suspect_namespace",
 	"suspect_pod",
 	"suspect_pod_uid",
@@ -275,6 +278,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			n.Victim.Namespace,
 			n.Victim.Pod,
 			n.Victim.PodUID,
+			string(n.VictimSignal),
 			n.Suspect.Namespace,
 			n.Suspect.Pod,
 			n.Suspect.PodUID,

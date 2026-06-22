@@ -90,11 +90,13 @@ func EnumerateNodePairs(items []LabeledSeries) []NodePair {
 			}
 			dstGroup := byNode[dstNode]
 			for _, src := range srcGroup {
-				if isLatencyMetric(src.Metric) {
+				// #150 suspect 는 victim (latency / throughput / error) 이 아닌 cause 만 인정한다.
+				if isVictimMetric(src.Metric) {
 					continue
 				}
 				for _, dst := range dstGroup {
-					if !isLatencyMetric(dst.Metric) {
+					// cross-node victim 은 latency 단일로 유지한다 (node throughput/error 미도입).
+					if classifyVictimSignal(dst.Metric) != SignalLatency {
 						continue
 					}
 					out = append(out, NodePair{
@@ -156,15 +158,13 @@ func SelectTopNCrossNode(results []CorrelationResult, topN int) []NodeInterferen
 		if r.Status != StatusOK && r.Status != StatusPartial {
 			continue
 		}
-		// defense-in-depth. EnumerateNodePairs가 사전 필터로 Src=non-latency / Dst=latency 만 enumerate
-		// 하므로 본 두 조건은 정상 경로에서 항상 통과하나 단위 테스트 등의 직접 주입 경로 안전성을
-		// 위해 검증을 유지한다.
-		srcLatency := isLatencyMetric(r.NodePair.SrcMetric)
-		dstLatency := isLatencyMetric(r.NodePair.DstMetric)
-		if srcLatency == dstLatency {
+		// defense-in-depth. EnumerateNodePairs가 사전 필터로 Src=suspect / Dst=latency victim 만
+		// enumerate 하므로 본 두 조건은 정상 경로에서 항상 통과하나 단위 테스트 등의 직접 주입 경로
+		// 안전성을 위해 검증을 유지한다. #150 victim 은 cross-node 에서 latency 단일로 유지한다.
+		if isVictimMetric(r.NodePair.SrcMetric) {
 			continue
 		}
-		if srcLatency {
+		if classifyVictimSignal(r.NodePair.DstMetric) != SignalLatency {
 			continue
 		}
 		dim := classifyDimension(r.NodePair.SrcMetric)
