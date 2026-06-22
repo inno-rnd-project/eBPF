@@ -7,14 +7,16 @@ import "testing"
 func TestComputeDominantDimension_SingleDominant(t *testing.T) {
 	neighbors := []NoisyNeighbor{
 		{
-			Victim:    PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"},
-			Dimension: DimensionCPU,
-			Score:     0.9,
+			Victim:       PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"},
+			VictimSignal: SignalLatency,
+			Dimension:    DimensionCPU,
+			Score:        0.9,
 		},
 		{
-			Victim:    PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"},
-			Dimension: DimensionMemory,
-			Score:     0.1,
+			Victim:       PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"},
+			VictimSignal: SignalLatency,
+			Dimension:    DimensionMemory,
+			Score:        0.1,
 		},
 	}
 	got := ComputeDominantDimension(neighbors)
@@ -30,10 +32,10 @@ func TestComputeDominantDimension_SingleDominant(t *testing.T) {
 // 채택되는지 검증한다. 노출되는 Weight 는 offset 가산 없는 raw 정규화 값 (0.25) 이어야 한다.
 func TestComputeDominantDimension_TieBreakerEnumOrder(t *testing.T) {
 	neighbors := []NoisyNeighbor{
-		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Dimension: DimensionCPU, Score: 0.5},
-		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Dimension: DimensionGPU, Score: 0.5},
-		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Dimension: DimensionMemory, Score: 0.5},
-		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Dimension: DimensionNetwork, Score: 0.5},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, VictimSignal: SignalLatency, Dimension: DimensionCPU, Score: 0.5},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, VictimSignal: SignalLatency, Dimension: DimensionGPU, Score: 0.5},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, VictimSignal: SignalLatency, Dimension: DimensionMemory, Score: 0.5},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, VictimSignal: SignalLatency, Dimension: DimensionNetwork, Score: 0.5},
 	}
 	got := ComputeDominantDimension(neighbors)
 	if len(got) != 1 {
@@ -52,8 +54,8 @@ func TestComputeDominantDimension_TieBreakerEnumOrder(t *testing.T) {
 // 사용한다.
 func TestComputeDominantDimension_WeightIsRawNormalized(t *testing.T) {
 	neighbors := []NoisyNeighbor{
-		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Dimension: DimensionCPU, Score: 0.8},
-		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Dimension: DimensionMemory, Score: 0.2},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, VictimSignal: SignalLatency, Dimension: DimensionCPU, Score: 0.8},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, VictimSignal: SignalLatency, Dimension: DimensionMemory, Score: 0.2},
 	}
 	got := ComputeDominantDimension(neighbors)
 	if len(got) != 1 {
@@ -72,8 +74,8 @@ func TestComputeDominantDimension_WeightIsRawNormalized(t *testing.T) {
 // 제외되는지 검증한다. 분모 가드의 dashboard 빈 시리즈 차단 동작.
 func TestComputeDominantDimension_ZeroSumSkipped(t *testing.T) {
 	neighbors := []NoisyNeighbor{
-		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Dimension: DimensionCPU, Score: 0},
-		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Dimension: DimensionMemory, Score: 0},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, VictimSignal: SignalLatency, Dimension: DimensionCPU, Score: 0},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, VictimSignal: SignalLatency, Dimension: DimensionMemory, Score: 0},
 	}
 	got := ComputeDominantDimension(neighbors)
 	if len(got) != 0 {
@@ -84,10 +86,10 @@ func TestComputeDominantDimension_ZeroSumSkipped(t *testing.T) {
 // TestComputeDominantDimension_MultipleVictims 는 victim 별로 dominant 가 독립 산정되는지 검증한다.
 func TestComputeDominantDimension_MultipleVictims(t *testing.T) {
 	neighbors := []NoisyNeighbor{
-		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Dimension: DimensionCPU, Score: 0.9},
-		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Dimension: DimensionMemory, Score: 0.1},
-		{Victim: PodIdentity{Namespace: "ns", Pod: "v2", PodUID: "u2"}, Dimension: DimensionGPU, Score: 0.8},
-		{Victim: PodIdentity{Namespace: "ns", Pod: "v2", PodUID: "u2"}, Dimension: DimensionNetwork, Score: 0.2},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, VictimSignal: SignalLatency, Dimension: DimensionCPU, Score: 0.9},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, VictimSignal: SignalLatency, Dimension: DimensionMemory, Score: 0.1},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v2", PodUID: "u2"}, VictimSignal: SignalLatency, Dimension: DimensionGPU, Score: 0.8},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v2", PodUID: "u2"}, VictimSignal: SignalLatency, Dimension: DimensionNetwork, Score: 0.2},
 	}
 	got := ComputeDominantDimension(neighbors)
 	if len(got) != 2 {
@@ -106,10 +108,10 @@ func TestComputeDominantDimension_MultipleVictims(t *testing.T) {
 func TestComputeDominantDimension_MaxScorePerDimension(t *testing.T) {
 	neighbors := []NoisyNeighbor{
 		// cpu dimension 두 suspect: max=0.9
-		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Suspect: PodIdentity{Pod: "s1"}, Dimension: DimensionCPU, Score: 0.4},
-		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Suspect: PodIdentity{Pod: "s2"}, Dimension: DimensionCPU, Score: 0.9},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Suspect: PodIdentity{Pod: "s1"}, VictimSignal: SignalLatency, Dimension: DimensionCPU, Score: 0.4},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Suspect: PodIdentity{Pod: "s2"}, VictimSignal: SignalLatency, Dimension: DimensionCPU, Score: 0.9},
 		// memory dimension 한 suspect: 0.5
-		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Suspect: PodIdentity{Pod: "s3"}, Dimension: DimensionMemory, Score: 0.5},
+		{Victim: PodIdentity{Namespace: "ns", Pod: "v1", PodUID: "u1"}, Suspect: PodIdentity{Pod: "s3"}, VictimSignal: SignalLatency, Dimension: DimensionMemory, Score: 0.5},
 	}
 	got := ComputeDominantDimension(neighbors)
 	if len(got) != 1 {

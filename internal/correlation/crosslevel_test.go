@@ -113,6 +113,28 @@ func TestEnumerateCrossLevelPairs_NoNodeSeriesNoCrossLevel(t *testing.T) {
 	}
 }
 
+// TestEnumerateCrossLevelPairs_ExcludesNonLatencyVictims 는 #150 으로 추가된 pod throughput / error
+// victim 시계열이 cross-level 의 pod-suspect 로 오분류되지 않고 (victim 도 아니므로) 페어에서 완전히
+// 제외되는지 검증한다. cross-level victim 은 latency 단일로 유지된다.
+func TestEnumerateCrossLevelPairs_ExcludesNonLatencyVictims(t *testing.T) {
+	items := []LabeledSeries{
+		nodeSeries("n1", clNodePress),
+		nodeSeries("n1", clNodeLat),
+		// pod throughput / error victim (latency 아님). suspect 로도 victim 으로도 잡히면 안 된다.
+		podMetricSeries("n1", "ns", "pod-a", `sum by(node, src_namespace, src_pod) (rate(netobs_pod_bytes_total[5m]))`),
+		podMetricSeries("n1", "ns", "pod-a", `sum by(node, src_namespace, src_pod) (rate(netobs_drop_events_flow_total[5m]))`),
+	}
+	got := EnumerateCrossLevelPairs(items, nil)
+	// node 압박 × pod latency 없음 (pod latency 부재), pod 압박 × node latency 없음 (pod throughput/
+	// error 는 suspect 아님). 따라서 페어 0.
+	if len(got) != 0 {
+		t.Errorf("페어 수=%d want 0 (throughput/error pod 가 cross-level 에 합류함)", len(got))
+		for _, p := range got {
+			t.Logf("  unexpected pair: %s %s/%s %s", p.Key.Direction, p.Key.PodNamespace, p.Key.Pod, p.Key.SrcMetric)
+		}
+	}
+}
+
 // crossLevelResult 는 SelectTopNCrossLevel 테스트 입력 helper 다.
 func crossLevelResult(node string, dir CrossLevelDirection, ns, pod, suspectMetric, victimMetric string, score float64) CorrelationResult {
 	return CorrelationResult{

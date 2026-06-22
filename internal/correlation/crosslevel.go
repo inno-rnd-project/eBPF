@@ -113,11 +113,19 @@ func EnumerateCrossLevelPairs(items []LabeledSeries, allowNamespaces []string) [
 		}
 		ns := item.Series.Labels["src_namespace"]
 		pod := item.Series.Labels["src_pod"]
-		latency := isLatencyMetric(item.Metric)
+		// #150 cross-level 은 victim 을 latency 단일로 유지한다. latency victim 과 victim 이 아닌 suspect
+		// 만 분류하고, throughput / error victim (signal Throughput/Error) 은 suspect 도 victim 도 아니라
+		// 본 layer 에서 제외해 pod-level throughput/error 가 pod-suspect 로 오분류되는 것을 막는다.
+		signal := classifyVictimSignal(item.Metric)
+		isLatencyVictim := signal == SignalLatency
+		isSuspect := signal == SignalNone
+		if !isLatencyVictim && !isSuspect {
+			continue
+		}
 		switch {
 		case ns == "" && pod == "":
 			// node-level 시계열.
-			if latency {
+			if isLatencyVictim {
 				nodeLatency[node] = append(nodeLatency[node], item)
 			} else {
 				nodePressure[node] = append(nodePressure[node], item)
@@ -135,7 +143,7 @@ func EnumerateCrossLevelPairs(items []LabeledSeries, allowNamespaces []string) [
 				metric:    item.Metric,
 				series:    item.Series,
 			}
-			if latency {
+			if isLatencyVictim {
 				podLatency[node] = append(podLatency[node], ps)
 			} else {
 				podPressure[node] = append(podPressure[node], ps)
@@ -261,12 +269,11 @@ func SelectTopNCrossLevel(results []CorrelationResult, topN int) []CrossLevel {
 		if r.Status != StatusOK && r.Status != StatusPartial {
 			continue
 		}
-		srcLatency := isLatencyMetric(r.CrossLevelPair.SrcMetric)
-		dstLatency := isLatencyMetric(r.CrossLevelPair.DstMetric)
-		if srcLatency == dstLatency {
+		// #150 cross-level victim 은 latency 단일로 유지한다. suspect 는 victim 이 아닌 압박이어야 한다.
+		if isVictimMetric(r.CrossLevelPair.SrcMetric) {
 			continue
 		}
-		if srcLatency {
+		if classifyVictimSignal(r.CrossLevelPair.DstMetric) != SignalLatency {
 			continue
 		}
 		dim := classifyDimension(r.CrossLevelPair.SrcMetric)

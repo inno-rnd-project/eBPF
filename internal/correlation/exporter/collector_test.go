@@ -16,6 +16,7 @@ func neighbor(victimPod, suspectPod string, dim correlation.ResourceDimension, r
 	return correlation.NoisyNeighbor{
 		Victim:        correlation.PodIdentity{Namespace: "default", Pod: victimPod, PodUID: "uid-" + victimPod},
 		VictimMetric:  "latency",
+		VictimSignal:  correlation.SignalLatency,
 		Suspect:       correlation.PodIdentity{Namespace: "default", Pod: suspectPod, PodUID: "uid-" + suspectPod},
 		SuspectMetric: "pod:cpu_throttle_score:5m",
 		Dimension:     dim,

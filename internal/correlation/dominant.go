@@ -56,6 +56,11 @@ func ComputeDominantDimension(neighbors []NoisyNeighbor) []DominantDimension {
 		if n.Dimension == DimensionUnknown {
 			continue
 		}
+		// dominant dimension 은 #69 의 latency 압박 기반 개념이라 latency victim 만 집계한다. #150 에서
+		// 추가된 throughput / error victim 은 단위와 의미가 달라 dominant weight 산정에 섞지 않는다.
+		if n.VictimSignal != SignalLatency {
+			continue
+		}
 		k := victimKey{n.Victim.Namespace, n.Victim.Pod, n.Victim.PodUID}
 		a, ok := aggregated[k]
 		if !ok {

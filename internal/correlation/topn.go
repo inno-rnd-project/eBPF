@@ -40,7 +40,11 @@ type NoisyNeighbor struct {
 	Suspect       PodIdentity       `json:"suspect"`
 	SuspectMetric string            `json:"suspect_metric"`
 	Dimension     ResourceDimension `json:"dimension"`
-	// Rank 는 (victim, dimension) 그룹 내 max_abs_value 내림차순 1-based 순위다. 1 이 가장 강한 상관.
+	// VictimSignal 은 #150 의 victim 영향 종착 차원 (latency / throughput / error) 이다. dimension 이
+	// suspect 의 자원 종류라면 VictimSignal 은 victim 측 품질 저하의 종류다. Top-N 은 (victim, victim_
+	// signal, dimension) 그룹별로 산정되어 한 victim 이 신호별로 독립 순위를 갖는다.
+	VictimSignal VictimSignal `json:"victim_signal"`
+	// Rank 는 (victim, victim_signal, dimension) 그룹 내 max_abs_value 내림차순 1-based 순위다. 1 이 가장 강한 상관.
 	Rank        int     `json:"rank"`
 	Score       float64 `json:"score"`
 	LagSteps    int     `json:"lag_steps"`
@@ -76,31 +80,68 @@ func classifyDimension(metric string) ResourceDimension {
 	return DimensionUnknown
 }
 
-// isLatencyMetric 은 query 가 victim latency 메트릭인지 식별한다. SelectTopN 은 페어 정확히 한쪽이
-// latency 인 결과만 채택해 noisy neighbor 모델 (suspect 자원 압박 → victim latency 손해) 에 부합한
-// 케이스만 노출한다.
+// isLatencyMetric 은 query 가 victim latency 메트릭인지 식별한다. cross-node / service-impact /
+// cross-level layer 는 victim 을 latency 단일로 유지하므로 본 헬퍼로 latency victim 을 판정한다.
 func isLatencyMetric(metric string) bool {
 	return strings.Contains(metric, "latency")
 }
 
+// VictimSignal 은 #150 의 victim 영향 종착 차원이다. 간섭이 latency p99 악화뿐 아니라 throughput 저하
+// (netobs_pod_bytes_total 기반) 나 error율 증가 (drop 기반) 로도 나타나는 서비스 품질 저하를 victim
+// 축에서 구분한다. noisy neighbor 메트릭의 victim_signal 라벨에 그대로 들어간다.
+type VictimSignal string
+
+const (
+	SignalLatency    VictimSignal = "latency"
+	SignalThroughput VictimSignal = "throughput"
+	SignalError      VictimSignal = "error"
+	// SignalNone 은 victim 시계열이 아닌 (suspect cause score 등) 메트릭에 반환된다. SelectTopN 은
+	// 페어 정확히 한쪽이 victim (signal != none) 이어야 채택한다.
+	SignalNone VictimSignal = ""
+)
+
+// classifyVictimSignal 은 query 문자열에서 VictimSignal 을 결정한다. 토큰은 suspect cause score 명
+// (network_throughput_score / network_retrans_score / cpu_throttle_score 등) 과 겹치지 않는 victim
+// 고유 토큰 (latency / bytes / drop) 으로 골라 dimension 분류 정합을 유지한다. 예를 들어 suspect 인
+// network_throughput_score 는 "throughput" 을 포함하나 "bytes" 가 없어 victim 으로 오분류되지 않고,
+// network_retrans_score 는 "retrans" 라 "drop" 과 겹치지 않는다.
+func classifyVictimSignal(metric string) VictimSignal {
+	switch {
+	case strings.Contains(metric, "latency"):
+		return SignalLatency
+	case strings.Contains(metric, "bytes"):
+		return SignalThroughput
+	case strings.Contains(metric, "drop"):
+		return SignalError
+	}
+	return SignalNone
+}
+
+// isVictimMetric 은 metric 이 victim 시계열 (어떤 signal 이든) 인지 반환한다. enumerate / select 단계
+// 에서 suspect (cause) 와 victim (outcome) 을 가르는 단정 기준으로, suspect = victim 이 아님이다.
+func isVictimMetric(metric string) bool {
+	return classifyVictimSignal(metric) != SignalNone
+}
+
 // SelectTopN 은 Correlate 결과에서 noisy neighbor 페어를 추출한다. 다음 규칙을 단정적으로 적용한다.
 //
-//   - 페어 정확히 한쪽이 latency 메트릭이고 반대쪽이 non-latency cause score 인 페어만 채택한다.
-//     양쪽 모두 latency 거나 양쪽 모두 non-latency 인 페어는 noisy neighbor 모델에 부합하지 않아
-//     제외한다.
-//   - 채택된 페어 중 Src 가 non-latency suspect, Dst 가 latency victim 인 방향만 사용한다. 반대
-//     방향 (EnumeratePairs 가 만드는 (Y,X)) 은 같은 (victim, suspect) 가 두 번 등장하지 않도록
-//     자동 dedup 의미로 제외한다. 결과적으로 채택된 lag 부호는 "suspect 가 victim 을 N step 앞선다"
-//     인과 방향으로 자연스럽게 정렬된다.
+//   - #150 페어 정확히 한쪽이 victim 메트릭 (latency / throughput / error) 이고 반대쪽이 victim 이 아닌
+//     cause score 인 페어만 채택한다. 양쪽 모두 victim 이거나 양쪽 모두 cause 인 페어는 noisy neighbor
+//     모델에 부합하지 않아 제외한다. victim signal 은 classifyVictimSignal 로 판정하며 suspect cause
+//     score 명과 토큰이 겹치지 않아 dimension 분류 정합이 유지된다.
+//   - 채택된 페어 중 Src 가 suspect (cause), Dst 가 victim 인 방향만 사용한다. 반대 방향 (EnumeratePairs
+//     가 만드는 (Y,X)) 은 같은 (victim, suspect) 가 두 번 등장하지 않도록 자동 dedup 의미로 제외한다.
 //   - Status 가 StatusOK 또는 StatusPartial 인 결과만 채택한다. SkippedConstant / SkippedLowSamples
 //     는 의미 있는 score 가 없어 제외한다.
 //   - suspect 메트릭에서 dimension 을 분류해 DimensionUnknown 이면 제외한다 (카디널리티 가드).
-//   - (victim_namespace, victim_pod, victim_pod_uid, dimension) 그룹별 max_abs_value 내림차순으로
-//     정렬해 상위 topN 개에 rank 1..topN 부여한다. 동률은 (suspect_namespace, suspect_pod,
-//     suspect_pod_uid) 라벨 lexicographic 순서로 결정한다.
+//   - (victim_namespace, victim_pod, victim_pod_uid, victim_signal, dimension) 그룹별 max_abs_value
+//     내림차순으로 정렬해 상위 topN 개에 rank 1..topN 부여한다. 동률은 (suspect_namespace, suspect_pod,
+//     suspect_pod_uid) 라벨 lexicographic 순서로 결정한다. victim 이 신호별로 독립 Top-N 을 갖는다.
+//   - effect size (impact_seconds) 는 latency victim 에만 유효해 throughput / error victim 은 ImpactOK
+//     를 false 로 둔다.
 //
-// 결과는 (victim_namespace, victim_pod, dimension, rank) 순으로 정렬된 슬라이스다. 동일 cycle 의
-// 재현성을 보장한다. topN <= 0 이면 nil 을 반환한다.
+// 결과는 (victim_namespace, victim_pod, victim_signal, dimension, rank) 순으로 정렬된 슬라이스다. 동일
+// cycle 의 재현성을 보장한다. topN <= 0 이면 nil 을 반환한다.
 func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 	if topN <= 0 {
 		return nil
@@ -109,6 +150,7 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 	type candidate struct {
 		victim        PodIdentity
 		victimMetric  string
+		victimSignal  VictimSignal
 		suspect       PodIdentity
 		suspectMetric string
 		dimension     ResourceDimension
@@ -132,14 +174,18 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		if r.Status != StatusOK && r.Status != StatusPartial {
 			continue
 		}
-		srcLatency := isLatencyMetric(r.Pair.SrcMetric)
-		dstLatency := isLatencyMetric(r.Pair.DstMetric)
-		if srcLatency == dstLatency {
+		// #150 victim 판정 다차원화. 페어 정확히 한쪽이 victim (latency / throughput / error) 이고
+		// 반대쪽이 victim 이 아닌 cause score 여야 한다. src 가 victim 인 역방향은 같은 (victim, suspect)
+		// 중복 회피를 위해 skip 해 suspect→victim 방향만 채택한다.
+		srcSignal := classifyVictimSignal(r.Pair.SrcMetric)
+		dstSignal := classifyVictimSignal(r.Pair.DstMetric)
+		if (srcSignal == SignalNone) == (dstSignal == SignalNone) {
 			continue
 		}
-		if srcLatency {
+		if srcSignal != SignalNone {
 			continue
 		}
+		victimSignal := dstSignal
 		dim := classifyDimension(r.Pair.SrcMetric)
 		if dim == DimensionUnknown {
 			continue
@@ -162,6 +208,7 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 				PodUID:    r.Pair.DstPodUID,
 			},
 			victimMetric: r.Pair.DstMetric,
+			victimSignal: victimSignal,
 			suspect: PodIdentity{
 				Namespace: r.Pair.SrcNamespace,
 				Pod:       r.Pair.SrcPod,
@@ -175,7 +222,9 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 			pvalue:        r.PValue,
 			grangerOK:     r.GrangerOK,
 			impact:        r.Impact,
-			impactOK:      r.ImpactOK,
+			// #146 effect size 는 latency 증가량 (seconds) 의미라 latency victim 에만 유효하다.
+			// throughput / error victim 은 단위가 달라 impact_seconds 로 노출하지 않도록 gate 한다.
+			impactOK: r.ImpactOK && victimSignal == SignalLatency,
 		})
 	}
 
@@ -187,6 +236,7 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		victimNamespace  string
 		victimPod        string
 		victimPodUID     string
+		victimSignal     VictimSignal
 		suspectNamespace string
 		suspectPod       string
 		suspectPodUID    string
@@ -198,6 +248,7 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 			victimNamespace:  c.victim.Namespace,
 			victimPod:        c.victim.Pod,
 			victimPodUID:     c.victim.PodUID,
+			victimSignal:     c.victimSignal,
 			suspectNamespace: c.suspect.Namespace,
 			suspectPod:       c.suspect.Pod,
 			suspectPodUID:    c.suspect.PodUID,
@@ -213,14 +264,15 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 	}
 
 	type groupKey struct {
-		namespace string
-		pod       string
-		podUID    string
-		dimension ResourceDimension
+		namespace    string
+		pod          string
+		podUID       string
+		victimSignal VictimSignal
+		dimension    ResourceDimension
 	}
 	groups := make(map[groupKey][]candidate)
 	for _, c := range deduped {
-		k := groupKey{c.victim.Namespace, c.victim.Pod, c.victim.PodUID, c.dimension}
+		k := groupKey{c.victim.Namespace, c.victim.Pod, c.victim.PodUID, c.victimSignal, c.dimension}
 		groups[k] = append(groups[k], c)
 	}
 
@@ -238,6 +290,9 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		}
 		if a.podUID != b.podUID {
 			return a.podUID < b.podUID
+		}
+		if a.victimSignal != b.victimSignal {
+			return a.victimSignal < b.victimSignal
 		}
 		return a.dimension < b.dimension
 	})
@@ -266,6 +321,7 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 			out = append(out, NoisyNeighbor{
 				Victim:        c.victim,
 				VictimMetric:  c.victimMetric,
+				VictimSignal:  c.victimSignal,
 				Suspect:       c.suspect,
 				SuspectMetric: c.suspectMetric,
 				Dimension:     c.dimension,
