@@ -155,6 +155,41 @@ func TestBuildImpactGraph_PodIdentityMergesUIDVariants(t *testing.T) {
 	}
 }
 
+// TestImpactGraph_Filter 는 namespace / min_score 유도 부분그래프가 엣지를 거르고 정점·degree 를
+// 재산정하는지 검증한다.
+func TestImpactGraph_Filter(t *testing.T) {
+	mk := func(sNS, sPod, vNS, vPod string, score float64) NoisyNeighbor {
+		return NoisyNeighbor{
+			Suspect:      PodIdentity{Namespace: sNS, Pod: sPod},
+			Victim:       PodIdentity{Namespace: vNS, Pod: vPod},
+			Dimension:    DimensionCPU,
+			VictimSignal: SignalLatency,
+			Score:        score,
+		}
+	}
+	g := BuildImpactGraph([]NoisyNeighbor{
+		mk("a", "s1", "a", "v1", 0.9), // a/a
+		mk("a", "s1", "b", "v2", 0.4), // a/b 약한
+		mk("b", "s3", "b", "v3", 0.8), // b/b
+	})
+	// min_score 0.5: 0.4 엣지 제거 → 2 엣지.
+	f := g.Filter("", 0.5)
+	if len(f.Edges) != 2 {
+		t.Errorf("min_score 필터 edges=%d want 2", len(f.Edges))
+	}
+	// namespace a: suspect 또는 victim 이 a 인 엣지 (a/a, a/b) → 2 엣지, b/b 제외.
+	f2 := g.Filter("a", 0)
+	if len(f2.Edges) != 2 {
+		t.Errorf("namespace 필터 edges=%d want 2", len(f2.Edges))
+	}
+	// 부분그래프 정점·degree 재산정 확인: namespace a 필터 후 s3/v3 (b/b) 정점은 없어야 한다.
+	for _, n := range f2.Nodes {
+		if n.Pod == "s3" || n.Pod == "v3" {
+			t.Errorf("namespace a 필터인데 b/b 정점 %s 가 남음", n.Pod)
+		}
+	}
+}
+
 // TestBuildImpactGraph_Empty 는 빈 입력에서 빈 그래프를 반환하는지 검증한다.
 func TestBuildImpactGraph_Empty(t *testing.T) {
 	g := BuildImpactGraph(nil)

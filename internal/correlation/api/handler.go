@@ -571,15 +571,33 @@ func (h *Handler) ListCrossLevel(w http.ResponseWriter, r *http.Request) {
 // 그래프를 graceful 하게 반환한다. transitive 경로 추출과 필터는 Phase 2 에서 추가한다.
 //
 // @Summary      Get impact propagation graph
-// @Description  suspect → victim 1-hop 엣지로 구성된 영향 전파 그래프의 정점 (out/in degree 포함) 과 엣지 전체 반환
+// @Description  suspect → victim 1-hop 엣지로 구성된 영향 전파 그래프의 정점 (out/in degree 포함) 과 엣지 반환. namespace / min_score 로 유도 부분그래프를 추릴 수 있다
 // @Tags         correlation
 // @Produce      json
+// @Param        namespace  query  string  false  "suspect 또는 victim 이 이 namespace 인 엣지만 (유도 부분그래프)"
+// @Param        min_score  query  number  false  "score 가 이 값 이상인 엣지만"
 // @Success      200  {object}  ImpactGraphResponse
+// @Failure      400  {object}  ErrorResponse
 // @Router       /api/v1/impact-graph [get]
-func (h *Handler) GetImpactGraph(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) GetImpactGraph(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	namespace := strings.TrimSpace(q.Get("namespace"))
+	var minScore float64
+	if raw := strings.TrimSpace(q.Get("min_score")); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			apicommon.WriteError(w, http.StatusBadRequest, "invalid_min_score", "min_score 는 실수여야 합니다")
+			return
+		}
+		minScore = v
+	}
+
 	var g correlation.ImpactGraph
 	if h.impactGraphSource != nil {
 		g = h.impactGraphSource.ImpactGraphSnapshot()
+	}
+	if namespace != "" || minScore > 0 {
+		g = g.Filter(namespace, minScore)
 	}
 	// nil 슬라이스는 JSON 에서 null 로 직렬화되므로 빈 슬라이스로 정규화해 응답이 항상 nodes:[] /
 	// edges:[] 형태를 유지하게 한다 (graceful empty).

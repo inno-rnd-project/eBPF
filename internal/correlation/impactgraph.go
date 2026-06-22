@@ -49,35 +49,8 @@ type ImpactGraph struct {
 // 입력이 이미 SelectTopN 으로 필터 / 데듀프 / topN 컷된 결과라 그래프 크기가 통제되며, 본 Phase 1 은
 // pod-level noisy neighbor 만 정점으로 둔다 (node / workload 입도 그래프는 Phase 2 확장 대상).
 func BuildImpactGraph(neighbors []NoisyNeighbor) ImpactGraph {
-	// 정점 동일성은 (namespace, pod) 다. src_pod_uid 가 suspect 측 score (sum by(node,namespace,pod))
-	// 와 victim 측 latency 에서 일관되게 채워지지 않아, 같은 pod 가 uid="" 노드와 uid=set 노드로 갈라져
-	// 정점이 중복되고 경로에 의사 사이클이 생기는 것을 막는다. PodUID 는 best-effort 메타데이터로 여러
-	// 역할 중 비어 있지 않은 최소 uid 를 보관해 입력 순서와 무관하게 결정적이다.
-	type nodeKey struct {
-		namespace string
-		pod       string
-	}
-	// 정점 수는 최대 2*len(neighbors) (엣지마다 suspect + victim) 이나 hub 중복으로 보통 그보다 적다.
-	// len(neighbors) 를 초기 용량 힌트로 줘 맵 확장 시의 재할당 / 재해싱을 줄인다.
-	nodes := make(map[nodeKey]*ImpactGraphNode, len(neighbors))
-	getNode := func(id PodIdentity) *ImpactGraphNode {
-		k := nodeKey{id.Namespace, id.Pod}
-		n, ok := nodes[k]
-		if !ok {
-			n = &ImpactGraphNode{Namespace: id.Namespace, Pod: id.Pod, PodUID: id.PodUID}
-			nodes[k] = n
-		}
-		// best-effort: 비어 있지 않은 최소 uid 를 채택해 결정적으로 둔다.
-		if id.PodUID != "" && (n.PodUID == "" || id.PodUID < n.PodUID) {
-			n.PodUID = id.PodUID
-		}
-		return n
-	}
-
 	edges := make([]ImpactGraphEdge, 0, len(neighbors))
 	for _, nb := range neighbors {
-		getNode(nb.Suspect).OutDegree++
-		getNode(nb.Victim).InDegree++
 		edges = append(edges, ImpactGraphEdge{
 			Suspect:      nb.Suspect,
 			Victim:       nb.Victim,
@@ -89,24 +62,76 @@ func BuildImpactGraph(neighbors []NoisyNeighbor) ImpactGraph {
 			GrangerOK:    nb.GrangerOK,
 		})
 	}
+	sortImpactEdges(edges)
+	return ImpactGraph{Nodes: nodesFromEdges(edges), Edges: edges}
+}
 
-	outNodes := make([]ImpactGraphNode, 0, len(nodes))
-	for _, n := range nodes {
-		outNodes = append(outNodes, *n)
+// Filter 는 엣지를 namespace 와 min_score 로 거른 유도 부분그래프를 반환한다. namespace 가 비어 있지
+// 않으면 suspect 또는 victim 이 그 namespace 인 엣지만, min_score>0 이면 score 가 그 이상인 엣지만
+// 남긴다. 정점과 degree 는 걸러진 엣지에서 재산정되어 부분그래프 내부 정합이 유지된다. /api/v1/
+// impact-graph 가 대형 그래프 응답을 좁히는 데 쓴다.
+func (g ImpactGraph) Filter(namespace string, minScore float64) ImpactGraph {
+	filtered := make([]ImpactGraphEdge, 0, len(g.Edges))
+	for _, e := range g.Edges {
+		if minScore > 0 && e.Score < minScore {
+			continue
+		}
+		if namespace != "" && e.Suspect.Namespace != namespace && e.Victim.Namespace != namespace {
+			continue
+		}
+		filtered = append(filtered, e)
 	}
-	sort.Slice(outNodes, func(i, j int) bool {
-		if outNodes[i].Namespace != outNodes[j].Namespace {
-			return outNodes[i].Namespace < outNodes[j].Namespace
-		}
-		if outNodes[i].Pod != outNodes[j].Pod {
-			return outNodes[i].Pod < outNodes[j].Pod
-		}
-		return outNodes[i].PodUID < outNodes[j].PodUID
-	})
+	// g.Edges 가 이미 정렬돼 있어 filtered 도 정렬 순서를 보존한다. 정점만 재산정한다.
+	return ImpactGraph{Nodes: nodesFromEdges(filtered), Edges: filtered}
+}
 
-	// 엣지 정렬 키는 (suspect ns/pod/uid, victim ns/pod/uid, victim_signal, dimension) 다. SelectTopN
-	// 이 동일 키로 dedup 하므로 본 키가 엣지마다 유일해 결정적이다. 동명 pod 가 재생성되어 UID 만
-	// 다르게 공존하는 경우에도 순서가 흔들리지 않도록 정점 정렬과 동일하게 PodUID 까지 비교한다.
+// nodesFromEdges 는 엣지 집합에서 정점 (out/in degree 포함) 을 재구성한다. BuildImpactGraph 와 Filter
+// 가 공유한다. 정점 동일성은 (namespace, pod) 다. src_pod_uid 가 suspect 측 score (sum by(node,
+// namespace,pod)) 와 victim 측 latency 에서 일관되게 채워지지 않아, 같은 pod 가 uid="" 노드와 uid=set
+// 노드로 갈라져 정점이 중복되고 경로에 의사 사이클이 생기는 것을 막는다. PodUID 는 비어 있지 않은
+// 최소 uid 를 채택해 입력 순서와 무관하게 결정적이다.
+func nodesFromEdges(edges []ImpactGraphEdge) []ImpactGraphNode {
+	type nodeKey struct {
+		namespace string
+		pod       string
+	}
+	nodes := make(map[nodeKey]*ImpactGraphNode, len(edges))
+	getNode := func(id PodIdentity) *ImpactGraphNode {
+		k := nodeKey{id.Namespace, id.Pod}
+		n, ok := nodes[k]
+		if !ok {
+			n = &ImpactGraphNode{Namespace: id.Namespace, Pod: id.Pod, PodUID: id.PodUID}
+			nodes[k] = n
+		}
+		if id.PodUID != "" && (n.PodUID == "" || id.PodUID < n.PodUID) {
+			n.PodUID = id.PodUID
+		}
+		return n
+	}
+	for _, e := range edges {
+		getNode(e.Suspect).OutDegree++
+		getNode(e.Victim).InDegree++
+	}
+	out := make([]ImpactGraphNode, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, *n)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Namespace != out[j].Namespace {
+			return out[i].Namespace < out[j].Namespace
+		}
+		if out[i].Pod != out[j].Pod {
+			return out[i].Pod < out[j].Pod
+		}
+		return out[i].PodUID < out[j].PodUID
+	})
+	return out
+}
+
+// sortImpactEdges 는 엣지를 결정적 순서로 정렬한다. 키는 (suspect ns/pod/uid, victim ns/pod/uid,
+// victim_signal, dimension) 다. SelectTopN 이 동일 키로 dedup 하므로 본 키가 엣지마다 유일해 결정적
+// 이며, 동명 pod 가 재생성되어 UID 만 다르게 공존해도 순서가 흔들리지 않는다.
+func sortImpactEdges(edges []ImpactGraphEdge) {
 	sort.Slice(edges, func(i, j int) bool {
 		a, b := edges[i], edges[j]
 		if a.Suspect.Namespace != b.Suspect.Namespace {
@@ -132,6 +157,4 @@ func BuildImpactGraph(neighbors []NoisyNeighbor) ImpactGraph {
 		}
 		return a.Dimension < b.Dimension
 	})
-
-	return ImpactGraph{Nodes: outNodes, Edges: edges}
 }

@@ -379,7 +379,7 @@ const docTemplatecorrelation = `{
         },
         "/api/v1/impact-graph": {
             "get": {
-                "description": "suspect → victim 1-hop 엣지로 구성된 영향 전파 그래프의 정점 (out/in degree 포함) 과 엣지 전체 반환",
+                "description": "suspect → victim 1-hop 엣지로 구성된 영향 전파 그래프의 정점 (out/in degree 포함) 과 엣지 반환. namespace / min_score 로 유도 부분그래프를 추릴 수 있다",
                 "produces": [
                     "application/json"
                 ],
@@ -387,11 +387,31 @@ const docTemplatecorrelation = `{
                     "correlation"
                 ],
                 "summary": "Get impact propagation graph",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "suspect 또는 victim 이 이 namespace 인 엣지만 (유도 부분그래프)",
+                        "name": "namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "number",
+                        "description": "score 가 이 값 이상인 엣지만",
+                        "name": "min_score",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.ImpactGraphResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.ErrorResponse"
                         }
                     }
                 }

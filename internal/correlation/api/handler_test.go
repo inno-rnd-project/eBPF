@@ -504,6 +504,38 @@ func TestGetImpactGraph_HappyPath(t *testing.T) {
 	}
 }
 
+func TestGetImpactGraph_Filter(t *testing.T) {
+	// a→b (ns-a), c→d (ns-b). namespace=ns-a 필터 시 a→b 만.
+	g := correlation.BuildImpactGraph([]correlation.NoisyNeighbor{
+		newFakeNeighbor("ns-a", "b", "ns-a", "a", correlation.DimensionCPU, 1),
+		newFakeNeighbor("ns-b", "d", "ns-b", "c", correlation.DimensionCPU, 1),
+	})
+	source := &fakeSource{impactGraph: g}
+	h := NewHandler(source, source, source, source, source)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/impact-graph?namespace=ns-a", nil)
+	w := httptest.NewRecorder()
+	h.GetImpactGraph(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	var resp ImpactGraphResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Summary.EdgeCount != 1 {
+		t.Errorf("edge_count=%d want 1 (namespace=ns-a 필터)", resp.Summary.EdgeCount)
+	}
+}
+
+func TestGetImpactGraph_InvalidMinScore(t *testing.T) {
+	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/impact-graph?min_score=abc", nil)
+	w := httptest.NewRecorder()
+	h.GetImpactGraph(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d want 400 (invalid min_score)", w.Code)
+	}
+}
+
 func TestGetImpactGraph_NilSourceGracefulEmpty(t *testing.T) {
 	h := NewHandler(&fakeSource{}, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/impact-graph", nil)
