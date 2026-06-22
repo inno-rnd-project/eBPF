@@ -226,7 +226,8 @@ func TestCollector_EmitsImpactRootReach(t *testing.T) {
 		neighbor("b", "a", correlation.DimensionCPU, 1, 0.9, 1),
 		neighbor("c", "a", correlation.DimensionCPU, 1, 0.9, 1),
 	})
-	c.ReplaceImpactPaths(correlation.ExtractImpactPaths(g, 5, 0.5, 1024))
+	paths, _ := correlation.ExtractImpactPaths(g, 5, 0.5, 1024)
+	c.ReplaceImpactPaths(paths)
 
 	if count := testutil.CollectAndCount(c, "correlation_impact_root_reach"); count != 1 {
 		t.Fatalf("root_reach series=%d want 1 (root a 하나)", count)

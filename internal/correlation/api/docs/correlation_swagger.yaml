@@ -335,6 +335,8 @@ definitions:
         type: array
       root:
         $ref: '#/definitions/netobs_internal_correlation.PodIdentity'
+      root_kind:
+        $ref: '#/definitions/netobs_internal_correlation.RootKind'
       score:
         type: number
       terminal:
@@ -448,8 +450,18 @@ definitions:
     - DimensionNetwork
     - DimensionGPU
     - DimensionUnknown
+  netobs_internal_correlation.RootKind:
+    enum:
+    - source
+    - net_source
+    type: string
+    x-enum-varnames:
+    - RootKindSource
+    - RootKindNetSource
   netobs_internal_correlation.RootSuspect:
     properties:
+      kind:
+        $ref: '#/definitions/netobs_internal_correlation.RootKind'
       path_count:
         type: integer
       reach:

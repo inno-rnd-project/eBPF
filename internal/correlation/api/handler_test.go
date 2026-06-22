@@ -532,7 +532,7 @@ func pathsFakeSource() *fakeSource {
 		newFakeNeighbor("ns", "b", "ns", "a", correlation.DimensionCPU, 1),
 		newFakeNeighbor("ns", "c", "ns", "a", correlation.DimensionCPU, 1),
 	})
-	paths := correlation.ExtractImpactPaths(g, 5, 0.5, 1024)
+	paths, _ := correlation.ExtractImpactPaths(g, 5, 0.5, 1024)
 	return &fakeSource{impactPaths: paths, rootSuspects: correlation.RootSuspects(paths)}
 }
 

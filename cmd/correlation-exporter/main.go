@@ -345,10 +345,11 @@ func reconcileOnce(
 	// API 도 빈 그래프를 돌려 준다. 새 Prometheus fetch 없이 neighbors 만 재사용한다.
 	var impactGraph correlation.ImpactGraph
 	var impactPaths []correlation.ImpactPath
+	pathsTruncated := false
 	if cfg.ImpactGraphEnabled {
 		impactGraph = correlation.BuildImpactGraph(neighbors)
 		// #151 Phase 2 다단계 경로 추출. 동일 그래프에서 근원 suspect 별 transitive 경로를 뽑는다.
-		impactPaths = correlation.ExtractImpactPaths(impactGraph, cfg.ImpactPathMaxDepth, cfg.ImpactPathMinScore, cfg.ImpactPathMaxPaths)
+		impactPaths, pathsTruncated = correlation.ExtractImpactPaths(impactGraph, cfg.ImpactPathMaxDepth, cfg.ImpactPathMinScore, cfg.ImpactPathMaxPaths)
 	}
 	collector.ReplaceImpactGraph(impactGraph)
 	collector.ReplaceImpactPaths(impactPaths)
@@ -358,7 +359,7 @@ func reconcileOnce(
 	expectedMetrics := len(cfg.PlannedQueries())
 	health.RecordCycle(duration, results, neighbors, expectedMetrics)
 	ready.Store(true)
-	log.Printf("reconcile ok: pairs=%d neighbors=%d cross_node=%d service_impact=%d cross_level=%d graph_nodes=%d graph_edges=%d impact_paths=%d duration=%s", len(results), len(neighbors), len(crossNode), len(serviceImpact), len(crossLevel), len(impactGraph.Nodes), len(impactGraph.Edges), len(impactPaths), duration)
+	log.Printf("reconcile ok: pairs=%d neighbors=%d cross_node=%d service_impact=%d cross_level=%d graph_nodes=%d graph_edges=%d impact_paths=%d impact_paths_truncated=%v duration=%s", len(results), len(neighbors), len(crossNode), len(serviceImpact), len(crossLevel), len(impactGraph.Nodes), len(impactGraph.Edges), len(impactPaths), pathsTruncated, duration)
 }
 
 // hasCLIFlag 는 args 에 -flag, --flag, -flag=, --flag= 패턴이 있는지 검사한다. flag 우선 정책을

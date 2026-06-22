@@ -1119,6 +1119,9 @@ const docTemplatecorrelation = `{
                 "root": {
                     "$ref": "#/definitions/netobs_internal_correlation.PodIdentity"
                 },
+                "root_kind": {
+                    "$ref": "#/definitions/netobs_internal_correlation.RootKind"
+                },
                 "score": {
                     "type": "number"
                 },
@@ -1274,9 +1277,23 @@ const docTemplatecorrelation = `{
                 "DimensionUnknown"
             ]
         },
+        "netobs_internal_correlation.RootKind": {
+            "type": "string",
+            "enum": [
+                "source",
+                "net_source"
+            ],
+            "x-enum-varnames": [
+                "RootKindSource",
+                "RootKindNetSource"
+            ]
+        },
         "netobs_internal_correlation.RootSuspect": {
             "type": "object",
             "properties": {
+                "kind": {
+                    "$ref": "#/definitions/netobs_internal_correlation.RootKind"
+                },
                 "path_count": {
                     "type": "integer"
                 },

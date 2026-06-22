@@ -17,12 +17,26 @@ type ImpactPathHop struct {
 	LagSteps     int               `json:"lag_steps"`
 }
 
+// RootKind 는 근원 (root) 의 식별 방식이다. 순환이 없는 그래프에서는 in-degree 0 인 순수 source 가
+// 근원이지만, 조밀하거나 순환이 있는 그래프에는 순수 source 가 없을 수 있어 net-source (out>in) 로
+// fallback 한다. 추후 SCC 응축 기반 근원 (RootKindSCC 등) 으로 확장 가능하도록 enum 으로 둔다.
+type RootKind string
+
+const (
+	// RootKindSource 는 가지치기된 그래프에서 들어오는 강한 엣지가 없는 (in-degree 0) 순수 근원이다.
+	RootKindSource RootKind = "source"
+	// RootKindNetSource 는 순수 source 가 없을 때 채택하는 fallback 근원으로, out-degree 가 in-degree
+	// 보다 큰 (보내는 영향이 받는 영향보다 많은) 정점이다.
+	RootKindNetSource RootKind = "net_source"
+)
+
 // ImpactPath 는 근원 suspect (root) 에서 시작해 종착 victim (terminal) 으로 이어지는 다단계 전파
 // 경로다. Hops 는 root 에서 terminal 까지의 순서 있는 엣지 열이며 같은 정점을 두 번 거치지 않는
 // 단순 경로다. Score 는 weakest-link (hop 최소 score) 로, 경로 전체가 적어도 이 강도로 이어진다는
-// 보수적 지표다.
+// 보수적 지표다. RootKind 는 root 가 순수 source 인지 net-source fallback 인지 알린다.
 type ImpactPath struct {
 	Root     PodIdentity     `json:"root"`
+	RootKind RootKind        `json:"root_kind"`
 	Terminal PodIdentity     `json:"terminal"`
 	Hops     []ImpactPathHop `json:"hops"`
 	Depth    int             `json:"depth"`
@@ -34,6 +48,7 @@ type ImpactPath struct {
 // 큰 root 는 가장 넓게 영향을 퍼뜨리는 근본 원인 후보다.
 type RootSuspect struct {
 	Root      PodIdentity `json:"root"`
+	Kind      RootKind    `json:"kind"`
 	Reach     int         `json:"reach"`
 	PathCount int         `json:"path_count"`
 }
@@ -59,11 +74,15 @@ func podKey(id PodIdentity) pathNodeKey {
 //     사이클 (A→B→A) 에서 무한 순회하지 않는다.
 //   - score 가 minScore 미만인 엣지는 약한 전파로 보고 가지치기한다.
 //   - 더 따라갈 엣지가 없거나 maxDepth 에 도달하면 root→terminal maximal 경로 1 개를 emit 한다.
-//   - 누적 경로 수가 maxPairs 캡에 도달하면 추출을 중단한다 (조밀 그래프의 조합 폭발 방어).
+//   - 누적 경로 수가 maxPaths 캡에 도달하면 추출을 중단하고 truncated=true 를 반환한다 (조밀 그래프의
+//     조합 폭발 방어, silent cap 방지).
+//   - 순수 source (in-degree 0) 근원이 하나도 없으면 (조밀하거나 순환이 있는 그래프) net-source
+//     (out-degree>in-degree) 정점으로 fallback 해 경로를 추출한다. 각 경로의 RootKind 로 어느 방식의
+//     근원인지 알린다.
 //
 // 결과는 (root, terminal, score 내림차순) 정렬로 결정적이다. maxDepth<=0 면 5, maxPaths<=0 면 1024
-// 로 fallback 한다.
-func ExtractImpactPaths(g ImpactGraph, maxDepth int, minScore float64, maxPaths int) []ImpactPath {
+// 로 fallback 한다. 반환값 truncated 는 maxPaths 캡으로 추출이 중단됐는지를 알린다.
+func ExtractImpactPaths(g ImpactGraph, maxDepth int, minScore float64, maxPaths int) ([]ImpactPath, bool) {
 	if maxDepth <= 0 {
 		maxDepth = 5
 	}
@@ -115,22 +134,39 @@ func ExtractImpactPaths(g ImpactGraph, maxDepth int, minScore float64, maxPaths 
 			prunedIn[podKey(e.Victim)]++
 		}
 	}
-	roots := make([]ImpactGraphNode, 0)
+	type rootEntry struct {
+		node ImpactGraphNode
+		kind RootKind
+	}
+	roots := make([]rootEntry, 0)
 	for _, n := range g.Nodes {
 		k := pathNodeKey{namespace: n.Namespace, pod: n.Pod}
 		if prunedIn[k] == 0 && prunedOut[k] > 0 {
-			roots = append(roots, n)
+			roots = append(roots, rootEntry{node: n, kind: RootKindSource})
+		}
+	}
+	// 순수 source 가 없으면 (조밀하거나 순환이 있는 그래프) net-source (out>in) 로 fallback 한다.
+	// 들어오는 영향보다 내보내는 영향이 많은 정점이라 가장 상류에 가까운 근원 후보다.
+	if len(roots) == 0 {
+		for _, n := range g.Nodes {
+			k := pathNodeKey{namespace: n.Namespace, pod: n.Pod}
+			if prunedOut[k] > prunedIn[k] {
+				roots = append(roots, rootEntry{node: n, kind: RootKindNetSource})
+			}
 		}
 	}
 
 	out := make([]ImpactPath, 0)
+	truncated := false
 	for _, r := range roots {
-		rootID := PodIdentity{Namespace: r.Namespace, Pod: r.Pod, PodUID: r.PodUID}
+		rootID := PodIdentity{Namespace: r.node.Namespace, Pod: r.node.Pod, PodUID: r.node.PodUID}
+		rootKind := r.kind
 		visited := map[pathNodeKey]bool{podKey(rootID): true}
 		hops := make([]ImpactPathHop, 0, maxDepth)
 		var dfs func(cur pathNodeKey)
 		dfs = func(cur pathNodeKey) {
 			if len(out) >= maxPaths {
+				truncated = true
 				return
 			}
 			// 다음 후보: 방문하지 않은 victim pod 로 가는 엣지. 같은 victim pod 로 가는 평행 엣지는
@@ -147,11 +183,14 @@ func ExtractImpactPaths(g ImpactGraph, maxDepth int, minScore float64, maxPaths 
 			}
 			// terminal 조건: 진행할 엣지가 없거나 깊이 한계 도달. hop 이 1 개 이상일 때만 경로다.
 			if len(hops) > 0 && (len(next) == 0 || len(hops) >= maxDepth) {
-				out = append(out, makePath(rootID, hops))
+				p := makePath(rootID, hops)
+				p.RootKind = rootKind
+				out = append(out, p)
 				return
 			}
 			for _, e := range next {
 				if len(out) >= maxPaths {
+					truncated = true
 					return
 				}
 				vk := podKey(e.Victim)
@@ -194,7 +233,7 @@ func ExtractImpactPaths(g ImpactGraph, maxDepth int, minScore float64, maxPaths 
 		}
 		return a.Score > b.Score
 	})
-	return out
+	return out, truncated
 }
 
 // makePath 는 hop 열에서 ImpactPath 를 만든다. Score 는 weakest-link (hop 최소), Terminal 은 마지막
@@ -222,6 +261,7 @@ func makePath(root PodIdentity, hops []ImpactPathHop) ImpactPath {
 func RootSuspects(paths []ImpactPath) []RootSuspect {
 	type agg struct {
 		root      PodIdentity
+		kind      RootKind
 		terminals map[pathNodeKey]struct{}
 		pathCount int
 	}
@@ -230,7 +270,7 @@ func RootSuspects(paths []ImpactPath) []RootSuspect {
 		k := podKey(p.Root)
 		a, ok := byRoot[k]
 		if !ok {
-			a = &agg{root: p.Root, terminals: make(map[pathNodeKey]struct{})}
+			a = &agg{root: p.Root, kind: p.RootKind, terminals: make(map[pathNodeKey]struct{})}
 			byRoot[k] = a
 		}
 		a.terminals[podKey(p.Terminal)] = struct{}{}
@@ -239,7 +279,7 @@ func RootSuspects(paths []ImpactPath) []RootSuspect {
 
 	out := make([]RootSuspect, 0, len(byRoot))
 	for _, a := range byRoot {
-		out = append(out, RootSuspect{Root: a.root, Reach: len(a.terminals), PathCount: a.pathCount})
+		out = append(out, RootSuspect{Root: a.root, Kind: a.kind, Reach: len(a.terminals), PathCount: a.pathCount})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Reach != out[j].Reach {

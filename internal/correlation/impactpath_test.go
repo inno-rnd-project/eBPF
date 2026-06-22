@@ -24,7 +24,7 @@ func pathTerminals(paths []ImpactPath) map[string]ImpactPath {
 // 다단계 경로가 추출되는지 검증한다.
 func TestExtractImpactPaths_Chain(t *testing.T) {
 	g := graphFromEdges([3]interface{}{"b", "a", 0.9}, [3]interface{}{"c", "b", 0.7})
-	paths := ExtractImpactPaths(g, 5, 0.5, 1024)
+	paths, _ := ExtractImpactPaths(g, 5, 0.5, 1024)
 	if len(paths) != 1 {
 		t.Fatalf("paths=%d want 1 (a→b→c)", len(paths))
 	}
@@ -46,7 +46,7 @@ func TestExtractImpactPaths_Chain(t *testing.T) {
 // TestExtractImpactPaths_Branch 는 root 가 여러 terminal 로 분기하면 경로가 각각 추출되는지 검증한다.
 func TestExtractImpactPaths_Branch(t *testing.T) {
 	g := graphFromEdges([3]interface{}{"b", "a", 0.9}, [3]interface{}{"c", "a", 0.6})
-	paths := ExtractImpactPaths(g, 5, 0.5, 1024)
+	paths, _ := ExtractImpactPaths(g, 5, 0.5, 1024)
 	if len(paths) != 2 {
 		t.Fatalf("paths=%d want 2 (a→b, a→c)", len(paths))
 	}
@@ -63,7 +63,7 @@ func TestExtractImpactPaths_Branch(t *testing.T) {
 // 경로가 0 인지 검증한다 (사이클에서 무한 순회하지 않음).
 func TestExtractImpactPaths_PureCycleNoRoot(t *testing.T) {
 	g := graphFromEdges([3]interface{}{"b", "a", 0.9}, [3]interface{}{"a", "b", 0.8})
-	paths := ExtractImpactPaths(g, 5, 0.5, 1024)
+	paths, _ := ExtractImpactPaths(g, 5, 0.5, 1024)
 	if len(paths) != 0 {
 		t.Errorf("paths=%d want 0 (root 없는 순환)", len(paths))
 	}
@@ -77,7 +77,7 @@ func TestExtractImpactPaths_CycleWithRoot(t *testing.T) {
 		[3]interface{}{"b", "a", 0.8},
 		[3]interface{}{"a", "b", 0.7},
 	)
-	paths := ExtractImpactPaths(g, 5, 0.5, 1024)
+	paths, _ := ExtractImpactPaths(g, 5, 0.5, 1024)
 	if len(paths) != 1 {
 		t.Fatalf("paths=%d want 1 (r→a→b)", len(paths))
 	}
@@ -90,7 +90,7 @@ func TestExtractImpactPaths_CycleWithRoot(t *testing.T) {
 // 검증한다.
 func TestExtractImpactPaths_MinScorePrune(t *testing.T) {
 	g := graphFromEdges([3]interface{}{"b", "a", 0.9}, [3]interface{}{"c", "b", 0.3})
-	paths := ExtractImpactPaths(g, 5, 0.5, 1024)
+	paths, _ := ExtractImpactPaths(g, 5, 0.5, 1024)
 	if len(paths) != 1 {
 		t.Fatalf("paths=%d want 1 (b→c 가지치기로 a→b 만)", len(paths))
 	}
@@ -106,7 +106,7 @@ func TestExtractImpactPaths_MaxDepth(t *testing.T) {
 		[3]interface{}{"c", "b", 0.9},
 		[3]interface{}{"d", "c", 0.9},
 	)
-	paths := ExtractImpactPaths(g, 2, 0.5, 1024)
+	paths, _ := ExtractImpactPaths(g, 2, 0.5, 1024)
 	if len(paths) != 1 {
 		t.Fatalf("paths=%d want 1", len(paths))
 	}
@@ -124,7 +124,8 @@ func TestRootSuspects_ReachAndCount(t *testing.T) {
 		[3]interface{}{"c", "a", 0.8},
 		[3]interface{}{"z", "r", 0.7},
 	)
-	roots := RootSuspects(ExtractImpactPaths(g, 5, 0.5, 1024))
+	paths, _ := ExtractImpactPaths(g, 5, 0.5, 1024)
+	roots := RootSuspects(paths)
 	if len(roots) != 2 {
 		t.Fatalf("roots=%d want 2", len(roots))
 	}
@@ -137,10 +138,66 @@ func TestRootSuspects_ReachAndCount(t *testing.T) {
 	}
 }
 
+// TestExtractImpactPaths_NetSourceFallback 은 순수 source (in-degree 0) 가 없는 순환 그래프에서
+// net-source (out>in) 로 fallback 해 경로가 추출되고 RootKind 가 net_source 로 표시되는지 검증한다.
+func TestExtractImpactPaths_NetSourceFallback(t *testing.T) {
+	// a→b, b→c, c→a (3-순환) 에 a→x 를 더해 a 는 out=2/in=1 (net-source), 나머지는 out=in=1.
+	// 순수 source 가 없어 a 가 net-source 근원이 된다.
+	g := graphFromEdges(
+		[3]interface{}{"b", "a", 0.9},
+		[3]interface{}{"c", "b", 0.9},
+		[3]interface{}{"a", "c", 0.9},
+		[3]interface{}{"x", "a", 0.9},
+	)
+	paths, _ := ExtractImpactPaths(g, 5, 0.5, 1024)
+	if len(paths) == 0 {
+		t.Fatalf("paths=0 want >0 (net-source fallback 미동작)")
+	}
+	for _, p := range paths {
+		if p.Root.Pod != "a" {
+			t.Errorf("root=%s want a (net-source)", p.Root.Pod)
+		}
+		if p.RootKind != RootKindNetSource {
+			t.Errorf("root_kind=%s want net_source", p.RootKind)
+		}
+	}
+	roots := RootSuspects(paths)
+	if len(roots) != 1 || roots[0].Kind != RootKindNetSource {
+		t.Errorf("roots=%+v want 1 net_source", roots)
+	}
+}
+
+// TestExtractImpactPaths_PureRootKind 는 순수 source 근원의 RootKind 가 source 인지 검증한다.
+func TestExtractImpactPaths_PureRootKind(t *testing.T) {
+	g := graphFromEdges([3]interface{}{"b", "a", 0.9})
+	paths, _ := ExtractImpactPaths(g, 5, 0.5, 1024)
+	if len(paths) != 1 || paths[0].RootKind != RootKindSource {
+		t.Errorf("paths=%d kind=%v want 1 source", len(paths), paths[0].RootKind)
+	}
+}
+
+// TestExtractImpactPaths_TruncatedFlag 는 maxPaths 캡 도달 시 truncated=true 가 반환되는지 검증한다.
+func TestExtractImpactPaths_TruncatedFlag(t *testing.T) {
+	// root a 가 b, c, d 로 분기 (3 경로). maxPaths=2 면 truncated.
+	g := graphFromEdges(
+		[3]interface{}{"b", "a", 0.9},
+		[3]interface{}{"c", "a", 0.9},
+		[3]interface{}{"d", "a", 0.9},
+	)
+	paths, truncated := ExtractImpactPaths(g, 5, 0.5, 2)
+	if len(paths) != 2 || !truncated {
+		t.Errorf("paths=%d truncated=%v want 2/true (maxPaths cap)", len(paths), truncated)
+	}
+	_, notTrunc := ExtractImpactPaths(g, 5, 0.5, 1024)
+	if notTrunc {
+		t.Errorf("truncated=true want false (cap 미도달)")
+	}
+}
+
 // TestExtractImpactPaths_Deterministic 은 입력 순서가 달라도 경로 추출이 결정적인지 검증한다.
 func TestExtractImpactPaths_Deterministic(t *testing.T) {
-	a := ExtractImpactPaths(graphFromEdges([3]interface{}{"c", "a", 0.8}, [3]interface{}{"b", "a", 0.9}), 5, 0.5, 1024)
-	b := ExtractImpactPaths(graphFromEdges([3]interface{}{"b", "a", 0.9}, [3]interface{}{"c", "a", 0.8}), 5, 0.5, 1024)
+	a, _ := ExtractImpactPaths(graphFromEdges([3]interface{}{"c", "a", 0.8}, [3]interface{}{"b", "a", 0.9}), 5, 0.5, 1024)
+	b, _ := ExtractImpactPaths(graphFromEdges([3]interface{}{"b", "a", 0.9}, [3]interface{}{"c", "a", 0.8}), 5, 0.5, 1024)
 	if len(a) != len(b) {
 		t.Fatalf("len mismatch %d vs %d", len(a), len(b))
 	}
