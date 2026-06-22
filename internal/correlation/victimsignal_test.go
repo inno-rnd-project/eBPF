@@ -21,10 +21,15 @@ func TestClassifyVictimSignal(t *testing.T) {
 		// suspect cause score 는 victim 이 아니어야 한다 (충돌 회피).
 		{"pod:cpu_throttle_score:5m", SignalNone},
 		{"pod:memory_pressure_score:5m", SignalNone},
-		{"pod:network_throughput_score:5m", SignalNone}, // "throughput" 포함하나 "bytes" 없음
-		{"pod:network_retrans_score:5m", SignalNone},    // "retrans" 는 "drop" 과 다름
+		{"pod:network_throughput_score:5m", SignalNone},
+		{"pod:network_retrans_score:5m", SignalNone},
 		{"pod:host_compute_stall_score:5m", SignalNone},
 		{"pod:gpu_memory_utilization_ratio:5m", SignalNone},
+		// 운영자가 ExtraMetrics 로 추가할 수 있는 커스텀 suspect 는 "bytes" / "drop" 일반 토큰을 포함해도
+		// victim 으로 오분류되지 않아야 한다 (source 메트릭 이름 매칭으로 차단).
+		{`container_network_receive_bytes_total`, SignalNone},
+		{`container_memory_working_set_bytes`, SignalNone},
+		{`rate(node_network_receive_drop_total[5m])`, SignalNone},
 	}
 	for _, c := range cases {
 		if got := classifyVictimSignal(c.metric); got != c.want {

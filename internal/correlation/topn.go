@@ -80,8 +80,8 @@ func classifyDimension(metric string) ResourceDimension {
 	return DimensionUnknown
 }
 
-// isLatencyMetric 은 query 가 victim latency 메트릭인지 식별한다. cross-node / service-impact /
-// cross-level layer 는 victim 을 latency 단일로 유지하므로 본 헬퍼로 latency victim 을 판정한다.
+// isLatencyMetric 은 metric 이 latency 토큰을 포함하는지 보는 단순 헬퍼다. victim 신호 판정은
+// classifyVictimSignal 로 일원화했으며 본 헬퍼는 단위 테스트의 보조 단정에만 남겨둔다.
 func isLatencyMetric(metric string) bool {
 	return strings.Contains(metric, "latency")
 }
@@ -100,18 +100,20 @@ const (
 	SignalNone VictimSignal = ""
 )
 
-// classifyVictimSignal 은 query 문자열에서 VictimSignal 을 결정한다. 토큰은 suspect cause score 명
-// (network_throughput_score / network_retrans_score / cpu_throttle_score 등) 과 겹치지 않는 victim
-// 고유 토큰 (latency / bytes / drop) 으로 골라 dimension 분류 정합을 유지한다. 예를 들어 suspect 인
-// network_throughput_score 는 "throughput" 을 포함하나 "bytes" 가 없어 victim 으로 오분류되지 않고,
-// network_retrans_score 는 "retrans" 라 "drop" 과 겹치지 않는다.
+// classifyVictimSignal 은 query 문자열에서 VictimSignal 을 결정한다. "bytes" / "drop" 같은 일반 토큰
+// 대신 victim 의 실제 netobs source 메트릭 이름 (stage_latency / netobs_pod_bytes_total /
+// netobs_drop_events_flow_total) 으로 매칭한다. 일반 토큰을 쓰면 운영자가 ExtraMetrics 로 추가한 커스텀
+// suspect (예: container_network_receive_bytes_total, container_memory_working_set_bytes) 가 "bytes"
+// 때문에 victim 으로 오분류되어 suspect 가 분석에서 빠지는 버그가 생긴다. source 메트릭 이름으로 좁히면
+// suspect cause score (network_throughput_score / network_retrans_score 등) 와 임의 커스텀 메트릭이
+// 모두 SignalNone 으로 분류되어 suspect 로 정상 취급된다.
 func classifyVictimSignal(metric string) VictimSignal {
 	switch {
-	case strings.Contains(metric, "latency"):
+	case strings.Contains(metric, "stage_latency"):
 		return SignalLatency
-	case strings.Contains(metric, "bytes"):
+	case strings.Contains(metric, "netobs_pod_bytes_total"):
 		return SignalThroughput
-	case strings.Contains(metric, "drop"):
+	case strings.Contains(metric, "netobs_drop_events_flow_total"):
 		return SignalError
 	}
 	return SignalNone

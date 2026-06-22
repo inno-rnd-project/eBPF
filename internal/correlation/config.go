@@ -164,7 +164,10 @@ func DefaultConfig() Config {
 			`sum by(node, src_namespace, src_pod, src_pod_uid) (rate(netobs_pod_bytes_total{direction="egress",layer="nic"}[5m]))`,
 			// #150 error victim (victim_signal=error). pod 단위 drop rate 다. netobs_drop_events_flow_total
 			// 은 src_pod 를 보유하나 NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 에 등록된 namespace 에서만
-			// emit 되어 미설정 시 본 victim 은 graceful 하게 비어 있다. "drop" 토큰이라 error 로 분류된다.
+			// emit 되어 미설정 시 본 victim 은 graceful 하게 비어 있다. classifyVictimSignal 이 source 메트릭
+			// 이름 netobs_drop_events_flow_total 로 매칭해 error 로 분류한다. 본 메트릭은 src_pod_uid 라벨을
+			// 보유하지 않아 sum by 에 넣어도 PromQL 이 결과에서 제거하므로 (no-op) 의도적으로 제외했고, victim
+			// pod_uid 는 빈 값이라 SelectTopN 이 (namespace, pod) fallback 으로 dedup / 그룹화한다.
 			`sum by(node, src_namespace, src_pod) (rate(netobs_drop_events_flow_total[5m]))`,
 		},
 		FetchTimeout:      30 * time.Second,
