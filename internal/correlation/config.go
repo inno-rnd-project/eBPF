@@ -100,6 +100,13 @@ type Config struct {
 	// 있으면 모든 namespace 를 허용하고 CrossLevelMaxPairs 캡이 backstop 이 된다. 운영자가 특정
 	// namespace (예: latency-sensitive app) 로 좁혀 페어 수를 줄이는 카디널리티 통제 수단이다.
 	CrossLevelAllowNamespaces []string
+
+	// ImpactGraphEnabled 는 #151 Phase 1 의 영향 전파 그래프 토글이다. true 일 때 exporter 가 매 reconcile
+	// cycle 의 noisy neighbor Top-N 을 정점 (pod) 과 방향 엣지 (suspect → victim) 로 하는 in-memory
+	// 그래프로 구성해 REST API 와 node degree 메트릭으로 노출한다. 새 Prometheus fetch 없이 기존 Top-N
+	// 을 재사용하므로 비용이 작다. #151 부터 default true 이며 IMPACT_GRAPH=false env 또는
+	// -impact-graph=false flag 로 opt-out 한다.
+	ImpactGraphEnabled bool
 }
 
 // PlannedQueries 는 활성 layer 를 반영해 Correlate 가 fetch 할 query 의 dedup 합집합을 반환한다.
@@ -203,5 +210,7 @@ func DefaultConfig() Config {
 		CrossLevelEnabled:         true,
 		CrossLevelMaxPairs:        4096,
 		CrossLevelAllowNamespaces: nil,
+		// #151 Phase 1 영향 전파 그래프. 기존 noisy neighbor Top-N 을 재사용해 새 입력 query 가 없다.
+		ImpactGraphEnabled: true,
 	}
 }
