@@ -87,6 +87,11 @@ func main() {
 	applyEnvDuration("RECONCILE_INTERVAL", "reconcile-interval", &reconcileInterval)
 	applyEnvInt("MIN_SAMPLES", "min-samples", &cfg.MinSamples)
 	applyEnvInt("TOP_N", "top-n", &topN)
+	// #151 Phase 2 경로 추출 tunable 의 env override. 조밀 그래프에서 IMPACT_PATH_MIN_SCORE 를 올려
+	// 약한 엣지를 더 쳐내면 근원 (root) 이 드러나 경로가 추출된다.
+	applyEnvInt("IMPACT_PATH_MAX_DEPTH", "impact-path-max-depth", &cfg.ImpactPathMaxDepth)
+	applyEnvFloat("IMPACT_PATH_MIN_SCORE", "impact-path-min-score", &cfg.ImpactPathMinScore)
+	applyEnvInt("IMPACT_PATH_MAX_PATHS", "impact-path-max-paths", &cfg.ImpactPathMaxPaths)
 	if v := strings.TrimSpace(os.Getenv("LAG_STEPS")); v != "" {
 		var parsed intSlice
 		if err := parsed.Set(v); err != nil {
@@ -156,6 +161,9 @@ func main() {
 	fs.BoolVar(&cfg.ServiceImpactEnabled, "service-impact", cfg.ServiceImpactEnabled, "#148: service-impact layer (node pressure vs workload-level latency, correlation_service_impact_score gauge). Default enabled; set -service-impact=false or SERVICE_IMPACT=false to opt out on very large clusters")
 	fs.BoolVar(&cfg.CrossLevelEnabled, "cross-level", cfg.CrossLevelEnabled, "#149: cross-level layer (same-node node pressure vs pod latency, both directions, correlation_cross_level_score gauge). Default enabled; set -cross-level=false or CROSS_LEVEL=false to opt out on very large clusters")
 	fs.BoolVar(&cfg.ImpactGraphEnabled, "impact-graph", cfg.ImpactGraphEnabled, "#151 Phase 1: in-memory impact propagation graph (nodes=pods, edges=suspect->victim, correlation_impact_graph_node_degree gauge + /api/v1/impact-graph). Default enabled; set -impact-graph=false or IMPACT_GRAPH=false to opt out")
+	fs.IntVar(&cfg.ImpactPathMaxDepth, "impact-path-max-depth", cfg.ImpactPathMaxDepth, "#151 Phase 2: max hop depth for impact path extraction (env IMPACT_PATH_MAX_DEPTH)")
+	fs.Float64Var(&cfg.ImpactPathMinScore, "impact-path-min-score", cfg.ImpactPathMinScore, "#151 Phase 2: min edge score to include in impact paths; raise on dense graphs to surface roots (env IMPACT_PATH_MIN_SCORE)")
+	fs.IntVar(&cfg.ImpactPathMaxPaths, "impact-path-max-paths", cfg.ImpactPathMaxPaths, "#151 Phase 2: max extracted impact paths (combinatorial backstop, env IMPACT_PATH_MAX_PATHS)")
 
 	var extra stringSlice
 	fs.Var(&extra, "extra-metric", "additional Prometheus query (repeat for multiple)")
@@ -399,4 +407,22 @@ func applyEnvInt(envKey, flagName string, dst *int) {
 		log.Fatalf("env %s parse: %v", envKey, err)
 	}
 	*dst = n
+}
+
+// applyEnvFloat 은 applyEnvInt 의 float64 판본이다. ImpactPathMinScore 같은 실수 tunable 의 env
+// override 에 쓰인다. parse 실패 시 동일 flag 가 제공되면 무시, 아니면 fatal 로 misconfiguration 을
+// 조기에 드러낸다.
+func applyEnvFloat(envKey, flagName string, dst *float64) {
+	v := strings.TrimSpace(os.Getenv(envKey))
+	if v == "" {
+		return
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		if hasCLIFlag(os.Args[1:], flagName) {
+			return
+		}
+		log.Fatalf("env %s parse: %v", envKey, err)
+	}
+	*dst = f
 }
