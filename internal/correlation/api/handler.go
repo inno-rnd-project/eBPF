@@ -40,14 +40,13 @@ type CrossLevelSnapshotSource interface {
 	CrossLevelSnapshot() []correlation.CrossLevel
 }
 
-// ImpactGraphSnapshotSource 는 #151 의 영향 전파 그래프 (Phase 1) 와 다단계 경로 / 근원 suspect
-// (Phase 2) snapshot 을 제공하는 추상 인터페이스다. exporter.Collector 가 세 메서드를 모두 만족하므로
-// /api/v1/impact-graph 와 /api/v1/impact-paths 가 동일 source 를 공유한다. test 측에서 fake 주입 시
-// 사용한다.
+// ImpactGraphSnapshotSource 는 #151 의 영향 전파 그래프 (Phase 1) 와 다단계 경로 (Phase 2) snapshot 을
+// 제공하는 추상 인터페이스다. exporter.Collector 가 두 메서드를 모두 만족하므로 /api/v1/impact-graph 와
+// /api/v1/impact-paths 가 동일 source 를 공유한다. 근원 요약은 handler 가 필터된 경로에서 재집계하므로
+// 별도 snapshot 메서드를 두지 않는다. test 측에서 fake 주입 시 사용한다.
 type ImpactGraphSnapshotSource interface {
 	ImpactGraphSnapshot() correlation.ImpactGraph
 	ImpactPathsSnapshot() []correlation.ImpactPath
-	RootSuspectsSnapshot() []correlation.RootSuspect
 }
 
 // Handler 는 correlation API endpoint 들 의 의존성을 모은다. SnapshotSource 다섯 종 외 별도 상태가
@@ -650,10 +649,8 @@ func (h *Handler) ListImpactPaths(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var paths []correlation.ImpactPath
-	var roots []correlation.RootSuspect
 	if h.impactGraphSource != nil {
 		paths = h.impactGraphSource.ImpactPathsSnapshot()
-		roots = h.impactGraphSource.RootSuspectsSnapshot()
 	}
 	filtered := make([]correlation.ImpactPath, 0, len(paths))
 	for _, p := range paths {
@@ -674,6 +671,8 @@ func (h *Handler) ListImpactPaths(w http.ResponseWriter, r *http.Request) {
 	if filtered == nil {
 		filtered = []correlation.ImpactPath{}
 	}
+	// 근원 요약은 필터된 경로에서 재집계해 paths 와 roots 가 항상 같은 부분집합을 가리키게 한다.
+	roots := correlation.RootSuspects(filtered)
 	if roots == nil {
 		roots = []correlation.RootSuspect{}
 	}

@@ -332,17 +332,6 @@ func (c *Collector) ImpactPathsSnapshot() []correlation.ImpactPath {
 	return append([]correlation.ImpactPath(nil), c.impactPaths...)
 }
 
-// RootSuspectsSnapshot 은 가장 최근 산정한 근원 suspect 집계의 안전한 복사본을 반환한다.
-// /api/v1/impact-paths 응답의 roots summary 로 노출된다.
-func (c *Collector) RootSuspectsSnapshot() []correlation.RootSuspect {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if len(c.rootSuspects) == 0 {
-		return nil
-	}
-	return append([]correlation.RootSuspect(nil), c.rootSuspects...)
-}
-
 // Describe 는 prometheus.Collector 인터페이스를 만족한다.
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.scoreDesc

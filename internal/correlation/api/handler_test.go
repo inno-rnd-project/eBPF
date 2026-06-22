@@ -17,7 +17,6 @@ type fakeSource struct {
 	crossLevel    []correlation.CrossLevel
 	impactGraph   correlation.ImpactGraph
 	impactPaths   []correlation.ImpactPath
-	rootSuspects  []correlation.RootSuspect
 }
 
 func (f *fakeSource) Snapshot() []correlation.NoisyNeighbor              { return f.data }
@@ -26,7 +25,6 @@ func (f *fakeSource) ServiceImpactSnapshot() []correlation.ServiceImpact { retur
 func (f *fakeSource) CrossLevelSnapshot() []correlation.CrossLevel       { return f.crossLevel }
 func (f *fakeSource) ImpactGraphSnapshot() correlation.ImpactGraph       { return f.impactGraph }
 func (f *fakeSource) ImpactPathsSnapshot() []correlation.ImpactPath      { return f.impactPaths }
-func (f *fakeSource) RootSuspectsSnapshot() []correlation.RootSuspect    { return f.rootSuspects }
 
 func newFakeCrossLevel(node string, dir correlation.CrossLevelDirection, ns, pod string, dim correlation.ResourceDimension, rank int, score float64) correlation.CrossLevel {
 	return correlation.CrossLevel{
@@ -565,7 +563,7 @@ func pathsFakeSource() *fakeSource {
 		newFakeNeighbor("ns", "c", "ns", "a", correlation.DimensionCPU, 1),
 	})
 	paths, _ := correlation.ExtractImpactPaths(g, 5, 0.5, 1024)
-	return &fakeSource{impactPaths: paths, rootSuspects: correlation.RootSuspects(paths)}
+	return &fakeSource{impactPaths: paths}
 }
 
 func TestListImpactPaths_HappyPath(t *testing.T) {
@@ -607,6 +605,28 @@ func TestListImpactPaths_TerminalFilter(t *testing.T) {
 	}
 	if len(resp.Paths) == 1 && resp.Paths[0].Terminal.Pod != "b" {
 		t.Errorf("terminal=%s want b", resp.Paths[0].Terminal.Pod)
+	}
+}
+
+// TestListImpactPaths_RootsRecomputedFromFiltered 는 필터로 경로를 좁히면 roots summary 도 그 부분집합
+// 에서 재집계돼 reach 가 줄고 paths 와 정합하는지 검증한다. terminal_pod=b 면 a→b 경로 1 개만 남으므로
+// 근원 a 의 reach 는 전역 2 가 아닌 1 이어야 한다.
+func TestListImpactPaths_RootsRecomputedFromFiltered(t *testing.T) {
+	source := pathsFakeSource()
+	h := NewHandler(source, source, source, source, source)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/impact-paths?terminal_pod=b", nil)
+	w := httptest.NewRecorder()
+	h.ListImpactPaths(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	var resp ImpactPathsResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Summary.PathCount != 1 || resp.Summary.RootCount != 1 {
+		t.Fatalf("summary paths=%d roots=%d want 1/1", resp.Summary.PathCount, resp.Summary.RootCount)
+	}
+	if len(resp.Roots) != 1 || resp.Roots[0].Reach != 1 || resp.Roots[0].PathCount != 1 {
+		t.Errorf("filtered root=%+v want reach=1 path_count=1 (전역 2 가 아닌 필터 부분집합)", resp.Roots)
 	}
 }
 

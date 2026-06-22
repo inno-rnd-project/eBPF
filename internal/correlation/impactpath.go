@@ -169,31 +169,30 @@ func ExtractImpactPaths(g ImpactGraph, maxDepth int, minScore float64, maxPaths 
 				truncated = true
 				return
 			}
-			// 다음 후보: 방문하지 않은 victim pod 로 가는 엣지. 같은 victim pod 로 가는 평행 엣지는
-			// 정렬상 최강 (score 최대) 인 첫 엣지 1 개만 채택해 동일 pod 를 통한 중복 경로를 막는다.
-			next := make([]ImpactGraphEdge, 0, len(adj[cur]))
-			seenVictim := make(map[pathNodeKey]bool)
-			for _, e := range adj[cur] {
-				vk := podKey(e.Victim)
-				if visited[vk] || seenVictim[vk] {
-					continue
-				}
-				seenVictim[vk] = true
-				next = append(next, e)
-			}
-			// terminal 조건: 진행할 엣지가 없거나 깊이 한계 도달. hop 이 1 개 이상일 때만 경로다.
-			if len(hops) > 0 && (len(next) == 0 || len(hops) >= maxDepth) {
+			// 깊이 한계 도달 시 현재까지의 경로를 truncate 해 emit 한다. maxDepth>=1 이라 hops>0 이 보장된다.
+			if len(hops) >= maxDepth {
 				p := makePath(rootID, hops)
 				p.RootKind = rootKind
 				out = append(out, p)
 				return
 			}
-			for _, e := range next {
-				if len(out) >= maxPaths {
-					truncated = true
-					return
-				}
+			// adj[cur] 가 victim (namespace, pod) 정렬이라 같은 victim pod 로 가는 평행 엣지는 인접한다.
+			// 직전 victim 과 비교해 건너뛰면 (정렬상 최강 score 가 먼저라 첫 엣지 채택) 재귀마다 map /
+			// 슬라이스 할당 없이 victim pod 당 1 hop 만 채택한다.
+			hasOutgoing := false
+			var lastVictim pathNodeKey
+			hasLast := false
+			for _, e := range adj[cur] {
 				vk := podKey(e.Victim)
+				if hasLast && vk == lastVictim {
+					continue
+				}
+				lastVictim = vk
+				hasLast = true
+				if visited[vk] {
+					continue
+				}
+				hasOutgoing = true
 				visited[vk] = true
 				hops = append(hops, ImpactPathHop{
 					Suspect:      e.Suspect,
@@ -206,6 +205,16 @@ func ExtractImpactPaths(g ImpactGraph, maxDepth int, minScore float64, maxPaths 
 				dfs(vk)
 				hops = hops[:len(hops)-1]
 				visited[vk] = false
+				if len(out) >= maxPaths {
+					truncated = true
+					return
+				}
+			}
+			// 진행할 엣지가 없는 terminal 이면 root→terminal 경로 1 개 emit 한다 (hops>0 일 때만).
+			if !hasOutgoing && len(hops) > 0 {
+				p := makePath(rootID, hops)
+				p.RootKind = rootKind
+				out = append(out, p)
 			}
 		}
 		dfs(podKey(rootID))
@@ -239,6 +248,11 @@ func ExtractImpactPaths(g ImpactGraph, maxDepth int, minScore float64, maxPaths 
 // makePath 는 hop 열에서 ImpactPath 를 만든다. Score 는 weakest-link (hop 최소), Terminal 은 마지막
 // hop 의 victim 이다. hops 슬라이스는 caller 가 재사용 (truncate) 하므로 복사본을 보관한다.
 func makePath(root PodIdentity, hops []ImpactPathHop) ImpactPath {
+	// 방어적 가드: caller 는 hops>0 일 때만 호출하지만 빈 hop 으로 들어와도 panic 대신 root 만 담은
+	// 경로를 돌려준다.
+	if len(hops) == 0 {
+		return ImpactPath{Root: root, Terminal: root}
+	}
 	copied := append([]ImpactPathHop(nil), hops...)
 	score := copied[0].Score
 	for _, h := range copied[1:] {
