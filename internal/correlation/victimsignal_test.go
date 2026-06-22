@@ -33,6 +33,24 @@ func TestClassifyVictimSignal(t *testing.T) {
 	}
 }
 
+// TestDefaultConfig_HasMultiSignalVictims 는 DefaultMetrics 에 세 victim signal (latency / throughput
+// / error) 이 각각 정확히 하나씩 포함되어 zero-config 에서도 다차원 victim 이 산출되는지 검증한다.
+func TestDefaultConfig_HasMultiSignalVictims(t *testing.T) {
+	counts := map[VictimSignal]int{}
+	for _, m := range DefaultConfig().DefaultMetrics {
+		counts[classifyVictimSignal(m)]++
+	}
+	for _, sig := range []VictimSignal{SignalLatency, SignalThroughput, SignalError} {
+		if counts[sig] != 1 {
+			t.Errorf("DefaultMetrics 의 victim_signal=%s 개수=%d want 1", sig, counts[sig])
+		}
+	}
+	// cause score 들은 victim 이 아니어야 한다 (SignalNone 다수).
+	if counts[SignalNone] == 0 {
+		t.Errorf("DefaultMetrics 에 suspect cause score (SignalNone) 가 없음")
+	}
+}
+
 // TestSelectTopN_MultiSignalVictims 는 한 victim 이 latency / throughput / error 세 신호별로 독립
 // 순위를 갖고 victim_signal 이 정확히 채워지는지 검증한다.
 func TestSelectTopN_MultiSignalVictims(t *testing.T) {

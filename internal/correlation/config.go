@@ -155,8 +155,17 @@ func DefaultConfig() Config {
 			// multi-GPU pod 에서 동일 (namespace, pod) 에 여러 series 가 생성되어 PairKey 중복이 발생
 			// 한다. avg by(...) 로 pod 단위 집계해 단일 series 로 normalize 한다.
 			`avg by(node, src_namespace, src_pod, src_pod_uid) (pod:gpu_memory_utilization_ratio:5m)`,
-			// netobs 의 pod-level latency p99.
+			// netobs 의 pod-level latency p99 victim (#150 victim_signal=latency).
 			`histogram_quantile(0.99, sum by(node, src_namespace, src_pod, src_pod_uid, le) (rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])))`,
+			// #150 throughput victim (victim_signal=throughput). netobs_pod_bytes_total 의 egress nic
+			// 바이트 rate 를 pod 단위로 집계한다. 간섭으로 throughput 이 저하되면 suspect 압박과 음의 상관
+			// 으로 나타나며 SelectTopN 은 max|corr| 로 부호 무관하게 포착한다. "bytes" 토큰이라 classify
+			// VictimSignal 이 throughput 으로 분류한다.
+			`sum by(node, src_namespace, src_pod, src_pod_uid) (rate(netobs_pod_bytes_total{direction="egress",layer="nic"}[5m]))`,
+			// #150 error victim (victim_signal=error). pod 단위 drop rate 다. netobs_drop_events_flow_total
+			// 은 src_pod 를 보유하나 NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 에 등록된 namespace 에서만
+			// emit 되어 미설정 시 본 victim 은 graceful 하게 비어 있다. "drop" 토큰이라 error 로 분류된다.
+			`sum by(node, src_namespace, src_pod) (rate(netobs_drop_events_flow_total[5m]))`,
 		},
 		FetchTimeout:      30 * time.Second,
 		GrangerLag:        2,
