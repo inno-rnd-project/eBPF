@@ -113,6 +113,45 @@ func TestListNoisyNeighbors_DimensionFilter(t *testing.T) {
 	}
 }
 
+func TestListNoisyNeighbors_VictimSignalFilter(t *testing.T) {
+	mk := func(pod string, sig correlation.VictimSignal) correlation.NoisyNeighbor {
+		n := newFakeNeighbor("ns-a", pod, "ns-b", "suspect", correlation.DimensionCPU, 1)
+		n.VictimSignal = sig
+		return n
+	}
+	source := &fakeSource{data: []correlation.NoisyNeighbor{
+		mk("v-lat", correlation.SignalLatency),
+		mk("v-tput", correlation.SignalThroughput),
+		mk("v-err", correlation.SignalError),
+	}}
+	h := NewHandler(source, source, source, source)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/noisy-neighbor?victim_signal=throughput", nil)
+	w := httptest.NewRecorder()
+	h.ListNoisyNeighbors(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	var resp NoisyNeighborListResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Page.Total != 1 {
+		t.Errorf("total=%d want 1 (victim_signal=throughput)", resp.Page.Total)
+	}
+	if len(resp.Items) == 1 && resp.Items[0].VictimSignal != correlation.SignalThroughput {
+		t.Errorf("victim_signal=%s want throughput", resp.Items[0].VictimSignal)
+	}
+}
+
+func TestListNoisyNeighbors_InvalidVictimSignal(t *testing.T) {
+	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/noisy-neighbor?victim_signal=bogus", nil)
+	w := httptest.NewRecorder()
+	h.ListNoisyNeighbors(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d want 400 (invalid victim_signal)", w.Code)
+	}
+}
+
 func TestListNoisyNeighbors_InvalidDimension(t *testing.T) {
 	h := NewHandler(&fakeSource{}, &fakeSource{}, &fakeSource{}, &fakeSource{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/noisy-neighbor?dimension=invalid", nil)

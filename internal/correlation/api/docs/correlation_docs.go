@@ -419,6 +419,12 @@ const docTemplatecorrelation = `{
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "victim 영향 종착 차원 필터 (latency/throughput/error)",
+                        "name": "victim_signal",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "max rank (기본 무제한)",
                         "name": "rank_max",
@@ -977,7 +983,7 @@ const docTemplatecorrelation = `{
                     "type": "number"
                 },
                 "rank": {
-                    "description": "Rank 는 (victim, dimension) 그룹 내 max_abs_value 내림차순 1-based 순위다. 1 이 가장 강한 상관.",
+                    "description": "Rank 는 (victim, victim_signal, dimension) 그룹 내 max_abs_value 내림차순 1-based 순위다. 1 이 가장 강한 상관.",
                     "type": "integer"
                 },
                 "sample_count": {
@@ -997,6 +1003,14 @@ const docTemplatecorrelation = `{
                 },
                 "victim_metric": {
                     "type": "string"
+                },
+                "victim_signal": {
+                    "description": "VictimSignal 은 #150 의 victim 영향 종착 차원 (latency / throughput / error) 이다. dimension 이\nsuspect 의 자원 종류라면 VictimSignal 은 victim 측 품질 저하의 종류다. Top-N 은 (victim, victim_\nsignal, dimension) 그룹별로 산정되어 한 victim 이 신호별로 독립 순위를 갖는다.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/netobs_internal_correlation.VictimSignal"
+                        }
+                    ]
                 }
             }
         },
@@ -1071,6 +1085,21 @@ const docTemplatecorrelation = `{
                     "type": "string"
                 }
             }
+        },
+        "netobs_internal_correlation.VictimSignal": {
+            "type": "string",
+            "enum": [
+                "latency",
+                "throughput",
+                "error",
+                ""
+            ],
+            "x-enum-varnames": [
+                "SignalLatency",
+                "SignalThroughput",
+                "SignalError",
+                "SignalNone"
+            ]
         }
     }
 }`

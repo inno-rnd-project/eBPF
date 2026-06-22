@@ -144,6 +144,7 @@ type ErrorDetail struct {
 // @Param        suspect_namespace  query  string  false  "suspect Pod 의 namespace 필터"
 // @Param        suspect_pod        query  string  false  "suspect Pod 의 이름 필터"
 // @Param        dimension          query  string  false  "리소스 차원 필터 (cpu/memory/network/gpu)"
+// @Param        victim_signal      query  string  false  "victim 영향 종착 차원 필터 (latency/throughput/error)"
 // @Param        rank_max           query  int     false  "max rank (기본 무제한)"
 // @Param        limit              query  int     false  "응답 item 최대 개수 (기본 100, 최대 1000)"
 // @Param        offset             query  int     false  "응답 시작 offset (기본 0)"
@@ -155,6 +156,11 @@ func (h *Handler) ListNoisyNeighbors(w http.ResponseWriter, r *http.Request) {
 	dimension := strings.ToLower(strings.TrimSpace(q.Get("dimension")))
 	if dimension != "" && !validDimension(dimension) {
 		apicommon.WriteError(w, http.StatusBadRequest, "invalid_dimension", "dimension 은 cpu / memory / network / gpu 중 하나여야 합니다")
+		return
+	}
+	victimSignal := strings.ToLower(strings.TrimSpace(q.Get("victim_signal")))
+	if victimSignal != "" && !validVictimSignal(victimSignal) {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_victim_signal", "victim_signal 은 latency / throughput / error 중 하나여야 합니다")
 		return
 	}
 
@@ -182,6 +188,9 @@ func (h *Handler) ListNoisyNeighbors(w http.ResponseWriter, r *http.Request) {
 	filtered := make([]correlation.NoisyNeighbor, 0, len(all))
 	for _, n := range all {
 		if dimension != "" && !strings.EqualFold(string(n.Dimension), dimension) {
+			continue
+		}
+		if victimSignal != "" && !strings.EqualFold(string(n.VictimSignal), victimSignal) {
 			continue
 		}
 		if rankMax > 0 && n.Rank > rankMax {
@@ -221,6 +230,16 @@ func (h *Handler) ListNoisyNeighbors(w http.ResponseWriter, r *http.Request) {
 func validDimension(d string) bool {
 	switch d {
 	case "cpu", "memory", "network", "gpu":
+		return true
+	}
+	return false
+}
+
+// validVictimSignal 은 #150 의 victim_signal 쿼리 파라미터를 검증한다. correlation.VictimSignal 정의와
+// 정합한 세 값만 허용한다.
+func validVictimSignal(s string) bool {
+	switch s {
+	case string(correlation.SignalLatency), string(correlation.SignalThroughput), string(correlation.SignalError):
 		return true
 	}
 	return false
