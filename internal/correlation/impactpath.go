@@ -103,10 +103,22 @@ func ExtractImpactPaths(g ImpactGraph, maxDepth int, minScore float64, maxPaths 
 		})
 	}
 
-	// root = in-degree 0, out-degree>0. g.Nodes 는 namespace/pod/uid 정렬 상태라 root 순회도 결정적.
+	// root 는 가지치기된 (score>=minScore) 그래프 기준 in-degree 0, out-degree>0 정점이다. 순회가
+	// 강한 엣지만 따라가므로 root 판정도 동일 그래프를 써야 정합한다. raw graph in-degree 를 쓰면 약한
+	// 엣지 하나만 들어와도 root 에서 빠져, 강한 incoming 이 없는 진짜 근원이 누락된다. g.Nodes 가
+	// (namespace, pod) 정렬 상태라 root 순회도 결정적이다.
+	prunedIn := make(map[pathNodeKey]int)
+	prunedOut := make(map[pathNodeKey]int)
+	for sk, es := range adj {
+		prunedOut[sk] = len(es)
+		for _, e := range es {
+			prunedIn[podKey(e.Victim)]++
+		}
+	}
 	roots := make([]ImpactGraphNode, 0)
 	for _, n := range g.Nodes {
-		if n.InDegree == 0 && n.OutDegree > 0 {
+		k := pathNodeKey{namespace: n.Namespace, pod: n.Pod}
+		if prunedIn[k] == 0 && prunedOut[k] > 0 {
 			roots = append(roots, n)
 		}
 	}
