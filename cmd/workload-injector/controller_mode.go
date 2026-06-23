@@ -36,6 +36,7 @@ type controllerConfig struct {
 	LeaderElectionID  string
 	LeaderElectionNS  string
 	PrometheusURL     string
+	CorrelationURL    string
 	AllowClusterLabel string
 }
 
@@ -49,6 +50,7 @@ func loadControllerConfig() *controllerConfig {
 		LeaderElectionID:  envOr("CONTROLLER_LEADER_ELECTION_ID", "loadscenario.injector.netobs.io"),
 		LeaderElectionNS:  envOr("CONTROLLER_LEADER_ELECTION_NAMESPACE", "ebpf-project"),
 		PrometheusURL:     envOr("PROMETHEUS_URL", "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"),
+		CorrelationURL:    envOr("CORRELATION_URL", "http://correlation-exporter.ebpf-project.svc.cluster.local:9830"),
 		AllowClusterLabel: envOr("INJECTOR_ALLOW_CLUSTER_LABEL", "environment=dev"),
 	}
 
@@ -63,6 +65,7 @@ func loadControllerConfig() *controllerConfig {
 	fs.StringVar(&c.LeaderElectionID, "controller-leader-election-id", c.LeaderElectionID, "leader election lease name")
 	fs.StringVar(&c.LeaderElectionNS, "controller-leader-election-namespace", c.LeaderElectionNS, "leader election lease namespace")
 	fs.StringVar(&c.PrometheusURL, "prometheus-url", c.PrometheusURL, "Prometheus base URL (spike alert assertion)")
+	fs.StringVar(&c.CorrelationURL, "correlation-url", c.CorrelationURL, "correlation exporter base URL (score-based trigger)")
 	fs.StringVar(&c.AllowClusterLabel, "allow-cluster-label", c.AllowClusterLabel, "required node label for cluster safety gate")
 
 	if err := fs.Parse(os.Args[1:]); err != nil && err != flag.ErrHelp {
@@ -124,6 +127,7 @@ func runControllerMode() int {
 		LockNamespace:     cfg.LeaderElectionNS,
 		LockHolder:        holder,
 		SpikeAsserter:     injectorcontroller.NewPromSpikeAsserter(cfg.PrometheusURL),
+		ScoreProvider:     injectorcontroller.NewCorrelationScoreClient(cfg.CorrelationURL),
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		log.Printf("controller: reconciler SetupWithManager: %v", err)

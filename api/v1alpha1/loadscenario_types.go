@@ -82,6 +82,13 @@ type LoadScenarioSpec struct {
 	// +optional
 	SpikeAlertAssertion bool `json:"spikeAlertAssertion,omitempty"`
 
+	// ScoreTrigger 가 설정 되면 controller 가 correlation 의 간섭 score snapshot 을 조회 해 victim 과
+	// suspect 의 score 가 임계 이상 일 때 부하 run 을 트리거 한다. 이때 Schedule 은 직접 트리거 가 아닌
+	// score 평가 poll 주기 로 해석 되며, 실제 run 은 score 조건 충족 시에만 발생 한다. nil 이면 기존
+	// 처럼 Schedule 따른 cron 트리거 로 동작 한다.
+	// +optional
+	ScoreTrigger *ScoreTriggerSpec `json:"scoreTrigger,omitempty"`
+
 	// MaxFailures 는 연속 실패 임계 이다. status.consecutiveFailures 가 본 값을 초과 하면
 	// LoadScenario 의 suspend 상태 가 true 로 자동 전환 되어 다음 run 이 트리거 되지 않는다.
 	// 기본값 3.
@@ -95,6 +102,39 @@ type LoadScenarioSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
+}
+
+// ScoreTriggerSpec 는 correlation 간섭 score 기반 자동 트리거 조건 이다. controller 가 correlation
+// exporter 의 noisy-neighbor snapshot 을 조회 해 (VictimRef, SuspectRef, Dimension) 매칭 페어 의 최대
+// score 가 ScoreThreshold 이상 이면 부하 run 을 트리거 한다. 자동 트리거 도 기존 cron 경로 와 동일 한
+// safety gate (동시성 락 / maxFailures suspend / prod 차단) 를 거친다.
+type ScoreTriggerSpec struct {
+	// VictimRef 는 간섭 을 받는 victim Pod 다. score snapshot 의 victim 식별자 와 매칭 된다.
+	// +kubebuilder:validation:Required
+	VictimRef LoadScenarioTargetRef `json:"victimRef"`
+
+	// SuspectRef 는 간섭 을 일으키는 suspect Pod 다. 비우면 spec.targetRef (부하 대상) 를 suspect 로
+	// 사용 해, suspect 를 stress 해 victim 저하 를 검증 하는 인과 루프 를 형성 한다.
+	// +optional
+	SuspectRef *LoadScenarioTargetRef `json:"suspectRef,omitempty"`
+
+	// Dimension 은 score 를 평가 할 자원 차원 필터 다. 비우면 모든 차원 중 최대 score 를 본다.
+	// +kubebuilder:validation:Enum=cpu;memory;network;gpu
+	// +optional
+	Dimension string `json:"dimension,omitempty"`
+
+	// ScoreThreshold 는 트리거 임계 score 다 (0~1 사이 실수 문자열, 예 "0.7"). 매칭 페어 의 최대
+	// score 가 본 값 이상 이면 트리거 한다. correlation score 는 0~1 정규화 상관 강도 다. CRD 의 float
+	// 직렬화 비권장 을 피해 문자열 로 받고 controller 가 0~1 범위 를 검증 한다.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	ScoreThreshold string `json:"scoreThreshold"`
+
+	// MinInterval 은 score 트리거 run 사이 의 최소 간격 (debounce) 이다. score 가 임계 를 계속 넘더라도
+	// 본 간격 이내 에는 재트리거 하지 않아 과도한 반복 인가 를 막는다. 기본값 10m.
+	// +kubebuilder:default="10m"
+	// +optional
+	MinInterval metav1.Duration `json:"minInterval,omitempty"`
 }
 
 // LoadScenarioRunState 는 reconciler lifecycle state machine 의 상태값 이다.
@@ -134,6 +174,11 @@ type LoadScenarioStatus struct {
 	// +optional
 	LastSuccessfulRunTime *metav1.Time `json:"lastSuccessfulRunTime,omitempty"`
 
+	// LastScoreTriggerTime 은 scoreTrigger 가 마지막 으로 run 을 트리거 한 시각 이다. minInterval
+	// debounce 판정 의 기준 시각 으로 사용 되며, run 성공/실패 와 무관 하게 트리거 시점 에 기록 된다.
+	// +optional
+	LastScoreTriggerTime *metav1.Time `json:"lastScoreTriggerTime,omitempty"`
+
 	// LastObservedSpikeAlerts 는 spikeAlertAssertion 이 true 일 때 마지막 run 종료 직후
 	// firing 으로 관측 된 alertname 목록 이다. hit 가 없으면 빈 배열 또는 nil.
 	// +optional
@@ -150,6 +195,7 @@ type LoadScenarioStatus struct {
 	//   - Scheduled (마지막 run 이 schedule 따라 정상 트리거 됨)
 	//   - SpikeAlertObserved (spikeAlertAssertion = true 일 때 마지막 run 의 alert hit 여부)
 	//   - Suspended (maxFailures 초과 또는 운영자 명시 suspend)
+	//   - ScoreTriggered (scoreTrigger 설정 시 마지막 score 평가 의 트리거 충족 여부)
 	// +optional
 	// +patchMergeKey=type
 	// +patchStrategy=merge
