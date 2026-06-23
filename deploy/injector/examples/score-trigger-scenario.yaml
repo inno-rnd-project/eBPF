@@ -1,0 +1,41 @@
+# score-trigger-scenario.yaml 은 #153 의 간섭 score 기반 자동 트리거 예제 다. spec.scoreTrigger 가
+# 설정 되면 controller 는 schedule 을 직접 트리거 가 아닌 score 평가 poll 주기 로 보고, 매 poll 마다
+# correlation exporter 의 noisy-neighbor snapshot 을 조회 해 victim 과 suspect 의 간섭 score 가
+# scoreThreshold 이상 인지 확인 한다. 임계 를 넘고 minInterval debounce 를 통과 하면 targetRef (suspect)
+# 에 검증 부하 를 인가 해 victim 저하 를 재현 / 검증 한다.
+#
+# 자동 트리거 도 기존 cron 경로 와 동일 한 safety gate 를 거친다.
+#   - 동시성 락 (concurrencyPolicy) 으로 동일 target 중복 인가 차단
+#   - maxFailures 초과 시 자동 suspend
+#   - prod 차단 gate (INJECTOR_ALLOW_CLUSTER_LABEL 매칭 Node 부재 시 fail-fast)
+#
+# suspectRef 를 생략 하면 targetRef 가 suspect 로 사용 되어, "suspect 를 stress 해 victim 저하 를
+# 검증" 하는 인과 루프 가 형성 된다. dimension 을 생략 하면 모든 자원 차원 중 최대 score 를 본다.
+apiVersion: injector.netobs.io/v1alpha1
+kind: LoadScenario
+metadata:
+  name: example-score-trigger
+  namespace: ebpf-project
+spec:
+  # scoreTrigger 가 설정 되면 schedule 은 score 평가 poll 주기 로 해석 된다 (여기선 2 분 마다 평가).
+  schedule: "@every 2m"
+  kind: cpu
+  duration: 3m
+  intensity: 1500m
+  # 검증 부하 를 인가 할 대상 (suspect). scoreTrigger.suspectRef 가 비면 본 targetRef 가 suspect 다.
+  targetRef:
+    namespace: correlation-stress
+    name: suspect
+  concurrencyPolicy: Forbid
+  maxFailures: 3
+  scoreTrigger:
+    # 간섭 을 받는 victim. correlation snapshot 의 victim 식별자 와 매칭.
+    victimRef:
+      namespace: correlation-stress
+      name: victim
+    # cpu 차원 의 간섭 score 만 평가 (생략 시 전체 차원 중 최대).
+    dimension: cpu
+    # 매칭 페어 의 최대 score 가 0.7 이상 이면 트리거.
+    scoreThreshold: "0.7"
+    # score 가 계속 임계 를 넘더라도 10 분 이내 에는 재트리거 하지 않음 (debounce).
+    minInterval: 10m

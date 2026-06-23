@@ -12,6 +12,7 @@ metadata:
 # cluster 환경 공통 파라미터 (PROMETHEUS_URL, BASELINE_WINDOW 등) 만 보유한다.
 data:
   PROMETHEUS_URL: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
+  CORRELATION_URL: "http://correlation-exporter.ebpf-project.svc.cluster.local:9830"
   BASELINE_WINDOW: "10m"
   DURATION: "5m"
   FETCH_TIMEOUT: "30s"

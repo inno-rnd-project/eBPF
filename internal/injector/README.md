@@ -42,6 +42,18 @@ workload-injector 가 사용하는 라이브러리 모음이다. injector binary
 
 가드 실패는 모두 `injector_runs_total{status="skipped_gate"}` 누적 후 `os.Exit(1)`.
 
+## score 기반 자동 트리거
+
+LoadScenario 의 `spec.scoreTrigger` 가 설정 되면 controller 가 correlation 의 간섭 score 를 평가 해 자동 으로 부하 를 트리거 한다. 운영자가 dashboard 로 score 를 확인 한 뒤 수동 으로 LoadScenario 를 만드는 과정 을 자동화 한다.
+
+- 평가 데이터: controller 가 `CORRELATION_URL` (기본 `correlation-exporter` Service) 의 `/api/v1/noisy-neighbor` 를 server-side 필터 (`victim_*`, `suspect_*`, `dimension`) 로 단일 query 해 매칭 페어 의 최대 score 를 산정
+- 트리거 조건: `victimRef` 와 suspect (`suspectRef` 생략 시 `targetRef`) 의 최대 score 가 `scoreThreshold` 이상 이면 부하 run 을 트리거. `dimension` 생략 시 전체 차원 중 최대
+- poll 주기: `scoreTrigger` 가 있으면 `schedule` 은 직접 트리거 가 아닌 score 평가 poll 주기 로 해석 되고, 실제 run 은 조건 충족 시에만 발생
+- debounce: score 가 계속 임계 를 넘더라도 `minInterval` (기본 10m) 이내 에는 재트리거 하지 않음
+- 안전장치: 자동 트리거 도 cron 트리거 와 동일 한 경로 (`startRun`) 로 진행 해 동시성 락 / `maxFailures` suspend / prod 차단 gate 를 그대로 적용. 평가 결과 는 `ScoreTriggered` condition (`ThresholdMet` / `BelowThreshold` / `Debounced` / `InvalidThreshold` / `NoScoreProvider` / `ScoreEvalError`) 으로 노출
+
+예제: `deploy/injector/examples/score-trigger-scenario.yaml`.
+
 ## alert runbook
 
 ### InjectorActive

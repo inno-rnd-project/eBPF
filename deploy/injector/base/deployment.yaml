@@ -42,6 +42,9 @@ spec:
               value: "environment=dev"
             - name: PROMETHEUS_URL
               value: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
+            # scoreTrigger 평가 시 correlation 간섭 score snapshot 을 조회 할 exporter base URL.
+            - name: CORRELATION_URL
+              value: "http://correlation-exporter.ebpf-project.svc.cluster.local:9830"
           ports:
             - name: metrics
               containerPort: 9841
