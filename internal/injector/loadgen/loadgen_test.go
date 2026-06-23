@@ -2,6 +2,7 @@ package loadgen
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,16 +101,16 @@ func TestNetwork_StartSpawnsServerAndClient(t *testing.T) {
 	}
 }
 
-// TestGPU_StartSpawnsPodWithGPUResource 는 gpu 모듈이 nvidia.com/gpu resource limit 을 명시하는지
-// 검증한다.
-func TestGPU_StartSpawnsPodWithGPUResource(t *testing.T) {
+// TestGPU_StartSpawnsRealLoadPod 는 gpu 모듈이 CUDA devel 이미지에서 nvcc 로 부하 프로그램을 컴파일해
+// 점유율 percent 와 duration 을 인자로 실행하고 단일 nvidia.com/gpu device 를 요청하는지 검증한다.
+func TestGPU_StartSpawnsRealLoadPod(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	g, err := New(KindGPU, client)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	params := defaultParams()
-	params.Intensity = "1"
+	params.Intensity = "80"
 	if err := g.Start(context.Background(), params); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -117,10 +118,57 @@ func TestGPU_StartSpawnsPodWithGPUResource(t *testing.T) {
 	if len(pods.Items) != 1 {
 		t.Fatalf("len=%d", len(pods.Items))
 	}
-	pod := pods.Items[0]
-	gpu := pod.Spec.Containers[0].Resources.Limits["nvidia.com/gpu"]
-	if gpu.String() != "1" {
-		t.Errorf("nvidia.com/gpu=%s want 1", gpu.String())
+	c := pods.Items[0].Spec.Containers[0]
+	if !strings.Contains(c.Image, "devel") {
+		t.Errorf("image=%s want devel (nvcc 포함)", c.Image)
+	}
+	if len(c.Command) != 3 || c.Command[0] != "sh" {
+		t.Fatalf("command=%v want sh -c <script>", c.Command)
+	}
+	script := c.Command[2]
+	for _, want := range []string{"nvcc", "/tmp/gpuload", "timeout"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script 에 %q 없음", want)
+		}
+	}
+	// 점유율 80 과 duration 60 (defaultParams) 이 부하 프로그램 인자로 전달돼야 한다.
+	if !strings.Contains(script, "/tmp/gpuload 80 60 ") {
+		t.Errorf("script 에 부하 인자 (pct=80 dur=60) 없음: %s", script)
+	}
+	if gpu := c.Resources.Limits["nvidia.com/gpu"]; gpu.String() != "1" {
+		t.Errorf("nvidia.com/gpu limit=%s want 1", gpu.String())
+	}
+	if greq := c.Resources.Requests["nvidia.com/gpu"]; greq.String() != "1" {
+		t.Errorf("nvidia.com/gpu request=%s want 1", greq.String())
+	}
+}
+
+// TestGPU_DefaultIntensityWhenEmpty 는 intensity 가 비면 80 percent 기본을 적용하는지 검증한다.
+func TestGPU_DefaultIntensityWhenEmpty(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	g, _ := New(KindGPU, client)
+	params := defaultParams()
+	params.Intensity = ""
+	if err := g.Start(context.Background(), params); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	pods, _ := client.CoreV1().Pods("ebpf-project").List(context.Background(), metav1.ListOptions{})
+	script := pods.Items[0].Spec.Containers[0].Command[2]
+	if !strings.Contains(script, "/tmp/gpuload 80 ") {
+		t.Errorf("기본 점유율 80 미적용: %s", script)
+	}
+}
+
+// TestGPU_InvalidIntensity 는 1~100 범위 밖이거나 비정수인 점유율을 Start 가 거부하는지 검증한다.
+func TestGPU_InvalidIntensity(t *testing.T) {
+	for _, in := range []string{"0", "101", "-1", "abc", "1.5"} {
+		client := fake.NewSimpleClientset()
+		g, _ := New(KindGPU, client)
+		params := defaultParams()
+		params.Intensity = in
+		if err := g.Start(context.Background(), params); err == nil {
+			t.Errorf("intensity=%q 인데 Start 가 통과 (거부 기대)", in)
+		}
 	}
 }
 
