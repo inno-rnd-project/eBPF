@@ -4,7 +4,7 @@ workload-injector 가 사용하는 라이브러리 모음이다. injector binary
 
 ## 책임 분리
 
-- `loadgen/` — kind 별 부하 모듈 (`cpu`, `network`, `gpu`) 의 공통 인터페이스와 K8s API 로 stress Pod 를 spawn / cleanup 하는 helper
+- `loadgen/` — kind 별 부하 모듈 (`cpu`, `memory`, `network`, `gpu`) 의 공통 인터페이스와 K8s API 로 stress Pod 를 spawn / cleanup 하는 helper. `gpu` 는 CUDA devel 이미지에서 nvcc 로 즉석 컴파일한 busy kernel 을 duty cycle 로 돌려 실제 GPU 점유 를 발생시킨다
 - `blastradius/` — baseline 과 impact 두 시계열의 평균 latency 차이를 0 ~ 1 정규화한 score 산출과 victim 후보 식별
 - `safety/` — duration / intensity 상한, cluster Node 라벨 gate, target 별 ConfigMap annotation lease 로 동시 injection 차단
 - `exporter/` — `injector_active`, `correlation_blast_radius_score`, baseline / impact, self-health 메트릭의 `prometheus.Collector` 구현체
@@ -36,7 +36,7 @@ workload-injector 가 사용하는 라이브러리 모음이다. injector binary
 본 이슈의 비목표 "prod 자동 실행 금지" 를 binary 단에서 명시 검증한다.
 
 - `DURATION` 절대 상한 30 분. 초과 시 fail-fast
-- `INTENSITY` kind 별 상한: cpu 4000m, network 1000M, gpu 1
+- `INTENSITY` kind 별 상한: cpu 4000m, memory 2Gi, network 1000M, gpu 100 (목표 점유율 percent)
 - `INJECTOR_ALLOW_CLUSTER_LABEL` (기본 `environment=dev`) 매칭 Node 가 cluster 에 0 개이면 fail-fast. prod cluster 는 `environment=prod` 만 가지도록 라벨링되어 있어야 효과가 있다 (운영자 컨벤션)
 - 동일 target 동시 injection 차단: ConfigMap annotation lease 패턴으로 lock 획득 실패 시 fail-fast. lease TTL 은 duration 의 2 배
 

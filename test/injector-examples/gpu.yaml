@@ -36,8 +36,9 @@ spec:
               value: "default"
             - name: TARGET_POD
               value: "gpu-victim"
+            # gpu intensity 는 목표 점유율 percent (1~100). CUDA busy kernel 의 duty cycle 로 매핑된다.
             - name: INTENSITY
-              value: "1"
+              value: "80"
             - name: DURATION
               value: "5m"
           ports:

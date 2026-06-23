@@ -52,9 +52,13 @@ func TestCheckIntensity(t *testing.T) {
 		{loadgen.KindNetwork, "1G", false},
 		{loadgen.KindNetwork, "2G", true},
 		{loadgen.KindNetwork, "abc", true},
-		// gpu
+		// gpu. 1~100 점유율 percent. 0 이하 / 상한 초과 / 비정수 거부.
 		{loadgen.KindGPU, "1", false},
-		{loadgen.KindGPU, "2", true},
+		{loadgen.KindGPU, "80", false},
+		{loadgen.KindGPU, "100", false},
+		{loadgen.KindGPU, "0", true},
+		{loadgen.KindGPU, "101", true},
+		{loadgen.KindGPU, "abc", true},
 		{loadgen.KindGPU, "", true},
 		// memory. K8s Quantity 규약. 2Gi (2 * 2^30 bytes) 가 상한이고 K / M / G 는 decimal,
 		// Ki / Mi / Gi 는 binary 로 해석된다. 1G (10^9) 는 2Gi 미만이라 통과, 2Gi 정확히 boundary,
