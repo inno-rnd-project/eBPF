@@ -19,6 +19,23 @@
 
 위 표는 prod 운영 경험을 누적해 갱신한다. 신규 패턴은 PR로 본 docs를 함께 갱신하는 것을 컨벤션으로 한다.
 
+## network_pressure dominant cause와 TCP 재전송 (#154)
+
+dominant cause enum의 `network_pressure`는 throughput saturation과 TCP 재전송 두 신호를 함께 반영한다. base score는 canonical `pod:network_pressure_score:5m`이며 `pod:network_throughput_score:5m`과 `pod:network_retrans_score:5m`의 element-wise max다. 이 score를 node와 cluster와 victim 차원이 모두 rollup하므로, TCP 재전송이 GPU 유휴를 유발하면 `network_pressure`가 dominant cause로 직접 분류된다. 재전송을 별도 cause slot으로 분리하지 않아 `gpu_idle_cause_sum:5m` 분모와 tie-breaker offset은 변경 없이 정합을 유지한다.
+
+dominant cause가 `network_pressure`로 잡히면 다음 순서로 throughput-driven인지 retrans-driven인지 세부 진단한다.
+
+1. `pod:network_throughput_score:5m`과 `pod:network_retrans_score:5m`을 같은 victim Pod 라벨(`src_namespace`, `src_pod`)로 동시 조회해 둘 중 어느 신호가 우세한지 확인한다.
+2. retrans가 우세하면 위 표의 `network_retrans_score만 우세` 행을 따라 `dst_namespace`/`dst_workload` 라벨로 어떤 peer와의 통신에서 재전송이 발생하는지 식별하고 네트워크 admin과 협업한다.
+3. throughput이 우세하면 `network_throughput_score만 우세` 행을 따라 NIC capacity 포화 흐름을 점검한다.
+
+```promql
+# network_pressure dominant 시 throughput vs retrans 세부 비교
+pod:network_throughput_score:5m
+  or
+pod:network_retrans_score:5m
+```
+
 ## score 정규화 분모 산출식
 
 ### PCIe theoretical bytes/sec
