@@ -1,9 +1,10 @@
 # gpu-load-scenario.yaml 은 #118 LoadScenario manifest 예제 4 kind 중 gpu 부하 의 base 다.
-# nvidia/cuda 의 vectorAdd sample 무한 반복으로 GPU 부하 를 발생시킨다. dev cluster 의 RTX 3090
-# 단일 GPU 환경 에 정합 하며 multi-GPU 점유 는 본 이슈 외 (#102 비목표 그대로).
+# CUDA busy kernel 을 컨테이너 안에서 nvcc 로 컴파일해 반복 실행하며 실제 GPU 점유 를 발생시킨다.
+# dev cluster 의 RTX 3090 단일 GPU 환경 에 정합 하며 multi-GPU 점유 는 본 이슈 외.
 #
 # spec 필드 의미:
-#   intensity: gpu 의 경우 device 수. 안전 상한 "1" (multi-GPU 점유 follow-up). 본 예제 는 단일 GPU.
+#   intensity: gpu 의 경우 목표 점유율 percent (1~100). 안전 상한 "100". busy kernel 의 duty cycle 로
+#     매핑돼 단일 GPU device 의 SM 점유율 을 근사한다.
 #   targetRef: GPU 워크로드 Pod 의 namespace 와 name. dev cluster 의 pytorch-conv2d-bench 같은
 #     bench Pod 가 default 후보 이지만 ad-hoc bench Pod 라 본 예제 의 targetRef 는 운영자가 실제
 #     배포된 GPU Pod 의 namespace 와 name 으로 명시 정정 한다.
@@ -16,8 +17,8 @@ spec:
   schedule: "@every 1h"
   kind: gpu
   duration: 5m
-  # GPU 단일 device 점유.
-  intensity: "1"
+  # GPU 목표 점유율 80 percent.
+  intensity: "80"
   targetRef:
     namespace: ebpf-project
     name: pytorch-conv2d-bench
