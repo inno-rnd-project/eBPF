@@ -19,6 +19,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -66,9 +68,16 @@ type LoadScenarioReconciler struct {
 	LockNamespace     string
 	LockHolder        string
 	SpikeAsserter     SpikeAlertAsserter
-	CronParser        cron.Parser
-	Now               func() time.Time
+	// ScoreProvider 는 spec.scoreTrigger 평가 시 correlation 간섭 score 를 조회 한다. nil 이면
+	// scoreTrigger 가 설정 돼도 트리거 하지 않고 condition 으로 degrade 를 표시 한다.
+	ScoreProvider InterferenceScoreProvider
+	CronParser    cron.Parser
+	Now           func() time.Time
 }
+
+// defaultScoreTriggerMinInterval 은 spec.scoreTrigger.minInterval 이 비었을 때 적용 하는 debounce
+// 기본값 이다. CRD default 와 동일 하며 직접 생성된 객체 의 zero 값 을 방어 한다.
+const defaultScoreTriggerMinInterval = 10 * time.Minute
 
 // defaultCronParser 는 standard cron 5 필드 (minute / hour / dom / month / dow) 와 descriptor
 // (@every, @daily 등) 를 지원한다.
@@ -176,15 +185,28 @@ func (r *LoadScenarioReconciler) isSuspended(ls *injectorv1alpha1.LoadScenario) 
 // 인가 를 start, 아니면 wait.
 func (r *LoadScenarioReconciler) handleIdle(ctx context.Context, ls *injectorv1alpha1.LoadScenario, schedule cron.Schedule) (ctrl.Result, error) {
 	now := r.Now()
-	var lastSchedule time.Time
-	if ls.Status.LastScheduleTime != nil {
-		lastSchedule = ls.Status.LastScheduleTime.Time
+	// scoreTrigger 가 설정 되면 schedule 은 직접 트리거 가 아닌 score 평가 poll 주기 로 해석 된다. 매
+	// poll 마다 간섭 score 를 평가 해 임계 충족 + minInterval debounce 통과 시에만 run 으로 진행 한다.
+	// 미충족 / 에러 / provider 부재 는 evaluateScoreTrigger 가 condition + requeue 로 처리 하고
+	// proceed=false 를 반환 한다. scoreTrigger 가 없으면 기존 cron schedule gate 로 동작 한다.
+	if ls.Spec.ScoreTrigger != nil {
+		proceed, res, err := r.evaluateScoreTrigger(ctx, ls, schedule, now)
+		if err != nil || !proceed {
+			return res, err
+		}
+		triggerTime := metav1.NewTime(now)
+		ls.Status.LastScoreTriggerTime = &triggerTime
 	} else {
-		lastSchedule = ls.CreationTimestamp.Time
-	}
-	nextRun := schedule.Next(lastSchedule)
-	if nextRun.After(now) {
-		return ctrl.Result{RequeueAfter: nextRun.Sub(now)}, nil
+		var lastSchedule time.Time
+		if ls.Status.LastScheduleTime != nil {
+			lastSchedule = ls.Status.LastScheduleTime.Time
+		} else {
+			lastSchedule = ls.CreationTimestamp.Time
+		}
+		nextRun := schedule.Next(lastSchedule)
+		if nextRun.After(now) {
+			return ctrl.Result{RequeueAfter: nextRun.Sub(now)}, nil
+		}
 	}
 
 	startErr := r.startRun(ctx, ls, now)
@@ -226,6 +248,70 @@ func (r *LoadScenarioReconciler) handleIdle(ctx context.Context, ls *injectorv1a
 		return ctrl.Result{}, updateErr
 	}
 	return ctrl.Result{RequeueAfter: ls.Spec.Duration.Duration + 5*time.Second}, nil
+}
+
+// evaluateScoreTrigger 는 spec.scoreTrigger 의 score 조건 을 평가 한다. 임계 충족 + debounce 통과 시
+// (true, _, nil) 을 반환 해 handleIdle 이 startRun 으로 진행 하게 하고, 그 외 (provider 부재 / threshold
+// 파싱 실패 / 평가 에러 / 임계 미달 / debounce) 는 condition 과 status 를 갱신 한 뒤 (false, requeue, _) 를
+// 반환 한다. schedule 은 다음 poll 까지 의 requeue 간격 산정 에만 쓰인다.
+func (r *LoadScenarioReconciler) evaluateScoreTrigger(ctx context.Context, ls *injectorv1alpha1.LoadScenario, schedule cron.Schedule, now time.Time) (bool, ctrl.Result, error) {
+	st := ls.Spec.ScoreTrigger
+	nextPoll := func() ctrl.Result {
+		d := schedule.Next(now).Sub(now)
+		if d <= 0 {
+			d = time.Minute
+		}
+		return ctrl.Result{RequeueAfter: d}
+	}
+	updateThen := func(res ctrl.Result) (bool, ctrl.Result, error) {
+		if err := r.Status().Update(ctx, ls); err != nil {
+			return false, ctrl.Result{}, err
+		}
+		return false, res, nil
+	}
+
+	if r.ScoreProvider == nil {
+		setCondition(ls, "ScoreTriggered", metav1.ConditionUnknown, "NoScoreProvider", "score provider not configured; scoreTrigger inert")
+		return updateThen(ctrl.Result{RequeueAfter: time.Minute})
+	}
+
+	threshold, perr := strconv.ParseFloat(strings.TrimSpace(st.ScoreThreshold), 64)
+	if perr != nil || threshold < 0 || threshold > 1 {
+		setCondition(ls, "ScoreTriggered", metav1.ConditionFalse, "InvalidThreshold", fmt.Sprintf("scoreThreshold %q must be a number in 0..1", st.ScoreThreshold))
+		return updateThen(nextPoll())
+	}
+
+	victim := PodRef{Namespace: st.VictimRef.Namespace, Pod: st.VictimRef.Name}
+	suspect := PodRef{Namespace: ls.Spec.TargetRef.Namespace, Pod: ls.Spec.TargetRef.Name}
+	if st.SuspectRef != nil {
+		suspect = PodRef{Namespace: st.SuspectRef.Namespace, Pod: st.SuspectRef.Name}
+	}
+
+	score, found, serr := r.ScoreProvider.MaxScore(ctx, victim, suspect, st.Dimension)
+	if serr != nil {
+		setCondition(ls, "ScoreTriggered", metav1.ConditionUnknown, "ScoreEvalError", serr.Error())
+		// 일시적 조회 실패 는 scenario 실패 로 보지 않고 짧게 재시도 한다.
+		return updateThen(ctrl.Result{RequeueAfter: 30 * time.Second})
+	}
+	if !found || score < threshold {
+		setCondition(ls, "ScoreTriggered", metav1.ConditionFalse, "BelowThreshold",
+			fmt.Sprintf("max score %.3f < threshold %.3f (found=%t)", score, threshold, found))
+		return updateThen(nextPoll())
+	}
+
+	minInterval := st.MinInterval.Duration
+	if minInterval <= 0 {
+		minInterval = defaultScoreTriggerMinInterval
+	}
+	if ls.Status.LastScoreTriggerTime != nil && now.Sub(ls.Status.LastScoreTriggerTime.Time) < minInterval {
+		setCondition(ls, "ScoreTriggered", metav1.ConditionFalse, "Debounced",
+			fmt.Sprintf("score %.3f >= %.3f but within minInterval %s of last trigger", score, threshold, minInterval))
+		return updateThen(nextPoll())
+	}
+
+	setCondition(ls, "ScoreTriggered", metav1.ConditionTrue, "ThresholdMet",
+		fmt.Sprintf("score %.3f >= threshold %.3f (victim=%s/%s suspect=%s/%s)", score, threshold, victim.Namespace, victim.Pod, suspect.Namespace, suspect.Pod))
+	return true, ctrl.Result{}, nil
 }
 
 // handleRunning 은 Running phase 의 transition 이다. duration 경과 시 stress Pod cleanup + lock
