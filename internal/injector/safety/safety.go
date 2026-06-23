@@ -43,16 +43,19 @@ func CheckDuration(d time.Duration) error {
 //     단일 진실원으로 일치시킨다. 노드 가용 메모리의 일부 수준으로 제한해 OOM 충격이 다른 워크로드
 //     에 전이되지 않게 한다.
 //   - network: bandwidth (`1000M`) 이하. iperf3 -b 의 상한.
-//   - gpu: device 수 (`1`) 이하. multi-GPU 점유는 follow-up.
+//   - gpu: 목표 점유율 percent (`100`) 이하. loadgen/gpu.go 가 본 percent 를 CUDA busy kernel 의
+//     duty cycle 로 매핑해 단일 GPU device 의 SM 점유율을 근사한다. device 수가 아니라 점유율이라
+//     단일 GPU 노드에서도 부하 강도를 1~100 으로 조절할 수 있다.
 var IntensityLimits = map[loadgen.Kind]string{
 	loadgen.KindCPU:     "4000m",
 	loadgen.KindMemory:  "2Gi",
 	loadgen.KindNetwork: "1000M",
-	loadgen.KindGPU:     "1",
+	loadgen.KindGPU:     "100",
 }
 
-// CheckIntensity 는 kind 별 상한 표 와 입력을 비교한다. cpu / gpu 는 resource.Quantity 로 파싱해
-// 수치 비교, memory 는 bytes 단위로 파싱, network 는 단순 prefix 매칭으로 1000M / 1G 이상 거부.
+// CheckIntensity 는 kind 별 상한 표 와 입력을 비교한다. cpu 는 resource.Quantity 로 파싱해 수치 비교,
+// gpu 는 1~100 점유율 percent 로 파싱, memory 는 bytes 단위로 파싱, network 는 단순 prefix 매칭으로
+// 1000M / 1G 이상 거부.
 func CheckIntensity(kind loadgen.Kind, intensity string) error {
 	limit, ok := IntensityLimits[kind]
 	if !ok {
@@ -62,11 +65,31 @@ func CheckIntensity(kind loadgen.Kind, intensity string) error {
 	case loadgen.KindCPU:
 		return checkResourceQuantity(intensity, limit, "cpu")
 	case loadgen.KindGPU:
-		return checkResourceQuantity(intensity, limit, "gpu")
+		return checkGPUUtilPercent(intensity, limit)
 	case loadgen.KindMemory:
 		return checkMemoryBytes(intensity, limit)
 	case loadgen.KindNetwork:
 		return checkBandwidth(intensity, limit)
+	}
+	return nil
+}
+
+// checkGPUUtilPercent 는 gpu intensity 를 1~limit 범위의 정수 점유율 percent 로 검증한다. loadgen/gpu.go
+// 가 동일 규약으로 percent 를 CUDA duty cycle 로 매핑하므로 0 이하나 비정수, 상한 초과를 fail-fast 한다.
+func checkGPUUtilPercent(input, limit string) error {
+	in, err := atoi64(strings.TrimSpace(input))
+	if err != nil {
+		return fmt.Errorf("parse gpu intensity %q as utilization percent: %w", input, err)
+	}
+	max, err := atoi64(strings.TrimSpace(limit))
+	if err != nil {
+		return fmt.Errorf("parse gpu limit %q: %w", limit, err)
+	}
+	if in < 1 {
+		return fmt.Errorf("gpu intensity %s must be a positive utilization percent", input)
+	}
+	if in > max {
+		return fmt.Errorf("gpu intensity %s exceeds limit %s%%", input, limit)
 	}
 	return nil
 }
