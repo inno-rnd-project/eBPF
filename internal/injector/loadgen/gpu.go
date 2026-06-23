@@ -25,7 +25,10 @@ const gpuTimeoutGraceSec = 30
 // gpuStressSource 는 컨테이너 안에서 nvcc 로 즉석 컴파일되는 CUDA 부하 프로그램이다. 인자는
 // (점유율 percent, duration 초, 점유 메모리 MiB) 이며, busy kernel 한 사이클의 실행 시간을 측정해
 // off 구간을 sleep 하는 duty cycle 로 단일 GPU 의 SM 점유율을 목표 percent 로 근사한다. runtime
-// 이미지에는 nvcc 가 없어 devel 이미지를 쓰며, sm_86 (RTX 3090 / Ampere) 타깃으로 컴파일한다.
+// 이미지에는 nvcc 가 없어 devel 이미지를 쓰며, -arch=native 로 컨테이너에 할당된 GPU 의 compute
+// capability 를 컴파일 시점에 자동 감지해 빌드한다. 컴파일이 대상 GPU 노드 위에서 일어나고 Pod 가
+// nvidia.com/gpu 를 할당받아 드라이버가 보이므로, RTX 3090 (sm_86) 외 T4 / V100 / Hopper 등 다른
+// 아키텍처 노드에서도 별도 수정 없이 정합한다.
 const gpuStressSource = `#include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -144,7 +147,7 @@ func (g *gpuGen) Start(ctx context.Context, params Params) error {
 		"cat > /tmp/gpuload.cu <<'CUDA_EOF'\n" +
 		gpuStressSource +
 		"CUDA_EOF\n" +
-		"nvcc -O3 -arch=sm_86 -o /tmp/gpuload /tmp/gpuload.cu\n" +
+		"nvcc -O3 -arch=native -o /tmp/gpuload /tmp/gpuload.cu\n" +
 		fmt.Sprintf("exec timeout %d /tmp/gpuload %d %d %d\n", timeoutSec, pct, durSec, gpuStressMemMiB)
 
 	name := sanitizeName("stress-gpu", params.TargetPod)
