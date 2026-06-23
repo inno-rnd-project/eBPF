@@ -143,7 +143,7 @@ check-prometheus-rules:
 		out=$(PROMTOOL_RULES_TMP_DIR)/$$base.yaml; \
 		echo "extracting spec.groups from $$f → $$out"; \
 		awk '/^spec:/{f=1;next} f' $$f | sed 's/^  //' > $$out; \
-		docker run --rm --entrypoint promtool -v $(CURDIR)/$$out:/tmp/rules.yaml $(PROMTOOL_IMAGE) check rules /tmp/rules.yaml; \
+		docker run --rm --entrypoint promtool -v $(CURDIR)/$$out:/tmp/rules.yaml $(PROMTOOL_IMAGE) check rules /tmp/rules.yaml || exit 1; \
 	done
 	@echo "promtool check rules: OK"
 
@@ -160,7 +160,7 @@ test-prometheus-rules:
 		docker run --rm --entrypoint promtool \
 			-v $(CURDIR)/$(PROMTOOL_RULES_TMP_DIR)/gpuobs.yaml:/tmp/gpuobs.yaml \
 			-v $(CURDIR)/$$t:/tmp/test.yaml \
-			$(PROMTOOL_IMAGE) test rules /tmp/test.yaml; \
+			$(PROMTOOL_IMAGE) test rules /tmp/test.yaml || exit 1; \
 	done
 	@echo "promtool test rules: OK"
 

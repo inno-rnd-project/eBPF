@@ -31,9 +31,8 @@ dominant cause가 `network_pressure`로 잡히면 다음 순서로 throughput-dr
 
 ```promql
 # network_pressure dominant 시 throughput vs retrans 세부 비교
-pod:network_throughput_score:5m
-  or
-pod:network_retrans_score:5m
+# 두 메트릭은 라벨 셋이 같아 or 는 한쪽만 남기므로, __name__ 정규식으로 둘 다 함께 조회한다.
+{__name__=~"pod:network_(throughput|retrans)_score:5m"}
 ```
 
 ## score 정규화 분모 산출식
