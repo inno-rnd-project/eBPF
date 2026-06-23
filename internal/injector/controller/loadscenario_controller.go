@@ -194,8 +194,8 @@ func (r *LoadScenarioReconciler) handleIdle(ctx context.Context, ls *injectorv1a
 		if err != nil || !proceed {
 			return res, err
 		}
-		triggerTime := metav1.NewTime(now)
-		ls.Status.LastScoreTriggerTime = &triggerTime
+		// LastScoreTriggerTime 은 run 이 실제로 시작된 RunStateRunning 전환부 에서 기록 한다. startRun
+		// 실패 / Forbid lock skip 으로 run 이 안 떴는데 debounce 가 걸리는 것을 막는다.
 	} else {
 		var lastSchedule time.Time
 		if ls.Status.LastScheduleTime != nil {
@@ -238,6 +238,10 @@ func (r *LoadScenarioReconciler) handleIdle(ctx context.Context, ls *injectorv1a
 	scheduleTime := metav1.NewTime(now)
 	ls.Status.LastScheduleTime = &scheduleTime
 	ls.Status.RunStartTime = &scheduleTime
+	if ls.Spec.ScoreTrigger != nil {
+		// score 트리거 run 이 실제로 시작된 시점 만 debounce 기준 으로 기록 한다.
+		ls.Status.LastScoreTriggerTime = &scheduleTime
+	}
 	ls.Status.RunState = injectorv1alpha1.RunStateRunning
 	setCondition(ls, "Ready", metav1.ConditionTrue, "ReconcileOK", "controller is reconciling scenario")
 	setCondition(ls, "Scheduled", metav1.ConditionTrue, "RunStarted", "stress Pod spawned, awaiting duration")
@@ -281,6 +285,18 @@ func (r *LoadScenarioReconciler) evaluateScoreTrigger(ctx context.Context, ls *i
 		return updateThen(nextPoll())
 	}
 
+	// debounce 검사 는 MaxScore HTTP 호출 보다 먼저 한다. debounce window 동안 correlation 으로의
+	// 불필요한 query 를 피한다.
+	minInterval := st.MinInterval.Duration
+	if minInterval <= 0 {
+		minInterval = defaultScoreTriggerMinInterval
+	}
+	if ls.Status.LastScoreTriggerTime != nil && now.Sub(ls.Status.LastScoreTriggerTime.Time) < minInterval {
+		setCondition(ls, "ScoreTriggered", metav1.ConditionFalse, "Debounced",
+			fmt.Sprintf("within minInterval %s of last trigger", minInterval))
+		return updateThen(nextPoll())
+	}
+
 	victim := PodRef{Namespace: st.VictimRef.Namespace, Pod: st.VictimRef.Name}
 	suspect := PodRef{Namespace: ls.Spec.TargetRef.Namespace, Pod: ls.Spec.TargetRef.Name}
 	if st.SuspectRef != nil {
@@ -296,16 +312,6 @@ func (r *LoadScenarioReconciler) evaluateScoreTrigger(ctx context.Context, ls *i
 	if !found || score < threshold {
 		setCondition(ls, "ScoreTriggered", metav1.ConditionFalse, "BelowThreshold",
 			fmt.Sprintf("max score %.3f < threshold %.3f (found=%t)", score, threshold, found))
-		return updateThen(nextPoll())
-	}
-
-	minInterval := st.MinInterval.Duration
-	if minInterval <= 0 {
-		minInterval = defaultScoreTriggerMinInterval
-	}
-	if ls.Status.LastScoreTriggerTime != nil && now.Sub(ls.Status.LastScoreTriggerTime.Time) < minInterval {
-		setCondition(ls, "ScoreTriggered", metav1.ConditionFalse, "Debounced",
-			fmt.Sprintf("score %.3f >= %.3f but within minInterval %s of last trigger", score, threshold, minInterval))
 		return updateThen(nextPoll())
 	}
 

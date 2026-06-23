@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -77,6 +78,8 @@ func (c *CorrelationScoreClient) MaxScore(ctx context.Context, victim, suspect P
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// keep-alive 커넥션 재사용 을 위해 body 를 비운 뒤 종료 한다.
+		_, _ = io.Copy(io.Discard, resp.Body)
 		return 0, false, fmt.Errorf("correlation query status=%d", resp.StatusCode)
 	}
 	var parsed struct {

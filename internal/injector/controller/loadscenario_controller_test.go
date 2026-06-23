@@ -175,6 +175,35 @@ func TestReconcile_ScoreTrigger_Debounced(t *testing.T) {
 	if st, reason := conditionReason(got, "ScoreTriggered"); st != metav1.ConditionFalse || reason != "Debounced" {
 		t.Errorf("ScoreTriggered=%s/%s want False/Debounced", st, reason)
 	}
+	if provider.calls != 0 {
+		t.Errorf("provider 호출=%d want 0 (debounce 는 MaxScore 호출 전에 차단)", provider.calls)
+	}
+}
+
+// TestReconcile_ScoreTrigger_NoDebounceOnFailedStart 는 score 가 임계 를 넘어 트리거 했더라도 startRun
+// 이 실패 하면 (target pod 부재) LastScoreTriggerTime 이 기록 되지 않아 다음 poll 에서 debounce 없이
+// 재시도 가능 한지 검증 한다.
+func TestReconcile_ScoreTrigger_NoDebounceOnFailedStart(t *testing.T) {
+	ls := scoreTriggerScenario()
+	provider := &fakeScoreProvider{score: 0.9, found: true}
+	r, c := newScoreReconciler(ls, provider, time.Now())
+	// target pod 를 제거 해 startRun 의 target fetch 가 실패 하게 한다.
+	if err := r.K8sClient.CoreV1().Pods("ebpf-project").Delete(context.Background(), "suspect-pod", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("delete target pod: %v", err)
+	}
+
+	reconcileOnce(t, r, ls)
+
+	got := getScenario(t, c, ls)
+	if got.Status.RunState == injectorv1alpha1.RunStateRunning {
+		t.Error("runState=Running, want not-Running (startRun 실패)")
+	}
+	if got.Status.LastScoreTriggerTime != nil {
+		t.Error("lastScoreTriggerTime 기록됨, want nil (run 미시작 시 debounce 미적용)")
+	}
+	if got.Status.ConsecutiveFailures != 1 {
+		t.Errorf("consecutiveFailures=%d want 1 (startRun 실패 카운트)", got.Status.ConsecutiveFailures)
+	}
 }
 
 // TestReconcile_ScoreTrigger_NilProvider 는 provider 미주입 시 트리거 하지 않고 NoScoreProvider 로
