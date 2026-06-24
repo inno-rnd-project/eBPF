@@ -1073,10 +1073,12 @@ spec:
             summary: "GPU thermal throttle sustained on {{ $labels.node }} gpu_uuid={{ $labels.gpu_uuid }} (score={{ $value }})"
             description: "GPU {{ $labels.gpu_uuid }} on node {{ $labels.node }} shows sustained thermal throttle correlation with temperature for 10 minutes (score={{ $value }}, threshold 0.8). Check cooling, fan curve, ambient temperature, and reduce concurrent CUDA workloads. See docs/gpuobs/rtx-thermal-correlation.md for triage workflow."
 
-    # netobs-gpuobs.gpu-idle.alerts 그룹은 GPU 유휴 상태와 5종 cause score 조합 alert을 모은다.
+    # netobs-gpuobs.gpu-idle.alerts 그룹은 GPU 유휴 상태와 7종 cause score 조합 alert을 모은다.
     # 단일 cause는 warning, host_compute_stall 은 host와 device 양쪽 자원 한계가 동시에 의심되므로
     # critical로 둔다. cutoff는 docs/correlation/diagnosis-gpu-idle.md 의 기본값 (warning 0.5, critical
-    # 0.7-0.9) 을 따른다. for 5m으로 spike에 의한 false-positive를 차단한다.
+    # 0.7-0.9) 을 따른다. for 5m으로 spike에 의한 false-positive를 차단한다. dcgm_pcie_replay 와
+    # nccl_collective_stall 은 base score 가 cluster 단위라 node join 대신 on() 으로 GPU 유휴와 결합하며
+    # 데이터센터 GPU 환경에서만 발화한다 (#155).
     - name: netobs-gpuobs.gpu-idle.alerts
       interval: 30s
       rules:
@@ -1166,6 +1168,44 @@ spec:
           annotations:
             summary: "GPU idle with host compute stall on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} score={{ $value }})"
             description: "Pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} on node {{ $labels.node }} shows host compute stall (low CUDA launch rate or GPU memory saturation, score={{ $value }}) while GPU is idle. Inspect kernel launches via gpuobs_cuda_kernel_launches_total and GPU memory via pod:gpu_memory_utilization_ratio:5m."
+
+        # GPUIdleWithDCGMPCIeReplay (#155)
+        # GPU 유휴 + DCGM PCIe replay score 상승. dcgm_pcie_replay 는 dominant cause 엔진의 7 cause 중
+        # 하나이며 base score 가 cluster 단위 (DCGM_FI_DEV_PCIE_REPLAY_COUNTER 의 cluster max rate) 라
+        # node / pod 라벨이 없다. 따라서 기존 5 alert 의 on(node) join 대신 on() 으로 어느 노드라도 GPU
+        # 유휴인 상태와 결합한다. dcgm-exporter 가 활성인 데이터센터 GPU 환경에서만 base 가 emit 되고
+        # dev (DCGM 부재) 에서는 score 가 0 이라 발화하지 않는다. PCIe link error 로 인한 retry 가 GPU
+        # compute 진입을 지연시키는 hardware 신호다.
+        - alert: GPUIdleWithDCGMPCIeReplay
+          expr: |
+            cluster:dcgm_pcie_replay_score:5m > 0.7
+              and on() (max(node:gpu_idle:5m) > 0.5)
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle with DCGM PCIe replay (score={{ $value }})"
+            description: "DCGM PCIe replay score is {{ $value }} (threshold 0.7) while a GPU is idle. PCIe link errors (DCGM_FI_DEV_PCIE_REPLAY_COUNTER) are forcing retries that delay GPU compute. Inspect link health on datacenter GPUs. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
+
+        # GPUIdleWithNCCLCollectiveStall (#155)
+        # GPU 유휴 + NCCL collective stall score 상승. nccl_collective_stall 은 dominant cause 엔진의
+        # 7 cause 중 하나이며 base score 가 cluster 단위 (gpuobs_nccl_collective_duration_seconds_sum 의
+        # node 합산 후 cluster max) 라 node / pod 라벨이 없어 on() 으로 GPU 유휴와 결합한다. NCCL
+        # profiler 가 활성인 데이터센터 GPU 환경에서만 base 가 emit 되고 dev (noop profiler) 에서는
+        # score 가 0 이라 발화하지 않는다. allreduce / broadcast 등 collective 의 rank 간 sync 대기로
+        # GPU 가 유휴인 상태를 host_compute_stall (kernel launch 부족) 과 구분한다.
+        - alert: GPUIdleWithNCCLCollectiveStall
+          expr: |
+            cluster:nccl_collective_stall_score:5m > 0.7
+              and on() (max(node:gpu_idle:5m) > 0.5)
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle with NCCL collective stall (score={{ $value }})"
+            description: "NCCL collective stall score is {{ $value }} (threshold 0.7) while a GPU is idle. Ranks are spending wall-clock in collective wait (allreduce/broadcast sync). Inspect gpuobs_nccl_collective_duration_seconds. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
 
         # GPUIdleDominantCauseSwitch
         # GPU 유휴 dominant cause 가 10 분 안에 두 번 이상 swap 시 발화 (#66). cause 식별이 불안정한
