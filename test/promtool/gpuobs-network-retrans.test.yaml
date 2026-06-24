@@ -1,0 +1,52 @@
+# gpuobs-network-retrans.test.yaml 은 #154 의 정합 검증 promtool unit test 다. throughput 은 0 이고
+# TCP 재전송 만 높은 (0.5) 입력 을 주어, 재전송 이 canonical pod:network_pressure_score:5m 와 cluster
+# rollup 과 gpu_idle_cause_sum:5m 분모 에 편입 되어 network_pressure 가 GPU 유휴 dominant cause 로
+# 분류 되는지 단정 한다. throughput 이 0 이므로 network_pressure 가 우세 한 유일한 근거 는 재전송 이다.
+#
+# rate() 외삽 의 부동소수점 잡음 을 피하려고, raw score (rate 기반) 의 정확 값 단정 은 throughput=0
+# (정확) 만 두고, 나머지 는 분모/분자 가 같아 잡음 이 상쇄 되는 비율 (weight=1) 과 dominant cause 라벨
+# 로 단정 한다. rule_files 는 make test-prometheus-rules 가 추출 해 마운트 하는 gpuobs.yaml.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  - interval: 30s
+    input_series:
+      # throughput: egress/ingress rate 0, NIC capacity 1000 → score 0 (정확)
+      - series: 'netobs_pod_bytes_total{direction="egress",layer="nic",node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
+        values: '0+0x12'
+      - series: 'netobs_pod_bytes_total{direction="ingress",layer="l4",node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
+        values: '0+0x12'
+      - series: 'netobs_node_nic_capacity_bytes_per_sec{node="n1"}'
+        values: '1000x12'
+      # retrans: retrans rate 5/s, packets rate 10/s → score 0.5
+      - series: 'netobs_pod_stage_events_labeled_total{stage="retrans",node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
+        values: '0+150x12'
+      - series: 'netobs_pod_packets_total{node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
+        values: '0+300x12'
+      # GPU idle gating: utilization 5% (<20) 상시 → node:gpu_idle:5m = 1 > 0.5
+      - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
+        values: '5x12'
+
+    promql_expr_test:
+      # throughput 은 0 (정확). 따라서 이후 network_pressure 우세 의 유일한 근거 는 재전송 이다.
+      - expr: pod:network_throughput_score:5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'pod:network_throughput_score:5m{node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
+            value: 0
+      # network_pressure cause weight = network_pressure score / gpu_idle_cause_sum = 1 (분모/분자 동일
+      # 해 rate 외삽 잡음 이 상쇄). throughput=0 인데 weight=1 이므로 재전송 이 cause 에 편입됐음을 증명.
+      - expr: gpu_idle_cause_weight:5m{cause="network_pressure"}
+        eval_time: 5m
+        exp_samples:
+          - labels: 'gpu_idle_cause_weight:5m{cause="network_pressure"}'
+            value: 1
+      # dominant cause = network_pressure (weight 1 + tie-breaker offset 2e-6)
+      - expr: cluster:gpu_idle_dominant_cause:5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'cluster:gpu_idle_dominant_cause:5m{cause="network_pressure"}'
+            value: 1.000002

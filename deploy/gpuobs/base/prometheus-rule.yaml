@@ -184,6 +184,26 @@ spec:
               1
             )
 
+        # pod:network_pressure_score:5m
+        # Pod 단위 네트워크 압박 의 단일 진실원. throughput saturation 과 TCP 재전송 두 신호의 element-
+        # wise max 다. 두 신호가 서로 다른 스케일 (throughput 은 NIC capacity 비율, retrans 는 재전송
+        # 비율) 이라 합산은 의미가 흐려져 worst-of 를 채택한다. node / cluster / victim 차원의 network_
+        # pressure 가 모두 본 score 를 rollup 해 "network pressure" 의 의미를 단일화한다 (#154).
+        #
+        # PromQL 의 OR 는 동일 라벨 셋 충돌 시 LHS 만 남겨 element-wise max 가 되지 않으므로, 두 신호가
+        # 모두 있는 Pod 는 (a >= bool b) 곱셈으로 max 를 취하고, 한쪽만 있는 Pod 는 뒤의 or 두 항으로
+        # 보존한다. 둘 다 [0, 1] clamp 된 score 라 곱셈 결과도 [0, 1] 을 유지한다.
+        - record: pod:network_pressure_score:5m
+          expr: |
+            (
+              (pod:network_throughput_score:5m >= bool pod:network_retrans_score:5m)
+                * pod:network_throughput_score:5m
+              + (pod:network_retrans_score:5m > bool pod:network_throughput_score:5m)
+                * pod:network_retrans_score:5m
+            )
+            or pod:network_throughput_score:5m
+            or pod:network_retrans_score:5m
+
         # pod:cpu_throttle_score:5m
         # cAdvisor의 CPU CFS throttled / total periods 비율 (0-1). 0.3 이상이면 컨테이너 CPU limit
         # 으로 인한 throttle이 빈번하다. label_replace로 cAdvisor의 namespace/pod 라벨을 netobs/gpuobs
@@ -257,15 +277,11 @@ spec:
         - record: node:memory_pressure_score:5m
           expr: max by(node) (pod:memory_pressure_score:5m)
 
-        # network 압박은 throughput saturation 과 retrans rate 두 신호의 max 로 둔다. 두 신호가 서로
-        # 다른 스케일이라 단순 합산은 dominant cause weighting 에서 의미가 흐려져 max 만 채택한다.
+        # network 압박은 pod:network_pressure_score:5m (throughput 과 retrans 의 element-wise max) 을
+        # node 단위로 max rollup 한다. 기존 max(throughput or retrans) 는 동일 라벨 Pod 에서 OR 충돌로
+        # retrans 가 누락될 수 있어, canonical pod score 로 통일해 정확성과 의미 일관성을 확보한다 (#154).
         - record: node:network_pressure_score:5m
-          expr: |
-            max by(node) (
-              pod:network_throughput_score:5m
-              or
-              pod:network_retrans_score:5m
-            )
+          expr: max by(node) (pod:network_pressure_score:5m)
 
         # gpu 압박은 host_compute_stall_score 로 두어 host 측 launch 부족 또는 device memory 압박이
         # 노드 의 GPU 작업 진행을 막는 신호를 노드 단위로 노출한다.
@@ -320,10 +336,12 @@ spec:
     # 사용하는 recording rule 을 모은다. 본 그룹의 첫 5 종은 node 와 Pod 차원으로 흩어진 cause score
     # 5 종을 cluster 단위 단일 값으로 max rollup 해 dominant cause weight 산정 단계에서 동일한 차원
     # 으로 비교 가능하게 한다. dominant cause 가 cluster 평균이 아니라 worst-case 신호를 따라가도록
-    # max 를 채택한다. retrans 신호는 본 rollup 에 포함하지 않는다. retrans 는 PromQL 의 OR 패턴으로
-    # alert 에서 사용되는 보조 신호이며 throughput score 와 다른 threshold 스케일을 가져 weighting
-    # 합산에 합치면 cause 간 비교 의미가 흐려진다. NetworkPressure cause 의 base score 는 throughput
-    # saturation score 만 사용한다.
+    # max 를 채택한다. network_pressure cause 의 base score 는 canonical pod:network_pressure_score:5m
+    # (throughput saturation 과 TCP 재전송 의 element-wise max) 의 rollup 이라, 재전송이 GPU 유휴를
+    # 유발하는 경우도 network_pressure dominant cause 로 직접 분류된다 (#154). 두 신호의 스케일 차이는
+    # 합산이 아닌 max 로 흡수해 cause 간 비교 의미를 유지한다. retrans 를 별도 cause slot 으로 분리하지
+    # 않는 이유는 비목표 (재전송 원인 세부 분류) 와 정합하며, 단일 cause 유지로 gpu_idle_cause_sum:5m
+    # 분모와 tie-breaker offset 이 변경 없이 자동 정합되기 때문이다.
     - name: netobs-gpuobs.dominant-cause.recording
       interval: 30s
       rules:
@@ -343,10 +361,12 @@ spec:
           expr: max(pod:memory_pressure_score:5m)
 
         # cluster:pod_network_pressure_score:5m
-        # Pod 단위 throughput saturation 의 cluster max. retrans 신호는 NetworkPressure alert 의 OR
-        # 보조 신호로 남아 본 rollup 에는 포함되지 않는다.
+        # Pod 단위 network pressure (throughput saturation 과 TCP 재전송 의 max) 의 cluster max. canonical
+        # pod:network_pressure_score:5m 을 rollup 해 재전송이 GPU 유휴를 유발할 때도 network_pressure
+        # cause 로 직접 분류되게 한다 (#154). retrans 가 throughput 보다 강한 worst-case Pod 가 본 값을
+        # 결정한다. or vector(0) 로 network 트래픽이 없는 환경에서도 합 산출이 가능하다.
         - record: cluster:pod_network_pressure_score:5m
-          expr: max(pod:network_throughput_score:5m)
+          expr: max(pod:network_pressure_score:5m) or vector(0)
 
         # cluster:pod_host_compute_stall_score:5m
         # Pod 단위 host 측 CUDA launch 부족 또는 GPU memory 포화 score 의 cluster max.
@@ -590,7 +610,7 @@ spec:
           expr: |
             sum by(node, victim_namespace, victim_pod) (
               label_replace(label_replace(
-                pod:network_throughput_score:5m,
+                pod:network_pressure_score:5m,
                 "victim_namespace", "$1", "src_namespace", "(.+)"),
                 "victim_pod", "$1", "src_pod", "(.+)")
             )
