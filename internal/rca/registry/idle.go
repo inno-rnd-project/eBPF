@@ -2,9 +2,9 @@ package registry
 
 // registerIdle 은 gpu-idle 그룹의 7 종 mapping 을 등록한다. 앞 5 종은 src_namespace 와 src_pod 라벨로
 // victim 을 식별 가능하고, cause 별로 dominant_dimension 이 alert 이름에 인코딩되어 있어 mapping 흐름이
-// 동일하다 (cause 만 다름). 뒤 2 종 (dcgm_pcie_replay, nccl_collective_stall) 은 base score 가 cluster
-// 단위라 alert 라벨에 src_namespace / src_pod / node 가 없어 idleMapping 이 victim / node 식별을 자연
-// skip 하고 dimension 과 evidence 만 채운다 (#155).
+// 동일하다 (cause 만 다름). 뒤 2 종 (dcgm_pcie_replay, nccl_collective_stall) 은 node 단위 alert 라
+// node 라벨은 있으나 src_namespace / src_pod 가 없어 idleMapping 이 victim 식별은 skip 하고 node 기반
+// GPUSignal 과 dimension / evidence 를 채운다 (#155).
 func registerIdle(r *Registry) {
 	r.register("GPUIdleWithPCIeSaturation", idleMapping("network", []string{
 		"node:gpu_pcie_saturation_score:5m",
@@ -26,14 +26,14 @@ func registerIdle(r *Registry) {
 		"gpuobs_cuda_kernel_launches_total",
 	}))
 	// dcgm_pcie_replay 와 nccl_collective_stall 은 GPU 도메인 hardware / collective 신호라 dimension
-	// 을 gpu 로 둔다. base score 가 cluster 단위라 victim Pod 가 특정되지 않으므로 evidence 메트릭으로
-	// 운영자가 datacenter GPU 환경에서 직접 추적한다.
+	// 을 gpu 로 둔다. alert 가 node 단위로 발화해 node 라벨이 전달되므로 idleMapping 이 node 를 식별해
+	// GPUSignal 산정에 활용하고, evidence 도 node 단위 score 를 가리켜 운영자가 해당 노드를 추적한다.
 	r.register("GPUIdleWithDCGMPCIeReplay", idleMapping("gpu", []string{
-		"cluster:dcgm_pcie_replay_score:5m",
+		"node:dcgm_pcie_replay_score:5m",
 		"DCGM_FI_DEV_PCIE_REPLAY_COUNTER",
 	}))
 	r.register("GPUIdleWithNCCLCollectiveStall", idleMapping("gpu", []string{
-		"cluster:nccl_collective_stall_score:5m",
+		"node:nccl_collective_stall_score:5m",
 		"gpuobs_nccl_collective_duration_seconds",
 	}))
 }

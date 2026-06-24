@@ -377,42 +377,47 @@ spec:
         # 5 cause base score 의 합. cause weight 정규화의 분모로 쓰인다. base 시리즈가 비어 있는
         # cause 는 `or vector(0)` 로 0 으로 대체해 합이 NaN 으로 빠지지 않게 한다. dev cluster 처럼
         # PCIe / network 트래픽이 거의 없는 환경에서도 합 산출이 가능하게 한다.
-        # cluster:dcgm_pcie_replay_score:5m (#133)
-        # DCGM 의 DCGM_FI_DEV_PCIE_REPLAY_COUNTER (PCIe link error 로 인한 retry 누적 카운터) 의
-        # 5 분 rate 를 cluster max 로 집계 후 정규화 임계 (100 replays/sec) 로 나눠 0-1 score 로
-        # 만든다. clamp_max 로 burst 시 1.0 상한 둔다. dcgm-exporter 가 본 메트릭 을 Prometheus 에
-        # emit 하는 데이터센터 GPU 환경 에서만 활성 되고 dev cluster 의 RTX 3090 (DCGM 부재) 에서는
-        # base 메트릭 부재 로 or vector(0) fallback 이 0 을 돌려준다. 정규화 임계 100 은 PCIe replay
-        # 가 초당 수십 회 를 넘으면 link 품질 저하 신호 라는 경험치 기반 이며 운영자 가 환경 별로
-        # recording rule 을 override 가능 하다.
-        - record: cluster:dcgm_pcie_replay_score:5m
+        # node:dcgm_pcie_replay_score:5m (#133, #155)
+        # 노드 단위 DCGM PCIe replay score. DCGM_FI_DEV_PCIE_REPLAY_COUNTER (PCIe link error 로 인한
+        # retry 누적 카운터) 의 5 분 rate 를 node 단위 max 후 정규화 임계 (100 replays/sec) 로 나눠
+        # 0-1 로 만든다. clamp_max 로 burst 시 1.0 상한 둔다. GPUIdleWithDCGMPCIeReplay alert 가
+        # on(node) join 으로 본 score 를 사용해 어떤 노드의 PCIe link error 인지 식별 가능하게 한다.
+        # dcgm-exporter 가 활성인 데이터센터 GPU 환경에서만 base 가 emit 되고, dev (DCGM 부재) 에서는
+        # or on(node)(node:gpu_idle:5m * 0) fallback 이 GPU 노드별 0 을 채워 alert 가 발화하지 않는다.
+        - record: node:dcgm_pcie_replay_score:5m
           expr: |
             clamp_max(
-              max(rate(DCGM_FI_DEV_PCIE_REPLAY_COUNTER[5m])) / 100,
+              max by(node) (rate(DCGM_FI_DEV_PCIE_REPLAY_COUNTER[5m])) / 100,
               1
             )
-            or vector(0)
+            or on(node) (node:gpu_idle:5m * 0)
+
+        # cluster:dcgm_pcie_replay_score:5m (#133)
+        # node 단위 score 의 cluster max. dominant cause 엔진이 worst-case 노드의 PCIe replay 를 따른다.
+        - record: cluster:dcgm_pcie_replay_score:5m
+          expr: max(node:dcgm_pcie_replay_score:5m) or vector(0)
+
+        # node:nccl_collective_stall_score:5m (#134, #155)
+        # 노드 단위 NCCL collective stall score. gpuobs 가 libnccl.so collective 심볼 uprobe 로 수집한
+        # gpuobs_nccl_collective_duration_seconds histogram 의 _sum rate 를 node 단위로 합산 후 1.0 상한
+        # 으로 clamp 한다. _sum 의 5 분 rate 는 초당 누적 collective wall-clock (collective-seconds/sec)
+        # 이며 한 rank 가 시간의 100% 를 collective 대기에 쓰면 1.0 에 근접한다. GPUIdleWithNCCLCollective
+        # Stall alert 가 on(node) join 으로 본 score 를 사용해 어떤 노드의 collective stall 인지 식별
+        # 가능하게 한다. NCCL profiler 가 활성 (build tag nccl 이미지 + GPUOBS_NCCL_ENABLED=true +
+        # 데이터센터 GPU) 인 노드에서만 base 가 emit 되고, dev (noop profiler) 에서는 or on(node)
+        # (node:gpu_idle:5m * 0) fallback 이 GPU 노드별 0 을 채워 alert 가 발화하지 않는다.
+        - record: node:nccl_collective_stall_score:5m
+          expr: |
+            clamp_max(
+              sum by(node) (rate(gpuobs_nccl_collective_duration_seconds_sum[5m])),
+              1
+            )
+            or on(node) (node:gpu_idle:5m * 0)
 
         # cluster:nccl_collective_stall_score:5m (#134)
-        # gpuobs 가 libnccl.so collective 심볼 uprobe 로 수집한 gpuobs_nccl_collective_duration_
-        # seconds histogram 의 _sum rate 를 node 단위로 합산 후 cluster max 로 집계해 0-1 score 로
-        # 만든다. _sum 의 5 분 rate 는 초당 누적 collective wall-clock (collective-seconds/sec) 이며
-        # 한 rank process 가 시간의 100% 를 collective 대기에 쓰면 1.0 에 근접하고 복수 rank 의 부분
-        # 대기 합도 누적된다. clamp_max 로 1.0 상한 둔다. NCCL profiler 가 활성 (build tag nccl 이미지
-        # + GPUOBS_NCCL_ENABLED=true + 데이터센터 GPU) 인 노드에서만 base 메트릭 이 emit 되고 dev
-        # cluster 의 RTX 3090 (noop profiler) 에서는 시리즈 부재 로 or vector(0) fallback 이 0 을
-        # 돌려준다. 정규화 임계 는 collective-seconds/sec 1.0 (한 rank 상시 대기) 을 score 1.0 으로
-        # 보는 경험치 기반 이며 노드 GPU 수가 많아 동시 collective 대기 합이 큰 환경 은 운영자 가
-        # 분모 를 GPU 수로 나눠 recording rule 을 override 가능 하다.
+        # node 단위 score 의 cluster max. dominant cause 엔진이 worst-case 노드의 collective stall 을 따른다.
         - record: cluster:nccl_collective_stall_score:5m
-          expr: |
-            clamp_max(
-              max(
-                sum by(node) (rate(gpuobs_nccl_collective_duration_seconds_sum[5m]))
-              ),
-              1
-            )
-            or vector(0)
+          expr: max(node:nccl_collective_stall_score:5m) or vector(0)
 
         - record: gpu_idle_cause_sum:5m
           expr: |
@@ -1077,8 +1082,8 @@ spec:
     # 단일 cause는 warning, host_compute_stall 은 host와 device 양쪽 자원 한계가 동시에 의심되므로
     # critical로 둔다. cutoff는 docs/correlation/diagnosis-gpu-idle.md 의 기본값 (warning 0.5, critical
     # 0.7-0.9) 을 따른다. for 5m으로 spike에 의한 false-positive를 차단한다. dcgm_pcie_replay 와
-    # nccl_collective_stall 은 base score 가 cluster 단위라 node join 대신 on() 으로 GPU 유휴와 결합하며
-    # 데이터센터 GPU 환경에서만 발화한다 (#155).
+    # nccl_collective_stall 은 node 단위 base score (node:*_score:5m) 로 다른 5종과 동일하게 on(node)
+    # 조인하며 데이터센터 GPU 환경에서만 발화한다 (#155).
     - name: netobs-gpuobs.gpu-idle.alerts
       interval: 30s
       rules:
@@ -1171,41 +1176,41 @@ spec:
 
         # GPUIdleWithDCGMPCIeReplay (#155)
         # GPU 유휴 + DCGM PCIe replay score 상승. dcgm_pcie_replay 는 dominant cause 엔진의 7 cause 중
-        # 하나이며 base score 가 cluster 단위 (DCGM_FI_DEV_PCIE_REPLAY_COUNTER 의 cluster max rate) 라
-        # node / pod 라벨이 없다. 따라서 기존 5 alert 의 on(node) join 대신 on() 으로 어느 노드라도 GPU
-        # 유휴인 상태와 결합한다. dcgm-exporter 가 활성인 데이터센터 GPU 환경에서만 base 가 emit 되고
-        # dev (DCGM 부재) 에서는 score 가 0 이라 발화하지 않는다. PCIe link error 로 인한 retry 가 GPU
-        # compute 진입을 지연시키는 hardware 신호다.
+        # 하나다. base score node:dcgm_pcie_replay_score:5m 가 node 단위라 기존 5 alert 와 동일하게
+        # on(node) 로 같은 노드의 GPU 유휴와 결합해 cross-node 오탐을 막고 node 라벨로 조치 가능하게
+        # 한다. dcgm-exporter 가 활성인 데이터센터 GPU 환경에서만 base 가 emit 되고 dev (DCGM 부재)
+        # 에서는 score 가 0 이라 발화하지 않는다. PCIe link error 로 인한 retry 가 GPU compute 진입을
+        # 지연시키는 hardware 신호다.
         - alert: GPUIdleWithDCGMPCIeReplay
           expr: |
-            cluster:dcgm_pcie_replay_score:5m > 0.7
-              and on() (max(node:gpu_idle:5m) > 0.5)
+            node:dcgm_pcie_replay_score:5m > 0.7
+              and on(node) (node:gpu_idle:5m > 0.5)
           for: 5m
           labels:
             severity: warning
             component: correlation
           annotations:
-            summary: "GPU idle with DCGM PCIe replay (score={{ $value }})"
-            description: "DCGM PCIe replay score is {{ $value }} (threshold 0.7) while a GPU is idle. PCIe link errors (DCGM_FI_DEV_PCIE_REPLAY_COUNTER) are forcing retries that delay GPU compute. Inspect link health on datacenter GPUs. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
+            summary: "GPU idle with DCGM PCIe replay on {{ $labels.node }} (score={{ $value }})"
+            description: "DCGM PCIe replay score is {{ $value }} (threshold 0.7) on node {{ $labels.node }} while a GPU is idle. PCIe link errors (DCGM_FI_DEV_PCIE_REPLAY_COUNTER) are forcing retries that delay GPU compute. Inspect link health on datacenter GPUs. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
 
         # GPUIdleWithNCCLCollectiveStall (#155)
         # GPU 유휴 + NCCL collective stall score 상승. nccl_collective_stall 은 dominant cause 엔진의
-        # 7 cause 중 하나이며 base score 가 cluster 단위 (gpuobs_nccl_collective_duration_seconds_sum 의
-        # node 합산 후 cluster max) 라 node / pod 라벨이 없어 on() 으로 GPU 유휴와 결합한다. NCCL
+        # 7 cause 중 하나다. base score node:nccl_collective_stall_score:5m 가 node 단위라 on(node) 로
+        # 같은 노드의 GPU 유휴와 결합해 cross-node 오탐을 막고 node 라벨로 조치 가능하게 한다. NCCL
         # profiler 가 활성인 데이터센터 GPU 환경에서만 base 가 emit 되고 dev (noop profiler) 에서는
         # score 가 0 이라 발화하지 않는다. allreduce / broadcast 등 collective 의 rank 간 sync 대기로
         # GPU 가 유휴인 상태를 host_compute_stall (kernel launch 부족) 과 구분한다.
         - alert: GPUIdleWithNCCLCollectiveStall
           expr: |
-            cluster:nccl_collective_stall_score:5m > 0.7
-              and on() (max(node:gpu_idle:5m) > 0.5)
+            node:nccl_collective_stall_score:5m > 0.7
+              and on(node) (node:gpu_idle:5m > 0.5)
           for: 5m
           labels:
             severity: warning
             component: correlation
           annotations:
-            summary: "GPU idle with NCCL collective stall (score={{ $value }})"
-            description: "NCCL collective stall score is {{ $value }} (threshold 0.7) while a GPU is idle. Ranks are spending wall-clock in collective wait (allreduce/broadcast sync). Inspect gpuobs_nccl_collective_duration_seconds. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
+            summary: "GPU idle with NCCL collective stall on {{ $labels.node }} (score={{ $value }})"
+            description: "NCCL collective stall score is {{ $value }} (threshold 0.7) on node {{ $labels.node }} while a GPU is idle. Ranks are spending wall-clock in collective wait (allreduce/broadcast sync). Inspect gpuobs_nccl_collective_duration_seconds. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
 
         # GPUIdleDominantCauseSwitch
         # GPU 유휴 dominant cause 가 10 분 안에 두 번 이상 swap 시 발화 (#66). cause 식별이 불안정한

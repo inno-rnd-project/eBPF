@@ -20,11 +20,12 @@ tests:
         alertname: GPUIdleWithDCGMPCIeReplay
         exp_alerts:
           - exp_labels:
+              node: n1
               severity: warning
               component: correlation
             exp_annotations:
-              summary: "GPU idle with DCGM PCIe replay (score=1)"
-              description: "DCGM PCIe replay score is 1 (threshold 0.7) while a GPU is idle. PCIe link errors (DCGM_FI_DEV_PCIE_REPLAY_COUNTER) are forcing retries that delay GPU compute. Inspect link health on datacenter GPUs. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
+              summary: "GPU idle with DCGM PCIe replay on n1 (score=1)"
+              description: "DCGM PCIe replay score is 1 (threshold 0.7) on node n1 while a GPU is idle. PCIe link errors (DCGM_FI_DEV_PCIE_REPLAY_COUNTER) are forcing retries that delay GPU compute. Inspect link health on datacenter GPUs. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
 
   # GPUIdleWithNCCLCollectiveStall: NCCL collective wall-clock rate 2/s → score clamp 1.0, GPU 유휴.
   - interval: 30s
@@ -38,8 +39,9 @@ tests:
         alertname: GPUIdleWithNCCLCollectiveStall
         exp_alerts:
           - exp_labels:
+              node: n1
               severity: warning
               component: correlation
             exp_annotations:
-              summary: "GPU idle with NCCL collective stall (score=1)"
-              description: "NCCL collective stall score is 1 (threshold 0.7) while a GPU is idle. Ranks are spending wall-clock in collective wait (allreduce/broadcast sync). Inspect gpuobs_nccl_collective_duration_seconds. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
+              summary: "GPU idle with NCCL collective stall on n1 (score=1)"
+              description: "NCCL collective stall score is 1 (threshold 0.7) on node n1 while a GPU is idle. Ranks are spending wall-clock in collective wait (allreduce/broadcast sync). Inspect gpuobs_nccl_collective_duration_seconds. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
