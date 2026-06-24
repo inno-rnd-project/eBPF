@@ -10,7 +10,7 @@ PR #79의 dominant cause classification은 5 cause weight (`pcie_saturation`와 
 
 ### `internal/gpuobs/dcgm/`
 
-`Source` 인터페이스가 DCGM 메트릭 fetch의 추상 진입점이다. 메서드 셋은 `Available`와 `MetricForward(prefix)`와 `Close` 3종이고 production 구현은 build tag (`//go:build dcgm`) 분리한 파일에서 NVIDIA DCGM SDK 또는 dcgm-exporter HTTP endpoint를 호출한다. 기본 구현 `noopSource`는 `NewNoop()` factory로 생성되며 모든 메서드가 graceful empty 결과를 돌려준다.
+`Source` 인터페이스가 DCGM 통합의 추상 진입점이다. 메서드 셋은 dcgm-exporter 가용성 health check `Available`와 리소스 정리 `Close` 2종이다. gpuobs는 DCGM hardware counter를 자체 re-export 하지 않고 Prometheus가 dcgm-exporter를 직접 스크랩하므로, 메트릭 forward 경로 (`MetricForward`) 는 중복 double-hop이라 #156에서 제거했다. production 구현 `httpSource` (`http_source.go`) 는 순수 Go HTTP client로 CGO와 libdcgm.so 의존이 없다. 기본 구현 `noopSource`는 `NewNoop()` factory로 생성되며 모든 메서드가 graceful empty 결과를 돌려준다.
 
 `Sample` struct는 단일 sample의 4 필드 (`Name`와 `Labels`와 `Value`와 `Timestamp`) 를 묶는다. cardinality 가드는 `Labels`의 키 셋을 device와 gpu_uuid 같은 폐쇄 enum으로 한정해 보장한다.
 
@@ -33,12 +33,12 @@ dev cluster의 RTX 3090 단일 GPU 환경에서는 다음 흐름이 default다.
 
 ## DCGM 활성 절차 (#133, dcgm-exporter HTTP 방식)
 
-A100 또는 H100 같은 데이터센터 GPU 환경에서 DCGM 통합은 dcgm-exporter HTTP endpoint 방식으로 활성한다. `internal/gpuobs/dcgm/http_source.go`의 production `Source`가 dcgm-exporter의 `/metrics`를 순수 Go HTTP client로 fetch하므로 CGO와 libdcgm.so 의존과 build tag 분리가 모두 불요하다.
+A100 또는 H100 같은 데이터센터 GPU 환경에서 DCGM 통합은 dcgm-exporter HTTP endpoint 방식으로 활성한다. 데이터 경로는 다음과 같다. DCGM hardware counter는 dcgm-exporter가 `/metrics`로 노출하고 Prometheus가 dcgm-exporter를 직접 스크랩한다. gpuobs는 본 메트릭을 re-export 하지 않으며, `http_source.go`의 production `Source`는 dcgm-exporter `/metrics`에 HTTP GET 해 200 응답 여부 (가용성) 만 확인해 `gpuobs_dcgm_available` self-health gauge를 채운다. 순수 Go HTTP client라 CGO와 libdcgm.so 의존과 build tag 분리가 모두 불요하다.
 
 - NVIDIA GPU Operator 또는 standalone manifest로 dcgm-exporter를 배포해 `DCGM_FI_DEV_PCIE_REPLAY_COUNTER`와 `DCGM_FI_DEV_NVLINK_BANDWIDTH_*` 같은 hardware counter를 Prometheus에 emit
 - gpuobs-agent에 `GPUOBS_DCGM_ENABLED=true` env (또는 `-dcgm` flag) 를 설정해 `dcgm.NewHTTPSource` wire-up을 활성. dcgm-exporter Service 경로가 기본값 (`http://dcgm-exporter.gpu-operator.svc:9400/metrics`) 과 다르면 `GPUOBS_DCGM_EXPORTER_URL` env로 override
 - dcgm-exporter가 reachable 하면 `gpuobs_dcgm_available` self-health gauge가 1로 전환
-- recording rule `cluster:dcgm_pcie_replay_score:5m`가 `DCGM_FI_DEV_PCIE_REPLAY_COUNTER`의 rate를 정규화해 base score를 산출하고 `gpu_idle_cause_weight:5m{cause="dcgm_pcie_replay"}` weight가 0보다 큰 값으로 활성
+- recording rule `node:dcgm_pcie_replay_score:5m`가 `DCGM_FI_DEV_PCIE_REPLAY_COUNTER`의 rate를 node 단위로 정규화해 base score를 산출하고 (`cluster:dcgm_pcie_replay_score:5m`는 그 cluster max), `gpu_idle_cause_weight:5m{cause="dcgm_pcie_replay"}` weight와 `GPUIdleWithDCGMPCIeReplay` alert가 활성
 
 ## NCCL 활성 절차 (#134, libnccl.so uprobe 방식)
 
