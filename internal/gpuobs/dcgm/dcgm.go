@@ -9,34 +9,18 @@
 // 이라 별도 패키지로 분리한다.
 package dcgm
 
-import "time"
-
-// Sample은 DCGM 메트릭의 단일 sample 표현이다. Name은 메트릭 식별자 (예: "dcgm_pcie_replay_count")
-// 이고 Labels는 device와 gpu_uuid 등 cardinality 가드 라벨이다. Value는 raw 측정 값이고
-// Timestamp는 sample 시각이다.
-type Sample struct {
-	Name      string
-	Labels    map[string]string
-	Value     float64
-	Timestamp time.Time
-}
-
-// Source는 DCGM 메트릭 fetch의 추상 인터페이스다. production 구현은 build tag dcgm 분리한
-// 파일에서 NVIDIA DCGM SDK 또는 dcgm-exporter HTTP endpoint를 호출한다. 본 패키지의 기본
-// 구현은 noopSource라 모든 메서드가 graceful empty 결과를 돌려준다.
+// Source는 DCGM 통합의 추상 인터페이스다. gpuobs는 DCGM hardware counter를 자체 re-export 하지
+// 않고 dcgm-exporter가 노출하는 메트릭 (DCGM_FI_DEV_PCIE_REPLAY_COUNTER 등) 을 Prometheus가 직접
+// 스크랩한다. 따라서 본 인터페이스는 dcgm-exporter 가용성 health check (Available) 와 리소스 정리
+// (Close) 만 둔다. 메트릭 re-export 경로 (MetricForward) 는 Prometheus 직접 스크랩과 중복 double-hop
+// 이라 #156 에서 제거했다. 기본 구현은 noopSource 다.
 type Source interface {
-	// Available은 DCGM SDK 또는 dcgm-exporter endpoint가 정상 연결되어 있는지 돌려준다.
-	// gpuobs_dcgm_available self-health gauge의 값 산출에 사용된다. noopSource는 항상 false
-	// 를 돌려주어 dev cluster의 RTX 3090 환경에서 graceful degradation 식별 진입점이 된다.
+	// Available은 dcgm-exporter endpoint가 정상 연결되어 있는지 돌려준다. gpuobs_dcgm_available
+	// self-health gauge의 값 산출에 사용된다. noopSource는 항상 false를 돌려주어 dev cluster의
+	// RTX 3090 환경에서 graceful degradation 식별 진입점이 된다.
 	Available() bool
 
-	// MetricForward는 prefix로 필터한 DCGM 메트릭 sample 슬라이스를 돌려준다. fetch 실패
-	// 또는 SDK 미통합 환경에서는 빈 슬라이스를 돌려준다. prefix가 빈 문자열이면 모든 메트릭
-	// 을 돌려준다.
-	MetricForward(prefix string) []Sample
-
-	// Close는 SDK handle 또는 HTTP client의 리소스 정리 진입점이다. noopSource는 nil을
-	// 돌려준다.
+	// Close는 HTTP client의 리소스 정리 진입점이다. noopSource는 nil을 돌려준다.
 	Close() error
 }
 
@@ -53,10 +37,6 @@ func NewNoop() Source {
 
 func (*noopSource) Available() bool {
 	return false
-}
-
-func (*noopSource) MetricForward(prefix string) []Sample {
-	return nil
 }
 
 func (*noopSource) Close() error {
