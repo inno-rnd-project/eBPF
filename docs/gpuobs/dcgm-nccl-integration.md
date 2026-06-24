@@ -12,8 +12,6 @@ PR #79의 dominant cause classification은 5 cause weight (`pcie_saturation`와 
 
 `Source` 인터페이스가 DCGM 통합의 추상 진입점이다. 메서드 셋은 dcgm-exporter 가용성 health check `Available`와 리소스 정리 `Close` 2종이다. gpuobs는 DCGM hardware counter를 자체 re-export 하지 않고 Prometheus가 dcgm-exporter를 직접 스크랩하므로, 메트릭 forward 경로 (`MetricForward`) 는 중복 double-hop이라 #156에서 제거했다. production 구현 `httpSource` (`http_source.go`) 는 순수 Go HTTP client로 CGO와 libdcgm.so 의존이 없다. 기본 구현 `noopSource`는 `NewNoop()` factory로 생성되며 모든 메서드가 graceful empty 결과를 돌려준다.
 
-`Sample` struct는 단일 sample의 4 필드 (`Name`와 `Labels`와 `Value`와 `Timestamp`) 를 묶는다. cardinality 가드는 `Labels`의 키 셋을 device와 gpu_uuid 같은 폐쇄 enum으로 한정해 보장한다.
-
 ### `internal/gpuobs/nccl/`
 
 `Profiler` 인터페이스가 NCCL collective event 비동기 수집의 추상 진입점이다. 메서드 셋은 `Available`와 `Attach`와 `Events() <-chan Event`와 `Close` 4종이다. production 구현 `productionProfiler` (`nccl_real.go`, build tag `//go:build nccl`) 는 `libnccl.so.2`의 collective 심볼 (`ncclAllReduce`와 `ncclBroadcast`와 `ncclReduceScatter`와 `ncclAllGather`) 에 uprobe와 uretprobe를 attach해 collective의 entry-exit wall-clock을 ringbuf로 수집하고 `Events()` 채널로 emit한다. attach mechanism은 `internal/gpuobs/cuda`와 동일하게 uprobe_multi link를 써 `perf_event_paranoid` 정책을 우회한다. build tag `nccl`이 비활성인 기본 빌드에서는 `nccl_stub.go`의 `NewProduction`이 noop을 돌려주고 `noopProfiler`의 `Events()` 가 미리 close된 channel을 돌려주어 호출자의 range 루프가 정상 종료한다.

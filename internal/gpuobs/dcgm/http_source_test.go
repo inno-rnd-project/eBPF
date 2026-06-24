@@ -7,13 +7,9 @@ import (
 	"time"
 )
 
-// dcgmExporterSample은 dcgm-exporter /metrics 응답의 부분 mock이다. Available 테스트가 200 응답
-// body로 사용한다. gpuobs는 본 메트릭을 parse하지 않고 (re-export 제거, #156) Prometheus가
-// dcgm-exporter를 직접 스크랩하므로, 본 상수는 200 응답 형태의 예시일 뿐이다.
-const dcgmExporterSample = `# HELP DCGM_FI_DEV_PCIE_REPLAY_COUNTER Total number of PCIe retries.
-# TYPE DCGM_FI_DEV_PCIE_REPLAY_COUNTER counter
-DCGM_FI_DEV_PCIE_REPLAY_COUNTER{gpu="0",UUID="GPU-abc"} 42
-`
+// dcgmExporterSample은 Available 테스트의 200 응답 body다. Available은 status code (200) 만 확인하고
+// body는 읽지 않으므로 (re-export 제거, #156) 내용은 무의미해 빈 문자열로 둔다.
+const dcgmExporterSample = ""
 
 // TestHTTPSource_Available_OK는 dcgm-exporter가 200을 돌려줄 때 Available이 true를 돌려주는지
 // 검증한다. 데이터센터 GPU 환경에서 gpuobs_dcgm_available=1 emit의 회귀 가드다.
