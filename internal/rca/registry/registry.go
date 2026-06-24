@@ -1,4 +1,4 @@
-// Package registry 는 alert 이름별 RCA 산정 함수를 모은 dispatcher 다. 9 alert mapping 을 alert
+// Package registry 는 alert 이름별 RCA 산정 함수를 모은 dispatcher 다. 11 alert mapping 을 alert
 // 그룹 단위 (netobs, gpuobs, idle, correlation) 4 파일로 분리해 신규 alert 추가 시 한 파일만
 // 갱신되도록 응집도를 통제한다. mapping 이 등록되지 않은 alert 는 Dispatch 가 zero RCASummary +
 // false 를 돌려주어 호출 측이 raw label echo back 으로 silent drop 을 회피한다.
