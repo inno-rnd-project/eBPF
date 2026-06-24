@@ -1,6 +1,6 @@
 # GPU 유휴 원인 진단 가이드
 
-본 가이드는 `node:gpu_idle:5m` alert이 발화했을 때 6종 cause score를 조합해 원인을 짚는 절차를 정리한다. 모든 cause score는 0-1로 정규화되며 PrometheusRule 그룹 `netobs-gpuobs.gpu-idle.recording` 에서 정의된다. alert 그룹 `netobs-gpuobs.gpu-idle.alerts` 가 본 score 임계 기반으로 5종 alert을 발화한다.
+본 가이드는 `node:gpu_idle:5m` alert이 발화했을 때 cause score를 조합해 원인을 짚는 절차를 정리한다. 모든 cause score는 0-1로 정규화되며 PrometheusRule 그룹 `netobs-gpuobs.gpu-idle.recording` 에서 정의된다. dominant cause 엔진은 7 cause(`pcie_saturation`, `network_pressure`, `cpu_throttle`, `memory_pressure`, `host_compute_stall`, `dcgm_pcie_replay`, `nccl_collective_stall`)로 동작하며, alert 그룹 `netobs-gpuobs.gpu-idle.alerts` 가 본 score 임계 기반으로 7종 `GPUIdleWith*` alert을 발화한다. `dcgm_pcie_replay` 와 `nccl_collective_stall` 은 base score가 node 단위(`node:dcgm_pcie_replay_score:5m`, `node:nccl_collective_stall_score:5m`)이며 DCGM / NCCL 텔레메트리 기반이라 데이터센터 GPU 환경에서만 활성된다.
 
 ## score 조합 패턴별 해석 표
 
@@ -12,6 +12,8 @@
 | cpu_throttle_score만 우세 | 컨테이너 CPU limit이 너무 낮아 host side에서 GPU 작업 dispatcher가 throttle됨 | Pod의 CPU limit 상향 또는 GPU 워크로드의 CPU dependency 분석 (data loader, preprocessor 등) |
 | memory_pressure_score만 우세 | 컨테이너 메모리가 limit에 임박해 OOMKill 직전 또는 swap thrashing | Pod의 memory limit 상향 또는 batch size 축소 |
 | host_compute_stall_score만 우세 | host측 CUDA launch가 baseline 미만이거나 GPU device memory가 포화됨. host 또는 device 측 자원 한계로 GPU 작업이 진행되지 않는 가장 직접적 신호 | `gpuobs_cuda_kernel_launches_total` rate로 host 측 dispatcher 상태 확인, `gpuobs_pod_memory_used_bytes` / `gpuobs_device_memory_total_bytes` 비율로 device memory 포화 확인 |
+| dcgm_pcie_replay_score만 우세 | DCGM PCIe replay 카운터 상승. PCIe link error로 인한 retry가 GPU의 compute 진입을 지연시키는 hardware 신호 (데이터센터 GPU). pcie_saturation(대역폭 점유)과 의미 구분 | `DCGM_FI_DEV_PCIE_REPLAY_COUNTER` rate로 link error 추이 확인, PCIe link 품질 / riser / 슬롯 점검 후 hardware admin과 협업 |
+| nccl_collective_stall_score만 우세 | NCCL collective(allreduce/broadcast 등)의 rank 간 sync 대기로 GPU가 유휴 (데이터센터 multi-GPU). host_compute_stall(kernel launch 부족)과 의미 구분 | `gpuobs_nccl_collective_duration_seconds` 로 collective 대기 추이 확인, rank 간 부하 불균형 / straggler / 통신 토폴로지 점검 |
 | pcie_saturation + network_throughput 동시 우세 | 데이터 pipeline 전반이 I/O bound. Pod 외부에서 데이터를 받고 GPU로 보내는 두 단계 모두 포화 | end-to-end pipeline 검토, 데이터 로더 / NCCL 통신 / cudaMemcpy 단계별 측정 |
 | pcie_saturation + host_compute_stall 동시 우세 | PCIe 대역폭 한계로 device memory가 채워지지 않아 host side도 launch 부족 | h2d 전송 우선순위 분석, `pinned memory` 또는 zero-copy 도입 검토 |
 | cpu_throttle + host_compute_stall 동시 우세 | host CPU가 throttle되어 CUDA API 호출 자체가 느림. inference latency가 GPU가 아닌 host에 묶임 | CPU limit 상향 + data loader worker 수 조정 |
@@ -97,6 +99,8 @@ CPU throttle은 cAdvisor의 `container_cpu_cfs_throttled_periods_total` 과 `con
 | pod:cpu_throttle_score:5m | 0.3 | 0.5 | 30% 이상 period가 throttle되면 host측 dispatcher 영향 시작 |
 | pod:memory_pressure_score:5m | 0.9 | 0.95 | OOM 임박 신호이므로 다른 score보다 cutoff가 높음 |
 | pod:host_compute_stall_score:5m | 0.7 | 0.9 | host stall은 GPU 활용 자체를 막아 critical 우선순위 |
+| node:dcgm_pcie_replay_score:5m | 0.7 | 0.9 | replay 100/sec를 1.0으로 정규화. 0.7(70/sec)부터 link error가 sustained, 0.9 이상은 심각한 link 품질 저하 |
+| node:nccl_collective_stall_score:5m | 0.7 | 0.9 | collective-seconds/sec 1.0을 1.0으로 정규화. 0.7부터 rank가 시간의 70%를 collective 대기에 사용 |
 
 cutoff는 워크로드별로 조정한다. inference 워크로드는 burst가 적어 cutoff를 낮추고, batch training은 burst가 잦아 cutoff를 높이는 식이다. PrometheusRule을 수정하지 않고 alert의 expression 직접 수정 (kustomize patch) 으로 cluster 단위 cutoff 조정이 가능하다.
 

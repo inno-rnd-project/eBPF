@@ -134,7 +134,7 @@ PROMTOOL_RULES_TMP_DIR ?= bin/promtool-rules
 # PROMTOOL_TEST_FILES 는 promtool test rules 로 실행할 unit test 파일이다. 각 test 파일은 gpuobs
 # recording rule 을 입력 series 로부터 평가해 산출 series 의 기대값을 단정한다. rule_files 는 컨테이너
 # 안에서 gpuobs.yaml (추출본) 을 가리킨다.
-PROMTOOL_TEST_FILES ?= test/promtool/gpuobs-network-retrans.test.yaml
+PROMTOOL_TEST_FILES ?= test/promtool/gpuobs-network-retrans.test.yaml test/promtool/gpuobs-new-cause-alerts.test.yaml
 
 check-prometheus-rules:
 	@mkdir -p $(PROMTOOL_RULES_TMP_DIR)

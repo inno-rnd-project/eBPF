@@ -1,0 +1,47 @@
+# gpuobs-new-cause-alerts.test.yaml 은 #155 의 신규 2 cause alert (GPUIdleWithDCGMPCIeReplay,
+# GPUIdleWithNCCLCollectiveStall) 가 base score 가 임계 를 넘고 GPU 가 유휴 일 때 firing 되는지 검증
+# 한다. base score 를 1.0 으로 clamp 시켜 ($value=1) annotation 매칭 의 부동소수점 잡음 을 배제 한다.
+# 두 alert 모두 for: 5m + rate[5m] 라 eval_time 10m 에서 firing 을 단정 한다.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # GPUIdleWithDCGMPCIeReplay: DCGM PCIe replay rate 150/s → score clamp 1.0, GPU 유휴.
+  - interval: 30s
+    input_series:
+      - series: 'DCGM_FI_DEV_PCIE_REPLAY_COUNTER{node="n1",gpu="0"}'
+        values: '0+4500x22'
+      - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
+        values: '5x22'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GPUIdleWithDCGMPCIeReplay
+        exp_alerts:
+          - exp_labels:
+              node: n1
+              severity: warning
+              component: correlation
+            exp_annotations:
+              summary: "GPU idle with DCGM PCIe replay on n1 (score=1)"
+              description: "DCGM PCIe replay score is 1 (threshold 0.7) on node n1 while a GPU is idle. PCIe link errors (DCGM_FI_DEV_PCIE_REPLAY_COUNTER) are forcing retries that delay GPU compute. Inspect link health on datacenter GPUs. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
+
+  # GPUIdleWithNCCLCollectiveStall: NCCL collective wall-clock rate 2/s → score clamp 1.0, GPU 유휴.
+  - interval: 30s
+    input_series:
+      - series: 'gpuobs_nccl_collective_duration_seconds_sum{node="n1"}'
+        values: '0+60x22'
+      - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
+        values: '5x22'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GPUIdleWithNCCLCollectiveStall
+        exp_alerts:
+          - exp_labels:
+              node: n1
+              severity: warning
+              component: correlation
+            exp_annotations:
+              summary: "GPU idle with NCCL collective stall on n1 (score=1)"
+              description: "NCCL collective stall score is 1 (threshold 0.7) on node n1 while a GPU is idle. Ranks are spending wall-clock in collective wait (allreduce/broadcast sync). Inspect gpuobs_nccl_collective_duration_seconds. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."

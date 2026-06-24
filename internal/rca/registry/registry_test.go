@@ -34,18 +34,21 @@ func (f *fakeSources) EvaluateConfidence(neighbors []NeighborInfo, dropFlows []D
 	return 0.5
 }
 
-// TestNew_RegistersExactlyNineMappings 는 명세상 9 alert mapping 이 정확히 등록되는지 회귀
+// TestNew_RegistersExactlyElevenMappings 는 명세상 11 alert mapping 이 정확히 등록되는지 회귀
 // 가드한다. 신규 mapping 추가 시 본 테스트의 expected 셋도 함께 갱신해야 하며 의도된 변경이
-// 아닌 누락 / 오타가 발견된다.
-func TestNew_RegistersExactlyNineMappings(t *testing.T) {
+// 아닌 누락 / 오타가 발견된다. #155 에서 GPUIdleWithDCGMPCIeReplay 와 GPUIdleWithNCCLCollectiveStall
+// 2 종이 추가되어 9 → 11 이 되었다.
+func TestNew_RegistersExactlyElevenMappings(t *testing.T) {
 	r := New()
 	names := r.Alertnames()
 	sort.Strings(names)
 	want := []string{
 		"CorrelationStrongNoisyNeighbor",
 		"GPUIdleWithCPUThrottle",
+		"GPUIdleWithDCGMPCIeReplay",
 		"GPUIdleWithHostComputeStall",
 		"GPUIdleWithMemoryPressure",
+		"GPUIdleWithNCCLCollectiveStall",
 		"GPUIdleWithNetworkPressure",
 		"GPUIdleWithPCIeSaturation",
 		"GPUObsCudaStreamWaitHigh",
