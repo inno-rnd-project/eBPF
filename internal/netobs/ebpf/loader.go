@@ -294,11 +294,17 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 	attachOptionalKprobe("kfree_skb_reason", objs.HandleKfreeSkbReason, &links)
 	attachOptionalKprobe("tcp_cleanup_rbuf", objs.HandleTcpCleanupRbuf, &links)
 
+	// #173 NIC ingress→L3 stage 의 진입점. __netif_receive_skb 는 NIC 드라이버가 skb 를 커널 stack 에
+	// 올리는 보편 진입점으로, 공개 심볼 netif_receive_skb 가 NAPI / backlog 경로에 우회되어 거의
+	// 발화하지 않는 점을 dev 실측으로 확인해 본 심볼을 hook 한다. softirq context 라 socket 미해상
+	// 이므로 진입 시각만 per-CPU stash 하고 Pod 귀속과 emit 은 tcp_v4_rcv (L3 진입) 으로 미룬다.
+	attachOptionalKprobe("__netif_receive_skb", objs.HandleNetifReceiveSkb, &links)
+
 	// #65 receive path 의 BPF kprobe 4 종. tcp_v4_do_rcv / tcp_rcv_established / tcp_recvmsg 3 종은
 	// sock 인자가 있어 emit_rcv_event 로 stage 별 진입 시점과 TCP 상태를 ringbuf 에 emit 하고,
-	// tcp_v4_rcv 는 socket lookup 이전이라 sock 이 없어 attach 만 유지하고 event emit 은 보류한다.
-	// attachOptionalKprobe 를 사용해 kernel 빌드 옵션 또는 버전 변경으로 심볼이 사라져도 agent 가
-	// fail-close 되지 않게 한다.
+	// tcp_v4_rcv 는 socket lookup 이전이지만 #173 부터 skb->sk (early demux) 로 NIC ingress→L3 (RCV_NIC)
+	// stage 를 emit 한다 (RCV_L3 자체 emit 은 보류 유지). attachOptionalKprobe 를 사용해 kernel 빌드
+	// 옵션 또는 버전 변경으로 심볼이 사라져도 agent 가 fail-close 되지 않게 한다.
 	attachOptionalKprobe("tcp_v4_rcv", objs.HandleTcpV4Rcv, &links)
 	attachOptionalKprobe("tcp_v4_do_rcv", objs.HandleTcpV4DoRcv, &links)
 	attachOptionalKprobe("tcp_rcv_established", objs.HandleTcpRcvEstablished, &links)
