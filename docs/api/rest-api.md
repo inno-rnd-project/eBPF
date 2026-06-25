@@ -14,7 +14,7 @@
 
 | Agent | Endpoint | 용도 | 데이터 source 연결 상태 |
 |---|---|---|---|
-| `correlation-exporter` | `/api/v1/noisy-neighbor`와 cross-node-interference와 service-impact와 cross-level와 impact-graph와 impact-paths | victim과 suspect와 dimension 별 간섭 분석 결과 | 완료 (Snapshot 직접 연결) |
+| `correlation-exporter` | `/api/v1/noisy-neighbor`와 `/api/v1/cross-node-interference`와 `/api/v1/service-impact`와 `/api/v1/cross-level`와 `/api/v1/impact-graph`와 `/api/v1/impact-paths` | victim과 suspect와 dimension 별 간섭 분석 결과 | 완료 (Snapshot 직접 연결) |
 | `rca-summarizer` | `/rca?alert=<name>` | alert별 RCA 요약 | 완료 (기존 #71 구현) |
 
 ## Swagger UI 접근
