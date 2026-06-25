@@ -1,6 +1,6 @@
 # deploy/swagger-ui
 
-이슈 #100 의 자체 dashboard용 REST API layer 의 통합 Swagger UI 진입점이다. `swaggerapi/swagger-ui` 공식 image의 `URLS` 환경 변수로 3 agent (correlation-exporter와 netobs-agent와 gpuobs-agent) 의 `/api/v1/swagger.json` spec을 dropdown으로 묶어 운영자가 한 곳에서 endpoint를 탐색 가능하게 한다. rca-summarizer는 `/rca` endpoint만 제공하므로 본 dropdown에 포함하지 않는다.
+이슈 #100 의 자체 dashboard용 REST API layer 의 Swagger UI 진입점이다. `swaggerapi/swagger-ui` 공식 image의 `URLS` 환경 변수로 correlation-exporter의 `/api/v1/swagger.json` spec을 등록한다. netobs-agent와 gpuobs-agent의 REST API는 미사용 scaffold라 #171에서 제거했고 REST API는 소비처(injector)가 있는 correlation-exporter만 유지하므로, 본 UI도 correlation 단일이다. rca-summarizer는 `/rca` endpoint만 제공하므로 포함하지 않는다.
 
 ## 적용
 
@@ -41,9 +41,7 @@ kubectl port-forward -n ebpf-project svc/correlation-exporter 9830:9830
 
 ```json
 [
-  {"url":"http://correlation-exporter:9830/api/v1/swagger.json","name":"correlation"},
-  {"url":"http://netobs-agent:9810/api/v1/swagger.json","name":"netobs"},
-  {"url":"http://gpuobs-agent:9820/api/v1/swagger.json","name":"gpuobs"}
+  {"url":"http://correlation-exporter:9830/api/v1/swagger.json","name":"correlation"}
 ]
 ```
 
