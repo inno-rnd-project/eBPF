@@ -1,6 +1,6 @@
 # REST API layer 운영자 가이드
 
-이슈 #100의 자체 dashboard용 REST API layer에 대한 운영자 가이드다. 4 agent (`correlation-exporter`와 `netobs-agent`와 `gpuobs-agent`와 `rca-summarizer`) 가 도메인별 JSON endpoint를 노출해 Prometheus query 의존 없이 자체 dashboard에서 본 시스템의 분석 결과를 활용 가능하게 한다.
+이슈 #100의 자체 dashboard용 REST API layer에 대한 운영자 가이드다. `correlation-exporter`가 간섭 분석 결과를 JSON endpoint로 노출해 Prometheus query 의존 없이 자체 dashboard에서 활용 가능하게 하고, `rca-summarizer`가 `/rca` 요약을 제공한다. netobs-agent와 gpuobs-agent의 REST API는 nil source skeleton이고 소비처가 없어 #171에서 제거했으며, flow와 drop과 GPU 자원 관측은 Prometheus 스크랩(`/metrics`)으로 일원화한다.
 
 ## 사용 시나리오
 
@@ -14,42 +14,22 @@
 
 | Agent | Endpoint | 용도 | 데이터 source 연결 상태 |
 |---|---|---|---|
-| `correlation-exporter` | `/api/v1/noisy-neighbor` | victim과 suspect와 dimension 별 noisy neighbor top-N | 완료 (Snapshot 직접 연결) |
-| `netobs-agent` | `/api/v1/flows` | 5-tuple 기준 flow bytes와 rate | skeleton (실 source는 follow-up 이슈로 위임) |
-| `netobs-agent` | `/api/v1/drops` | drop_reason 별 5-tuple 분포 | skeleton (실 source는 follow-up 이슈로 위임) |
-| `gpuobs-agent` | `/api/v1/gpu` | device와 pod scope GPU 자원 사용량 | skeleton (실 source는 follow-up 이슈로 위임) |
+| `correlation-exporter` | `/api/v1/noisy-neighbor`와 cross-node-interference와 service-impact와 cross-level와 impact-graph와 impact-paths | victim과 suspect와 dimension 별 간섭 분석 결과 | 완료 (Snapshot 직접 연결) |
 | `rca-summarizer` | `/rca?alert=<name>` | alert별 RCA 요약 | 완료 (기존 #71 구현) |
 
 ## Swagger UI 접근
 
-본 시스템의 Swagger UI는 두 가지 진입점을 제공한다.
-
-### 통합 진입점 (운영자 권장)
-
-`deploy/swagger-ui/` 의 Pod가 3 agent (correlation-exporter와 netobs-agent와 gpuobs-agent) 의 `/api/v1/swagger.json` spec을 dropdown으로 묶는다. 운영자가 한 브라우저 창에서 3 agent의 모든 endpoint를 탐색 가능하다. rca-summarizer는 `/rca` endpoint만 제공하므로 본 dropdown에 포함하지 않는다.
+REST API는 correlation-exporter만 제공하므로 Swagger UI도 correlation 단일이다.
 
 ```sh
+# 통합 진입점 (deploy/swagger-ui/ Pod, correlation spec 단일 등록)
 kubectl apply -k deploy/swagger-ui/
 kubectl port-forward -n ebpf-project svc/swagger-ui 8080:8080
-# 브라우저로 http://localhost:8080 접속 후 상단 dropdown 선택
-```
+# 브라우저로 http://localhost:8080 접속
 
-### agent 별 직접 진입 (개발 편의)
-
-특정 agent의 endpoint만 빠르게 확인할 때.
-
-```sh
-# correlation-exporter
+# correlation-exporter 개별 진입 (개발 편의)
 kubectl port-forward -n ebpf-project svc/correlation-exporter 9830:9830
 # 브라우저로 http://localhost:9830/api/v1/swagger/ 접속
-
-# netobs-agent
-kubectl port-forward -n ebpf-project svc/netobs-agent 9810:9810
-# 브라우저로 http://localhost:9810/api/v1/swagger/ 접속
-
-# gpuobs-agent
-kubectl port-forward -n ebpf-project svc/gpuobs-agent 9820:9820
-# 브라우저로 http://localhost:9820/api/v1/swagger/ 접속
 ```
 
 ## 응답 표준

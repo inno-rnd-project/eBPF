@@ -1,9 +1,8 @@
-# 이슈 #100 의 자체 dashboard 용 REST API layer 의 통합 Swagger UI 진입점. swaggerapi/swagger-ui
-# 공식 image 가 URLS 환경 변수 로 dropdown 형 multi-spec 표시를 native 지원 한다. 3 agent
-# (correlation-exporter 와 netobs-agent 와 gpuobs-agent) 의 /api/v1/swagger.json 을 등록 해 운영자
-# 가 한 곳 에서 endpoint 를 탐색 가능 하게 한다. agent 별 개별 swagger UI (/api/v1/swagger/index.html)
-# 도 그대로 유지 되므로 본 통합 Pod 는 보조 진입점. rca-summarizer 는 /rca endpoint 만 제공 하므로
-# 본 URLS 에 포함 하지 않는다.
+# 이슈 #100 의 자체 dashboard 용 REST API layer 의 Swagger UI 진입점. swaggerapi/swagger-ui 공식
+# image 가 URLS 환경 변수 로 spec 표시를 native 지원 한다. netobs 와 gpuobs 의 REST API 는 미사용
+# scaffold 라 #171 에서 제거 했고, REST API 는 소비처 (injector) 가 있는 correlation-exporter 만
+# 유지 한다. 따라서 본 URLS 는 correlation-exporter 의 /api/v1/swagger.json 만 등록 한다. correlation
+# 의 개별 swagger UI (/api/v1/swagger/index.html) 도 그대로 유지 되므로 본 Pod 는 보조 진입점 이다.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -39,7 +38,7 @@ spec:
             # 이는 cluster DNS 미해석 한계 라 별도 ingress 또는 cluster 내부 접근 권장 (README 참조).
             - name: URLS
               value: >-
-                [{"url":"http://correlation-exporter:9830/api/v1/swagger.json","name":"correlation"},{"url":"http://netobs-agent:9810/api/v1/swagger.json","name":"netobs"},{"url":"http://gpuobs-agent:9820/api/v1/swagger.json","name":"gpuobs"}]
+                [{"url":"http://correlation-exporter:9830/api/v1/swagger.json","name":"correlation"}]
             - name: URLS_PRIMARY_NAME
               value: "correlation"
           resources:
