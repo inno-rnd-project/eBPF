@@ -26,6 +26,12 @@ type NetObsNetobsFlowKey struct {
 
 type NetObsNetobsFlowValue struct{ Bytes uint64 }
 
+type NetObsNetobsNicIngress struct {
+	TsNic uint64
+	TsL3  uint64
+	Skb   uint64
+}
+
 type NetObsNetobsPodBytesKey struct {
 	CgroupId  uint64
 	Direction uint8
@@ -124,6 +130,7 @@ type NetObsSpecs struct {
 type NetObsProgramSpecs struct {
 	HandleDevQueueXmit      *ebpf.ProgramSpec `ebpf:"handle_dev_queue_xmit"`
 	HandleKfreeSkbReason    *ebpf.ProgramSpec `ebpf:"handle_kfree_skb_reason"`
+	HandleNetifReceiveSkb   *ebpf.ProgramSpec `ebpf:"handle_netif_receive_skb"`
 	HandleTcpCleanupRbuf    *ebpf.ProgramSpec `ebpf:"handle_tcp_cleanup_rbuf"`
 	HandleTcpRcvEstablished *ebpf.ProgramSpec `ebpf:"handle_tcp_rcv_established"`
 	HandleTcpRecvmsg        *ebpf.ProgramSpec `ebpf:"handle_tcp_recvmsg"`
@@ -153,6 +160,7 @@ type NetObsMapSpecs struct {
 	Events        *ebpf.MapSpec `ebpf:"events"`
 	EventsDropped *ebpf.MapSpec `ebpf:"events_dropped"`
 	FlowBytes     *ebpf.MapSpec `ebpf:"flow_bytes"`
+	NicIngress    *ebpf.MapSpec `ebpf:"nic_ingress"`
 	PodBytes      *ebpf.MapSpec `ebpf:"pod_bytes"`
 	RecvStarts    *ebpf.MapSpec `ebpf:"recv_starts"`
 	SegAccum      *ebpf.MapSpec `ebpf:"seg_accum"`
@@ -190,6 +198,7 @@ type NetObsMaps struct {
 	Events        *ebpf.Map `ebpf:"events"`
 	EventsDropped *ebpf.Map `ebpf:"events_dropped"`
 	FlowBytes     *ebpf.Map `ebpf:"flow_bytes"`
+	NicIngress    *ebpf.Map `ebpf:"nic_ingress"`
 	PodBytes      *ebpf.Map `ebpf:"pod_bytes"`
 	RecvStarts    *ebpf.Map `ebpf:"recv_starts"`
 	SegAccum      *ebpf.Map `ebpf:"seg_accum"`
@@ -203,6 +212,7 @@ func (m *NetObsMaps) Close() error {
 		m.Events,
 		m.EventsDropped,
 		m.FlowBytes,
+		m.NicIngress,
 		m.PodBytes,
 		m.RecvStarts,
 		m.SegAccum,
@@ -223,6 +233,7 @@ type NetObsVariables struct {
 type NetObsPrograms struct {
 	HandleDevQueueXmit      *ebpf.Program `ebpf:"handle_dev_queue_xmit"`
 	HandleKfreeSkbReason    *ebpf.Program `ebpf:"handle_kfree_skb_reason"`
+	HandleNetifReceiveSkb   *ebpf.Program `ebpf:"handle_netif_receive_skb"`
 	HandleTcpCleanupRbuf    *ebpf.Program `ebpf:"handle_tcp_cleanup_rbuf"`
 	HandleTcpRcvEstablished *ebpf.Program `ebpf:"handle_tcp_rcv_established"`
 	HandleTcpRecvmsg        *ebpf.Program `ebpf:"handle_tcp_recvmsg"`
@@ -248,6 +259,7 @@ func (p *NetObsPrograms) Close() error {
 	return _NetObsClose(
 		p.HandleDevQueueXmit,
 		p.HandleKfreeSkbReason,
+		p.HandleNetifReceiveSkb,
 		p.HandleTcpCleanupRbuf,
 		p.HandleTcpRcvEstablished,
 		p.HandleTcpRecvmsg,

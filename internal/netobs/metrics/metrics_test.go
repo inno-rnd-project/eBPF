@@ -280,15 +280,16 @@ func TestRecord_SendPathStage4Decomposition(t *testing.T) {
 	}
 }
 
-// TestRecord_RecvPathStageLatency 는 #141 의 receive path 3 종 stage (rcv_demux, rcv_established,
-// rcv_app) event 가 stageLatencyLabeled histogram 에 latency 를 emit 하는지 검증한다. 기존에는 rcv
-// stage 가 TCP 상태 sample 만 집계하고 latency 를 Observe 하지 않아 dashboard 수신 패널이 빈 데이터로
-// 남던 회귀를 가드한다.
+// TestRecord_RecvPathStageLatency 는 receive path stage event 가 stageLatencyLabeled histogram 에
+// latency 를 emit 하는지 검증한다. #141 의 3 종 (rcv_demux, rcv_established, rcv_app) 에 더해 #173 의
+// rcv_nic (NIC ingress→L3) 까지 포함한다. 기존에는 rcv stage 가 TCP 상태 sample 만 집계하고 latency 를
+// Observe 하지 않아 dashboard 수신 패널이 빈 데이터로 남던 회귀를 가드한다.
 func TestRecord_RecvPathStageLatency(t *testing.T) {
 	cases := []struct {
 		stage     uint8
 		stageName string
 	}{
+		{types.StageRcvNic, "rcv_nic"},
 		{types.StageRcvDemux, "rcv_demux"},
 		{types.StageRcvEstablished, "rcv_established"},
 		{types.StageRcvApp, "rcv_app"},

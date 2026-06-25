@@ -37,6 +37,11 @@ enum netobs_event_stage {
      * 활성 시 첫 segment 만 측정한다 (seen_transmit flag). */
     NETOBS_STAGE_TCP_WRITE_XMIT  = 10,
     NETOBS_STAGE_TCP_TRANSMIT_SKB = 11,
+    /* #173 NIC ingress→L3 stage. __netif_receive_skb (NIC 드라이버 가 skb 를 커널 stack 에 올리는
+     * 진입점) 부터 tcp_v4_rcv / tcp_v6_rcv (L3 진입) 까지의 softirq 처리 시간이다. __netif_receive_skb
+     * 는 socket 미해상 단계 라 Pod 귀속 이 불가능 하므로 진입 시각 만 per-CPU 로 stash 하고, L3 진입 의
+     * skb->sk (early demux) 로 귀속 해 emit 한다. 기존 rcv stage 4 종 (6-9) 의 가장 앞 단 segment 다. */
+    NETOBS_STAGE_RCV_NIC          = 12,
 };
 
 /* pod_bytes 누적 맵의 key/value. key는 (cgroup_id, direction, layer) 삼중 합성이며 동일 Pod의

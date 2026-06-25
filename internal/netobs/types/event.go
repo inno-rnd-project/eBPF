@@ -26,6 +26,10 @@ const (
 	// 는 개별 segment transmit entry 라 TSO/GSO 활성 시 첫 segment 만 latency 가 측정된다.
 	StageTcpWriteXmit   = 10
 	StageTcpTransmitSkb = 11
+	// #173 NIC ingress→L3 stage. __netif_receive_skb (NIC 드라이버의 커널 stack 진입점) 부터
+	// tcp_v4_rcv / tcp_v6_rcv (L3 진입) 까지의 softirq 처리 시간이다. rcv path 4 종 (6-9) 의 가장
+	// 앞 단 segment 로, BPF 측 netobs_event_stage 의 NETOBS_STAGE_RCV_NIC 와 정합한다.
+	StageRcvNic = 12
 )
 
 type Event struct {
@@ -131,6 +135,8 @@ func StageName(stage uint8) string {
 		return "retrans"
 	case StageDrop:
 		return "drop"
+	case StageRcvNic:
+		return "rcv_nic"
 	case StageRcvL3:
 		return "rcv_l3"
 	case StageRcvDemux:
@@ -149,7 +155,8 @@ func StageName(stage uint8) string {
 }
 
 // StageDirection 은 stage 별 흐름 방향을 반환한다. send path 7 종 (#82 의 tcp_write_xmit / tcp_
-// transmit_skb 포함) 은 "egress", #65 의 rcv path 4 종은 "ingress" 로 분류한다. enricher 가
+// transmit_skb 포함) 은 "egress", rcv path 5 종 (#65 의 4 종 + #173 의 rcv_nic) 은 "ingress" 로
+// 분류한다. enricher 가
 // Direction 라벨 산정에 사용하며, 알 수 없는 stage 는 "unknown" 으로 둬 메트릭 라벨이 빈 문자열
 // 로 비지 않게 한다.
 func StageDirection(stage uint8) string {
@@ -157,7 +164,7 @@ func StageDirection(stage uint8) string {
 	case StageSendmsgRet, StageToVeth, StageToDevQ, StageRetrans, StageDrop,
 		StageTcpWriteXmit, StageTcpTransmitSkb:
 		return "egress"
-	case StageRcvL3, StageRcvDemux, StageRcvEstablished, StageRcvApp:
+	case StageRcvNic, StageRcvL3, StageRcvDemux, StageRcvEstablished, StageRcvApp:
 		return "ingress"
 	}
 	return "unknown"

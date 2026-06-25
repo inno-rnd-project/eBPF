@@ -130,6 +130,40 @@ struct {
     __type(value, struct netobs_recv_state);
 } recv_starts SEC(".maps");
 
+/* #173 NIC ingress→L3 구간 의 skb->protocol 필터 상수. NIC 진입 stash 를 IP / IPv6 패킷 으로만
+ * 한정 해 ARP 등 비-IP 트래픽 의 불필요 한 per-CPU slot 갱신 을 피한다. skb->protocol 은 __be16 라
+ * host 상수 를 bpf_htons 로 변환 해 비교 한다. */
+#define NETOBS_ETH_P_IP   0x0800
+#define NETOBS_ETH_P_IPV6 0x86DD
+
+/* #173 NIC ingress→L3 구간 의 sanity 상한 (nanoseconds). 본 구간 은 동일 CPU 의 단일 softirq 콜체인
+ * (__netif_receive_skb → ip_rcv → tcp_v4_rcv) 으로 직렬 진행 되어 µs scale 이다. nic_ingress 의 skb
+ * 포인터 일치 로 동일 패킷 을 보장 하므로 stale 차단 보다는 skb 포인터 재사용 등 극단 outlier 가드
+ * 목적 이며, 1ms 초과 차분 은 콜체인 segment 가 아닌 artifact 로 보고 latency 를 채택 하지 않는다. */
+#define NETOBS_RCV_NIC_MAX_NS 1000000ULL
+
+/* #173 NIC ingress→L3 구간 측정용 per-CPU 단일 slot. __netif_receive_skb 는 softirq context 라 수신
+ * skb 의 socket / cgroup 이 아직 미해상 이므로 socket_cookie 키 stash 가 불가능 하다. 대신 수신 처리 가
+ * 동일 CPU 의 단일 softirq 콜체인 (__netif_receive_skb → tcp_v4_rcv → tcp_v4_do_rcv) 으로 직렬 진행
+ * 되는 점 을 활용 한다. NIC 진입 시각 (ts_nic) 과 skb 포인터 를 __netif_receive_skb 에서 stash 하고,
+ * L3 진입 (tcp_v4_rcv / tcp_v6_rcv) 에서 skb 포인터 일치 시 진입 시각 (ts_l3) 을 stamp 한다. Pod 귀속 은
+ * socket 미해상 단계 라, sock 인자 가 보장 되는 demux (tcp_v4_do_rcv) 에서 slot 의 두 timestamp 로
+ * NIC→L3 latency 를 산정 해 emit 한다. 두 timestamp 가 모두 동기 콜체인 에서 찍히므로 demux 가 backlog
+ * 로 지연 emit 되어도 latency 값 은 정확 하다. skb 포인터 일치 검사 가 RPS / loopback 등 콜체인 이 끊긴
+ * 경우 의 오측정 을 차단 한다 (dev 실측 skb 정합 98.6%). */
+struct netobs_nic_ingress {
+    __u64 ts_nic;   /* __netif_receive_skb 진입 시각 */
+    __u64 ts_l3;    /* tcp_v4_rcv / tcp_v6_rcv (L3 진입) 시각, 동일 skb 일 때만 stamp */
+    __u64 skb;      /* 상관 대상 skb 포인터 */
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct netobs_nic_ingress);
+} nic_ingress SEC(".maps");
+
 static __always_inline int match_target(__u32 daddr_net)
 {
     __u32 key = 0;
@@ -829,6 +863,24 @@ int BPF_KPROBE(handle_tcp_cleanup_rbuf, struct sock *sk, int copied)
     return 0;
 }
 
+/* #173 capture_nic_l3 는 L3 진입 (tcp_v4_rcv / tcp_v6_rcv) 시점 에 per-CPU nic_ingress slot 의 ts_l3 를
+ * stamp 한다. socket lookup 이전 단계 라 sk 가 없어도 동작 하며 (NIC→L3 구간 은 Pod 귀속 과 무관 하게
+ * 시각 만 필요), __netif_receive_skb 가 stash 한 skb 포인터 와 현재 skb 가 일치 할 때만 stamp 해 동일
+ * 패킷 임을 보장 한다. 실제 latency 산정 과 emit 은 sock 인자 가 보장 되는 tcp_v4_do_rcv 에서 수행 된다. */
+static __always_inline void capture_nic_l3(struct sk_buff *skb)
+{
+    __u32 key = 0;
+    struct netobs_nic_ingress *ni;
+
+    if (!skb)
+        return;
+    ni = bpf_map_lookup_elem(&nic_ingress, &key);
+    if (!ni)
+        return;
+    if (ni->skb == (__u64)(unsigned long)skb && ni->ts_nic)
+        ni->ts_l3 = bpf_ktime_get_ns();
+}
+
 /* #141 stash_recv_l3 는 tcp_v4_rcv / tcp_v6_rcv 의 L3 진입 시점 timestamp 를 socket_cookie 키로
  * recv_starts 에 기록한다. tcp_v4_rcv 는 socket lookup 이전 단계라 sk 인자가 없어 skb->sk (early
  * demux 결과) 로 sock 을 복원한다. established 연결은 early demux 로 skb->sk 가 채워져 있어
@@ -882,6 +934,8 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
     __u64 now;
     __u16 family;
     __u32 latency_us = 0;
+    __u8  nic_matched = 0;   /* #173 RCV_NIC 의 nic_ingress 상관 성공 여부. latency_us==0 (sub-µs) 와
+                              * 미상관 을 구분 해 sub-µs 측정 값 을 버리지 않게 한다. */
 
     if (!sk)
         return;
@@ -955,50 +1009,113 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
         }
         if (st)
             bpf_map_delete_elem(&recv_starts, &s.socket_cookie);
+    } else if (stage == NETOBS_STAGE_RCV_NIC) {
+        /* #173 NIC ingress→L3 구간. per-CPU nic_ingress 의 NIC 진입 시각 (ts_nic) 과 L3 진입 시각 (ts_l3)
+         * 이 모두 stamp 되고 현재 demux skb 와 slot 의 skb 포인터 가 일치 (동일 softirq 콜체인) 할 때만 두
+         * 시각 의 차분 을 NIC→L3 latency 로 채택 한다. 두 시각 모두 동기 콜체인 에서 찍히므로 demux 가
+         * backlog 로 지연 emit 되어도 값 은 정확 하다. 채택 후 slot 의 skb 를 0 으로 비워 후속 패킷 이
+         * 동일 slot 의 stale 값 을 중복 채택 하지 않게 한다. NIC→L3 는 동기 콜체인 의 µs scale 구간 이라
+         * 차분 이 1µs 미만 이면 latency_us 가 0 으로 내림 되는데, 이는 정상 측정 값 이므로 nic_matched
+         * flag 로 미상관 (skip 대상) 과 구분 한다. skb 가 null 이면 consume 후 ni->skb 가 0 인 slot 과
+         * 0 == 0 으로 오매칭 되어 stale 값 을 채택 할 수 있으므로 skb 자체 의 non-null 을 먼저 가드 한다.
+         * 가상화 / 저해상 클럭 환경 에서 ts_l3 와 ts_nic 가 동일 ns 일 수 있는데 0ns 도 정상 측정 이라
+         * ts_l3 >= ts_nic 로 수집 한다 (등호 누락 시 0µs sample 손실). */
+        __u32 nkey = 0;
+        struct netobs_nic_ingress *ni = bpf_map_lookup_elem(&nic_ingress, &nkey);
+        if (skb && ni && ni->skb == (__u64)(unsigned long)skb && ni->ts_nic && ni->ts_l3 &&
+            ni->ts_l3 >= ni->ts_nic && (ni->ts_l3 - ni->ts_nic) < NETOBS_RCV_NIC_MAX_NS) {
+            latency_us = (__u32)((ni->ts_l3 - ni->ts_nic) / 1000);
+            ni->skb = 0;
+            nic_matched = 1;
+        }
     }
+
+    /* #173 RCV_NIC 는 per-CPU nic_ingress 와 현재 skb 가 일치 해 NIC→L3 구간 이 실제 산정 된 경우 만
+     * emit 한다. 콜체인 이 끊긴 (RPS / loopback / backlog 지연) 미상관 패킷 까지 emit 하면 histogram 에
+     * spurious 0 sample 이 누적 되므로 nic_matched 가 0 이면 emit 을 skip 한다. latency_us 자체 가 0 인
+     * 경우 (sub-µs 구간) 는 정상 측정 이라 emit 한다. 다른 rcv stage 는 ts_l3 부재 시 0 emit 이 의미 있는
+     * fallback (#141) 이라 본 guard 를 적용 하지 않는다. */
+    if (stage == NETOBS_STAGE_RCV_NIC && !nic_matched)
+        return;
 
     bpf_get_current_comm(&s.comm, sizeof(s.comm));
     emit_event(&s, stage, 0, 0, latency_us, -1, 0, 0);
 }
 
+/* #173 __netif_receive_skb 는 NIC 드라이버 가 skb 를 커널 stack 에 올리는 보편 진입점 이다. 공개
+ * 심볼 netif_receive_skb 는 NAPI / backlog 경로 에 우회 되어 거의 발화 하지 않으므로 (dev 실측 1 회),
+ * 모든 ingress 가 지나는 __netif_receive_skb 를 hook 한다 (실측 2351 회 로 tcp_v4_rcv 1815 회 를 포함).
+ * softirq context 라 socket / cgroup 미해상 이므로 NIC 진입 시각 과 skb 포인터 만 per-CPU slot 에 stash
+ * 하고 ts_l3 는 0 으로 리셋 한다. L3 진입 시각 stamp 와 Pod 귀속 / emit 은 후속 stage 로 미룬다. IP /
+ * IPv6 패킷 만 stash 해 비-IP 트래픽 의 불필요 한 slot 갱신 을 피한다. */
+SEC("kprobe/__netif_receive_skb")
+int BPF_KPROBE(handle_netif_receive_skb, struct sk_buff *skb)
+{
+    __u32 key = 0;
+    __u16 proto;
+    struct netobs_nic_ingress *ni;
+
+    if (!skb)
+        return 0;
+    proto = BPF_CORE_READ(skb, protocol);
+    if (proto != bpf_htons(NETOBS_ETH_P_IP) && proto != bpf_htons(NETOBS_ETH_P_IPV6))
+        return 0;
+
+    ni = bpf_map_lookup_elem(&nic_ingress, &key);
+    if (!ni)
+        return 0;
+    ni->ts_nic = bpf_ktime_get_ns();
+    ni->ts_l3  = 0;
+    ni->skb    = (__u64)(unsigned long)skb;
+    return 0;
+}
+
 /* #65 receive path stage 별 kprobe.
  *
  * tcp_v4_rcv 는 L3 entry 로 socket lookup 이전이라 sk 인자가 없지만, #141 부터 skb->sk (early demux
- * 결과) 로 sock 을 복원해 L3 진입 timestamp 를 socket_cookie 키로 stash 한다 (Pod 귀속은 여전히
- * 보류하고 event emit 도 하지 않으며 후속 stage 의 누적 latency 기준점만 제공한다). tcp_v4_do_rcv
- * 부터는 sock 인자가 있어 sk_cgrp_data 기반 cgroup_id 로 수신 Pod 를 정확히 식별한다. tcp_recvmsg 는
- * process context 라 bpf_get_current_cgroup_id() 도 정답을 주지만 sock 경로로 통일해 다른 stage 와
- * 동일한 키 공간을 유지한다. netif_receive_skb 와 sk_data_ready 는 본 PR 의 범위 검토에서 제외했다
- * (cgroup 미식별, kernel 6.x inline). */
+ * 결과) 로 sock 을 복원해 L3 진입 timestamp 를 socket_cookie 키로 stash 한다. #173 부터는 sk 와 무관 하게
+ * capture_nic_l3 로 per-CPU nic_ingress slot 에 L3 진입 시각 (ts_l3) 을 stamp 해, sock 인자 가 보장 되는
+ * tcp_v4_do_rcv 에서 NIC→L3 (RCV_NIC) stage 를 귀속 / emit 할 수 있게 한다 (RCV_L3 자체 의 별도 emit 은
+ * 두지 않는다). tcp_v4_do_rcv 부터는 sock 인자가 있어 sk_cgrp_data 기반 cgroup_id 로 수신 Pod 를 정확히
+ * 식별한다. tcp_recvmsg 는 process context 라 bpf_get_current_cgroup_id() 도 정답을 주지만 sock 경로로
+ * 통일해 다른 stage 와 동일한 키 공간을 유지한다. */
 SEC("kprobe/tcp_v4_rcv")
 int BPF_KPROBE(handle_tcp_v4_rcv, struct sk_buff *skb)
 {
+    capture_nic_l3(skb);
     stash_recv_l3(skb);
     return 0;
 }
 
+/* #173 tcp_v4_do_rcv 는 sock 인자 가 보장 되는 동기 콜체인 의 demux 단계 다. NIC→L3 (RCV_NIC) 와
+ * L3→demux (RCV_DEMUX) 두 stage 를 함께 emit 한다. RCV_NIC 은 per-CPU slot 의 ts_nic / ts_l3 상관 이
+ * 성공 한 경우 에만 emit_rcv_event 내부 가드 로 emit 되고, 상관 실패 시 자연 skip 된다. */
 SEC("kprobe/tcp_v4_do_rcv")
 int BPF_KPROBE(handle_tcp_v4_do_rcv, struct sock *sk, struct sk_buff *skb)
 {
+    emit_rcv_event(sk, skb, NETOBS_STAGE_RCV_NIC);
     emit_rcv_event(sk, skb, NETOBS_STAGE_RCV_DEMUX);
     return 0;
 }
 
 /* #103 IPv6 TCP receive path entry. tcp_v4_rcv 와 동일 패턴 으로 #141 부터 skb->sk 로 L3 진입
- * timestamp 를 stash 한다. RCV_L3 stage 의 event emit 은 본 hook 에서 수행 하지 않는다 (cgroup 미식별
- * 시점). tcp_v6_do_rcv 에서 sock 기반 demux stage 가 emit_rcv_event 로 처리 된다. */
+ * timestamp 를 stash 하고, #173 부터 capture_nic_l3 로 per-CPU nic_ingress 의 L3 진입 시각 을 stamp
+ * 한다. RCV_L3 stage 의 event emit 은 본 hook 에서 수행 하지 않으며, NIC→L3 stage 는 tcp_v6_do_rcv 가
+ * emit_rcv_event 로 emit 한다. */
 SEC("kprobe/tcp_v6_rcv")
 int BPF_KPROBE(handle_tcp_v6_rcv, struct sk_buff *skb)
 {
+    capture_nic_l3(skb);
     stash_recv_l3(skb);
     return 0;
 }
 
-/* #103 IPv6 TCP demux. tcp_v4_do_rcv 와 동일 시그니처. emit_rcv_event 가 family 분기 로 IPv6
- * 흐름 도 자연 capture 한다. */
+/* #103 IPv6 TCP demux. tcp_v4_do_rcv 와 동일 시그니처. emit_rcv_event 가 family 분기 로 IPv6 흐름 도
+ * 자연 capture 한다. #173 NIC→L3 (RCV_NIC) 와 L3→demux (RCV_DEMUX) 두 stage 를 함께 emit 한다. */
 SEC("kprobe/tcp_v6_do_rcv")
 int BPF_KPROBE(handle_tcp_v6_do_rcv, struct sock *sk, struct sk_buff *skb)
 {
+    emit_rcv_event(sk, skb, NETOBS_STAGE_RCV_NIC);
     emit_rcv_event(sk, skb, NETOBS_STAGE_RCV_DEMUX);
     return 0;
 }
