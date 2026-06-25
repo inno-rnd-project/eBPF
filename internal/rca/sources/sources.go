@@ -5,6 +5,8 @@
 package sources
 
 import (
+	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -72,6 +74,21 @@ func (s *Sources) GPUSignal(node string) float64 {
 		return 0
 	}
 	return s.gpuobs.fetchGPUSignal(node)
+}
+
+// Probe 는 readiness 용 초기 connectivity 검사다. correlation-exporter snapshot 또는 Prometheus
+// query 중 하나라도 연결 되면 nil 을 돌려준다. 둘 다 실패 하면 두 에러 를 합쳐 돌려준다. rca-summarizer
+// main 이 본 결과 로 readyz 를 게이팅 하며, 본 검사 와 무관 하게 webhook 수신 은 계속 serve 된다.
+func (s *Sources) Probe(ctx context.Context) error {
+	errSnap := s.snapshot.probe(ctx)
+	if errSnap == nil {
+		return nil
+	}
+	errQuery := s.promql.probe(ctx)
+	if errQuery == nil {
+		return nil
+	}
+	return fmt.Errorf("sources probe failed: snapshot=%v, query=%v", errSnap, errQuery)
 }
 
 // EvaluateConfidence 는 mapping 이 각 source 의 raw 결과 를 모은 뒤 호출 하는 multi-source
@@ -150,25 +167,30 @@ type snapshotEntry struct {
 }
 
 // snapshotSource 는 snapshot fetch 의 추상 인터페이스다. test 가 in-memory fake 를 주입할 수
-// 있게 한다.
+// 있게 한다. probe 는 readiness 용 connectivity 검사로 cache 를 우회 해 연결 성공 여부만 돌려준다.
 type snapshotSource interface {
 	fetch() []snapshotEntry
+	probe(ctx context.Context) error
 }
 
 // promQLSource 는 Prometheus query 의 추상 인터페이스다.
 type promQLSource interface {
 	fetchTopDropFlows(namespace string, n int) []registry.DropFlowInfo
+	probe(ctx context.Context) error
 }
 
 // noopSnapshot 과 noopPromQL 은 unit test 의 baseline fixture 다. registry 단위 테스트는 fake
-// Sources 를 직접 만들어 쓰므로 본 noop 은 sources 패키지 내 통합 테스트에서만 사용한다.
+// Sources 를 직접 만들어 쓰므로 본 noop 은 sources 패키지 내 통합 테스트에서만 사용한다. probe 는
+// 항상 연결 성공 (nil) 을 돌려준다.
 type noopSnapshot struct{}
 
-func (noopSnapshot) fetch() []snapshotEntry { return nil }
+func (noopSnapshot) fetch() []snapshotEntry      { return nil }
+func (noopSnapshot) probe(context.Context) error { return nil }
 
 type noopPromQL struct{}
 
 func (noopPromQL) fetchTopDropFlows(string, int) []registry.DropFlowInfo { return nil }
+func (noopPromQL) probe(context.Context) error                           { return nil }
 
 type noopGpuobs struct{}
 

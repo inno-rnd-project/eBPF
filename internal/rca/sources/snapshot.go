@@ -60,6 +60,13 @@ func (s *httpSnapshotSource) fetch() []snapshotEntry {
 	return entries
 }
 
+// probe 는 readiness 용 connectivity 검사다. cache 를 우회 해 doFetch 를 직접 호출 하고 entries
+// 는 버린 채 에러만 돌려준다. correlation-exporter 가 200 과 유효 JSON 을 반환 하면 nil 이다.
+func (s *httpSnapshotSource) probe(ctx context.Context) error {
+	_, err := s.doFetch(ctx)
+	return err
+}
+
 // doFetch 는 HTTP GET 한 번 수행 후 응답 본문을 snapshotEntry 슬라이스로 unmarshal 한다.
 // correlation.NoisyNeighbor 의 JSON tag 가 nested PodIdentity 라 본 패키지의 평면 struct 와
 // shape 가 달라 중간 typed unmarshal struct 를 사용한다.
