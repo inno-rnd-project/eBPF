@@ -14,8 +14,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"netobs/internal/kube"
-	netobsapi "netobs/internal/netobs/api"
-	netobsdocs "netobs/internal/netobs/api/docs"
 	"netobs/internal/netobs/config"
 	"netobs/internal/netobs/drop"
 	ebpfx "netobs/internal/netobs/ebpf"
@@ -27,8 +25,6 @@ import (
 	"netobs/internal/netobs/symbols"
 	"netobs/internal/netobs/types"
 	"netobs/internal/server"
-
-	httpSwagger "github.com/swaggo/http-swagger/v2"
 )
 
 func main() {
@@ -128,19 +124,6 @@ func main() {
 	}
 
 	mux := server.NewMux("netobs-agent", reg, ready)
-
-	// #100 REST API layer 도입. /api/v1/flows 와 /api/v1/drops 그리고 swagger UI 부착.
-	// 본 PR 의 source 연결은 follow-up 이슈로 위임 되어 있어 SnapshotFlows / SnapshotDrops 가 nil
-	// 또는 빈 list 를 반환 하면 graceful empty response 를 돌려준다.
-	netobsapi.NewHandler(nil, nil).Register(mux)
-	mux.Handle("/api/v1/swagger/", httpSwagger.Handler(
-		httpSwagger.URL("/api/v1/swagger.json"),
-		httpSwagger.InstanceName("netobs"),
-	))
-	mux.HandleFunc("/api/v1/swagger.json", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(netobsdocs.SwaggerInfonetobs.ReadDoc()))
-	})
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,

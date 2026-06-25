@@ -226,11 +226,9 @@ generate-crd: controller-gen-install
 swag-init:
 	@if [ ! -x "$(SWAG)" ]; then echo "swag CLI 가 없습니다. go install github.com/swaggo/swag/cmd/swag@latest 를 실행하세요."; exit 1; fi
 	# correlation 은 PodIdentity 같은 cross-package 타입 까지 OpenAPI schema 에 포함 시키려고
-	# parseDependency 와 repo 루트 scope 채택. netobs 와 gpuobs 는 cross-agent dependency parsing
-	# 충돌 회피 를 위해 agent 별 -d scope 제한 후 parseDependency 끔. agent 별 swaggo 주석 의
-	# 응답 타입 이 본인 패키지 또는 apicommon 알리어스 만 참조 하도록 commit 2-4 에서 정합 처리됨.
+	# parseDependency 와 repo 루트 scope 채택. netobs 와 gpuobs 의 REST API 는 미사용 scaffold 라
+	# #171 에서 제거 했고, REST API 는 소비처 (injector) 가 있는 correlation-exporter 만 유지 한다.
 	$(SWAG) init -g cmd/correlation-exporter/main.go --parseDependency --outputTypes go,json,yaml --output internal/correlation/api/docs --instanceName correlation -d $(CURDIR)
-	$(SWAG) init -g main.go --parseDependency=false --outputTypes go,json,yaml --output internal/netobs/api/docs --instanceName netobs -d cmd/netobs-agent,internal/netobs/api
 
 # swag-merge 는 3 agent 의 개별 swagger.json (swag 가 생성하는 Swagger 2.0 형식) 을 python 으로
 # 병합해 docs/api/openapi.yaml 단일 spec 으로 통합 한다. swag 산출물 의 spec version 을 유지 해
