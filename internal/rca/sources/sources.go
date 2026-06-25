@@ -80,13 +80,17 @@ func (s *Sources) GPUSignal(node string) float64 {
 // query 중 하나라도 연결 되면 nil 을 돌려준다. 둘 다 실패 하면 두 에러 를 합쳐 돌려준다. rca-summarizer
 // main 이 본 결과 로 readyz 를 게이팅 하며, 본 검사 와 무관 하게 webhook 수신 은 계속 serve 된다.
 func (s *Sources) Probe(ctx context.Context) error {
-	errSnap := s.snapshot.probe(ctx)
-	if errSnap == nil {
-		return nil
+	errSnap := fmt.Errorf("snapshot source not configured")
+	if s.snapshot != nil {
+		if errSnap = s.snapshot.probe(ctx); errSnap == nil {
+			return nil
+		}
 	}
-	errQuery := s.promql.probe(ctx)
-	if errQuery == nil {
-		return nil
+	errQuery := fmt.Errorf("promql source not configured")
+	if s.promql != nil {
+		if errQuery = s.promql.probe(ctx); errQuery == nil {
+			return nil
+		}
 	}
 	return fmt.Errorf("sources probe failed: snapshot=%v, query=%v", errSnap, errQuery)
 }

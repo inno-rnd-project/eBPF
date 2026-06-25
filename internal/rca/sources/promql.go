@@ -33,6 +33,9 @@ func newHTTPPromQLSource(baseURL string, fetchTimeout time.Duration) *httpPromQL
 // probe 는 readiness 용 connectivity 검사다. 가벼운 instant query (vector(1)) 로 Prometheus 연결과
 // 200 응답을 확인 한다. 응답 body 는 읽지 않고 status code 만 본다.
 func (p *httpPromQLSource) probe(ctx context.Context) error {
+	if p == nil || p.client == nil {
+		return fmt.Errorf("promql source not initialized")
+	}
 	q := url.Values{}
 	q.Set("query", "vector(1)")
 	endpoint := p.baseURL + "/api/v1/query?" + q.Encode()

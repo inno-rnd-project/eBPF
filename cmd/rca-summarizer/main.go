@@ -165,10 +165,12 @@ func main() {
 				return
 			}
 			log.Printf("readiness: sources initial fetch failed, webhook still served, retry in %s: %v", probeRetry, err)
+			timer := time.NewTimer(probeRetry)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-time.After(probeRetry):
+			case <-timer.C:
 			}
 		}
 	}()

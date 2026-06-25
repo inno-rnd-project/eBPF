@@ -60,11 +60,25 @@ func (s *httpSnapshotSource) fetch() []snapshotEntry {
 	return entries
 }
 
-// probe 는 readiness 용 connectivity 검사다. cache 를 우회 해 doFetch 를 직접 호출 하고 entries
-// 는 버린 채 에러만 돌려준다. correlation-exporter 가 200 과 유효 JSON 을 반환 하면 nil 이다.
+// probe 는 readiness 용 connectivity 검사다. doFetch 와 달리 최대 1 MiB JSON 을 다운로드 / 디코드
+// 하지 않고 HTTP GET 후 200 status 만 확인 해 경량 으로 연결성 만 본다. cache 도 우회 한다.
 func (s *httpSnapshotSource) probe(ctx context.Context) error {
-	_, err := s.doFetch(ctx)
-	return err
+	if s == nil || s.client == nil {
+		return fmt.Errorf("snapshot source not initialized")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
+	if err != nil {
+		return fmt.Errorf("new request: %w", err)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("do: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // doFetch 는 HTTP GET 한 번 수행 후 응답 본문을 snapshotEntry 슬라이스로 unmarshal 한다.

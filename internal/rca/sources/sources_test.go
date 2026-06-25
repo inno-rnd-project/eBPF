@@ -56,6 +56,15 @@ func TestSources_Probe_BothFail(t *testing.T) {
 	}
 }
 
+// TestSources_Probe_NilSourcesNoPanic 는 snapshot / promql 이 nil 인 부분 초기화 환경 에서 Probe 가
+// panic 없이 에러 를 돌려주는지 검증 한다.
+func TestSources_Probe_NilSourcesNoPanic(t *testing.T) {
+	s := &Sources{topN: 5}
+	if err := s.Probe(context.Background()); err == nil {
+		t.Error("Probe()=nil want error (nil sources)")
+	}
+}
+
 // TestHttpSnapshotSource_Probe 는 httpSnapshotSource.probe 가 200 응답에 nil, 비-200 에 에러를
 // 돌려주는지 검증 한다 (cache 우회 connectivity 검사).
 func TestHttpSnapshotSource_Probe(t *testing.T) {
