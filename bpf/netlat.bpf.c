@@ -1016,11 +1016,14 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
          * backlog 로 지연 emit 되어도 값 은 정확 하다. 채택 후 slot 의 skb 를 0 으로 비워 후속 패킷 이
          * 동일 slot 의 stale 값 을 중복 채택 하지 않게 한다. NIC→L3 는 동기 콜체인 의 µs scale 구간 이라
          * 차분 이 1µs 미만 이면 latency_us 가 0 으로 내림 되는데, 이는 정상 측정 값 이므로 nic_matched
-         * flag 로 미상관 (skip 대상) 과 구분 한다. */
+         * flag 로 미상관 (skip 대상) 과 구분 한다. skb 가 null 이면 consume 후 ni->skb 가 0 인 slot 과
+         * 0 == 0 으로 오매칭 되어 stale 값 을 채택 할 수 있으므로 skb 자체 의 non-null 을 먼저 가드 한다.
+         * 가상화 / 저해상 클럭 환경 에서 ts_l3 와 ts_nic 가 동일 ns 일 수 있는데 0ns 도 정상 측정 이라
+         * ts_l3 >= ts_nic 로 수집 한다 (등호 누락 시 0µs sample 손실). */
         __u32 nkey = 0;
         struct netobs_nic_ingress *ni = bpf_map_lookup_elem(&nic_ingress, &nkey);
-        if (ni && ni->skb == (__u64)(unsigned long)skb && ni->ts_nic && ni->ts_l3 &&
-            ni->ts_l3 > ni->ts_nic && (ni->ts_l3 - ni->ts_nic) < NETOBS_RCV_NIC_MAX_NS) {
+        if (skb && ni && ni->skb == (__u64)(unsigned long)skb && ni->ts_nic && ni->ts_l3 &&
+            ni->ts_l3 >= ni->ts_nic && (ni->ts_l3 - ni->ts_nic) < NETOBS_RCV_NIC_MAX_NS) {
             latency_us = (__u32)((ni->ts_l3 - ni->ts_nic) / 1000);
             ni->skb = 0;
             nic_matched = 1;
