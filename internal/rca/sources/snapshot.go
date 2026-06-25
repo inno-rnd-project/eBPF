@@ -60,6 +60,27 @@ func (s *httpSnapshotSource) fetch() []snapshotEntry {
 	return entries
 }
 
+// probe 는 readiness 용 connectivity 검사다. doFetch 와 달리 최대 1 MiB JSON 을 다운로드 / 디코드
+// 하지 않고 HTTP GET 후 200 status 만 확인 해 경량 으로 연결성 만 본다. cache 도 우회 한다.
+func (s *httpSnapshotSource) probe(ctx context.Context) error {
+	if s == nil || s.client == nil {
+		return fmt.Errorf("snapshot source not initialized")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
+	if err != nil {
+		return fmt.Errorf("new request: %w", err)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("do: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // doFetch 는 HTTP GET 한 번 수행 후 응답 본문을 snapshotEntry 슬라이스로 unmarshal 한다.
 // correlation.NoisyNeighbor 의 JSON tag 가 nested PodIdentity 라 본 패키지의 평면 struct 와
 // shape 가 달라 중간 typed unmarshal struct 를 사용한다.

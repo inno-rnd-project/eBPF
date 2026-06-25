@@ -1,7 +1,9 @@
 package sources
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +12,80 @@ import (
 
 	"netobs/internal/rca/registry"
 )
+
+// probeSnap 과 probePromQL 은 Sources.Probe 분기 검증용 test double 이다. probe 가 구성된 err 를
+// 그대로 돌려준다.
+type probeSnap struct{ err error }
+
+func (p probeSnap) fetch() []snapshotEntry      { return nil }
+func (p probeSnap) probe(context.Context) error { return p.err }
+
+type probePromQL struct{ err error }
+
+func (p probePromQL) fetchTopDropFlows(string, int) []registry.DropFlowInfo { return nil }
+func (p probePromQL) probe(context.Context) error                           { return p.err }
+
+// TestSources_Probe_SnapshotOK 는 snapshot probe 가 성공 하면 promql 을 조회 하지 않고 nil 을
+// 돌려주는지 검증 한다.
+func TestSources_Probe_SnapshotOK(t *testing.T) {
+	s := &Sources{snapshot: probeSnap{err: nil}, promql: probePromQL{err: errors.New("query down")}, topN: 5}
+	if err := s.Probe(context.Background()); err != nil {
+		t.Errorf("Probe()=%v want nil (snapshot 성공)", err)
+	}
+}
+
+// TestSources_Probe_PromQLFallback 는 snapshot 이 실패 해도 promql 이 성공 하면 nil 을 돌려주는지
+// 검증 한다 (snapshot 또는 query 중 하나만 연결 되면 ready).
+func TestSources_Probe_PromQLFallback(t *testing.T) {
+	s := &Sources{snapshot: probeSnap{err: errors.New("snap down")}, promql: probePromQL{err: nil}, topN: 5}
+	if err := s.Probe(context.Background()); err != nil {
+		t.Errorf("Probe()=%v want nil (promql fallback)", err)
+	}
+}
+
+// TestSources_Probe_BothFail 은 두 source 모두 실패 하면 에러 를 돌려주는지 검증 한다. main 이 본
+// 에러 로 readyz 를 not-ready 로 유지 한다.
+func TestSources_Probe_BothFail(t *testing.T) {
+	s := &Sources{snapshot: probeSnap{err: errors.New("snap down")}, promql: probePromQL{err: errors.New("query down")}, topN: 5}
+	err := s.Probe(context.Background())
+	if err == nil {
+		t.Fatal("Probe()=nil want error (둘 다 실패)")
+	}
+	if !strings.Contains(err.Error(), "snap down") || !strings.Contains(err.Error(), "query down") {
+		t.Errorf("Probe() err=%v 두 source 에러를 모두 포함해야 함", err)
+	}
+}
+
+// TestSources_Probe_NilSourcesNoPanic 는 snapshot / promql 이 nil 인 부분 초기화 환경 에서 Probe 가
+// panic 없이 에러 를 돌려주는지 검증 한다.
+func TestSources_Probe_NilSourcesNoPanic(t *testing.T) {
+	s := &Sources{topN: 5}
+	if err := s.Probe(context.Background()); err == nil {
+		t.Error("Probe()=nil want error (nil sources)")
+	}
+}
+
+// TestHttpSnapshotSource_Probe 는 httpSnapshotSource.probe 가 200 응답에 nil, 비-200 에 에러를
+// 돌려주는지 검증 한다 (cache 우회 connectivity 검사).
+func TestHttpSnapshotSource_Probe(t *testing.T) {
+	okSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer okSrv.Close()
+	s := newHTTPSnapshotSource(okSrv.URL, time.Second, time.Minute)
+	if err := s.probe(context.Background()); err != nil {
+		t.Errorf("probe()=%v want nil (200)", err)
+	}
+
+	downSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer downSrv.Close()
+	s2 := newHTTPSnapshotSource(downSrv.URL, time.Second, time.Minute)
+	if err := s2.probe(context.Background()); err == nil {
+		t.Error("probe()=nil want error (503)")
+	}
+}
 
 // TestHttpSnapshotSource_FetchAndCache 는 첫 호출에서 HTTP fetch 가 일어나고 cache TTL 안에서는
 // 동일 결과가 다시 fetch 없이 돌려지는지 검증한다.
@@ -176,3 +252,5 @@ type stubPromQL struct {
 func (s stubPromQL) fetchTopDropFlows(string, int) []registry.DropFlowInfo {
 	return s.flows
 }
+
+func (stubPromQL) probe(context.Context) error { return nil }

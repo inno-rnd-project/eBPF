@@ -30,6 +30,30 @@ func newHTTPPromQLSource(baseURL string, fetchTimeout time.Duration) *httpPromQL
 	}
 }
 
+// probe 는 readiness 용 connectivity 검사다. 가벼운 instant query (vector(1)) 로 Prometheus 연결과
+// 200 응답을 확인 한다. 응답 body 는 읽지 않고 status code 만 본다.
+func (p *httpPromQLSource) probe(ctx context.Context) error {
+	if p == nil || p.client == nil {
+		return fmt.Errorf("promql source not initialized")
+	}
+	q := url.Values{}
+	q.Set("query", "vector(1)")
+	endpoint := p.baseURL + "/api/v1/query?" + q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("new request: %w", err)
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("do: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // fetchTopDropFlows 는 namespace 필터를 거친 5-tuple 별 drop rate Top-N 을 돌려준다. namespace
 // 가 빈 문자열이면 전체 namespace 가 대상이다. 외부 호출 실패 시 빈 슬라이스를 돌려주어
 // mapping 의 fallback 경로로 진입한다.
