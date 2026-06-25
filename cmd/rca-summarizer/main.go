@@ -149,9 +149,29 @@ func main() {
 	log.Printf("config: prometheus=%s snapshot=%s webhook_timeout=%s",
 		cfg.prometheusURL, cfg.correlationSnapshotURL, cfg.webhookTimeout)
 
-	// skeleton 단계: 후속 commit 이 sources 초기 fetch 성공을 readiness 조건에 묶기 전까지
-	// 즉시 ready 로 둔다. /metrics 와 /healthz 만 사용해도 의미 있는 baseline 검증이 가능하다.
-	ready.Store(true)
+	// readiness 를 sources 초기 fetch 에 결합 한다. correlation-exporter snapshot 또는 Prometheus
+	// query 가 연결 되면 ready 로 전환 하고, 실패 하면 not-ready 를 유지 한 채 짧은 backoff 로 재시도
+	// 한다. webhook 수신 자체 는 ready 와 무관 하게 계속 serve 되어 sources 부재 시에도 degrade 동작
+	// 한다. ctx 취소 (shutdown) 시 루프 가 종료 된다.
+	go func() {
+		const probeRetry = 5 * time.Second
+		for {
+			probeCtx, cancel := context.WithTimeout(ctx, sources.DefaultFetchTimeout)
+			err := src.Probe(probeCtx)
+			cancel()
+			if err == nil {
+				ready.Store(true)
+				log.Printf("readiness: sources initial fetch ok, ready")
+				return
+			}
+			log.Printf("readiness: sources initial fetch failed, webhook still served, retry in %s: %v", probeRetry, err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(probeRetry):
+			}
+		}
+	}()
 
 	<-ctx.Done()
 	log.Printf("shutdown: %v", ctx.Err())
