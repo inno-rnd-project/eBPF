@@ -196,7 +196,7 @@ type ErrorDetail struct {
 // @Param        suspect_namespace  query  string  false  "suspect Pod 의 namespace 필터"
 // @Param        suspect_pod        query  string  false  "suspect Pod 의 이름 필터"
 // @Param        dimension          query  string  false  "리소스 차원 필터 (cpu/memory/network/gpu)"
-// @Param        victim_signal      query  string  false  "victim 영향 종착 차원 필터 (latency/throughput/error)"
+// @Param        victim_signal      query  string  false  "victim 영향 종착 차원 필터 (latency/throughput/error/gpu)"
 // @Param        rank_max           query  int     false  "max rank (기본 무제한)"
 // @Param        limit              query  int     false  "응답 item 최대 개수 (기본 100, 최대 1000)"
 // @Param        offset             query  int     false  "응답 시작 offset (기본 0)"
@@ -212,7 +212,7 @@ func (h *Handler) ListNoisyNeighbors(w http.ResponseWriter, r *http.Request) {
 	}
 	victimSignal := strings.ToLower(strings.TrimSpace(q.Get("victim_signal")))
 	if victimSignal != "" && !validVictimSignal(victimSignal) {
-		apicommon.WriteError(w, http.StatusBadRequest, "invalid_victim_signal", "victim_signal 은 latency / throughput / error 중 하나여야 합니다")
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_victim_signal", "victim_signal 은 latency / throughput / error / gpu 중 하나여야 합니다")
 		return
 	}
 
@@ -287,11 +287,11 @@ func validDimension(d string) bool {
 	return false
 }
 
-// validVictimSignal 은 #150 의 victim_signal 쿼리 파라미터를 검증한다. correlation.VictimSignal 정의와
-// 정합한 세 값만 허용한다.
+// validVictimSignal 은 victim_signal 쿼리 파라미터를 검증한다. correlation.VictimSignal 정의와 정합한
+// 값만 허용한다 (#150 의 latency / throughput / error 와 #174 의 gpu).
 func validVictimSignal(s string) bool {
 	switch s {
-	case string(correlation.SignalLatency), string(correlation.SignalThroughput), string(correlation.SignalError):
+	case string(correlation.SignalLatency), string(correlation.SignalThroughput), string(correlation.SignalError), string(correlation.SignalGPU):
 		return true
 	}
 	return false
