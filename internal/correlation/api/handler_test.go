@@ -127,6 +127,7 @@ func TestListNoisyNeighbors_VictimSignalFilter(t *testing.T) {
 		mk("v-lat", correlation.SignalLatency),
 		mk("v-tput", correlation.SignalThroughput),
 		mk("v-err", correlation.SignalError),
+		mk("v-gpu", correlation.SignalGPU),
 	}}
 	h := NewHandler(source, source, source, source, source)
 
@@ -143,6 +144,22 @@ func TestListNoisyNeighbors_VictimSignalFilter(t *testing.T) {
 	}
 	if len(resp.Items) == 1 && resp.Items[0].VictimSignal != correlation.SignalThroughput {
 		t.Errorf("victim_signal=%s want throughput", resp.Items[0].VictimSignal)
+	}
+
+	// #174 victim_signal=gpu 필터가 GPU victim 만 돌려주는지 검증한다.
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/noisy-neighbor?victim_signal=gpu", nil)
+	w = httptest.NewRecorder()
+	h.ListNoisyNeighbors(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d (victim_signal=gpu)", w.Code)
+	}
+	resp = NoisyNeighborListResponse{}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Page.Total != 1 {
+		t.Errorf("total=%d want 1 (victim_signal=gpu)", resp.Page.Total)
+	}
+	if len(resp.Items) == 1 && resp.Items[0].VictimSignal != correlation.SignalGPU {
+		t.Errorf("victim_signal=%s want gpu", resp.Items[0].VictimSignal)
 	}
 }
 

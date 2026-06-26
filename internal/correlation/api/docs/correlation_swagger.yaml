@@ -265,9 +265,9 @@ definitions:
         allOf:
         - $ref: '#/definitions/netobs_internal_correlation.VictimSignal'
         description: |-
-          VictimSignal 은 #150 의 victim 영향 종착 차원 (latency / throughput / error) 이다. dimension 이
-          suspect 의 자원 종류라면 VictimSignal 은 victim 측 품질 저하의 종류다. Top-N 은 (victim, victim_
-          signal, dimension) 그룹별로 산정되어 한 victim 이 신호별로 독립 순위를 갖는다.
+          VictimSignal 은 victim 영향 종착 차원 (#150 의 latency / throughput / error 와 #174 의 gpu) 이다.
+          dimension 이 suspect 의 자원 종류라면 VictimSignal 은 victim 측 품질 저하의 종류다. Top-N 은
+          (victim, victim_signal, dimension) 그룹별로 산정되어 한 victim 이 신호별로 독립 순위를 갖는다.
     type: object
   netobs_internal_correlation.PodIdentity:
     properties:
@@ -343,12 +343,14 @@ definitions:
     - latency
     - throughput
     - error
+    - gpu
     - ""
     type: string
     x-enum-varnames:
     - SignalLatency
     - SignalThroughput
     - SignalError
+    - SignalGPU
     - SignalNone
 info:
   contact: {}
@@ -534,7 +536,7 @@ paths:
         in: query
         name: dimension
         type: string
-      - description: victim 영향 종착 차원 필터 (latency/throughput/error)
+      - description: victim 영향 종착 차원 필터 (latency/throughput/error/gpu)
         in: query
         name: victim_signal
         type: string

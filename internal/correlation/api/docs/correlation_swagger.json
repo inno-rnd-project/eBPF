@@ -279,7 +279,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "victim 영향 종착 차원 필터 (latency/throughput/error)",
+                        "description": "victim 영향 종착 차원 필터 (latency/throughput/error/gpu)",
                         "name": "victim_signal",
                         "in": "query"
                     },
@@ -781,7 +781,7 @@
                     "type": "string"
                 },
                 "victim_signal": {
-                    "description": "VictimSignal 은 #150 의 victim 영향 종착 차원 (latency / throughput / error) 이다. dimension 이\nsuspect 의 자원 종류라면 VictimSignal 은 victim 측 품질 저하의 종류다. Top-N 은 (victim, victim_\nsignal, dimension) 그룹별로 산정되어 한 victim 이 신호별로 독립 순위를 갖는다.",
+                    "description": "VictimSignal 은 victim 영향 종착 차원 (#150 의 latency / throughput / error 와 #174 의 gpu) 이다.\ndimension 이 suspect 의 자원 종류라면 VictimSignal 은 victim 측 품질 저하의 종류다. Top-N 은\n(victim, victim_signal, dimension) 그룹별로 산정되어 한 victim 이 신호별로 독립 순위를 갖는다.",
                     "allOf": [
                         {
                             "$ref": "#/definitions/netobs_internal_correlation.VictimSignal"
@@ -896,12 +896,14 @@
                 "latency",
                 "throughput",
                 "error",
+                "gpu",
                 ""
             ],
             "x-enum-varnames": [
                 "SignalLatency",
                 "SignalThroughput",
                 "SignalError",
+                "SignalGPU",
                 "SignalNone"
             ]
         }

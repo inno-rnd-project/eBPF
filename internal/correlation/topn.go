@@ -40,9 +40,9 @@ type NoisyNeighbor struct {
 	Suspect       PodIdentity       `json:"suspect"`
 	SuspectMetric string            `json:"suspect_metric"`
 	Dimension     ResourceDimension `json:"dimension"`
-	// VictimSignal 은 #150 의 victim 영향 종착 차원 (latency / throughput / error) 이다. dimension 이
-	// suspect 의 자원 종류라면 VictimSignal 은 victim 측 품질 저하의 종류다. Top-N 은 (victim, victim_
-	// signal, dimension) 그룹별로 산정되어 한 victim 이 신호별로 독립 순위를 갖는다.
+	// VictimSignal 은 victim 영향 종착 차원 (#150 의 latency / throughput / error 와 #174 의 gpu) 이다.
+	// dimension 이 suspect 의 자원 종류라면 VictimSignal 은 victim 측 품질 저하의 종류다. Top-N 은
+	// (victim, victim_signal, dimension) 그룹별로 산정되어 한 victim 이 신호별로 독립 순위를 갖는다.
 	VictimSignal VictimSignal `json:"victim_signal"`
 	// Rank 는 (victim, victim_signal, dimension) 그룹 내 max_abs_value 내림차순 1-based 순위다. 1 이 가장 강한 상관.
 	Rank        int     `json:"rank"`
@@ -88,13 +88,20 @@ func isLatencyMetric(metric string) bool {
 
 // VictimSignal 은 #150 의 victim 영향 종착 차원이다. 간섭이 latency p99 악화뿐 아니라 throughput 저하
 // (netobs_pod_bytes_total 기반) 나 error율 증가 (drop 기반) 로도 나타나는 서비스 품질 저하를 victim
-// 축에서 구분한다. noisy neighbor 메트릭의 victim_signal 라벨에 그대로 들어간다.
+// 축에서 구분한다. #174 부터 GPU 사용률 저하 (pod:gpu_util_p95:5m 기반) 도 victim 신호로 추가되어
+// 네트워크 간섭이 GPU 저하로 이어지는 경로를 직접 상관으로 노출한다. noisy neighbor 메트릭의
+// victim_signal 라벨에 그대로 들어간다.
 type VictimSignal string
 
 const (
 	SignalLatency    VictimSignal = "latency"
 	SignalThroughput VictimSignal = "throughput"
 	SignalError      VictimSignal = "error"
+	// SignalGPU 는 #174 의 GPU victim 신호다. pod 단위 GPU 사용률 (pod:gpu_util_p95:5m) 저하를 victim
+	// 품질 저하로 본다. 네트워크 간섭으로 GPU 워크로드가 starvation 되면 사용률이 떨어져 suspect 압박과
+	// 음의 상관으로 나타나며 SelectTopN 은 max|corr| 로 부호 무관하게 포착한다. throughput / error 와
+	// 동일하게 latency 전용 레이어 (dominant / cross-* / impact_seconds) 에서는 자연 제외된다.
+	SignalGPU VictimSignal = "gpu"
 	// SignalNone 은 victim 시계열이 아닌 (suspect cause score 등) 메트릭에 반환된다. SelectTopN 은
 	// 페어 정확히 한쪽이 victim (signal != none) 이어야 채택한다.
 	SignalNone VictimSignal = ""
@@ -115,6 +122,14 @@ func classifyVictimSignal(metric string) VictimSignal {
 		return SignalThroughput
 	case strings.Contains(metric, "netobs_drop_events_flow_total"):
 		return SignalError
+	// #174 GPU victim 신호. pod 단위 GPU 사용률 recording rule 명 pod:gpu_util 로 매칭한다. gpu_util
+	// 단독 토큰은 운영자가 ExtraMetrics 로 추가한 커스텀 GPU suspect (container_gpu_utilization /
+	// node_gpu_utilization 등) 까지 victim 으로 오분류해 suspect 분석에서 빠뜨리므로, pod: 접두사를
+	// 포함한 source 메트릭 이름으로 좁힌다 (위 latency / throughput / error 와 동일 원칙). suspect 인
+	// pod:gpu_memory_utilization_ratio 는 pod:gpu_util 을 포함하지 않아 (pod:gpu_memory...) SignalNone
+	// 으로 남아 suspect 로 정상 취급된다.
+	case strings.Contains(metric, "pod:gpu_util"):
+		return SignalGPU
 	}
 	return SignalNone
 }

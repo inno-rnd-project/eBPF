@@ -62,6 +62,18 @@
         "hide": 2
       },
       {
+        "name": "victim_signal",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(correlation_noisy_neighbor_score, victim_signal)",
+        "multi": true,
+        "includeAll": true,
+        "label": "Victim signal",
+        "refresh": 2,
+        "sort": 1,
+        "hide": 0
+      },
+      {
         "name": "victim_node",
         "type": "query",
         "datasource": "${datasource}",
@@ -111,19 +123,19 @@
       },
       "targets": [
         {
-          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_score{victim_namespace=~\"$victim_namespace\",victim_pod=~\"$victim_pod\",resource_dimension=~\"$resource_dimension\"})",
+          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, victim_signal, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_score{victim_namespace=~\"$victim_namespace\",victim_pod=~\"$victim_pod\",victim_signal=~\"$victim_signal\",resource_dimension=~\"$resource_dimension\"})",
           "instant": true,
           "format": "table",
           "refId": "A"
         },
         {
-          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_lag_seconds{victim_namespace=~\"$victim_namespace\",victim_pod=~\"$victim_pod\",resource_dimension=~\"$resource_dimension\"})",
+          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, victim_signal, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_lag_seconds{victim_namespace=~\"$victim_namespace\",victim_pod=~\"$victim_pod\",victim_signal=~\"$victim_signal\",resource_dimension=~\"$resource_dimension\"})",
           "instant": true,
           "format": "table",
           "refId": "B"
         },
         {
-          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_impact_seconds{victim_namespace=~\"$victim_namespace\",victim_pod=~\"$victim_pod\",resource_dimension=~\"$resource_dimension\"})",
+          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, victim_signal, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_impact_seconds{victim_namespace=~\"$victim_namespace\",victim_pod=~\"$victim_pod\",victim_signal=~\"$victim_signal\",resource_dimension=~\"$resource_dimension\"})",
           "instant": true,
           "format": "table",
           "refId": "C"
@@ -467,14 +479,14 @@
       },
       "targets": [
         {
-          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_score and on(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_pvalue < 0.05))",
+          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, victim_signal, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_score{victim_signal=~\"$victim_signal\"} and on(victim_namespace, victim_pod, victim_pod_uid, victim_signal, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_pvalue{victim_signal=~\"$victim_signal\"} < 0.05))",
           "legendFormat": "score",
           "refId": "A",
           "instant": true,
           "format": "table"
         },
         {
-          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_pvalue < 0.05)",
+          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, victim_signal, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_pvalue{victim_signal=~\"$victim_signal\"} < 0.05)",
           "legendFormat": "pvalue",
           "refId": "B",
           "instant": true,

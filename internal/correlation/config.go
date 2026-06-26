@@ -189,6 +189,15 @@ func DefaultConfig() Config {
 			// 보유하지 않아 sum by 에 넣어도 PromQL 이 결과에서 제거하므로 (no-op) 의도적으로 제외했고, victim
 			// pod_uid 는 빈 값이라 SelectTopN 이 (namespace, pod) fallback 으로 dedup / 그룹화한다.
 			`sum by(node, src_namespace, src_pod) (rate(netobs_drop_events_flow_total[5m]))`,
+			// #174 GPU victim (victim_signal=gpu). pod 단위 GPU 사용률 p95 다. 네트워크 간섭으로 GPU
+			// 워크로드가 starvation 되면 사용률이 떨어져 suspect 압박과 음의 상관으로 나타나며 SelectTopN
+			// 은 max|corr| 로 부호 무관하게 포착한다. pod:gpu_util_p95:5m 은 gpu_uuid 라벨을 추가로 보유해
+			// multi-GPU pod 에서 동일 (namespace, pod) 에 여러 series 가 생성되므로 avg by(...) 로 pod 단위
+			// 집계해 단일 series 로 normalize 한다 (suspect pod:gpu_memory_utilization_ratio:5m 과 동일
+			// 패턴). 기존 GPU suspect 와 동일하게 GPU 워크로드 의 per-pod 귀속 (gpuobs_pod_utilization_percent)
+			// 이 있어야 emit 되며 미귀속 시 graceful 하게 비어 있다. classifyVictimSignal 이 pod:gpu_util 토큰
+			// 으로 매칭해 gpu 로 분류한다.
+			`avg by(node, src_namespace, src_pod, src_pod_uid) (pod:gpu_util_p95:5m)`,
 		},
 		FetchTimeout:      30 * time.Second,
 		GrangerLag:        2,
