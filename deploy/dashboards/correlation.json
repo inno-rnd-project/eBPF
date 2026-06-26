@@ -169,7 +169,8 @@
             "renameByName": {
               "Value #A": "score",
               "Value #B": "lag_seconds",
-              "Value #C": "impact_seconds"
+              "Value #C": "impact_seconds",
+              "Value #D": "causal_strength"
             }
           }
         },
