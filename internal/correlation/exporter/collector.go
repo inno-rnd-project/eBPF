@@ -124,6 +124,7 @@ type Collector struct {
 	impactDesc             *prometheus.Desc
 	impactMagnitudeDesc    *prometheus.Desc
 	impactPValueDesc       *prometheus.Desc
+	causalStrengthDesc     *prometheus.Desc
 	dominantDesc           *prometheus.Desc
 	crossNodeScoreDesc     *prometheus.Desc
 	serviceImpactScoreDesc *prometheus.Desc
@@ -166,6 +167,11 @@ func NewCollector(step time.Duration) *Collector {
 		impactPValueDesc: prometheus.NewDesc(
 			"correlation_noisy_neighbor_impact_pvalue",
 			"#175 의 effect size 유의성. high (압박) / low (비압박) 두 구간 victim 평균 차이의 Welch two-sample t-test two-sided p-value 다. 0.05 미만이면 압박에 따른 victim 품질 차이가 우연이 아닌 유의한 간섭 신호로 본다. 표본 부족이나 구간 분산이 사실상 0 이면 산정이 graceful skip 되어 emit 되지 않는다.",
+			neighborLabels, nil,
+		),
+		causalStrengthDesc: prometheus.NewDesc(
+			"correlation_noisy_neighbor_causal_strength",
+			"#176 의 통합 인과강도. Pearson 강도 (0.5) 와 Granger 유의성 (0.3) 과 effect size 유의성 (0.2) 을 가중합한 0~1 단일 지표로, 운영자가 개별 필드 (score / pvalue / impact_pvalue) 를 종합하지 않고 한 값으로 간섭 여부를 판단한다. 유의성 항은 산정 skip 시 0 으로 처리되어 증거가 많을수록 1 에 가깝다. 산정식과 가중치는 ComputeCausalStrength 가 단일 진실원으로 보유한다.",
 			neighborLabels, nil,
 		),
 		dominantDesc: prometheus.NewDesc(
@@ -352,6 +358,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.impactDesc
 	ch <- c.impactMagnitudeDesc
 	ch <- c.impactPValueDesc
+	ch <- c.causalStrengthDesc
 	ch <- c.dominantDesc
 	ch <- c.crossNodeScoreDesc
 	ch <- c.serviceImpactScoreDesc
@@ -406,6 +413,9 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		if n.ImpactPValueOK {
 			ch <- prometheus.MustNewConstMetric(c.impactPValueDesc, prometheus.GaugeValue, n.ImpactPValue, labels...)
 		}
+		// #176 통합 인과강도. 항상 [0,1] 로 산정되어 Top-N 의 모든 페어가 단일 series 를 갖는다 (별도
+		// OK 가드 없음). 운영자가 본 메트릭 하나로 간섭 우선순위를 정렬한다.
+		ch <- prometheus.MustNewConstMetric(c.causalStrengthDesc, prometheus.GaugeValue, n.CausalStrength, labels...)
 	}
 	// dominant dimension 은 Replace 시점에 1 회 산정되어 c.dominant 에 캐시된 결과를 그대로 emit
 	// 한다. scrape 마다 victim 단위 dimension max 집계 + sum 정규화 비용을 피해 Collect hot path 가

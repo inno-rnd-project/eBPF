@@ -738,6 +738,10 @@
         "netobs_internal_correlation.NoisyNeighbor": {
             "type": "object",
             "properties": {
+                "causal_strength": {
+                    "description": "#176 CausalStrength 는 Pearson 강도와 Granger 유의성과 effect size 유의성을 가중합한 [0,1] 통합\n인과강도다. 운영자가 개별 필드 (Score / PValue / ImpactPValue) 를 종합하지 않고 한 값으로 간섭\n여부를 판단하게 한다. 산정식과 가중치는 ComputeCausalStrength 가 단일 진실원으로 보유한다.",
+                    "type": "number"
+                },
                 "dimension": {
                     "$ref": "#/definitions/netobs_internal_correlation.ResourceDimension"
                 },

@@ -139,6 +139,12 @@
           "instant": true,
           "format": "table",
           "refId": "C"
+        },
+        {
+          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, victim_signal, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (correlation_noisy_neighbor_causal_strength{victim_namespace=~\"$victim_namespace\",victim_pod=~\"$victim_pod\",victim_signal=~\"$victim_signal\",resource_dimension=~\"$resource_dimension\"})",
+          "instant": true,
+          "format": "table",
+          "refId": "D"
         }
       ],
       "transformations": [

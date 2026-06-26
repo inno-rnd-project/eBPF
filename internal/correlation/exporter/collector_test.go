@@ -578,6 +578,22 @@ func TestCollector_EmitsImpactMagnitudeAndPValue(t *testing.T) {
 	}
 }
 
+// TestCollector_EmitsCausalStrength 는 #176 의 통합 인과강도가 모든 Top-N 페어에서 OK 가드 없이 단일
+// series 로 emit 되는지 검증한다. causal_strength 는 항상 [0,1] 로 산정되므로 neighbor 수만큼 emit 된다.
+func TestCollector_EmitsCausalStrength(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+
+	a := neighbor("v1", "s1", correlation.DimensionCPU, 1, 0.9, 2)
+	a.CausalStrength = 0.82
+	b := neighbor("v2", "s2", correlation.DimensionNetwork, 1, 0.7, 1)
+	b.CausalStrength = 0.35
+	c.Replace([]correlation.NoisyNeighbor{a, b})
+
+	if count := testutil.CollectAndCount(c, "correlation_noisy_neighbor_causal_strength"); count != 2 {
+		t.Errorf("causal_strength series=%d want 2 (모든 neighbor emit)", count)
+	}
+}
+
 // TestCollector_EmitsServiceImpactScore 는 ReplaceServiceImpact 가 보관한 ServiceImpact snapshot 이
 // correlation_service_impact_score gauge 로 정확히 emit 되는지 검증한다. victim_namespace,
 // victim_workload, suspect_node, dimension 4 라벨 셋이 라벨 셋 분리 정책에 정합하는지 회귀 가드다.
