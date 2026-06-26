@@ -133,13 +133,14 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 		if impactMin < 2 {
 			impactMin = 2
 		}
-		es := EffectSize(srcVals, dstVals, classifyVictimSignal(p.Key.DstMetric), impactMin)
+		victimSignal := classifyVictimSignal(p.Key.DstMetric)
+		es := EffectSize(srcVals, dstVals, victimSignal, impactMin)
 		r.ImpactMagnitude = es.Magnitude
 		r.ImpactMagnitudeOK = es.OK
 		r.ImpactPValue = es.PValue
 		r.ImpactPValueOK = es.PValueOK
 		// impact_seconds 는 latency 전용 legacy 로 유지한다 (#146 호환, seconds 단위 정합).
-		if classifyVictimSignal(p.Key.DstMetric) == SignalLatency {
+		if victimSignal == SignalLatency {
 			r.Impact = es.Magnitude
 			r.ImpactOK = es.OK
 		}
