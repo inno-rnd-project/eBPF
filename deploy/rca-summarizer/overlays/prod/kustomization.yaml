@@ -9,7 +9,7 @@ resources:
 images:
   - name: rca-summarizer
     newName: ghcr.io/inno-rnd-project/rca-summarizer
-    newTag: "1.3.0"
+    newTag: "1.3.1"
 
 patches:
   - path: patch-deployment.yaml
