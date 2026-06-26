@@ -67,6 +67,10 @@ type NoisyNeighbor struct {
 	ImpactMagnitudeOK bool    `json:"impact_magnitude_ok"`
 	ImpactPValue      float64 `json:"impact_pvalue"`
 	ImpactPValueOK    bool    `json:"impact_pvalue_ok"`
+	// #176 CausalStrength 는 Pearson 강도와 Granger 유의성과 effect size 유의성을 가중합한 [0,1] 통합
+	// 인과강도다. 운영자가 개별 필드 (Score / PValue / ImpactPValue) 를 종합하지 않고 한 값으로 간섭
+	// 여부를 판단하게 한다. 산정식과 가중치는 ComputeCausalStrength 가 단일 진실원으로 보유한다.
+	CausalStrength float64 `json:"causal_strength"`
 }
 
 // classifyDimension 은 query 문자열에서 ResourceDimension 을 결정한다. 매칭 우선순위는 더 구체적인
@@ -374,6 +378,13 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 				ImpactMagnitudeOK: c.impactMagnitudeOK,
 				ImpactPValue:      c.impactPValue,
 				ImpactPValueOK:    c.impactPValueOK,
+				CausalStrength: ComputeCausalStrength(CausalFactors{
+					PearsonStrength: c.score,
+					GrangerOK:       c.grangerOK,
+					GrangerPValue:   c.pvalue,
+					EffectOK:        c.impactPValueOK,
+					EffectPValue:    c.impactPValue,
+				}),
 			})
 		}
 	}
