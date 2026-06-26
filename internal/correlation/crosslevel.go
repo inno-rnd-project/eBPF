@@ -114,8 +114,8 @@ func EnumerateCrossLevelPairs(items []LabeledSeries, allowNamespaces []string) [
 		ns := item.Series.Labels["src_namespace"]
 		pod := item.Series.Labels["src_pod"]
 		// #150 cross-level 은 victim 을 latency 단일로 유지한다. latency victim 과 victim 이 아닌 suspect
-		// 만 분류하고, throughput / error victim (signal Throughput/Error) 은 suspect 도 victim 도 아니라
-		// 본 layer 에서 제외해 pod-level throughput/error 가 pod-suspect 로 오분류되는 것을 막는다.
+		// 만 분류하고, throughput / error victim (#150) 과 gpu victim (#174) 은 suspect 도 victim 도 아니라
+		// 본 layer 에서 제외해 pod-level 비-latency victim 이 pod-suspect 로 오분류되는 것을 막는다.
 		signal := classifyVictimSignal(item.Metric)
 		isLatencyVictim := signal == SignalLatency
 		isSuspect := signal == SignalNone
