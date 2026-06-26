@@ -122,6 +122,8 @@ type Collector struct {
 	lagDesc                *prometheus.Desc
 	pvalueDesc             *prometheus.Desc
 	impactDesc             *prometheus.Desc
+	impactMagnitudeDesc    *prometheus.Desc
+	impactPValueDesc       *prometheus.Desc
 	dominantDesc           *prometheus.Desc
 	crossNodeScoreDesc     *prometheus.Desc
 	serviceImpactScoreDesc *prometheus.Desc
@@ -153,7 +155,17 @@ func NewCollector(step time.Duration) *Collector {
 		),
 		impactDesc: prometheus.NewDesc(
 			"correlation_noisy_neighbor_impact_seconds",
-			"#146 의 effect size. suspect 압박 구간과 비압박 구간의 victim latency 차이 (seconds) 로 간섭의 절대 영향 크기다. score (상관 강도) 가 동조 여부를 본다면 본 메트릭은 victim 을 실제로 얼마나 느리게 만들었는지의 크기를 노출해 운영자가 우선순위를 판단하게 한다. 표본 부족 등으로 산정이 skip (ImpactOK=false) 된 시리즈는 emit 되지 않아 0 noise 가 끼지 않는다.",
+			"#146 의 effect size (latency victim 전용 legacy). suspect 압박 구간과 비압박 구간의 victim latency 차이 (seconds) 로 간섭의 절대 영향 크기다. #175 부터 throughput / error / gpu victim 까지 확장된 native 단위 크기는 correlation_noisy_neighbor_impact_magnitude 를, 그 차이의 통계적 유의성은 correlation_noisy_neighbor_impact_pvalue 를 본다. 표본 부족 등으로 산정이 skip 된 시리즈는 emit 되지 않아 0 noise 가 끼지 않는다.",
+			neighborLabels, nil,
+		),
+		impactMagnitudeDesc: prometheus.NewDesc(
+			"correlation_noisy_neighbor_impact_magnitude",
+			"#175 의 effect size 크기. suspect 압박 구간과 비압박 구간의 victim 값 차이를 victim 신호별 native 단위로 노출한다 (victim_signal=latency 면 seconds 증가, throughput 이면 bytes/s 감소, error 면 drops/s 증가, gpu 면 util 감소). 단위가 신호별로 다르므로 victim_signal 라벨과 함께 해석한다. degradation 이 없거나 표본 부족이면 emit 되지 않는다.",
+			neighborLabels, nil,
+		),
+		impactPValueDesc: prometheus.NewDesc(
+			"correlation_noisy_neighbor_impact_pvalue",
+			"#175 의 effect size 유의성. high (압박) / low (비압박) 두 구간 victim 평균 차이의 Welch two-sample t-test two-sided p-value 다. 0.05 미만이면 압박에 따른 victim 품질 차이가 우연이 아닌 유의한 간섭 신호로 본다. 표본 부족이나 구간 분산이 사실상 0 이면 산정이 graceful skip 되어 emit 되지 않는다.",
 			neighborLabels, nil,
 		),
 		dominantDesc: prometheus.NewDesc(
@@ -338,6 +350,8 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.lagDesc
 	ch <- c.pvalueDesc
 	ch <- c.impactDesc
+	ch <- c.impactMagnitudeDesc
+	ch <- c.impactPValueDesc
 	ch <- c.dominantDesc
 	ch <- c.crossNodeScoreDesc
 	ch <- c.serviceImpactScoreDesc
@@ -383,6 +397,14 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		}
 		if n.ImpactOK {
 			ch <- prometheus.MustNewConstMetric(c.impactDesc, prometheus.GaugeValue, n.Impact, labels...)
+		}
+		// #175 native 단위 effect size 크기와 그 차이의 Welch t-test 유의성. 각 OK 가드로 산정 skip 된
+		// 시리즈는 emit 되지 않아 0 noise 가 끼지 않는다.
+		if n.ImpactMagnitudeOK {
+			ch <- prometheus.MustNewConstMetric(c.impactMagnitudeDesc, prometheus.GaugeValue, n.ImpactMagnitude, labels...)
+		}
+		if n.ImpactPValueOK {
+			ch <- prometheus.MustNewConstMetric(c.impactPValueDesc, prometheus.GaugeValue, n.ImpactPValue, labels...)
 		}
 	}
 	// dominant dimension 은 Replace 시점에 1 회 산정되어 c.dominant 에 캐시된 결과를 그대로 emit

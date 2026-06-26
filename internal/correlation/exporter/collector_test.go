@@ -536,12 +536,45 @@ func TestCollector_EmitsImpact(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
 	expected := `
-# HELP correlation_noisy_neighbor_impact_seconds #146 의 effect size. suspect 압박 구간과 비압박 구간의 victim latency 차이 (seconds) 로 간섭의 절대 영향 크기다. score (상관 강도) 가 동조 여부를 본다면 본 메트릭은 victim 을 실제로 얼마나 느리게 만들었는지의 크기를 노출해 운영자가 우선순위를 판단하게 한다. 표본 부족 등으로 산정이 skip (ImpactOK=false) 된 시리즈는 emit 되지 않아 0 noise 가 끼지 않는다.
+# HELP correlation_noisy_neighbor_impact_seconds #146 의 effect size (latency victim 전용 legacy). suspect 압박 구간과 비압박 구간의 victim latency 차이 (seconds) 로 간섭의 절대 영향 크기다. #175 부터 throughput / error / gpu victim 까지 확장된 native 단위 크기는 correlation_noisy_neighbor_impact_magnitude 를, 그 차이의 통계적 유의성은 correlation_noisy_neighbor_impact_pvalue 를 본다. 표본 부족 등으로 산정이 skip 된 시리즈는 emit 되지 않아 0 noise 가 끼지 않는다.
 # TYPE correlation_noisy_neighbor_impact_seconds gauge
 correlation_noisy_neighbor_impact_seconds{rank="1",resource_dimension="cpu",suspect_namespace="default",suspect_pod="s1",suspect_pod_uid="uid-s1",victim_namespace="default",victim_pod="v1",victim_pod_uid="uid-v1",victim_signal="latency"} 0.042
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "correlation_noisy_neighbor_impact_seconds"); err != nil {
 		t.Errorf("impact metric mismatch: %v", err)
+	}
+}
+
+// TestCollector_EmitsImpactMagnitudeAndPValue 는 #175 의 impact_magnitude 와 impact_pvalue 가 각 OK
+// 가드가 true 일 때만 emit 되는지 검증한다. throughput victim 처럼 impact_seconds 는 없어도 native
+// 단위 크기와 유의성은 전 신호에서 노출된다.
+func TestCollector_EmitsImpactMagnitudeAndPValue(t *testing.T) {
+	c := NewCollector(30 * time.Second)
+
+	tput := neighbor("v1", "s1", correlation.DimensionNetwork, 1, 0.85, 2)
+	tput.VictimSignal = correlation.SignalThroughput
+	tput.ImpactOK = false // impact_seconds 는 latency 전용이라 throughput 은 미emit
+	tput.ImpactMagnitude = 1.5e6
+	tput.ImpactMagnitudeOK = true
+	tput.ImpactPValue = 0.012
+	tput.ImpactPValueOK = true
+
+	// magnitude 는 산출됐으나 분산 0 등으로 유의성만 skip 된 케이스.
+	noSig := neighbor("v2", "s2", correlation.DimensionCPU, 1, 0.80, 1)
+	noSig.ImpactMagnitude = 0.03
+	noSig.ImpactMagnitudeOK = true
+	noSig.ImpactPValueOK = false
+
+	c.Replace([]correlation.NoisyNeighbor{tput, noSig})
+
+	if count := testutil.CollectAndCount(c, "correlation_noisy_neighbor_impact_magnitude"); count != 2 {
+		t.Errorf("impact_magnitude series=%d want 2 (두 항목 모두 MagnitudeOK)", count)
+	}
+	if count := testutil.CollectAndCount(c, "correlation_noisy_neighbor_impact_pvalue"); count != 1 {
+		t.Errorf("impact_pvalue series=%d want 1 (PValueOK=true 1 개만)", count)
+	}
+	if count := testutil.CollectAndCount(c, "correlation_noisy_neighbor_impact_seconds"); count != 0 {
+		t.Errorf("impact_seconds series=%d want 0 (throughput 은 latency 전용 legacy 미emit)", count)
 	}
 }
 
