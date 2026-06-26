@@ -83,9 +83,21 @@ type CorrelationResult struct {
 	GrangerOK  bool    `json:"granger_ok"`
 	// Impact 와 ImpactOK 는 #146 의 effect size 산정 결과다. Impact 는 suspect 압박 구간과 비압박
 	// 구간의 victim latency 차이 (seconds) 로 간섭의 절대 영향 크기다. ImpactOK 가 false 면 표본
-	// 부족 또는 suspect 상수로 산정이 자연 skip 된 상태이며 Impact 는 0 으로 둔다.
+	// 부족 또는 suspect 상수로 산정이 자연 skip 된 상태이며 Impact 는 0 으로 둔다. #175 부터 본 두
+	// 필드는 latency victim 전용 legacy 로 유지되고 (impact_seconds 단위 정합), 전 신호 확장은 아래
+	// ImpactMagnitude 가 담당한다.
 	Impact   float64 `json:"impact_seconds"`
 	ImpactOK bool    `json:"impact_ok"`
+	// #175 ImpactMagnitude 는 victim 신호별 native 단위의 degradation 크기 (latency=seconds 증가,
+	// throughput=bytes/s 감소, error=drops/s 증가, gpu=util 감소) 로 latency 외 신호까지 확장된 effect
+	// size 다. impact_seconds 는 latency 전용 legacy alias 이며 신규 소비자는 본 필드와 victim_signal
+	// 라벨로 신호별 단위를 해석한다. ImpactPValue 는 high / low 구간 평균 차이의 Welch t-test two-sided
+	// p-value 로 effect size 의 통계적 유의성이다. *OK 가 false 면 표본 부족이나 구간 분산 0 등으로
+	// 산정이 graceful skip 된 상태이며 값은 0 으로 둔다.
+	ImpactMagnitude   float64 `json:"impact_magnitude"`
+	ImpactMagnitudeOK bool    `json:"impact_magnitude_ok"`
+	ImpactPValue      float64 `json:"impact_pvalue"`
+	ImpactPValueOK    bool    `json:"impact_pvalue_ok"`
 	// ServiceImpactPair 와 IsServiceImpact 는 #148 의 service-impact layer (workload 단위 victim) 결과다.
 	// IsCrossNode 와 동일한 분기 마킹 패턴으로 caller 가 pod / node / workload 세 입도를 단일 슬라이스
 	// 에서 식별 가능하다. IsServiceImpact=true 일 때만 ServiceImpactPair 가 유효하며 이때 Pair 와

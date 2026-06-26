@@ -121,20 +121,28 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 		r.FStatistic = g.F
 		r.PValue = g.PValue
 		r.GrangerOK = g.OK
-		// #146 effect size 산정. src (suspect 압박) high / low 구간의 dst (victim latency) 차이를
-		// 절대 영향 크기로 노출한다. SelectTopN 이 src=suspect, dst=latency 방향 페어만 채택하므로
-		// 채택된 페어의 Impact 는 "suspect 압박 시 victim latency 증가량 (seconds)" 의미가 된다.
-		// EffectSize 는 high / low 각 구간에 minSamples 이상을 요구하므로 Pearson 전체 표본 임계
-		// (MinSamples) 의 1/4 을 쓴다. 같은 값을 그대로 넘기면 window / step 으로 정해진 전체 표본
-		// (예: 30m / 30s = 60) 을 양분한 각 구간이 임계 미만이 되어 거의 모든 페어가 ImpactOK=false 로
-		// skip 된다. 최소 2 는 보장한다.
+		// #146 / #175 effect size 산정. src (suspect 압박) high / low 구간의 dst (victim) 차이를 victim
+		// 신호별 native 단위 절대 영향 크기로, 그 차이의 Welch t-test 유의성을 함께 산출한다. SelectTopN
+		// 이 src=suspect, dst=victim 방향 페어만 채택하므로 dst 메트릭으로 victim 신호를 분류해 degradation
+		// 방향을 결정한다. reverse 페어 (dst 가 suspect) 는 SignalNone 으로 분류되어 EffectSize 가 자연
+		// skip 한다. EffectSize 는 high / low 각 구간에 minSamples 이상을 요구하므로 Pearson 전체 표본
+		// 임계 (MinSamples) 의 1/4 을 쓴다. 같은 값을 그대로 넘기면 window / step 으로 정해진 전체 표본
+		// (예: 30m / 30s = 60) 을 양분한 각 구간이 임계 미만이 되어 거의 모든 페어가 skip 된다. 최소 2 는
+		// 보장한다.
 		impactMin := c.config.MinSamples / 4
 		if impactMin < 2 {
 			impactMin = 2
 		}
-		impact, impactOK := EffectSize(srcVals, dstVals, impactMin)
-		r.Impact = impact
-		r.ImpactOK = impactOK
+		es := EffectSize(srcVals, dstVals, classifyVictimSignal(p.Key.DstMetric), impactMin)
+		r.ImpactMagnitude = es.Magnitude
+		r.ImpactMagnitudeOK = es.OK
+		r.ImpactPValue = es.PValue
+		r.ImpactPValueOK = es.PValueOK
+		// impact_seconds 는 latency 전용 legacy 로 유지한다 (#146 호환, seconds 단위 정합).
+		if classifyVictimSignal(p.Key.DstMetric) == SignalLatency {
+			r.Impact = es.Magnitude
+			r.ImpactOK = es.OK
+		}
 		results = append(results, r)
 	}
 

@@ -184,3 +184,34 @@ func TestSelectTopN_ImpactGatedToLatency(t *testing.T) {
 		t.Errorf("gpu victim impactOK=%v want false (단위가 seconds 아님)", n.ImpactOK)
 	}
 }
+
+// TestSelectTopN_ImpactMagnitudeCarried 는 #175 의 impact_magnitude 와 impact_pvalue 가 latency 외
+// 신호 (throughput / error / gpu) 까지 NoisyNeighbor 로 carry 되는지 검증한다. legacy impact_seconds 는
+// latency 전용으로 gate 되지만 magnitude / pvalue 는 victim 신호 방향을 반영해 전 신호에서 노출된다.
+func TestSelectTopN_ImpactMagnitudeCarried(t *testing.T) {
+	mk := func(victimMetric string) NoisyNeighbor {
+		r := makeResult("ns", "sus", "us", "pod:cpu_throttle_score:5m", "ns", "vic", "uv", victimMetric, 0.9, 1, StatusOK)
+		r.ImpactMagnitude = 1234.5
+		r.ImpactMagnitudeOK = true
+		r.ImpactPValue = 0.012
+		r.ImpactPValueOK = true
+		out := SelectTopN([]CorrelationResult{r}, 10)
+		if len(out) != 1 {
+			t.Fatalf("victim=%s len=%d want 1", victimMetric, len(out))
+		}
+		return out[0]
+	}
+	for _, m := range []string{latencyMetric, throughputMetric, errorMetric, gpuMetric} {
+		n := mk(m)
+		if !n.ImpactMagnitudeOK || n.ImpactMagnitude != 1234.5 {
+			t.Errorf("victim=%q impact_magnitude=%v ok=%v want 1234.5/true", n.VictimSignal, n.ImpactMagnitude, n.ImpactMagnitudeOK)
+		}
+		if !n.ImpactPValueOK || n.ImpactPValue != 0.012 {
+			t.Errorf("victim=%q impact_pvalue=%v ok=%v want 0.012/true", n.VictimSignal, n.ImpactPValue, n.ImpactPValueOK)
+		}
+		// legacy impact_seconds 는 latency 전용이라 본 결과 (r.ImpactOK 미설정) 에서는 항상 false.
+		if n.ImpactOK {
+			t.Errorf("victim=%q impactOK=%v want false (impact_seconds 는 별도 latency gate)", n.VictimSignal, n.ImpactOK)
+		}
+	}
+}
