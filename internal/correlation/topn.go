@@ -55,9 +55,18 @@ type NoisyNeighbor struct {
 	GrangerOK bool    `json:"granger_ok"`
 	// #146 effect size 결과. Impact 는 suspect 압박 시 victim latency 증가량 (seconds) 으로 간섭의
 	// 절대 영향 크기다. Score (상관 강도) 와 독립된 지표라 운영자가 우선순위 판단에 함께 활용한다.
-	// ImpactOK=false 면 표본 부족 등으로 산정이 skip 되어 Impact 는 0 이다.
+	// ImpactOK=false 면 표본 부족 등으로 산정이 skip 되어 Impact 는 0 이다. #175 부터 본 두 필드는
+	// latency victim 전용 legacy 로 유지된다.
 	Impact   float64 `json:"impact_seconds"`
 	ImpactOK bool    `json:"impact_ok"`
+	// #175 ImpactMagnitude 는 victim 신호별 native 단위 degradation 크기 (latency=seconds, throughput=
+	// bytes/s 감소, error=drops/s 증가, gpu=util 감소) 로 latency 외 신호까지 확장된 effect size 다.
+	// ImpactPValue 는 high / low 구간 평균 차이의 Welch t-test two-sided p-value 로 effect size 의 통계적
+	// 유의성이다. *OK 가 false 면 표본 부족이나 구간 분산 0 등으로 산정이 graceful skip 된 상태다.
+	ImpactMagnitude   float64 `json:"impact_magnitude"`
+	ImpactMagnitudeOK bool    `json:"impact_magnitude_ok"`
+	ImpactPValue      float64 `json:"impact_pvalue"`
+	ImpactPValueOK    bool    `json:"impact_pvalue_ok"`
 }
 
 // classifyDimension 은 query 문자열에서 ResourceDimension 을 결정한다. 매칭 우선순위는 더 구체적인
@@ -154,8 +163,9 @@ func isVictimMetric(metric string) bool {
 //   - (victim_namespace, victim_pod, victim_pod_uid, victim_signal, dimension) 그룹별 max_abs_value
 //     내림차순으로 정렬해 상위 topN 개에 rank 1..topN 부여한다. 동률은 (suspect_namespace, suspect_pod,
 //     suspect_pod_uid) 라벨 lexicographic 순서로 결정한다. victim 이 신호별로 독립 Top-N 을 갖는다.
-//   - effect size (impact_seconds) 는 latency victim 에만 유효해 throughput / error victim 은 ImpactOK
-//     를 false 로 둔다.
+//   - legacy effect size (impact_seconds) 는 latency victim 에만 유효해 throughput / error / gpu victim
+//     은 ImpactOK 를 false 로 둔다. #175 의 impact_magnitude 와 impact_pvalue 는 victim 신호 방향을
+//     반영해 전 신호에서 산출되며 candidate 가 그대로 carry 한다.
 //
 // 결과는 (victim_namespace, victim_pod, victim_signal, dimension, rank) 순으로 정렬된 슬라이스다. 동일
 // cycle 의 재현성을 보장한다. topN <= 0 이면 nil 을 반환한다.
@@ -180,10 +190,15 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		// 않다).
 		pvalue    float64
 		grangerOK bool
-		// #146 effect size. Score (상관 강도) 와 독립이라 dedup 의 max score 비교에는 영향을 주지
-		// 않고 채택된 candidate 의 Impact 를 그대로 따라간다.
-		impact   float64
-		impactOK bool
+		// #146 / #175 effect size. Score (상관 강도) 와 독립이라 dedup 의 max score 비교에는 영향을 주지
+		// 않고 채택된 candidate 의 값을 그대로 따라간다. impact / impactOK 는 latency 전용 legacy 이고
+		// impactMagnitude / impactPValue 는 전 신호 확장이다.
+		impact            float64
+		impactOK          bool
+		impactMagnitude   float64
+		impactMagnitudeOK bool
+		impactPValue      float64
+		impactPValueOK    bool
 	}
 
 	candidates := make([]candidate, 0, len(results))
@@ -239,9 +254,14 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 			pvalue:        r.PValue,
 			grangerOK:     r.GrangerOK,
 			impact:        r.Impact,
-			// #146 effect size 는 latency 증가량 (seconds) 의미라 latency victim 에만 유효하다.
-			// throughput / error victim 은 단위가 달라 impact_seconds 로 노출하지 않도록 gate 한다.
-			impactOK: r.ImpactOK && victimSignal == SignalLatency,
+			// #146 impact_seconds 는 latency 증가량 (seconds) 의미라 latency victim 에만 유효하다.
+			// throughput / error / gpu victim 은 단위가 달라 impact_seconds 로 노출하지 않도록 gate 하고,
+			// 대신 #175 의 impactMagnitude (native 단위) 로 전 신호 영향 크기를 노출한다.
+			impactOK:          r.ImpactOK && victimSignal == SignalLatency,
+			impactMagnitude:   r.ImpactMagnitude,
+			impactMagnitudeOK: r.ImpactMagnitudeOK,
+			impactPValue:      r.ImpactPValue,
+			impactPValueOK:    r.ImpactPValueOK,
 		})
 	}
 
@@ -336,20 +356,24 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		for i := 0; i < limit; i++ {
 			c := cands[i]
 			out = append(out, NoisyNeighbor{
-				Victim:        c.victim,
-				VictimMetric:  c.victimMetric,
-				VictimSignal:  c.victimSignal,
-				Suspect:       c.suspect,
-				SuspectMetric: c.suspectMetric,
-				Dimension:     c.dimension,
-				Rank:          i + 1,
-				Score:         c.score,
-				LagSteps:      c.lag,
-				SampleCount:   c.samples,
-				PValue:        c.pvalue,
-				GrangerOK:     c.grangerOK,
-				Impact:        c.impact,
-				ImpactOK:      c.impactOK,
+				Victim:            c.victim,
+				VictimMetric:      c.victimMetric,
+				VictimSignal:      c.victimSignal,
+				Suspect:           c.suspect,
+				SuspectMetric:     c.suspectMetric,
+				Dimension:         c.dimension,
+				Rank:              i + 1,
+				Score:             c.score,
+				LagSteps:          c.lag,
+				SampleCount:       c.samples,
+				PValue:            c.pvalue,
+				GrangerOK:         c.grangerOK,
+				Impact:            c.impact,
+				ImpactOK:          c.impactOK,
+				ImpactMagnitude:   c.impactMagnitude,
+				ImpactMagnitudeOK: c.impactMagnitudeOK,
+				ImpactPValue:      c.impactPValue,
+				ImpactPValueOK:    c.impactPValueOK,
 			})
 		}
 	}

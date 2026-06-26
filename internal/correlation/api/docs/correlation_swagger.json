@@ -744,11 +744,24 @@
                 "granger_ok": {
                     "type": "boolean"
                 },
+                "impact_magnitude": {
+                    "description": "#175 ImpactMagnitude 는 victim 신호별 native 단위 degradation 크기 (latency=seconds, throughput=\nbytes/s 감소, error=drops/s 증가, gpu=util 감소) 로 latency 외 신호까지 확장된 effect size 다.\nImpactPValue 는 high / low 구간 평균 차이의 Welch t-test two-sided p-value 로 effect size 의 통계적\n유의성이다. *OK 가 false 면 표본 부족이나 구간 분산 0 등으로 산정이 graceful skip 된 상태다.",
+                    "type": "number"
+                },
+                "impact_magnitude_ok": {
+                    "type": "boolean"
+                },
                 "impact_ok": {
                     "type": "boolean"
                 },
+                "impact_pvalue": {
+                    "type": "number"
+                },
+                "impact_pvalue_ok": {
+                    "type": "boolean"
+                },
                 "impact_seconds": {
-                    "description": "#146 effect size 결과. Impact 는 suspect 압박 시 victim latency 증가량 (seconds) 으로 간섭의\n절대 영향 크기다. Score (상관 강도) 와 독립된 지표라 운영자가 우선순위 판단에 함께 활용한다.\nImpactOK=false 면 표본 부족 등으로 산정이 skip 되어 Impact 는 0 이다.",
+                    "description": "#146 effect size 결과. Impact 는 suspect 압박 시 victim latency 증가량 (seconds) 으로 간섭의\n절대 영향 크기다. Score (상관 강도) 와 독립된 지표라 운영자가 우선순위 판단에 함께 활용한다.\nImpactOK=false 면 표본 부족 등으로 산정이 skip 되어 Impact 는 0 이다. #175 부터 본 두 필드는\nlatency victim 전용 legacy 로 유지된다.",
                     "type": "number"
                 },
                 "lag_steps": {
