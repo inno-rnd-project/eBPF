@@ -122,10 +122,13 @@ func classifyVictimSignal(metric string) VictimSignal {
 		return SignalThroughput
 	case strings.Contains(metric, "netobs_drop_events_flow_total"):
 		return SignalError
-	// #174 GPU victim 신호. pod 단위 GPU 사용률 recording rule 명 gpu_util 로 매칭한다. suspect 인
-	// gpu_memory_utilization_ratio 는 gpu_util 토큰을 포함하지 않아 (gpu_memory...) SignalNone 으로
-	// 남아 suspect 로 정상 취급된다.
-	case strings.Contains(metric, "gpu_util"):
+	// #174 GPU victim 신호. pod 단위 GPU 사용률 recording rule 명 pod:gpu_util 로 매칭한다. gpu_util
+	// 단독 토큰은 운영자가 ExtraMetrics 로 추가한 커스텀 GPU suspect (container_gpu_utilization /
+	// node_gpu_utilization 등) 까지 victim 으로 오분류해 suspect 분석에서 빠뜨리므로, pod: 접두사를
+	// 포함한 source 메트릭 이름으로 좁힌다 (위 latency / throughput / error 와 동일 원칙). suspect 인
+	// pod:gpu_memory_utilization_ratio 는 pod:gpu_util 을 포함하지 않아 (pod:gpu_memory...) SignalNone
+	// 으로 남아 suspect 로 정상 취급된다.
+	case strings.Contains(metric, "pod:gpu_util"):
 		return SignalGPU
 	}
 	return SignalNone

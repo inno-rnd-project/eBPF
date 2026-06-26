@@ -26,10 +26,15 @@ func TestClassifyVictimSignal(t *testing.T) {
 		{"pod:network_throughput_score:5m", SignalNone},
 		{"pod:network_retrans_score:5m", SignalNone},
 		{"pod:host_compute_stall_score:5m", SignalNone},
-		// #174 GPU suspect (gpu_memory_utilization_ratio) 는 gpu_util 토큰을 포함하지 않아 victim 으로
+		// #174 GPU suspect (gpu_memory_utilization_ratio) 는 pod:gpu_util 토큰을 포함하지 않아 victim 으로
 		// 오분류되지 않고 suspect (SignalNone) 로 남아야 한다. GPU victim 추가의 핵심 비충돌 가드다.
 		{"pod:gpu_memory_utilization_ratio:5m", SignalNone},
 		{`avg by(node, src_namespace, src_pod, src_pod_uid) (pod:gpu_memory_utilization_ratio:5m)`, SignalNone},
+		// #174 운영자가 ExtraMetrics 로 추가할 수 있는 커스텀 GPU suspect 는 gpu_util 부분 문자열을 포함
+		// 해도 pod: 접두사가 없어 victim 으로 오분류되지 않고 suspect (SignalNone) 로 남아야 한다.
+		{"container_gpu_utilization_percent", SignalNone},
+		{`sum by(node) (rate(node_gpu_utilization[5m]))`, SignalNone},
+		{"node:gpu_util_p95:5m", SignalNone},
 		// 운영자가 ExtraMetrics 로 추가할 수 있는 커스텀 suspect 는 "bytes" / "drop" 일반 토큰을 포함해도
 		// victim 으로 오분류되지 않아야 한다 (source 메트릭 이름 매칭으로 차단).
 		{`container_network_receive_bytes_total`, SignalNone},

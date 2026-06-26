@@ -195,8 +195,8 @@ func DefaultConfig() Config {
 			// multi-GPU pod 에서 동일 (namespace, pod) 에 여러 series 가 생성되므로 avg by(...) 로 pod 단위
 			// 집계해 단일 series 로 normalize 한다 (suspect pod:gpu_memory_utilization_ratio:5m 과 동일
 			// 패턴). 기존 GPU suspect 와 동일하게 GPU 워크로드 의 per-pod 귀속 (gpuobs_pod_utilization_percent)
-			// 이 있어야 emit 되며 미귀속 시 graceful 하게 비어 있다. classifyVictimSignal 이 gpu_util 토큰으로
-			// 매칭해 gpu 로 분류한다.
+			// 이 있어야 emit 되며 미귀속 시 graceful 하게 비어 있다. classifyVictimSignal 이 pod:gpu_util 토큰
+			// 으로 매칭해 gpu 로 분류한다.
 			`avg by(node, src_namespace, src_pod, src_pod_uid) (pod:gpu_util_p95:5m)`,
 		},
 		FetchTimeout:      30 * time.Second,
