@@ -39,14 +39,16 @@ func NewHTTPSource(endpoint string, timeout time.Duration) Source {
 // 공유해 Available 한 번의 총 소요가 본 상한을 넘지 않는다.
 const DefaultFetchTimeout = 3 * time.Second
 
-// dcgmMaxAttempts 는 #177 의 Available 시도 횟수 상한 (1 초기 시도 + 최대 2 재시도) 이다. dcgmRetryBackoff
-// 는 재시도 간 짧은 고정 backoff 다. dcgm-exporter 의 순간 장애 (connection refused 등 즉시 실패) 가 수십
-// ~수백 ms 안에 복구되는 케이스를 커버하면서, 전체 시도가 timeout budget 안에 들도록 짧게 둔다. 진짜
-// hang / timeout 은 첫 시도가 budget 을 소진해 재시도 없이 기존처럼 false 를 돌려준다.
-const (
-	dcgmMaxAttempts  = 3
-	dcgmRetryBackoff = 150 * time.Millisecond
-)
+// dcgmMaxAttempts 는 #177 의 Available 시도 횟수 상한 (1 초기 시도 + 최대 2 재시도) 이다. dcgm-exporter
+// 의 순간 장애 (connection refused 등 즉시 실패) 가 수십~수백 ms 안에 복구되는 케이스를 커버하면서,
+// 전체 시도가 timeout budget 안에 들도록 한다. 진짜 hang / timeout 은 첫 시도가 budget 을 소진해 재시도
+// 없이 기존처럼 false 를 돌려준다.
+const dcgmMaxAttempts = 3
+
+// dcgmRetryBackoff 는 재시도 간 짧은 고정 backoff 다. 순간 장애 복구 윈도우를 커버하도록 짧게 두며,
+// var 로 선언해 단위 테스트가 1ms 등으로 오버라이드함으로써 실제 sleep 지연 없이 재시도 동작을 검증하게
+// 한다. production 에서는 변경되지 않는다.
+var dcgmRetryBackoff = 150 * time.Millisecond
 
 // Available은 dcgm-exporter /metrics에 HTTP GET 후 200 응답이면 true를 돌려준다. #177 부터 timeout 을
 // 전체 budget 으로 두고 그 안에서 최대 dcgmMaxAttempts 회 재시도해 순간 장애를 흡수한다. budget 을

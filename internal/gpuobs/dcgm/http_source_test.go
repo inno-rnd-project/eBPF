@@ -3,10 +3,18 @@ package dcgm
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// TestMain 은 dcgmRetryBackoff 를 1ms 로 낮춰 재시도 경로를 거치는 테스트가 실제 backoff (150ms) 만큼
+// 대기하지 않게 한다. 재시도 동작과 시도 횟수 단언은 backoff 값과 무관하므로 테스트 의미는 보존된다.
+func TestMain(m *testing.M) {
+	dcgmRetryBackoff = 1 * time.Millisecond
+	os.Exit(m.Run())
+}
 
 // dcgmExporterSample은 Available 테스트의 200 응답 body다. Available은 status code (200) 만 확인하고
 // body는 읽지 않으므로 (re-export 제거, #156) 내용은 무의미해 빈 문자열로 둔다.
