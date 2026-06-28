@@ -3,9 +3,18 @@ package dcgm
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// TestMain 은 dcgmRetryBackoff 를 1ms 로 낮춰 재시도 경로를 거치는 테스트가 실제 backoff (150ms) 만큼
+// 대기하지 않게 한다. 재시도 동작과 시도 횟수 단언은 backoff 값과 무관하므로 테스트 의미는 보존된다.
+func TestMain(m *testing.M) {
+	dcgmRetryBackoff = 1 * time.Millisecond
+	os.Exit(m.Run())
+}
 
 // dcgmExporterSample은 Available 테스트의 200 응답 body다. Available은 status code (200) 만 확인하고
 // body는 읽지 않으므로 (re-export 제거, #156) 내용은 무의미해 빈 문자열로 둔다.
@@ -48,5 +57,48 @@ func TestHTTPSource_Available_Non200(t *testing.T) {
 	s := NewHTTPSource(srv.URL, time.Second)
 	if s.Available() {
 		t.Errorf("Available()=true want false (503 응답)")
+	}
+}
+
+// TestHTTPSource_Available_RecoversAfterTransientFailure 는 #177 의 수용 조건이다. dcgm-exporter 가
+// 첫 응답만 일시 실패 (503) 하고 이후 복구 (200) 하면 timeout budget 내 재시도로 Available 이 true 를
+// 돌려주는지 httptest 로 입증한다. 재시도가 없던 기존 구현이면 첫 503 으로 false 가 됐을 케이스다.
+func TestHTTPSource_Available_RecoversAfterTransientFailure(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable) // 첫 호출만 일시 실패
+			return
+		}
+		_, _ = w.Write([]byte(dcgmExporterSample)) // 이후 복구
+	}))
+	defer srv.Close()
+
+	s := NewHTTPSource(srv.URL, time.Second)
+	if !s.Available() {
+		t.Errorf("Available()=false want true (1회 일시 실패 후 재시도 복구)")
+	}
+	if got := calls.Load(); got < 2 {
+		t.Errorf("calls=%d want >=2 (재시도가 발생해야 복구)", got)
+	}
+}
+
+// TestHTTPSource_Available_FalseAfterRetriesExhausted 는 #177 의 수용 조건이다. 모든 시도가 실패하면
+// 재시도 상한 (dcgmMaxAttempts) 까지 시도한 뒤 graceful false 를 돌려주는지, 그리고 시도 횟수가 상한을
+// 넘지 않는지 입증한다.
+func TestHTTPSource_Available_FalseAfterRetriesExhausted(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable) // 항상 실패
+	}))
+	defer srv.Close()
+
+	s := NewHTTPSource(srv.URL, time.Second)
+	if s.Available() {
+		t.Errorf("Available()=true want false (재시도 상한 초과)")
+	}
+	if got := calls.Load(); got != dcgmMaxAttempts {
+		t.Errorf("calls=%d want %d (상한까지만 재시도)", got, dcgmMaxAttempts)
 	}
 }
