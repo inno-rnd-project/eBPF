@@ -84,6 +84,18 @@ configMapGenerator:
         app.kubernetes.io/name: ebpf-project
         app.kubernetes.io/component: grafana-dashboard
         app.kubernetes.io/part-of: ebpf-project
+  # #178 pod 중심 drill-down. netobs / gpuobs / correlation 에 분산된 pod 패널을 단일 pod 기준으로
+  # 통합해 한 pod 의 latency 와 drop 과 network 와 GPU 를 동시에 본다. cross-domain 통합 뷰라 part-of
+  # 는 ebpf-project 로 둔다.
+  - name: pod-drilldown-dashboard
+    files:
+      - pod-drilldown.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+        app.kubernetes.io/name: ebpf-project
+        app.kubernetes.io/component: grafana-dashboard
+        app.kubernetes.io/part-of: ebpf-project
 
 generatorOptions:
   disableNameSuffixHash: true
