@@ -1,0 +1,109 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"netobs/internal/correlation"
+)
+
+// fakeQuerier 는 query 문자열별 canned InstantSample 을 돌려주는 테스트 더블이다. 부분 문자열 매칭으로
+// topk wrapping 이나 node 필터가 붙은 query 도 같은 규칙에 걸리게 한다.
+type fakeQuerier struct {
+	rules []struct {
+		contains string
+		samples  []correlation.InstantSample
+	}
+}
+
+func (f *fakeQuerier) on(contains string, samples ...correlation.InstantSample) *fakeQuerier {
+	f.rules = append(f.rules, struct {
+		contains string
+		samples  []correlation.InstantSample
+	}{contains, samples})
+	return f
+}
+
+func (f *fakeQuerier) Query(_ context.Context, query string) ([]correlation.InstantSample, error) {
+	for _, r := range f.rules {
+		if strings.Contains(query, r.contains) {
+			return r.samples, nil
+		}
+	}
+	return nil, nil
+}
+
+func sample(v float64, kv ...string) correlation.InstantSample {
+	l := map[string]string{}
+	for i := 0; i+1 < len(kv); i += 2 {
+		l[kv[i]] = kv[i+1]
+	}
+	return correlation.InstantSample{Labels: l, Value: v}
+}
+
+// TestSynthesis_GetHealth 는 /api/v1/health 가 차원별 health·status·hotspot·dominant·anomaly·summary
+// 를 합성하는지 검증한다. cpu 가 degraded 이고 worker2/app-x 에 압박이 집중되며 dominant 로 채택되는
+// 시나리오다.
+func TestSynthesis_GetHealth(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("cluster:cpu_health_score", sample(0.45)).
+		on("cluster:gpu_health_score", sample(0.82)).
+		on("cluster:memory_health_score", sample(0.90)).
+		on("cluster:network_health_score", sample(0.60)).
+		on("node:cpu_pressure_score", sample(0.78, "node", "worker2")).
+		on("pod:cpu_throttle_score", sample(0.78, "src_namespace", "default", "src_pod", "app-x")).
+		on("cluster:cpu_throttle_zscore", sample(3.2))
+	// gpu/memory/network 의 node pressure 는 미설정 → hotspot nil (graceful).
+
+	h := NewSynthesisHandler(q)
+	rec := httptest.NewRecorder()
+	h.GetHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp HealthResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	cpu := resp.Dimensions["cpu"]
+	if cpu.Status != "degraded" || cpu.Health == nil || *cpu.Health != 0.45 {
+		t.Errorf("cpu=%+v want degraded/0.45", cpu)
+	}
+	if cpu.Hotspot == nil || cpu.Hotspot.Node != "worker2" || cpu.Hotspot.TopPod != "default/app-x" || cpu.Hotspot.Severity != "high" {
+		t.Errorf("cpu hotspot=%+v want worker2/default/app-x/high", cpu.Hotspot)
+	}
+	if resp.Dimensions["gpu"].Status != "ok" {
+		t.Errorf("gpu status=%q want ok", resp.Dimensions["gpu"].Status)
+	}
+	if resp.DominantPressure == nil || resp.DominantPressure.Dimension != "cpu" || resp.DominantPressure.Pod != "default/app-x" {
+		t.Errorf("dominant=%+v want cpu/default/app-x", resp.DominantPressure)
+	}
+	if len(resp.Anomalies) != 1 || resp.Anomalies[0].Dimension != "cpu" || resp.Anomalies[0].Severity != "high" {
+		t.Errorf("anomalies=%+v want 1 cpu/high", resp.Anomalies)
+	}
+	if !strings.Contains(resp.Summary, "cpu") {
+		t.Errorf("summary=%q want cpu 언급", resp.Summary)
+	}
+}
+
+// TestSynthesis_GetHealth_NilQuerier 는 querier 가 nil 일 때 panic 없이 unknown 응답을 돌려주는지
+// 검증한다.
+func TestSynthesis_GetHealth_NilQuerier(t *testing.T) {
+	h := NewSynthesisHandler(nil)
+	rec := httptest.NewRecorder()
+	h.GetHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp HealthResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Dimensions["cpu"].Status != "unknown" || resp.Dimensions["cpu"].Health != nil {
+		t.Errorf("cpu=%+v want unknown/nil health (nil querier)", resp.Dimensions["cpu"])
+	}
+}
