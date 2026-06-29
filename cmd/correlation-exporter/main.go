@@ -248,6 +248,16 @@ func main() {
 	// 분리 되고 추가 부담 없음. collector 가 다섯 인터페이스 를 모두 만족 하므로 동일 인스턴스 를 다섯 번
 	// 전달 한다.
 	api.NewHandler(collector, collector, collector, collector, collector).Register(mux)
+	// #178 synthesis API. Prometheus instant query 로 health / pressure recording rule 을 합성해
+	// 헬스 + 압박 위치를 한 응답 (/api/v1/health) 으로 노출한다. range fetch 와 별개 경로라 reconcile
+	// hot path 와 무관하다. querier 초기화 실패 시 합성 endpoint 만 비활성되고 기존 API 는 유지된다.
+	if iq, err := correlation.NewPrometheusInstantQuerier(cfg.PrometheusURL, cfg.FetchTimeout); err != nil {
+		log.Printf("warn: synthesis API disabled, instant querier init failed: %v", err)
+	} else {
+		// collector 가 SnapshotSource (noisy-neighbor) 를 만족해 /api/v1/events 가 anomaly 와 함께
+		// 간섭 사건을 합성한다.
+		api.NewSynthesisHandler(iq, collector).Register(mux)
+	}
 	correlationdocs.SwaggerInfocorrelation.BasePath = "/"
 	mux.Handle("/api/v1/swagger/", httpSwagger.Handler(httpSwagger.URL("/api/v1/swagger.json"), httpSwagger.InstanceName("correlation")))
 	mux.HandleFunc("/api/v1/swagger.json", func(w http.ResponseWriter, _ *http.Request) {
