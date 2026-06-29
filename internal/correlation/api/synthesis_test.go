@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -206,6 +207,50 @@ func TestSynthesis_GetEvents(t *testing.T) {
 	}
 	if !foundNN {
 		t.Errorf("noisy_neighbor 사건 없음: %+v", resp.Events)
+	}
+}
+
+// TestSynthesis_GetHealth_NaN 은 health·node pressure 가 NaN 으로 와도 (division-by-zero recording
+// rule 등) JSON 직렬화가 실패하지 않고 unknown/hotspot nil 로 graceful 처리되는지 검증한다. NaN 은
+// json.Marshal 이 거부하므로 가드 누락 시 전체 응답이 깨진다.
+func TestSynthesis_GetHealth_NaN(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("cluster:cpu_health_score", sample(math.NaN())).
+		on("node:cpu_pressure_score", sample(math.NaN(), "node", "worker2"))
+	h := NewSynthesisHandler(q, nil)
+	rec := httptest.NewRecorder()
+	h.GetHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp HealthResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode (NaN 으로 marshal 깨짐?): %v", err)
+	}
+	cpu := resp.Dimensions["cpu"]
+	if cpu.Status != "unknown" || cpu.Health != nil || cpu.Hotspot != nil {
+		t.Errorf("cpu=%+v want unknown/nil health/nil hotspot (NaN graceful)", cpu)
+	}
+}
+
+// TestSynthesis_GetPressure_NaN 은 NaN 샘플이 랭킹 전에 걸러져 정상 값만 직렬화되는지 검증한다.
+func TestSynthesis_GetPressure_NaN(t *testing.T) {
+	q := (&fakeQuerier{}).on("pod:cpu_throttle_score",
+		sample(math.NaN(), "node", "worker2", "src_namespace", "default", "src_pod", "nan-pod"),
+		sample(0.62, "node", "worker2", "src_namespace", "default", "src_pod", "app-x"),
+	)
+	h := NewSynthesisHandler(q, nil)
+	rec := httptest.NewRecorder()
+	h.GetPressure(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pressure?dimension=cpu&scope=pod", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp PressureResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode (NaN 으로 marshal 깨짐?): %v", err)
+	}
+	if len(resp.Ranking) != 1 || resp.Ranking[0].Pod != "default/app-x" {
+		t.Errorf("ranking=%+v want NaN 제외 후 app-x 1건", resp.Ranking)
 	}
 }
 

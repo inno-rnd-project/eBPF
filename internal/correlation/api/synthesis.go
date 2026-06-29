@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"netobs/internal/apicommon"
@@ -181,33 +182,50 @@ func (h *SynthesisHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 		Anomalies:   []Anomaly{},
 	}
 
-	var dominant *DominantPressure
-	for _, d := range synthDimensions {
-		dh := DimensionHealth{Status: "unknown"}
-		if h.querier != nil {
-			if s, err := h.querier.Query(ctx, d.healthMetric); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
-				v := s[0].Value
-				dh.Health = &v
-				dh.Status = correlation.HealthStatus(v)
-			}
-			if hs := h.hotspot(ctx, d); hs != nil {
-				dh.Hotspot = hs
-				if dominant == nil || hs.Pressure > dominant.Pressure {
-					dominant = &DominantPressure{Dimension: d.name, Node: hs.Node, Pod: hs.TopPod, Pressure: hs.Pressure}
-				}
-			}
-		}
-		resp.Dimensions[d.name] = dh
+	// 차원별 health·hotspot·z-score 조회를 goroutine 으로 병렬화해 한 요청당 순차 HTTP 누적을 막는다.
+	// 각 goroutine 은 사전 할당 슬라이스의 자기 인덱스에만 기록하므로 공유 map 동시 쓰기나 mutex 가 없다.
+	type dimResult struct {
+		name    string
+		dh      DimensionHealth
+		hotspot *Hotspot
+		anomaly *Anomaly
 	}
-
-	if h.querier != nil {
-		for _, d := range synthDimensions {
-			if s, err := h.querier.Query(ctx, d.zscoreMetric); err == nil && len(s) > 0 {
-				z := s[0].Value
-				if sev := correlation.ZScoreSeverity(z); sev != "none" {
-					resp.Anomalies = append(resp.Anomalies, Anomaly{Dimension: d.name, ZScore: z, Window: "5m", Severity: sev})
+	results := make([]dimResult, len(synthDimensions))
+	var wg sync.WaitGroup
+	for i := range synthDimensions {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			d := synthDimensions[i]
+			res := dimResult{name: d.name, dh: DimensionHealth{Status: "unknown"}}
+			if h.querier != nil {
+				if s, err := h.querier.Query(ctx, d.healthMetric); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
+					v := s[0].Value
+					res.dh.Health = &v
+					res.dh.Status = correlation.HealthStatus(v)
+				}
+				res.hotspot = h.hotspot(ctx, d)
+				res.dh.Hotspot = res.hotspot
+				if s, err := h.querier.Query(ctx, d.zscoreMetric); err == nil && len(s) > 0 {
+					z := s[0].Value
+					if sev := correlation.ZScoreSeverity(z); sev != "none" {
+						res.anomaly = &Anomaly{Dimension: d.name, ZScore: z, Window: "5m", Severity: sev}
+					}
 				}
 			}
+			results[i] = res
+		}(i)
+	}
+	wg.Wait()
+
+	var dominant *DominantPressure
+	for _, res := range results {
+		resp.Dimensions[res.name] = res.dh
+		if res.hotspot != nil && (dominant == nil || res.hotspot.Pressure > dominant.Pressure) {
+			dominant = &DominantPressure{Dimension: res.name, Node: res.hotspot.Node, Pod: res.hotspot.TopPod, Pressure: res.hotspot.Pressure}
+		}
+		if res.anomaly != nil {
+			resp.Anomalies = append(resp.Anomalies, *res.anomaly)
 		}
 	}
 
@@ -220,7 +238,7 @@ func (h *SynthesisHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 // 없으면 nil 을 돌려준다.
 func (h *SynthesisHandler) hotspot(ctx context.Context, d synthDimension) *Hotspot {
 	s, err := h.querier.Query(ctx, "topk(1, "+d.nodePressure+")")
-	if err != nil || len(s) == 0 {
+	if err != nil || len(s) == 0 || math.IsNaN(s[0].Value) {
 		return nil
 	}
 	node := s[0].Labels["node"]
@@ -307,6 +325,14 @@ func (h *SynthesisHandler) GetPressure(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		if samples, err := h.querier.Query(ctx, fmt.Sprintf("topk(%d, %s)", limit, metric)); err == nil {
+			// NaN 은 JSON 직렬화 실패와 비일관 정렬을 유발하므로 랭킹 전에 걸러낸다.
+			valid := samples[:0]
+			for _, s := range samples {
+				if !math.IsNaN(s.Value) {
+					valid = append(valid, s)
+				}
+			}
+			samples = valid
 			sort.Slice(samples, func(i, j int) bool {
 				if samples[i].Value != samples[j].Value {
 					return samples[i].Value > samples[j].Value
@@ -407,6 +433,9 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 			}
 			if ps, err := h.querier.Query(ctx, fmt.Sprintf("topk(3, %s{node=%q})", d.podPressure, node)); err == nil {
 				for _, p := range ps {
+					if math.IsNaN(p.Value) {
+						continue
+					}
 					if pod := podLabel(p.Labels); pod != "" {
 						resp.TopPods = append(resp.TopPods, NodePodPressure{Pod: pod, Dimension: d.name, Pressure: p.Value})
 					}
