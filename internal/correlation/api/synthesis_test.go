@@ -59,7 +59,7 @@ func TestSynthesis_GetHealth(t *testing.T) {
 		on("cluster:cpu_throttle_zscore", sample(3.2))
 	// gpu/memory/network 의 node pressure 는 미설정 → hotspot nil (graceful).
 
-	h := NewSynthesisHandler(q)
+	h := NewSynthesisHandler(q, nil)
 	rec := httptest.NewRecorder()
 	h.GetHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
 
@@ -99,7 +99,7 @@ func TestSynthesis_GetPressure(t *testing.T) {
 		sample(0.51, "node", "worker2", "src_namespace", "batch", "src_pod", "job-7"),
 		sample(0.78, "node", "worker2", "src_namespace", "default", "src_pod", "app-x"),
 	)
-	h := NewSynthesisHandler(q)
+	h := NewSynthesisHandler(q, nil)
 	rec := httptest.NewRecorder()
 	h.GetPressure(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pressure?dimension=cpu&scope=pod&limit=10", nil))
 	if rec.Code != http.StatusOK {
@@ -117,7 +117,7 @@ func TestSynthesis_GetPressure(t *testing.T) {
 
 // TestSynthesis_GetPressure_InvalidDimension 은 알 수 없는 dimension 에 400 을 돌려주는지 검증한다.
 func TestSynthesis_GetPressure_InvalidDimension(t *testing.T) {
-	h := NewSynthesisHandler(&fakeQuerier{})
+	h := NewSynthesisHandler(&fakeQuerier{}, nil)
 	rec := httptest.NewRecorder()
 	h.GetPressure(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pressure?dimension=disk", nil))
 	if rec.Code != http.StatusBadRequest {
@@ -132,7 +132,7 @@ func TestSynthesis_GetNode(t *testing.T) {
 		on("node:memory_pressure_score", sample(0.22, "node", "worker2")).
 		on("node:pressure_score:5m", sample(0.78, "node", "worker2")).
 		on("pod:cpu_throttle_score", sample(0.78, "node", "worker2", "src_namespace", "default", "src_pod", "app-x"))
-	h := NewSynthesisHandler(q)
+	h := NewSynthesisHandler(q, nil)
 	rec := httptest.NewRecorder()
 	h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/worker2", nil))
 	if rec.Code != http.StatusOK {
@@ -151,10 +151,68 @@ func TestSynthesis_GetNode(t *testing.T) {
 	}
 }
 
+// fakeNeighbors 는 SnapshotSource 테스트 더블이다.
+type fakeNeighbors struct{ data []correlation.NoisyNeighbor }
+
+func (f *fakeNeighbors) Snapshot() []correlation.NoisyNeighbor { return f.data }
+
+// TestSynthesis_GetEvents 는 anomaly(z-score)와 noisy-neighbor(causal_strength)를 severity 정렬 사건
+// 으로 묶고, min_severity 미만(elevated 기본)을 제외하며 자연어 설명을 다는지 검증한다.
+func TestSynthesis_GetEvents(t *testing.T) {
+	q := (&fakeQuerier{}).on("cluster:cpu_throttle_zscore", sample(3.2))
+	nb := &fakeNeighbors{data: []correlation.NoisyNeighbor{
+		{
+			Suspect:   correlation.PodIdentity{Namespace: "default", Pod: "proxy"},
+			Victim:    correlation.PodIdentity{Namespace: "default", Pod: "app-x"},
+			Dimension: correlation.DimensionNetwork, VictimSignal: correlation.SignalLatency,
+			Score: 0.91, CausalStrength: 0.82, GrangerOK: true, PValue: 0.01,
+		},
+		// causal_strength 0.30 → low → 기본 min_severity=elevated 에서 제외돼야 한다.
+		{
+			Suspect:   correlation.PodIdentity{Namespace: "default", Pod: "noise"},
+			Victim:    correlation.PodIdentity{Namespace: "default", Pod: "app-y"},
+			Dimension: correlation.DimensionCPU, CausalStrength: 0.30, Score: 0.4,
+		},
+	}}
+	h := NewSynthesisHandler(q, nb)
+	rec := httptest.NewRecorder()
+	h.GetEvents(rec, httptest.NewRequest(http.MethodGet, "/api/v1/events", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp EventsResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	// high noisy-neighbor 1 + high anomaly 1 = 2 (low noisy-neighbor 제외).
+	if len(resp.Events) != 2 {
+		t.Fatalf("events=%d want 2 (low 제외)", len(resp.Events))
+	}
+	for _, e := range resp.Events {
+		if e.Severity == "low" {
+			t.Errorf("low 사건이 포함됨: %+v", e)
+		}
+	}
+	// 정렬: high 둘 중 강도(causal 0.82 vs z 3.2)… 둘 다 high 라 안정 정렬. noisy-neighbor 설명에 상관 포함.
+	var foundNN bool
+	for _, e := range resp.Events {
+		if e.Kind == "noisy_neighbor" {
+			foundNN = true
+			if e.CausalStrength == nil || *e.CausalStrength != 0.82 {
+				t.Errorf("noisy-neighbor causal=%v want 0.82", e.CausalStrength)
+			}
+			if !strings.Contains(e.Explanation, "상관") {
+				t.Errorf("explanation=%q want 상관 포함", e.Explanation)
+			}
+		}
+	}
+	if !foundNN {
+		t.Errorf("noisy_neighbor 사건 없음: %+v", resp.Events)
+	}
+}
+
 // TestSynthesis_GetHealth_NilQuerier 는 querier 가 nil 일 때 panic 없이 unknown 응답을 돌려주는지
 // 검증한다.
 func TestSynthesis_GetHealth_NilQuerier(t *testing.T) {
-	h := NewSynthesisHandler(nil)
+	h := NewSynthesisHandler(nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
 	if rec.Code != http.StatusOK {
