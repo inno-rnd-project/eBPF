@@ -22,15 +22,21 @@ spec:
       # #178 stale 시리즈 근본 정리. pod 와 instance 는 agent pod 재시작마다 값이 바뀌어 (pod 이름
       # 랜덤 suffix, instance IP:port) 메트릭에 stale 시리즈 churn 을 유발한다. netobs-agent 는
       # DaemonSet (노드당 1) 이라 node 라벨이 없는 self-health / legacy 메트릭 (netobs_bpf_program_
-      # attach_total, netobs_informer_sync_lag_seconds 등) 은 pod/instance 로만 인스턴스가 구분되므로,
-      # 먼저 __meta_kubernetes_pod_node_name 을 node 로 부여해 노드별로 구분되게 한다. honorLabels:
-      # true 로 두어 data 메트릭이 이미 보유한 node (관측 노드 = 자기 노드) 가 보존되어 exported_node
-      # 로 밀려나지 않게 한 뒤 pod 와 instance 를 labeldrop 한다.
+      # attach_total 등) 은 pod/instance 로만 인스턴스가 구분되므로, __meta_kubernetes_pod_node_name 을
+      # node 로 부여해 노드별로 구분되게 하고 honorLabels: true 로 data 메트릭의 node (관측 노드) 를
+      # 보존한다 (exported_node 회피). agent pod 라벨은 metricRelabelings 가 아니라 relabelings 단계
+      # (merge 前) 에서 labeldrop 해, 자체 pod 를 emit 하는 메트릭 (netobs_tcp_state_* 의 워크로드 pod)
+      # 과 충돌해 워크로드 pod 가 사라지고 agent pod 가 exported_pod 로 남는 것을 원천 차단한다.
+      # tcp_state 의 워크로드 pod 는 scraped 라벨이라 본 labeldrop 에 영향받지 않고 보존된다. instance 는
+      # 어떤 netobs 메트릭도 자체 emit 하지 않아 (agent IP:port) 전역 drop 하고, 충돌로 밀린 exported_*
+      # (예: tcp_state 의 exported_namespace) 도 함께 제거한다.
       honorLabels: true
       relabelings:
         - sourceLabels: [__meta_kubernetes_pod_node_name]
           targetLabel: node
           action: replace
+        - regex: pod
+          action: labeldrop
       metricRelabelings:
-        - regex: pod|instance
+        - regex: instance|exported_pod|exported_instance|exported_namespace|exported_node
           action: labeldrop

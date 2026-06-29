@@ -22,13 +22,16 @@ spec:
       # #178 stale 시리즈 근본 정리. gpuobs-agent 는 GPU 노드당 1 인 DaemonSet 이라 node 라벨이 없는
       # self-health 메트릭 (gpuobs_dcgm_available 등) 은 pod/instance 로만 인스턴스가 구분된다. netobs
       # 와 동일하게 __meta_kubernetes_pod_node_name 을 node 로 부여하고 honorLabels: true 로 data
-      # 메트릭의 node (관측 노드) 를 보존한 뒤 pod 와 instance 를 labeldrop 해 재시작 stale churn 을
-      # 제거한다.
+      # 메트릭의 node (관측 노드) 를 보존한다. agent pod 라벨은 merge 前 relabelings 단계에서 labeldrop
+      # 해 자체 pod 를 emit 하는 메트릭과의 충돌 (exported_pod 잔존) 을 원천 차단하고, instance 와 충돌로
+      # 밀린 exported_* 는 metricRelabelings 로 제거한다. netobs 와 동일 패턴으로 통일한다.
       honorLabels: true
       relabelings:
         - sourceLabels: [__meta_kubernetes_pod_node_name]
           targetLabel: node
           action: replace
+        - regex: pod
+          action: labeldrop
       metricRelabelings:
-        - regex: pod|instance
+        - regex: instance|exported_pod|exported_instance|exported_namespace|exported_node
           action: labeldrop
