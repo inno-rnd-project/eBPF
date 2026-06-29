@@ -144,6 +144,60 @@
                 }
             }
         },
+        "/api/v1/events": {
+            "get": {
+                "description": "z-score 이상과 noisy-neighbor 간섭을 공통 severity 로 묶어 정렬된 사건 목록과 자연어 설명, drill-down 링크로 돌려준다. min_severity 미만 사건은 제외한다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "synthesis"
+                ],
+                "summary": "이벤트 분석 (anomaly + noisy-neighbor 종합)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "최소 severity (low/elevated/high, 기본 elevated)",
+                        "name": "min_severity",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "상위 N 사건 (1-50, 기본 20)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.EventsResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/health": {
+            "get": {
+                "description": "4 자원 차원(cpu/gpu/memory/network)의 health 점수와 status, 압박이 집중된 node/pod(hotspot), 전체 dominant 압박 지점, z-score 이상, 한 줄 요약을 한 응답으로 돌려준다. 데이터 부재는 null + status=unknown 으로 graceful 처리한다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "synthesis"
+                ],
+                "summary": "클러스터 헬스 + 압박 위치 합성",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.HealthResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/impact-graph": {
             "get": {
                 "description": "suspect → victim 1-hop 엣지로 구성된 영향 전파 그래프의 정점 (out/in degree 포함) 과 엣지 반환. namespace / min_score 로 유도 부분그래프를 추릴 수 있다",
@@ -236,6 +290,41 @@
                 }
             }
         },
+        "/api/v1/node/{node}": {
+            "get": {
+                "description": "노드의 4 차원 pressure 와 종합(overall), dominant 차원, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "synthesis"
+                ],
+                "summary": "노드 1대 전체 압박 상황",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "노드 이름",
+                        "name": "node",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.NodeResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/noisy-neighbor": {
             "get": {
                 "description": "victim/suspect 와 dimension 과 rank 필터 후 pagination 적용한 noisy neighbor 시리즈 반환",
@@ -318,6 +407,53 @@
                 }
             }
         },
+        "/api/v1/pressure": {
+            "get": {
+                "description": "한 자원 차원의 node 또는 pod 를 pressure score 내림차순으로 랭킹해, /health 의 hotspot 에서 한 단계 더 파고든다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "synthesis"
+                ],
+                "summary": "차원별 압박 drill-down 랭킹",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "압박 차원 (cpu/gpu/memory/network)",
+                        "name": "dimension",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "랭킹 입도 (node/pod, 기본 node)",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "상위 N (1-100, 기본 10)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.PressureResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/service-impact": {
             "get": {
                 "description": "victim_namespace 와 victim_workload 와 suspect_node 와 dimension 과 rank 필터 후 pagination 적용한 service-impact 시리즈 반환",
@@ -390,6 +526,23 @@
         }
     },
     "definitions": {
+        "internal_correlation_api.Anomaly": {
+            "type": "object",
+            "properties": {
+                "dimension": {
+                    "type": "string"
+                },
+                "severity": {
+                    "type": "string"
+                },
+                "window": {
+                    "type": "string"
+                },
+                "zscore": {
+                    "type": "number"
+                }
+            }
+        },
         "internal_correlation_api.CrossLevelListResponse": {
             "type": "object",
             "properties": {
@@ -418,6 +571,37 @@
                 }
             }
         },
+        "internal_correlation_api.DimensionHealth": {
+            "type": "object",
+            "properties": {
+                "health": {
+                    "type": "number"
+                },
+                "hotspot": {
+                    "$ref": "#/definitions/internal_correlation_api.Hotspot"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.DominantPressure": {
+            "type": "object",
+            "properties": {
+                "dimension": {
+                    "type": "string"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "pressure": {
+                    "type": "number"
+                }
+            }
+        },
         "internal_correlation_api.ErrorDetail": {
             "type": "object",
             "properties": {
@@ -434,6 +618,104 @@
             "properties": {
                 "error": {
                     "$ref": "#/definitions/internal_correlation_api.ErrorDetail"
+                }
+            }
+        },
+        "internal_correlation_api.Event": {
+            "type": "object",
+            "properties": {
+                "causal_strength": {
+                    "type": "number"
+                },
+                "dimension": {
+                    "type": "string"
+                },
+                "explanation": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "kind": {
+                    "type": "string"
+                },
+                "links": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "severity": {
+                    "type": "string"
+                },
+                "zscore": {
+                    "type": "number"
+                }
+            }
+        },
+        "internal_correlation_api.EventsResponse": {
+            "type": "object",
+            "properties": {
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.Event"
+                    }
+                },
+                "generated_at": {
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "window": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.HealthResponse": {
+            "type": "object",
+            "properties": {
+                "anomalies": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.Anomaly"
+                    }
+                },
+                "dimensions": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/internal_correlation_api.DimensionHealth"
+                    }
+                },
+                "dominant_pressure": {
+                    "$ref": "#/definitions/internal_correlation_api.DominantPressure"
+                },
+                "generated_at": {
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "window": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.Hotspot": {
+            "type": "object",
+            "properties": {
+                "node": {
+                    "type": "string"
+                },
+                "pressure": {
+                    "type": "number"
+                },
+                "severity": {
+                    "type": "string"
+                },
+                "top_pod": {
+                    "type": "string"
                 }
             }
         },
@@ -499,6 +781,59 @@
                 }
             }
         },
+        "internal_correlation_api.NodePodPressure": {
+            "type": "object",
+            "properties": {
+                "dimension": {
+                    "type": "string"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "pressure": {
+                    "type": "number"
+                }
+            }
+        },
+        "internal_correlation_api.NodeResponse": {
+            "type": "object",
+            "properties": {
+                "dominant_dimension": {
+                    "type": "string"
+                },
+                "generated_at": {
+                    "type": "string"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "overall": {
+                    "type": "number"
+                },
+                "pressure": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "number",
+                        "format": "float64"
+                    }
+                },
+                "status": {
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "top_pods": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.NodePodPressure"
+                    }
+                },
+                "window": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_correlation_api.NoisyNeighborListResponse": {
             "type": "object",
             "properties": {
@@ -513,6 +848,52 @@
                 }
             }
         },
+        "internal_correlation_api.PressureEntry": {
+            "type": "object",
+            "properties": {
+                "node": {
+                    "type": "string"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "pressure": {
+                    "type": "number"
+                },
+                "rank": {
+                    "type": "integer"
+                },
+                "severity": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.PressureResponse": {
+            "type": "object",
+            "properties": {
+                "dimension": {
+                    "type": "string"
+                },
+                "generated_at": {
+                    "type": "string"
+                },
+                "ranking": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.PressureEntry"
+                    }
+                },
+                "scope": {
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "window": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_correlation_api.ServiceImpactListResponse": {
             "type": "object",
             "properties": {
@@ -524,6 +905,25 @@
                 },
                 "page": {
                     "$ref": "#/definitions/netobs_internal_apicommon.Page"
+                }
+            }
+        },
+        "netobs_internal_apicommon.ErrorBody": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/netobs_internal_apicommon.ErrorDetail"
+                }
+            }
+        },
+        "netobs_internal_apicommon.ErrorDetail": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
                 }
             }
         },
