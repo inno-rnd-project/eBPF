@@ -92,6 +92,65 @@ func TestSynthesis_GetHealth(t *testing.T) {
 	}
 }
 
+// TestSynthesis_GetPressure 는 dimension=cpu&scope=pod 가 pressure 내림차순 랭킹을 rank·severity 와
+// 함께 돌려주는지 검증한다.
+func TestSynthesis_GetPressure(t *testing.T) {
+	q := (&fakeQuerier{}).on("pod:cpu_throttle_score",
+		sample(0.51, "node", "worker2", "src_namespace", "batch", "src_pod", "job-7"),
+		sample(0.78, "node", "worker2", "src_namespace", "default", "src_pod", "app-x"),
+	)
+	h := NewSynthesisHandler(q)
+	rec := httptest.NewRecorder()
+	h.GetPressure(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pressure?dimension=cpu&scope=pod&limit=10", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp PressureResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if len(resp.Ranking) != 2 || resp.Ranking[0].Pod != "default/app-x" || resp.Ranking[0].Rank != 1 || resp.Ranking[0].Severity != "high" {
+		t.Errorf("ranking=%+v want app-x rank1 high 먼저", resp.Ranking)
+	}
+	if resp.Ranking[1].Pressure != 0.51 {
+		t.Errorf("rank2 pressure=%v want 0.51 (내림차순)", resp.Ranking[1].Pressure)
+	}
+}
+
+// TestSynthesis_GetPressure_InvalidDimension 은 알 수 없는 dimension 에 400 을 돌려주는지 검증한다.
+func TestSynthesis_GetPressure_InvalidDimension(t *testing.T) {
+	h := NewSynthesisHandler(&fakeQuerier{})
+	rec := httptest.NewRecorder()
+	h.GetPressure(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pressure?dimension=disk", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status=%d want 400 (invalid dimension)", rec.Code)
+	}
+}
+
+// TestSynthesis_GetNode 는 노드의 차원별 압박·overall·dominant·top_pods·status 합성을 검증한다.
+func TestSynthesis_GetNode(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("node:cpu_pressure_score", sample(0.78, "node", "worker2")).
+		on("node:memory_pressure_score", sample(0.22, "node", "worker2")).
+		on("node:pressure_score:5m", sample(0.78, "node", "worker2")).
+		on("pod:cpu_throttle_score", sample(0.78, "node", "worker2", "src_namespace", "default", "src_pod", "app-x"))
+	h := NewSynthesisHandler(q)
+	rec := httptest.NewRecorder()
+	h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/worker2", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp NodeResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Node != "worker2" || resp.DominantDimension != "cpu" || resp.Status != "degraded" {
+		t.Errorf("node=%+v want worker2/cpu/degraded", resp)
+	}
+	if resp.Overall == nil || *resp.Overall != 0.78 {
+		t.Errorf("overall=%v want 0.78", resp.Overall)
+	}
+	if len(resp.TopPods) == 0 || resp.TopPods[0].Pod != "default/app-x" {
+		t.Errorf("top_pods=%+v want default/app-x 먼저", resp.TopPods)
+	}
+}
+
 // TestSynthesis_GetHealth_NilQuerier 는 querier 가 nil 일 때 panic 없이 unknown 응답을 돌려주는지
 // 검증한다.
 func TestSynthesis_GetHealth_NilQuerier(t *testing.T) {

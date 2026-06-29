@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +36,45 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
 	))
+	mux.Handle("/api/v1/pressure", apicommon.Chain(
+		http.HandlerFunc(h.GetPressure),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
+	// /api/v1/node/{node} 는 경로 끝 segment 가 node 라 prefix 매칭 후 핸들러에서 파싱한다. 기존
+	// 라우트와 동일하게 CORSMiddleware 가 OPTIONS preflight 를 처리하도록 method 패턴은 쓰지 않는다.
+	mux.Handle("/api/v1/node/", apicommon.Chain(
+		http.HandlerFunc(h.GetNode),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
+}
+
+// lookupDimension 은 차원 이름으로 synthDimension 을 찾는다.
+func lookupDimension(name string) (synthDimension, bool) {
+	for _, d := range synthDimensions {
+		if d.name == name {
+			return d, true
+		}
+	}
+	return synthDimension{}, false
+}
+
+// pressureStatusLabel 은 pressure severity 를 health status 어휘 (ok/warn/degraded) 로 환산해 node
+// 응답이 health 와 동일 status 어휘를 쓰게 한다.
+func pressureStatusLabel(p float64) string {
+	switch correlation.PressureSeverity(p) {
+	case "high":
+		return "degraded"
+	case "elevated":
+		return "warn"
+	case "low":
+		return "ok"
+	default:
+		return "unknown"
+	}
 }
 
 // synthDimension 은 한 자원 차원의 health / pressure / anomaly recording rule 이름을 묶는다. 네 차원의
@@ -168,6 +209,225 @@ func (h *SynthesisHandler) hotspot(ctx context.Context, d synthDimension) *Hotsp
 		}
 	}
 	return hs
+}
+
+// PressureResponse 는 GET /api/v1/pressure 의 typed 응답이다. 한 차원의 node 또는 pod 를 pressure
+// 내림차순으로 랭킹한다.
+type PressureResponse struct {
+	GeneratedAt string          `json:"generated_at"`
+	Window      string          `json:"window"`
+	Dimension   string          `json:"dimension"`
+	Scope       string          `json:"scope"`
+	Ranking     []PressureEntry `json:"ranking"`
+	Summary     string          `json:"summary"`
+}
+
+// PressureEntry 는 pressure 랭킹의 한 항목이다. scope=pod 일 때만 Pod 가 채워진다.
+type PressureEntry struct {
+	Rank     int     `json:"rank"`
+	Node     string  `json:"node"`
+	Pod      string  `json:"pod,omitempty"`
+	Pressure float64 `json:"pressure"`
+	Severity string  `json:"severity"`
+}
+
+// GetPressure godoc
+// @Summary      차원별 압박 drill-down 랭킹
+// @Description  한 자원 차원의 node 또는 pod 를 pressure score 내림차순으로 랭킹해, /health 의 hotspot 에서 한 단계 더 파고든다.
+// @Tags         synthesis
+// @Produce      json
+// @Param        dimension  query  string  true   "압박 차원 (cpu/gpu/memory/network)"
+// @Param        scope      query  string  false  "랭킹 입도 (node/pod, 기본 node)"
+// @Param        limit      query  int     false  "상위 N (1-100, 기본 10)"
+// @Success      200  {object}  PressureResponse
+// @Failure      400  {object}  apicommon.ErrorBody
+// @Router       /api/v1/pressure [get]
+func (h *SynthesisHandler) GetPressure(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	d, ok := lookupDimension(strings.ToLower(strings.TrimSpace(q.Get("dimension"))))
+	if !ok {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_dimension", "dimension 은 cpu / gpu / memory / network 중 하나여야 합니다")
+		return
+	}
+	scope := strings.ToLower(strings.TrimSpace(q.Get("scope")))
+	if scope == "" {
+		scope = "node"
+	}
+	if scope != "node" && scope != "pod" {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_scope", "scope 는 node 또는 pod 여야 합니다")
+		return
+	}
+	limit := 10
+	if v := strings.TrimSpace(q.Get("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	metric := d.nodePressure
+	if scope == "pod" {
+		metric = d.podPressure
+	}
+
+	resp := PressureResponse{
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Window:      "5m",
+		Dimension:   d.name,
+		Scope:       scope,
+		Ranking:     []PressureEntry{},
+	}
+
+	if h.querier != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		if samples, err := h.querier.Query(ctx, fmt.Sprintf("topk(%d, %s)", limit, metric)); err == nil {
+			sort.Slice(samples, func(i, j int) bool {
+				if samples[i].Value != samples[j].Value {
+					return samples[i].Value > samples[j].Value
+				}
+				return podLabel(samples[i].Labels)+samples[i].Labels["node"] < podLabel(samples[j].Labels)+samples[j].Labels["node"]
+			})
+			for i, s := range samples {
+				e := PressureEntry{Rank: i + 1, Node: s.Labels["node"], Pressure: s.Value, Severity: correlation.PressureSeverity(s.Value)}
+				if scope == "pod" {
+					e.Pod = podLabel(s.Labels)
+				}
+				resp.Ranking = append(resp.Ranking, e)
+			}
+		}
+	}
+	resp.Summary = buildPressureSummary(resp)
+	apicommon.WriteJSON(w, resp)
+}
+
+// buildPressureSummary 는 랭킹 상위와 elevated 이상 건수를 한 줄로 요약한다.
+func buildPressureSummary(r PressureResponse) string {
+	if len(r.Ranking) == 0 {
+		return fmt.Sprintf("%s 압박 데이터가 없습니다.", r.Dimension)
+	}
+	elevated := 0
+	for _, e := range r.Ranking {
+		if e.Severity == "high" || e.Severity == "elevated" {
+			elevated++
+		}
+	}
+	top := r.Ranking[0]
+	who := top.Node
+	if top.Pod != "" {
+		who = top.Pod
+	}
+	return fmt.Sprintf("%s 압박 %s 기준 상위 %s(%.2f, %s). elevated 이상 %d건.", r.Dimension, r.Scope, who, top.Pressure, top.Severity, elevated)
+}
+
+// NodeResponse 는 GET /api/v1/node/{node} 의 typed 응답이다. 노드 1대의 차원별 압박과 종합, dominant
+// 차원, top 압박 pod 를 모은다. anomaly 는 cluster 단위 z-score 라 node 로 scope 되지 않아 본 응답에는
+// 싣지 않고 /health 또는 /events 에서 본다.
+type NodeResponse struct {
+	GeneratedAt       string             `json:"generated_at"`
+	Window            string             `json:"window"`
+	Node              string             `json:"node"`
+	Pressure          map[string]float64 `json:"pressure"`
+	Overall           *float64           `json:"overall"`
+	Status            string             `json:"status"`
+	DominantDimension string             `json:"dominant_dimension"`
+	TopPods           []NodePodPressure  `json:"top_pods"`
+	Summary           string             `json:"summary"`
+}
+
+// NodePodPressure 는 노드 위 한 pod 의 차원별 압박이다.
+type NodePodPressure struct {
+	Pod       string  `json:"pod"`
+	Dimension string  `json:"dimension"`
+	Pressure  float64 `json:"pressure"`
+}
+
+// GetNode godoc
+// @Summary      노드 1대 전체 압박 상황
+// @Description  노드의 4 차원 pressure 와 종합(overall), dominant 차원, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다.
+// @Tags         synthesis
+// @Produce      json
+// @Param        node  path  string  true  "노드 이름"
+// @Success      200  {object}  NodeResponse
+// @Failure      400  {object}  apicommon.ErrorBody
+// @Router       /api/v1/node/{node} [get]
+func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
+	node := strings.TrimPrefix(r.URL.Path, "/api/v1/node/")
+	if node == "" || strings.Contains(node, "/") {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node", "경로는 /api/v1/node/{node} 형식이어야 합니다")
+		return
+	}
+
+	resp := NodeResponse{
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Window:      "5m",
+		Node:        node,
+		Pressure:    map[string]float64{},
+		Status:      "unknown",
+		TopPods:     []NodePodPressure{},
+	}
+
+	if h.querier != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		domDim, domVal := "", math.Inf(-1)
+		for _, d := range synthDimensions {
+			if s, err := h.querier.Query(ctx, fmt.Sprintf("%s{node=%q}", d.nodePressure, node)); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
+				resp.Pressure[d.name] = s[0].Value
+				if s[0].Value > domVal {
+					domVal = s[0].Value
+					domDim = d.name
+				}
+			}
+			if ps, err := h.querier.Query(ctx, fmt.Sprintf("topk(3, %s{node=%q})", d.podPressure, node)); err == nil {
+				for _, p := range ps {
+					if pod := podLabel(p.Labels); pod != "" {
+						resp.TopPods = append(resp.TopPods, NodePodPressure{Pod: pod, Dimension: d.name, Pressure: p.Value})
+					}
+				}
+			}
+		}
+		if s, err := h.querier.Query(ctx, fmt.Sprintf("node:pressure_score:5m{node=%q}", node)); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
+			v := s[0].Value
+			resp.Overall = &v
+		}
+		resp.DominantDimension = domDim
+
+		// status 는 가장 압박이 큰 차원 (dominant) 기준으로 판정한다. overall (node:pressure_score) 은
+		// 차원을 블렌딩해 단일 차원 hotspot 을 희석하므로 정보 필드로만 노출하고 status 에는 쓰지 않는다
+		// (예: 한 노드의 memory 가 0.97 이어도 overall 0.24 면 ok 로 가려지는 것을 막는다).
+		if domDim != "" {
+			resp.Status = pressureStatusLabel(domVal)
+		}
+
+		sort.Slice(resp.TopPods, func(i, j int) bool {
+			if resp.TopPods[i].Pressure != resp.TopPods[j].Pressure {
+				return resp.TopPods[i].Pressure > resp.TopPods[j].Pressure
+			}
+			return resp.TopPods[i].Pod < resp.TopPods[j].Pod
+		})
+		if len(resp.TopPods) > 5 {
+			resp.TopPods = resp.TopPods[:5]
+		}
+	}
+
+	resp.Summary = buildNodeSummary(resp)
+	apicommon.WriteJSON(w, resp)
+}
+
+// buildNodeSummary 는 dominant 차원과 status, 주 압박 pod 를 한 줄로 요약한다.
+func buildNodeSummary(r NodeResponse) string {
+	if r.DominantDimension == "" {
+		return fmt.Sprintf("%s 의 압박 데이터가 없습니다.", r.Node)
+	}
+	seg := fmt.Sprintf("%s는 %s가 dominant(%.2f, %s)", r.Node, r.DominantDimension, r.Pressure[r.DominantDimension], r.Status)
+	if len(r.TopPods) > 0 {
+		seg += fmt.Sprintf(". 주 압박 pod %s", r.TopPods[0].Pod)
+	}
+	return seg + "."
 }
 
 // podLabel 은 pod 압박 시계열의 src_namespace / src_pod 를 "ns/pod" 로 합친다. src_pod 가 없으면 빈
