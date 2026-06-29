@@ -21,3 +21,8 @@ spec:
       path: /metrics
       interval: 30s
       scrapeTimeout: 10s
+      # #178 stale 시리즈 근본 정리. rca-summarizer 는 단일 replica Deployment 라 pod/instance 를 drop
+      # 해도 collision 이 없고, 재시작 시 바뀌던 pod/instance stale churn 만 제거된다.
+      metricRelabelings:
+        - regex: pod|instance
+          action: labeldrop

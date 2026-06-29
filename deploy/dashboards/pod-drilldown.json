@@ -1,0 +1,298 @@
+{
+  "title": "pod drill-down",
+  "uid": "pod-drilldown",
+  "tags": [
+    "ebpf",
+    "netobs",
+    "gpuobs",
+    "pod-centric"
+  ],
+  "schemaVersion": 38,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "label": "Datasource"
+      },
+      {
+        "name": "src_namespace",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(netobs_pod_stage_latency_labeled_seconds_count, src_namespace)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false,
+        "label": "Namespace"
+      },
+      {
+        "name": "src_pod",
+        "type": "query",
+        "datasource": "${datasource}",
+        "query": "label_values(netobs_pod_stage_latency_labeled_seconds_count{src_namespace=\"$src_namespace\"}, src_pod)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false,
+        "label": "Pod"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Pod drill-down: $src_namespace / $src_pod",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Latency p99 by stage",
+      "description": "선택 pod 의 수신/송신 stage 별 p99 지연. netobs_pod_stage_latency_labeled_seconds 를 stage 로 분해한다.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "last",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, stage) (rate(netobs_pod_stage_latency_labeled_seconds_bucket{src_namespace=\"$src_namespace\",src_pod=\"$src_pod\"}[5m])))",
+          "legendFormat": "{{stage}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Network throughput by direction/layer",
+      "description": "선택 pod 의 방향(ingress/egress) 과 layer(nic/l4) 별 바이트 처리율.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "last",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (direction, layer) (rate(netobs_pod_bytes_total{src_namespace=\"$src_namespace\",src_pod=\"$src_pod\"}[5m]))",
+          "legendFormat": "{{direction}}/{{layer}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Drop rate by reason",
+      "description": "선택 pod 의 drop reason 별 초당 drop 수. netobs_drop_events_flow_total 기반.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "last",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (drop_reason, drop_category) (rate(netobs_drop_events_flow_total{src_namespace=\"$src_namespace\",src_pod=\"$src_pod\"}[5m]))",
+          "legendFormat": "{{drop_reason}} ({{drop_category}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "GPU utilization & memory",
+      "description": "선택 pod 의 GPU 사용률 p95 와 GPU 메모리 사용 비율. GPU 워크로드 미귀속 시 graceful 하게 비어 있다.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "last",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "pod:gpu_util_p95:5m{src_namespace=\"$src_namespace\",src_pod=\"$src_pod\"}",
+          "legendFormat": "util_p95",
+          "refId": "A"
+        },
+        {
+          "expr": "pod:gpu_memory_utilization_ratio:5m{src_namespace=\"$src_namespace\",src_pod=\"$src_pod\"} * 100",
+          "legendFormat": "mem_util%",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Latency p99 adaptive anomaly band (rolling avg ± 2σ)",
+      "description": "#178 적응형 이상 하이라이트. 선택 pod 의 p99 가 자신의 1h rolling 평균 + 2σ 밴드를 넘으면 이상으로 본다. cluster z-score recording rule(adaptive) 과 달리 pod 자기 기준선으로 self-calibrating 하며 ML 없이 PromQL subquery 로만 산정한다.",
+      "datasource": "${datasource}",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "last",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(netobs_pod_stage_latency_labeled_seconds_bucket{src_namespace=\"$src_namespace\",src_pod=\"$src_pod\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "A"
+        },
+        {
+          "expr": "avg_over_time((histogram_quantile(0.99, sum by (le) (rate(netobs_pod_stage_latency_labeled_seconds_bucket{src_namespace=\"$src_namespace\",src_pod=\"$src_pod\"}[5m]))))[1h:5m])",
+          "legendFormat": "rolling avg(1h)",
+          "refId": "B"
+        },
+        {
+          "expr": "avg_over_time((histogram_quantile(0.99, sum by (le) (rate(netobs_pod_stage_latency_labeled_seconds_bucket{src_namespace=\"$src_namespace\",src_pod=\"$src_pod\"}[5m]))))[1h:5m]) + 2 * stddev_over_time((histogram_quantile(0.99, sum by (le) (rate(netobs_pod_stage_latency_labeled_seconds_bucket{src_namespace=\"$src_namespace\",src_pod=\"$src_pod\"}[5m]))))[1h:5m])",
+          "legendFormat": "avg + 2σ (anomaly 상한)",
+          "refId": "C"
+        }
+      ]
+    }
+  ]
+}
