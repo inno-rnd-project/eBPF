@@ -206,7 +206,7 @@ func (h *SynthesisHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 				}
 				res.hotspot = h.hotspot(ctx, d)
 				res.dh.Hotspot = res.hotspot
-				if s, err := h.querier.Query(ctx, d.zscoreMetric); err == nil && len(s) > 0 {
+				if s, err := h.querier.Query(ctx, d.zscoreMetric); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
 					z := s[0].Value
 					if sev := correlation.ZScoreSeverity(z); sev != "none" {
 						res.anomaly = &Anomaly{Dimension: d.name, ZScore: z, Window: "5m", Severity: sev}

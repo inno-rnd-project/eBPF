@@ -216,7 +216,8 @@ func TestSynthesis_GetEvents(t *testing.T) {
 func TestSynthesis_GetHealth_NaN(t *testing.T) {
 	q := (&fakeQuerier{}).
 		on("cluster:cpu_health_score", sample(math.NaN())).
-		on("node:cpu_pressure_score", sample(math.NaN(), "node", "worker2"))
+		on("node:cpu_pressure_score", sample(math.NaN(), "node", "worker2")).
+		on("cluster:cpu_throttle_zscore", sample(math.NaN()))
 	h := NewSynthesisHandler(q, nil)
 	rec := httptest.NewRecorder()
 	h.GetHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
@@ -230,6 +231,10 @@ func TestSynthesis_GetHealth_NaN(t *testing.T) {
 	cpu := resp.Dimensions["cpu"]
 	if cpu.Status != "unknown" || cpu.Health != nil || cpu.Hotspot != nil {
 		t.Errorf("cpu=%+v want unknown/nil health/nil hotspot (NaN graceful)", cpu)
+	}
+	// NaN z-score 는 anomaly 로 만들어지면 안 된다 (가드 + ZScoreSeverity none 이중 안전).
+	if len(resp.Anomalies) != 0 {
+		t.Errorf("anomalies=%+v want 0 (NaN z-score 제외)", resp.Anomalies)
 	}
 }
 
