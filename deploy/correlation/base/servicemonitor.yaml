@@ -24,3 +24,8 @@ spec:
       # 메트릭 (reconcile_duration, last_success_timestamp) 은 30s scrape 로 충분한 해상도를 얻는다.
       interval: 30s
       scrapeTimeout: 10s
+      # #178 stale 시리즈 근본 정리. correlation-exporter 는 단일 replica Deployment 라 pod/instance 를
+      # drop 해도 인스턴스 collision 이 없고, 재시작 시 바뀌던 pod/instance stale churn 만 제거된다.
+      metricRelabelings:
+        - regex: pod|instance
+          action: labeldrop

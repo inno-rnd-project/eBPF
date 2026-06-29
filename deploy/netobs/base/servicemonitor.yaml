@@ -19,3 +19,18 @@ spec:
       path: /metrics
       interval: 15s
       scrapeTimeout: 10s
+      # #178 stale 시리즈 근본 정리. pod 와 instance 는 agent pod 재시작마다 값이 바뀌어 (pod 이름
+      # 랜덤 suffix, instance IP:port) 메트릭에 stale 시리즈 churn 을 유발한다. netobs-agent 는
+      # DaemonSet (노드당 1) 이라 node 라벨이 없는 self-health / legacy 메트릭 (netobs_bpf_program_
+      # attach_total, netobs_informer_sync_lag_seconds 등) 은 pod/instance 로만 인스턴스가 구분되므로,
+      # 먼저 __meta_kubernetes_pod_node_name 을 node 로 부여해 노드별로 구분되게 한다. honorLabels:
+      # true 로 두어 data 메트릭이 이미 보유한 node (관측 노드 = 자기 노드) 가 보존되어 exported_node
+      # 로 밀려나지 않게 한 뒤 pod 와 instance 를 labeldrop 한다.
+      honorLabels: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+          action: replace
+      metricRelabelings:
+        - regex: pod|instance
+          action: labeldrop
