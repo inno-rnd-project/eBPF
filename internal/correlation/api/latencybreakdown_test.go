@@ -1,0 +1,80 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+// TestLatencyBreakdown_Workload 는 scope=workload 가 (workload, stage) p99 를 대상별로 묶어 단계 분해와
+// 지배 단계, share 를 만들고, 대상을 worst stage p99 내림차순으로 정렬하는지 검증한다.
+func TestLatencyBreakdown_Workload(t *testing.T) {
+	q := (&fakeQuerier{}).on("netobs_stage_latency_labeled_seconds_bucket",
+		sample(0.001, "src_namespace", "default", "src_workload", "app", "stage", "sendmsg_ret"),
+		sample(0.005, "src_namespace", "default", "src_workload", "app", "stage", "to_veth"),
+		sample(0.002, "src_namespace", "default", "src_workload", "other", "stage", "rcv_app"))
+
+	h := NewSynthesisHandler(q, nil)
+	rec := httptest.NewRecorder()
+	h.GetLatencyBreakdown(rec, httptest.NewRequest(http.MethodGet, "/api/v1/latency-breakdown", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp LatencyBreakdownResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Scope != "workload" || len(resp.Targets) != 2 {
+		t.Fatalf("scope=%q targets=%d want workload/2", resp.Scope, len(resp.Targets))
+	}
+	// app(worst 0.005) 이 other(worst 0.002) 보다 먼저.
+	app := resp.Targets[0]
+	if app.Workload != "app" || app.Namespace != "default" || app.DominantStage != "to_veth" {
+		t.Errorf("target[0]=%+v want default/app dominant to_veth", app)
+	}
+	if len(app.Stages) != 2 || app.Stages[0].Stage != "to_veth" || app.Stages[0].Share <= 0.8 {
+		t.Errorf("app stages=%+v want to_veth 먼저 share>0.8", app.Stages)
+	}
+	if resp.Targets[1].Workload != "other" {
+		t.Errorf("target[1]=%+v want other", resp.Targets[1])
+	}
+}
+
+// TestLatencyBreakdown_InvalidScope 는 알 수 없는 scope 에 400 을 돌려주는지 검증한다.
+func TestLatencyBreakdown_InvalidScope(t *testing.T) {
+	h := NewSynthesisHandler(&fakeQuerier{}, nil)
+	rec := httptest.NewRecorder()
+	h.GetLatencyBreakdown(rec, httptest.NewRequest(http.MethodGet, "/api/v1/latency-breakdown?scope=disk", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status=%d want 400 (invalid scope)", rec.Code)
+	}
+}
+
+// TestLatencyBreakdown_InvalidDirection 은 허용되지 않은 direction 에 400 을 돌려주는지 검증한다 (PromQL
+// injection 방지용 리터럴 화이트리스트).
+func TestLatencyBreakdown_InvalidDirection(t *testing.T) {
+	h := NewSynthesisHandler(&fakeQuerier{}, nil)
+	rec := httptest.NewRecorder()
+	h.GetLatencyBreakdown(rec, httptest.NewRequest(http.MethodGet, `/api/v1/latency-breakdown?direction=egress"}or(`, nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status=%d want 400 (invalid direction)", rec.Code)
+	}
+}
+
+// TestLatencyBreakdown_NilQuerier 는 querier 가 nil 일 때 panic 없이 빈 응답을 돌려주는지 검증한다.
+func TestLatencyBreakdown_NilQuerier(t *testing.T) {
+	h := NewSynthesisHandler(nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetLatencyBreakdown(rec, httptest.NewRequest(http.MethodGet, "/api/v1/latency-breakdown", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp LatencyBreakdownResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Targets) != 0 {
+		t.Errorf("targets=%d want 0 (nil querier)", len(resp.Targets))
+	}
+}
