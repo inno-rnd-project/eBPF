@@ -45,3 +45,22 @@ tests:
             exp_annotations:
               summary: "GPU idle with NCCL collective stall on n1 (score=1)"
               description: "NCCL collective stall score is 1 (threshold 0.7) on node n1 while a GPU is idle. Ranks are spending wall-clock in collective wait (allreduce/broadcast sync). Inspect gpuobs_nccl_collective_duration_seconds. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
+
+  # GPUIdleWithThermal (#190): thermal correlation score 0.95 → node:gpu_thermal_score 0.95 > 0.7, GPU 유휴.
+  - interval: 30s
+    input_series:
+      - series: 'gpuobs_thermal_correlation_score:5m{node="n1",gpu_uuid="g1"}'
+        values: '0.95x22'
+      - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
+        values: '5x22'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GPUIdleWithThermal
+        exp_alerts:
+          - exp_labels:
+              node: n1
+              severity: warning
+              component: correlation
+            exp_annotations:
+              summary: "GPU idle with thermal throttle on n1 (score=0.95)"
+              description: "GPU thermal score is 0.95 (threshold 0.7) on node n1 while a GPU is idle. Temperature and hw_thermal_slowdown throttle move together, so heat is capping clocks and GPU utilization. Inspect gpuobs_device_temperature_celsius and cooling. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."

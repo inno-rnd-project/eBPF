@@ -178,6 +178,46 @@
                 }
             }
         },
+        "/api/v1/gpu-idle": {
+            "get": {
+                "description": "노드별 GPU 유휴 비율과 유휴 원인 가중치 순위, dominant cause 를 합성한다. scope=cluster 는 cluster 단위 원인, scope=pod 는 victim Pod 단위 원인을 돌려준다. cause weight 는 GPU idle \u003e 0.5 일 때만 산출되며, 미만이면 cluster 가 null 로 graceful 처리된다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "synthesis"
+                ],
+                "summary": "GPU 유휴 원인 분석",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "cluster 또는 pod (기본 cluster)",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "scope=pod 상위 N victim (1-100, 기본 10)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.GpuIdleResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/health": {
             "get": {
                 "description": "4 자원 차원(cpu/gpu/memory/network)의 health 점수와 status, 압박이 집중된 node/pod(hotspot), 전체 dominant 압박 지점, z-score 이상, 한 줄 요약을 한 응답으로 돌려준다. 데이터 부재는 null + status=unknown 으로 graceful 처리한다.",
@@ -669,6 +709,100 @@
                     "type": "string"
                 },
                 "window": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.GpuCauseWeight": {
+            "type": "object",
+            "properties": {
+                "cause": {
+                    "type": "string"
+                },
+                "weight": {
+                    "type": "number"
+                }
+            }
+        },
+        "internal_correlation_api.GpuIdleAttribution": {
+            "type": "object",
+            "properties": {
+                "causes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.GpuCauseWeight"
+                    }
+                },
+                "dominant_cause": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.GpuIdleResponse": {
+            "type": "object",
+            "properties": {
+                "cluster": {
+                    "$ref": "#/definitions/internal_correlation_api.GpuIdleAttribution"
+                },
+                "generated_at": {
+                    "type": "string"
+                },
+                "nodes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.GpuNodeIdle"
+                    }
+                },
+                "scope": {
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "victims": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.GpuVictimIdle"
+                    }
+                },
+                "window": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.GpuNodeIdle": {
+            "type": "object",
+            "properties": {
+                "idle": {
+                    "type": "number"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "severity": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.GpuVictimIdle": {
+            "type": "object",
+            "properties": {
+                "causes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.GpuCauseWeight"
+                    }
+                },
+                "dominant_cause": {
+                    "type": "string"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "pod": {
                     "type": "string"
                 }
             }

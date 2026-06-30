@@ -44,9 +44,9 @@ tests:
         exp_samples:
           - labels: 'gpu_idle_cause_weight:5m{cause="network_pressure"}'
             value: 1
-      # dominant cause = network_pressure (weight 1 + tie-breaker offset 2e-6)
+      # dominant cause = network_pressure (weight 1 + tie-breaker offset 3e-6, #190 thermal 추가로 8 cause)
       - expr: cluster:gpu_idle_dominant_cause:5m
         eval_time: 5m
         exp_samples:
           - labels: 'cluster:gpu_idle_dominant_cause:5m{cause="network_pressure"}'
-            value: 1.000002
+            value: 1.000003
