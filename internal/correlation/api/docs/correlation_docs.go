@@ -376,6 +376,26 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "/api/v1/nodes": {
+            "get": {
+                "description": "노드별 이름, uid, 내부/외부 IP, Ready 상태, 버전, capacity(cpu/memory/gpu)를 kube-state-metrics 기반으로 돌려준다. 다른 API의 node 라벨과 동일 키로 매핑한다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "노드 인벤토리",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.NodesResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/noisy-neighbor": {
             "get": {
                 "description": "victim/suspect 와 dimension 과 rank 필터 후 pagination 적용한 noisy neighbor 시리즈 반환",
@@ -453,6 +473,34 @@ const docTemplatecorrelation = `{
                         "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/pods": {
+            "get": {
+                "description": "파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by), priority, phase, qos를 kube-state-metrics 기반으로 돌려준다. ?namespace 로 필터한다. 다른 API의 src_namespace/src_pod/pod_uid와 동일 키로 매핑한다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "파드 인벤토리",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "namespace 필터 (생략 시 전체)",
+                        "name": "namespace",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.PodsResponse"
                         }
                     }
                 }
@@ -926,6 +974,55 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "internal_correlation_api.NodeCapacity": {
+            "type": "object",
+            "properties": {
+                "cpu": {
+                    "type": "number"
+                },
+                "gpu": {
+                    "type": "number"
+                },
+                "memory_bytes": {
+                    "type": "number"
+                }
+            }
+        },
+        "internal_correlation_api.NodeInventory": {
+            "type": "object",
+            "properties": {
+                "capacity": {
+                    "$ref": "#/definitions/internal_correlation_api.NodeCapacity"
+                },
+                "external_ip": {
+                    "type": "string"
+                },
+                "internal_ip": {
+                    "type": "string"
+                },
+                "kernel_version": {
+                    "type": "string"
+                },
+                "kubelet_version": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "os_image": {
+                    "type": "string"
+                },
+                "ready": {
+                    "type": "boolean"
+                },
+                "runtime_version": {
+                    "type": "string"
+                },
+                "uid": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_correlation_api.NodePodPressure": {
             "type": "object",
             "properties": {
@@ -979,6 +1076,20 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "internal_correlation_api.NodesResponse": {
+            "type": "object",
+            "properties": {
+                "generated_at": {
+                    "type": "string"
+                },
+                "nodes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.NodeInventory"
+                    }
+                }
+            }
+        },
         "internal_correlation_api.NoisyNeighborListResponse": {
             "type": "object",
             "properties": {
@@ -990,6 +1101,58 @@ const docTemplatecorrelation = `{
                 },
                 "page": {
                     "$ref": "#/definitions/netobs_internal_apicommon.Page"
+                }
+            }
+        },
+        "internal_correlation_api.PodInventory": {
+            "type": "object",
+            "properties": {
+                "host_ip": {
+                    "type": "string"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "phase": {
+                    "type": "string"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "pod_ip": {
+                    "type": "string"
+                },
+                "priority_class": {
+                    "type": "string"
+                },
+                "qos_class": {
+                    "type": "string"
+                },
+                "uid": {
+                    "type": "string"
+                },
+                "workload_kind": {
+                    "type": "string"
+                },
+                "workload_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.PodsResponse": {
+            "type": "object",
+            "properties": {
+                "generated_at": {
+                    "type": "string"
+                },
+                "pods": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.PodInventory"
+                    }
                 }
             }
         },
