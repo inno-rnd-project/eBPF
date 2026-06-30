@@ -97,7 +97,7 @@
       "id": 1,
       "type": "stat",
       "title": "GPU health",
-      "description": "cluster:gpu_health_score:5m. 1 healthy, 0 worst. throttle reason 합산 기준.",
+      "description": "cluster:gpu_health_score:5m. 1 healthy, 0 worst. GPU 사용률(node:gpu_util_ratio:5m) cluster 평균 기준.",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 6,

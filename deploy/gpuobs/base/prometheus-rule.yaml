@@ -839,18 +839,15 @@ spec:
       interval: 30s
       rules:
         # cluster:gpu_health_score:5m
-        # cluster 의 어느 GPU 라도 throttle reason 이 동시에 다수 활성이면 health 가 떨어진다.
-        # gpuobs_device_throttle_active 는 reason 별 0/1 gauge 다. 노드의 GPU 별로 reason 합을 먼저
-        # 산출한 뒤 (sum by(node, gpu_uuid)) cluster 최대값을 reason 9 종으로 normalize 한다. 노드
-        # 단위 sum 만으로 산출하면 multi-GPU 노드에서 GPU 수가 곱해져 worst case 가 부풀려진다.
+        # GPU health 를 사용량 기준으로 본다. GPU 가 잘 쓰이고 있으면 healthy (1), 유휴면 worst (0)
+        # 다. 이 프로젝트의 전제 (유휴 GPU 가 곧 문제) 와 정합하며, throttle reason 기반 정의가 GPU 가
+        # 100 % 유휴여도 health 를 높게 보고하던 오도를 없앤다. node:gpu_util_ratio:5m (GPU 별 5 분
+        # 평균 사용률 0-1) 의 cluster 평균을 취한다. cpu / memory / network health 가 pressure 역수인
+        # 것과 달리 GPU 는 사용률 자체가 health 라 high = healthy 다. ok / warn / degraded 임계는
+        # HealthStatus (0.8 / 0.5) 가 적용해 사용률이 임계 미만이면 degraded 로 분류된다. GPU 미설치
+        # cluster 에서는 base series 가 비어 score 가 산출되지 않고 dashboard 에서 N/A 로 표시된다.
         - record: cluster:gpu_health_score:5m
-          expr: |
-            1 - clamp_max(
-              max(
-                sum by(node, gpu_uuid) (gpuobs_device_throttle_active)
-              ) / 9,
-              1
-            )
+          expr: clamp_max(avg(node:gpu_util_ratio:5m), 1)
 
         # cluster:cpu_health_score:5m
         # cluster 전체 Pod 의 cpu_throttle_score p95 의 inversion. p95 가 cluster 의 상위 5 % Pod 만
