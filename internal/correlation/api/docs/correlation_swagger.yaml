@@ -94,6 +94,67 @@ definitions:
       window:
         type: string
     type: object
+  internal_correlation_api.GpuCauseWeight:
+    properties:
+      cause:
+        type: string
+      weight:
+        type: number
+    type: object
+  internal_correlation_api.GpuIdleAttribution:
+    properties:
+      causes:
+        items:
+          $ref: '#/definitions/internal_correlation_api.GpuCauseWeight'
+        type: array
+      dominant_cause:
+        type: string
+    type: object
+  internal_correlation_api.GpuIdleResponse:
+    properties:
+      cluster:
+        $ref: '#/definitions/internal_correlation_api.GpuIdleAttribution'
+      generated_at:
+        type: string
+      nodes:
+        items:
+          $ref: '#/definitions/internal_correlation_api.GpuNodeIdle'
+        type: array
+      scope:
+        type: string
+      summary:
+        type: string
+      victims:
+        items:
+          $ref: '#/definitions/internal_correlation_api.GpuVictimIdle'
+        type: array
+      window:
+        type: string
+    type: object
+  internal_correlation_api.GpuNodeIdle:
+    properties:
+      idle:
+        type: number
+      node:
+        type: string
+      severity:
+        type: string
+    type: object
+  internal_correlation_api.GpuVictimIdle:
+    properties:
+      causes:
+        items:
+          $ref: '#/definitions/internal_correlation_api.GpuCauseWeight'
+        type: array
+      dominant_cause:
+        type: string
+      namespace:
+        type: string
+      node:
+        type: string
+      pod:
+        type: string
+    type: object
   internal_correlation_api.HealthResponse:
     properties:
       anomalies:
@@ -662,6 +723,34 @@ paths:
           schema:
             $ref: '#/definitions/internal_correlation_api.EventsResponse'
       summary: 이벤트 분석 (anomaly + noisy-neighbor 종합)
+      tags:
+      - synthesis
+  /api/v1/gpu-idle:
+    get:
+      description: 노드별 GPU 유휴 비율과 유휴 원인 가중치 순위, dominant cause 를 합성한다. scope=cluster
+        는 cluster 단위 원인, scope=pod 는 victim Pod 단위 원인을 돌려준다. cause weight 는 GPU idle
+        > 0.5 일 때만 산출되며, 미만이면 cluster 가 null 로 graceful 처리된다.
+      parameters:
+      - description: cluster 또는 pod (기본 cluster)
+        in: query
+        name: scope
+        type: string
+      - description: scope=pod 상위 N victim (1-100, 기본 10)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.GpuIdleResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+      summary: GPU 유휴 원인 분석
       tags:
       - synthesis
   /api/v1/health:
