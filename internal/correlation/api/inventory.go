@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"netobs/internal/apicommon"
+	"netobs/internal/correlation"
 )
 
 // 인벤토리 API 는 다른 진단 API 가 돌려주는 node / src_namespace / src_pod / pod_uid 식별자를 사람이
@@ -64,6 +66,25 @@ type PodsResponse struct {
 	Pods        []PodInventory `json:"pods"`
 }
 
+// queryParallel 은 여러 instant query 를 goroutine 으로 동시에 실행해 결과를 입력 순서대로 돌려준다.
+// 각 goroutine 이 out 슬라이스의 자기 인덱스에만 써 mutex 없이 race-free 하고, 호출부는 배리어 뒤에서
+// 순차로 병합한다. 실패한 query 는 nil 슬라이스로 남는다.
+func (h *SynthesisHandler) queryParallel(ctx context.Context, queries ...string) [][]correlation.InstantSample {
+	out := make([][]correlation.InstantSample, len(queries))
+	var wg sync.WaitGroup
+	for i, q := range queries {
+		wg.Add(1)
+		go func(i int, q string) {
+			defer wg.Done()
+			if s, err := h.querier.Query(ctx, q); err == nil {
+				out[i] = s
+			}
+		}(i, q)
+	}
+	wg.Wait()
+	return out
+}
+
 // GetNodes godoc
 // @Summary      노드 인벤토리
 // @Description  노드별 이름, uid, 내부/외부 IP, Ready 상태, 버전, capacity(cpu/memory/gpu)를 kube-state-metrics 기반으로 돌려준다. 다른 API의 node 라벨과 동일 키로 매핑한다.
@@ -80,6 +101,14 @@ func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// 4개 메트릭을 동시에 조회하고 (I/O 병렬), 맵 병합은 배리어 뒤에서 순차로 한다.
+	res := h.queryParallel(ctx,
+		"kube_node_info",
+		`kube_node_status_addresses{type="ExternalIP"}`,
+		`kube_node_status_condition{condition="Ready",status="true"}`,
+		"kube_node_status_capacity",
+	)
+
 	nodes := map[string]*NodeInventory{}
 	get := func(name string) *NodeInventory {
 		n, ok := nodes[name]
@@ -91,53 +120,45 @@ func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// kube_node_info: uid(system_uuid) + 내부 IP + 버전. base set.
-	if s, err := h.querier.Query(ctx, "kube_node_info"); err == nil {
-		for _, sm := range s {
-			name := sm.Labels["node"]
-			if name == "" {
-				continue
-			}
-			n := get(name)
-			n.UID = sm.Labels["system_uuid"]
-			n.InternalIP = sm.Labels["internal_ip"]
-			n.KubeletVersion = sm.Labels["kubelet_version"]
-			n.RuntimeVersion = sm.Labels["container_runtime_version"]
-			n.KernelVersion = sm.Labels["kernel_version"]
-			n.OSImage = sm.Labels["os_image"]
+	for _, sm := range res[0] {
+		name := sm.Labels["node"]
+		if name == "" {
+			continue
 		}
+		n := get(name)
+		n.UID = sm.Labels["system_uuid"]
+		n.InternalIP = sm.Labels["internal_ip"]
+		n.KubeletVersion = sm.Labels["kubelet_version"]
+		n.RuntimeVersion = sm.Labels["container_runtime_version"]
+		n.KernelVersion = sm.Labels["kernel_version"]
+		n.OSImage = sm.Labels["os_image"]
 	}
 	// 외부 IP 는 kube_node_status_addresses{type="ExternalIP"} 에만 있다.
-	if s, err := h.querier.Query(ctx, `kube_node_status_addresses{type="ExternalIP"}`); err == nil {
-		for _, sm := range s {
-			if name := sm.Labels["node"]; name != "" {
-				get(name).ExternalIP = sm.Labels["address"]
-			}
+	for _, sm := range res[1] {
+		if name := sm.Labels["node"]; name != "" {
+			get(name).ExternalIP = sm.Labels["address"]
 		}
 	}
 	// Ready 조건 (value 1 = ready).
-	if s, err := h.querier.Query(ctx, `kube_node_status_condition{condition="Ready",status="true"}`); err == nil {
-		for _, sm := range s {
-			if name := sm.Labels["node"]; name != "" && sm.Value == 1 {
-				get(name).Ready = true
-			}
+	for _, sm := range res[2] {
+		if name := sm.Labels["node"]; name != "" && sm.Value == 1 {
+			get(name).Ready = true
 		}
 	}
 	// capacity: cpu / memory / gpu.
-	if s, err := h.querier.Query(ctx, "kube_node_status_capacity"); err == nil {
-		for _, sm := range s {
-			name := sm.Labels["node"]
-			if name == "" || math.IsNaN(sm.Value) {
-				continue
-			}
-			v := sm.Value
-			switch sm.Labels["resource"] {
-			case "cpu":
-				get(name).Capacity.CPU = &v
-			case "memory":
-				get(name).Capacity.MemoryBytes = &v
-			case "nvidia_com_gpu":
-				get(name).Capacity.GPU = &v
-			}
+	for _, sm := range res[3] {
+		name := sm.Labels["node"]
+		if name == "" || math.IsNaN(sm.Value) {
+			continue
+		}
+		v := sm.Value
+		switch sm.Labels["resource"] {
+		case "cpu":
+			get(name).Capacity.CPU = &v
+		case "memory":
+			get(name).Capacity.MemoryBytes = &v
+		case "nvidia_com_gpu":
+			get(name).Capacity.GPU = &v
 		}
 	}
 
@@ -166,49 +187,46 @@ func (h *SynthesisHandler) GetPods(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// base(kube_pod_info)와 enrich(phase/qos)를 동시에 조회하고 배리어 뒤에서 uid join 으로 병합한다.
+	res := h.queryParallel(ctx, "kube_pod_info", "kube_pod_status_phase", "kube_pod_status_qos_class")
+
 	// kube_pod_info: base set. namespace 필터는 PromQL injection 을 피해 Go 측에서 적용한다.
 	pods := []*PodInventory{}
 	byUID := map[string]*PodInventory{}
-	if s, err := h.querier.Query(ctx, "kube_pod_info"); err == nil {
-		for _, sm := range s {
-			ns := sm.Labels["namespace"]
-			pod := sm.Labels["pod"]
-			if pod == "" || (nsFilter != "" && ns != nsFilter) {
-				continue
-			}
-			p := &PodInventory{
-				Namespace:     ns,
-				Pod:           pod,
-				UID:           sm.Labels["uid"],
-				PodIP:         sm.Labels["pod_ip"],
-				HostIP:        sm.Labels["host_ip"],
-				Node:          sm.Labels["node"],
-				WorkloadKind:  sm.Labels["created_by_kind"],
-				WorkloadName:  sm.Labels["created_by_name"],
-				PriorityClass: sm.Labels["priority_class"],
-			}
-			pods = append(pods, p)
-			if p.UID != "" {
-				byUID[p.UID] = p
-			}
+	for _, sm := range res[0] {
+		ns := sm.Labels["namespace"]
+		pod := sm.Labels["pod"]
+		if pod == "" || (nsFilter != "" && ns != nsFilter) {
+			continue
+		}
+		p := &PodInventory{
+			Namespace:     ns,
+			Pod:           pod,
+			UID:           sm.Labels["uid"],
+			PodIP:         sm.Labels["pod_ip"],
+			HostIP:        sm.Labels["host_ip"],
+			Node:          sm.Labels["node"],
+			WorkloadKind:  sm.Labels["created_by_kind"],
+			WorkloadName:  sm.Labels["created_by_name"],
+			PriorityClass: sm.Labels["priority_class"],
+		}
+		pods = append(pods, p)
+		if p.UID != "" {
+			byUID[p.UID] = p
 		}
 	}
 	// phase / qos 는 uid 로만 라벨링되므로 base 의 uid 집합만 enrich 한다 (value 1 = 활성).
-	if s, err := h.querier.Query(ctx, "kube_pod_status_phase"); err == nil {
-		for _, sm := range s {
-			if sm.Value == 1 {
-				if p, ok := byUID[sm.Labels["uid"]]; ok {
-					p.Phase = sm.Labels["phase"]
-				}
+	for _, sm := range res[1] {
+		if sm.Value == 1 {
+			if p, ok := byUID[sm.Labels["uid"]]; ok {
+				p.Phase = sm.Labels["phase"]
 			}
 		}
 	}
-	if s, err := h.querier.Query(ctx, "kube_pod_status_qos_class"); err == nil {
-		for _, sm := range s {
-			if sm.Value == 1 {
-				if p, ok := byUID[sm.Labels["uid"]]; ok {
-					p.QOSClass = sm.Labels["qos_class"]
-				}
+	for _, sm := range res[2] {
+		if sm.Value == 1 {
+			if p, ok := byUID[sm.Labels["uid"]]; ok {
+				p.QOSClass = sm.Labels["qos_class"]
 			}
 		}
 	}

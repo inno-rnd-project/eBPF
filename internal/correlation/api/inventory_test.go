@@ -53,7 +53,9 @@ func TestInventory_Pods(t *testing.T) {
 		t.Fatalf("status=%d want 200", rec.Code)
 	}
 	var resp PodsResponse
-	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if len(resp.Pods) != 2 || resp.Pods[0].Namespace != "default" || resp.Pods[1].Namespace != "kube-system" {
 		t.Fatalf("pods=%+v want default, kube-system 순", resp.Pods)
 	}
@@ -70,7 +72,9 @@ func TestInventory_Pods_NamespaceFilter(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.GetPods(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pods?namespace=default", nil))
 	var resp PodsResponse
-	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if len(resp.Pods) != 1 || resp.Pods[0].Pod != "trainer" {
 		t.Errorf("pods=%+v want default/trainer 1건", resp.Pods)
 	}
