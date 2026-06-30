@@ -211,7 +211,14 @@ func (h *SynthesisHandler) victimIdleAttribution(ctx context.Context, limit int)
 		out = append(out, *v)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return topCauseWeight(out[i].Causes) > topCauseWeight(out[j].Causes)
+		wi, wj := topCauseWeight(out[i].Causes), topCauseWeight(out[j].Causes)
+		if wi != wj {
+			return wi > wj
+		}
+		if out[i].Namespace != out[j].Namespace {
+			return out[i].Namespace < out[j].Namespace
+		}
+		return out[i].Pod < out[j].Pod
 	})
 	if len(out) > limit {
 		out = out[:limit]

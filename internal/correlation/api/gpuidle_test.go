@@ -101,6 +101,29 @@ func TestGpuIdle_Pod(t *testing.T) {
 	}
 }
 
+// TestGpuIdle_Pod_TieBreaker 는 top cause weight 가 동률인 victim 들이 namespace·pod 사전순으로
+// 결정적으로 정렬되는지 검증한다. sort.Slice 가 unstable 이라 타이브레이커가 없으면 순서가 비결정적이다.
+func TestGpuIdle_Pod_TieBreaker(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("node:gpu_idle:5m", sample(0.9, "node", "gpu")).
+		on("pod:gpu_idle_cause_weight:5m",
+			sample(0.5, "node", "gpu", "victim_namespace", "default", "victim_pod", "bbb", "cause", "memory_pressure"),
+			sample(0.5, "node", "gpu", "victim_namespace", "default", "victim_pod", "aaa", "cause", "memory_pressure")).
+		on("gpu_idle_cause_weight:5m", sample(0.5, "cause", "memory_pressure"))
+
+	h := NewSynthesisHandler(q, nil)
+	rec := httptest.NewRecorder()
+	h.GetGpuIdle(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-idle?scope=pod", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp GpuIdleResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if len(resp.Victims) != 2 || resp.Victims[0].Pod != "aaa" || resp.Victims[1].Pod != "bbb" {
+		t.Errorf("victims=%+v want 동률 시 aaa, bbb 순 (사전순 타이브레이커)", resp.Victims)
+	}
+}
+
 // TestGpuIdle_InvalidScope 는 알 수 없는 scope 에 400 을 돌려주는지 검증한다.
 func TestGpuIdle_InvalidScope(t *testing.T) {
 	h := NewSynthesisHandler(&fakeQuerier{}, nil)
