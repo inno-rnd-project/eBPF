@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"netobs/internal/correlation"
@@ -19,7 +20,22 @@ type fakeQuerier struct {
 		contains string
 		samples  []correlation.InstantSample
 	}
+	mu        sync.Mutex
 	lastQuery string
+	queries   []string
+}
+
+// sawQuery 는 실행된 쿼리 중 sub 를 포함하는 것이 있는지 돌려준다. queryParallel 이 Query 를 동시
+// 호출하므로 mutex 로 보호한다.
+func (f *fakeQuerier) sawQuery(sub string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, q := range f.queries {
+		if strings.Contains(q, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fakeQuerier) on(contains string, samples ...correlation.InstantSample) *fakeQuerier {
@@ -31,7 +47,10 @@ func (f *fakeQuerier) on(contains string, samples ...correlation.InstantSample) 
 }
 
 func (f *fakeQuerier) Query(_ context.Context, query string) ([]correlation.InstantSample, error) {
+	f.mu.Lock()
 	f.lastQuery = query
+	f.queries = append(f.queries, query)
+	f.mu.Unlock()
 	for _, r := range f.rules {
 		if strings.Contains(query, r.contains) {
 			return r.samples, nil
