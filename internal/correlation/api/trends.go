@@ -86,8 +86,16 @@ func (h *TrendsHandler) GetTrends(w http.ResponseWriter, r *http.Request) {
 		apicommon.WriteError(w, http.StatusBadRequest, "invalid_signal", "signal 은 noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity 중 하나여야 합니다")
 		return
 	}
-	rng := parseDurationParam(q.Get("range"), time.Hour, 24*time.Hour)
-	step := parseDurationParam(q.Get("step"), 5*time.Minute, time.Hour)
+	rng, err := parseDurationParam(q.Get("range"), time.Hour, 24*time.Hour)
+	if err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_range", "range 파싱 실패: "+err.Error())
+		return
+	}
+	step, err := parseDurationParam(q.Get("step"), 5*time.Minute, time.Hour)
+	if err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_step", "step 파싱 실패: "+err.Error())
+		return
+	}
 	if step < 30*time.Second {
 		step = 30 * time.Second
 	}
@@ -116,19 +124,22 @@ func (h *TrendsHandler) GetTrends(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseDurationParam 은 duration 문자열을 파싱해 [0, max] 로 clamp 한다. 파싱 실패나 비양수면 def 를 쓴다.
-func parseDurationParam(v string, def, max time.Duration) time.Duration {
+func parseDurationParam(v string, def, max time.Duration) (time.Duration, error) {
 	v = strings.TrimSpace(v)
 	if v == "" {
-		return def
+		return def, nil
 	}
 	d, err := time.ParseDuration(v)
-	if err != nil || d <= 0 {
-		return def
+	if err != nil {
+		return 0, err
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("duration must be positive: %s", v)
 	}
 	if d > max {
-		return max
+		return max, nil
 	}
-	return d
+	return d, nil
 }
 
 func buildTrendSeries(series []correlation.LabeledSeries) []TrendSeries {

@@ -94,6 +94,21 @@ func TestTrends_InvalidSignal(t *testing.T) {
 	}
 }
 
+// TestTrends_InvalidRange 는 파싱 불가하거나 비양수인 range/step 에 400 을 돌려주는지 검증한다.
+func TestTrends_InvalidRange(t *testing.T) {
+	h := NewTrendsHandler(&fakeFetcher{series: trendSeries()})
+	for _, path := range []string{
+		"/api/v1/trends?signal=noisy_neighbor_intensity&range=garbage",
+		"/api/v1/trends?signal=noisy_neighbor_intensity&step=-5m",
+	} {
+		rec := httptest.NewRecorder()
+		h.GetTrends(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s status=%d want 400", path, rec.Code)
+		}
+	}
+}
+
 // TestTrends_QueryError 는 range 쿼리 실패 시 500 을 돌려주는지 검증한다.
 func TestTrends_QueryError(t *testing.T) {
 	h := NewTrendsHandler(&fakeFetcher{err: errors.New("prometheus unreachable")})
