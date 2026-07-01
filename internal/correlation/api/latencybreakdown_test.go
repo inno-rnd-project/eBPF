@@ -1,11 +1,22 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"netobs/internal/correlation"
 )
+
+// errQuerier 는 항상 에러를 돌려주는 InstantQuerier 더블이다.
+type errQuerier struct{}
+
+func (errQuerier) Query(context.Context, string) ([]correlation.InstantSample, error) {
+	return nil, errors.New("prometheus unreachable")
+}
 
 // TestLatencyBreakdown_Workload 는 scope=workload 가 (workload, stage) p99 를 대상별로 묶어 단계 분해와
 // 지배 단계, share 를 만들고, 대상을 worst stage p99 내림차순으로 정렬하는지 검증한다.
@@ -59,6 +70,16 @@ func TestLatencyBreakdown_InvalidDirection(t *testing.T) {
 	h.GetLatencyBreakdown(rec, httptest.NewRequest(http.MethodGet, `/api/v1/latency-breakdown?direction=egress"}or(`, nil))
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status=%d want 400 (invalid direction)", rec.Code)
+	}
+}
+
+// TestLatencyBreakdown_QueryError 는 Prometheus 쿼리 실패 시 빈 200 이 아니라 500 을 돌려주는지 검증한다.
+func TestLatencyBreakdown_QueryError(t *testing.T) {
+	h := NewSynthesisHandler(errQuerier{}, nil)
+	rec := httptest.NewRecorder()
+	h.GetLatencyBreakdown(rec, httptest.NewRequest(http.MethodGet, "/api/v1/latency-breakdown", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status=%d want 500 (query 실패)", rec.Code)
 	}
 }
 

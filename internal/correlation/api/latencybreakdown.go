@@ -110,9 +110,12 @@ func (h *SynthesisHandler) GetLatencyBreakdown(w http.ResponseWriter, r *http.Re
 			selector = fmt.Sprintf("{direction=%q}", direction)
 		}
 		query := fmt.Sprintf("histogram_quantile(0.99, sum by(%s) (rate(%s%s[5m])))", sc.byLabels, sc.metric, selector)
-		if s, err := h.querier.Query(ctx, query); err == nil {
-			resp.Targets = groupLatencyTargets(s, sc, limit)
+		s, err := h.querier.Query(ctx, query)
+		if err != nil {
+			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", err))
+			return
 		}
+		resp.Targets = groupLatencyTargets(s, sc, limit)
 	}
 
 	resp.Summary = buildLatencySummary(resp)
@@ -136,7 +139,10 @@ func groupLatencyTargets(samples []correlation.InstantSample, sc latencyScope, l
 		if stage == "" || math.IsNaN(val) {
 			continue
 		}
-		key := strings.Join(idValues(labels, sc.idLabels), "\x00")
+		key := labels[sc.idLabels[0]]
+		if len(sc.idLabels) > 1 {
+			key += "\x00" + labels[sc.idLabels[1]]
+		}
 		g, ok := groups[key]
 		if !ok {
 			g = &agg{t: newLatencyTarget(labels, sc), key: key}
@@ -175,20 +181,21 @@ func groupLatencyTargets(samples []correlation.InstantSample, sc latencyScope, l
 		if wi != wj {
 			return wi > wj
 		}
-		return out[i].Namespace+out[i].Workload+out[i].Pod+out[i].Node < out[j].Namespace+out[j].Workload+out[j].Pod+out[j].Node
+		if out[i].Namespace != out[j].Namespace {
+			return out[i].Namespace < out[j].Namespace
+		}
+		if out[i].Workload != out[j].Workload {
+			return out[i].Workload < out[j].Workload
+		}
+		if out[i].Pod != out[j].Pod {
+			return out[i].Pod < out[j].Pod
+		}
+		return out[i].Node < out[j].Node
 	})
 	if len(out) > limit {
 		out = out[:limit]
 	}
 	return out
-}
-
-func idValues(labels map[string]string, keys []string) []string {
-	v := make([]string, len(keys))
-	for i, k := range keys {
-		v[i] = labels[k]
-	}
-	return v
 }
 
 func newLatencyTarget(labels map[string]string, sc latencyScope) *LatencyTarget {
