@@ -258,6 +258,9 @@ func main() {
 		// 간섭 사건을 합성한다.
 		api.NewSynthesisHandler(iq, collector, collector).Register(mux)
 	}
+	// #195 진단 신호 추이 API. collector 가 이미 emit 하는 correlation_* 시계열을 range query 로 읽어
+	// /api/v1/trends 로 이력을 노출한다. 적재는 collector 가 수행하므로 본 핸들러는 range fetch 만 한다.
+	api.NewTrendsHandler(fetcher).Register(mux)
 	correlationdocs.SwaggerInfocorrelation.BasePath = "/"
 	mux.Handle("/api/v1/swagger/", httpSwagger.Handler(httpSwagger.URL("/api/v1/swagger.json"), httpSwagger.InstanceName("correlation")))
 	mux.HandleFunc("/api/v1/swagger.json", func(w http.ResponseWriter, _ *http.Request) {
