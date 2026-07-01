@@ -820,6 +820,59 @@ const docTemplatecorrelation = `{
                     }
                 }
             }
+        },
+        "/api/v1/trends": {
+            "get": {
+                "description": "correlation-exporter 가 emit 하는 correlation_* 시계열을 range query 로 읽어 간섭 강도 추이를 돌려준다. signal 은 화이트리스트(noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity)만 허용해 임의 PromQL injection 과 cardinality 를 통제한다. 적재는 collector 가 이미 수행하며 본 API 는 이력을 노출만 한다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "synthesis"
+                ],
+                "summary": "진단 신호 추이",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "추이 신호 (noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity)",
+                        "name": "signal",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "조회 기간 (예: 1h, 6h, 최대 24h, 기본 1h)",
+                        "name": "range",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "샘플 간격 (예: 5m, 최소 30s, 기본 5m)",
+                        "name": "step",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.TrendsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -1790,6 +1843,60 @@ const docTemplatecorrelation = `{
                     "type": "string"
                 },
                 "window": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.TrendPoint": {
+            "type": "object",
+            "properties": {
+                "timestamp_ms": {
+                    "type": "integer"
+                },
+                "value": {
+                    "type": "number"
+                }
+            }
+        },
+        "internal_correlation_api.TrendSeries": {
+            "type": "object",
+            "properties": {
+                "labels": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "points": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.TrendPoint"
+                    }
+                }
+            }
+        },
+        "internal_correlation_api.TrendsResponse": {
+            "type": "object",
+            "properties": {
+                "generated_at": {
+                    "type": "string"
+                },
+                "range": {
+                    "type": "string"
+                },
+                "series": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.TrendSeries"
+                    }
+                },
+                "signal": {
+                    "type": "string"
+                },
+                "step": {
+                    "type": "string"
+                },
+                "summary": {
                     "type": "string"
                 }
             }
