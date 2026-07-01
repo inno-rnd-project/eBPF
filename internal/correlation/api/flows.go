@@ -81,9 +81,18 @@ func (h *SynthesisHandler) GetFlows(w http.ResponseWriter, r *http.Request) {
 	if h.querier != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
-		selector := ""
+		// direction 과 namespace 는 fmt %q (strconv.Quote) 로 이스케이프해 PromQL label matcher 로
+		// 밀어 Prometheus 측에서 필터한다. injection 없이 안전하고 고카디널리티 flow 의 전송량을 줄인다.
+		var matchers []string
 		if direction != "" {
-			selector = fmt.Sprintf("{direction=%q}", direction)
+			matchers = append(matchers, fmt.Sprintf("direction=%q", direction))
+		}
+		if nsFilter != "" {
+			matchers = append(matchers, fmt.Sprintf("src_namespace=%q", nsFilter))
+		}
+		selector := ""
+		if len(matchers) > 0 {
+			selector = "{" + strings.Join(matchers, ",") + "}"
 		}
 		query := fmt.Sprintf("sum by(node, src_namespace, src_workload, src_pod, dst_namespace, dst_pod_uid, dst_ip, protocol, direction) (rate(netobs_flow_bytes_total%s[5m]))", selector)
 		s, err := h.querier.Query(ctx, query)
@@ -91,7 +100,7 @@ func (h *SynthesisHandler) GetFlows(w http.ResponseWriter, r *http.Request) {
 			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", err))
 			return
 		}
-		resp.Edges = buildFlowEdges(s, nsFilter, limit)
+		resp.Edges = buildFlowEdges(s, limit)
 		resp.FlowCollectionEnabled = len(resp.Edges) > 0
 	}
 
@@ -99,16 +108,13 @@ func (h *SynthesisHandler) GetFlows(w http.ResponseWriter, r *http.Request) {
 	apicommon.WriteJSON(w, resp)
 }
 
-func buildFlowEdges(samples []correlation.InstantSample, nsFilter string, limit int) []FlowEdge {
+func buildFlowEdges(samples []correlation.InstantSample, limit int) []FlowEdge {
 	out := []FlowEdge{}
 	for _, sm := range samples {
 		if math.IsNaN(sm.Value) || sm.Value <= 0 {
 			continue
 		}
 		l := sm.Labels
-		if nsFilter != "" && l["src_namespace"] != nsFilter {
-			continue
-		}
 		out = append(out, FlowEdge{
 			Node: l["node"], SrcNamespace: l["src_namespace"], SrcWorkload: l["src_workload"], SrcPod: l["src_pod"],
 			DstNamespace: l["dst_namespace"], DstPodUID: l["dst_pod_uid"], DstIP: l["dst_ip"],
@@ -136,7 +142,7 @@ func buildFlowEdges(samples []correlation.InstantSample, nsFilter string, limit 
 
 // buildFlowsSummary 는 최다 대역폭 엣지와 flow 수집 활성 여부를 한 줄로 적는다.
 func buildFlowsSummary(r FlowsResponse) string {
-	if !r.FlowCollectionEnabled {
+	if len(r.Edges) == 0 {
 		return "flow 데이터 없음 (NETOBS_FLOW_ALLOW_NAMESPACES 활성 namespace 의 pod 간 흐름만 노출)"
 	}
 	e := r.Edges[0]

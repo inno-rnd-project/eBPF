@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -40,17 +41,19 @@ func TestFlows(t *testing.T) {
 	}
 }
 
-// TestFlows_NamespaceFilter 는 ?namespace 필터가 src_namespace 로 거르는지 검증한다.
+// TestFlows_NamespaceFilter 는 ?namespace 필터가 PromQL label matcher(src_namespace="...")로 쿼리에
+// 밀려 들어가는지 검증한다 (Prometheus 측 필터). fakeQuerier 는 셀렉터를 해석하지 않으므로 결과 개수
+// 대신 생성된 쿼리 문자열을 확인한다.
 func TestFlows_NamespaceFilter(t *testing.T) {
-	h := NewSynthesisHandler(flowsFakeQuerier(), nil, nil)
+	q := flowsFakeQuerier()
+	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetFlows(rec, httptest.NewRequest(http.MethodGet, "/api/v1/flows?namespace=ebpf-project", nil))
-	var resp FlowsResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
 	}
-	if len(resp.Edges) != 1 || resp.Edges[0].SrcNamespace != "ebpf-project" {
-		t.Errorf("edges=%+v want ebpf-project 1건", resp.Edges)
+	if !strings.Contains(q.lastQuery, `src_namespace="ebpf-project"`) {
+		t.Errorf("query=%q want src_namespace 셀렉터 포함", q.lastQuery)
 	}
 }
 
