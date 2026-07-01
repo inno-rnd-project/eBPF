@@ -330,6 +330,52 @@
                 }
             }
         },
+        "/api/v1/latency-breakdown": {
+            "get": {
+                "description": "송신/수신 커널 단계별 p99 latency 와 비중, 지배 단계를 scope(workload/node/pod)별로 분해한다. histogram_quantile 로 stage 라벨을 보존해 산출하며, pod scope 는 send-path 단계만 수집된다. direction(egress/ingress)으로 송신/수신을 좁힐 수 있다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "synthesis"
+                ],
+                "summary": "지연 단계 분해",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "workload / node / pod (기본 workload)",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "egress 또는 ingress (생략 시 전체)",
+                        "name": "direction",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "상위 N 대상 (1-100, 기본 10)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.LatencyBreakdownResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/node/{node}": {
             "get": {
                 "description": "노드의 4 차원 pressure 와 종합(overall), dominant 차원, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다.",
@@ -963,6 +1009,58 @@
                 }
             }
         },
+        "internal_correlation_api.LatencyBreakdownResponse": {
+            "type": "object",
+            "properties": {
+                "direction": {
+                    "type": "string"
+                },
+                "generated_at": {
+                    "type": "string"
+                },
+                "scope": {
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "targets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.LatencyTarget"
+                    }
+                },
+                "window": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.LatencyTarget": {
+            "type": "object",
+            "properties": {
+                "dominant_stage": {
+                    "type": "string"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "stages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.StageLatency"
+                    }
+                },
+                "workload": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_correlation_api.NodeCapacity": {
             "type": "object",
             "properties": {
@@ -1202,6 +1300,20 @@
                 },
                 "page": {
                     "$ref": "#/definitions/netobs_internal_apicommon.Page"
+                }
+            }
+        },
+        "internal_correlation_api.StageLatency": {
+            "type": "object",
+            "properties": {
+                "p99_seconds": {
+                    "type": "number"
+                },
+                "share": {
+                    "type": "number"
+                },
+                "stage": {
+                    "type": "string"
                 }
             }
         },

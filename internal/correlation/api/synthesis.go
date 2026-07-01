@@ -77,6 +77,12 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
 	))
+	mux.Handle("/api/v1/latency-breakdown", apicommon.Chain(
+		http.HandlerFunc(h.GetLatencyBreakdown),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
 }
 
 // severityRank 는 severity 라벨을 정렬용 정수로 환산한다 (높을수록 심각). events 정렬과 min_severity
