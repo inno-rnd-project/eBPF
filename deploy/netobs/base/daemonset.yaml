@@ -43,6 +43,11 @@ spec:
             # 에도 의존성 이 안정적 으로 유지 되게 한다.
             - name: NETOBS_KALLSYMS_PATH
               value: "/host/proc/kallsyms"
+            # #193 pod 간 flow 토폴로지 API 의 소스 netobs_flow_bytes_total 을 emit 할 src namespace
+            # allow-list 다. flow 메트릭은 기본 off 이며 본 목록의 namespace 에서 출발하는 5-tuple flow
+            # 만 emit 한다. cardinality 는 FlowGuard 의 LRU (NETOBS_FLOW_MAX_ACTIVE 기본 1024) 로 제한된다.
+            - name: NETOBS_FLOW_ALLOW_NAMESPACES
+              value: "ebpf-project,correlation-stress,default"
           ports:
             - name: metrics
               containerPort: 9810
