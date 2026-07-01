@@ -106,9 +106,10 @@ func buildPodMemory(res [][]correlation.InstantSample, limit int) []PodMemory {
 	if len(res) < 5 {
 		return []PodMemory{}
 	}
-	pods := map[string]*PodMemory{}
+	type podKey struct{ namespace, pod string }
+	pods := map[podKey]*PodMemory{}
 	get := func(ns, pod, node string) *PodMemory {
-		k := ns + "\x00" + pod
+		k := podKey{ns, pod}
 		p, ok := pods[k]
 		if !ok {
 			p = &PodMemory{Namespace: ns, Pod: pod, Node: node, Severity: "unknown"}
@@ -139,7 +140,7 @@ func buildPodMemory(res [][]correlation.InstantSample, limit int) []PodMemory {
 		if math.IsNaN(sm.Value) || sm.Value <= 0 {
 			continue
 		}
-		if p, ok := pods[sm.Labels["namespace"]+"\x00"+sm.Labels["pod"]]; ok {
+		if p, ok := pods[podKey{sm.Labels["namespace"], sm.Labels["pod"]}]; ok {
 			v := sm.Value
 			p.LimitBytes = &v
 		}
@@ -202,8 +203,12 @@ func buildMemorySummary(r MemoryResponse) string {
 		return "메모리 데이터 없음"
 	}
 	p := r.Pods[0]
-	if p.OOMRisk == nil {
-		return fmt.Sprintf("%s/%s working_set %.0fMB, limit 미설정 (OOM 위험 산출 불가), 지배 %s", p.Namespace, p.Pod, p.WorkingSetBytes/1e6, p.DominantKind)
+	dominant := p.DominantKind
+	if dominant == "" {
+		dominant = "없음"
 	}
-	return fmt.Sprintf("최고 OOM 위험 %s/%s %.0f%%(%s), 지배 메모리 %s", p.Namespace, p.Pod, *p.OOMRisk*100, p.Severity, p.DominantKind)
+	if p.OOMRisk == nil {
+		return fmt.Sprintf("%s/%s working_set %.0fMB, limit 미설정 (OOM 위험 산출 불가), 지배 %s", p.Namespace, p.Pod, p.WorkingSetBytes/1e6, dominant)
+	}
+	return fmt.Sprintf("최고 OOM 위험 %s/%s %.0f%%(%s), 지배 메모리 %s", p.Namespace, p.Pod, *p.OOMRisk*100, p.Severity, dominant)
 }
