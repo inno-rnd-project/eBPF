@@ -146,16 +146,24 @@ func buildDropGroups(samples []correlation.InstantSample, nsFilter string, limit
 		if out[i].DropsPerSec != out[j].DropsPerSec {
 			return out[i].DropsPerSec > out[j].DropsPerSec
 		}
-		return dropGroupKey(out[i]) < dropGroupKey(out[j])
+		if out[i].Node != out[j].Node {
+			return out[i].Node < out[j].Node
+		}
+		if out[i].Namespace != out[j].Namespace {
+			return out[i].Namespace < out[j].Namespace
+		}
+		if out[i].Workload != out[j].Workload {
+			return out[i].Workload < out[j].Workload
+		}
+		if out[i].Direction != out[j].Direction {
+			return out[i].Direction < out[j].Direction
+		}
+		return out[i].Reason < out[j].Reason
 	})
 	if len(out) > limit {
 		out = out[:limit]
 	}
 	return out
-}
-
-func dropGroupKey(g DropGroup) string {
-	return g.Node + "\x00" + g.Namespace + "\x00" + g.Workload + "\x00" + g.Direction + "\x00" + g.Reason
 }
 
 // fiveTupleKey 는 flow rate 와 last_timestamp 를 매칭하는 5-tuple 복합 키다. 두 메트릭이 동일 라벨
