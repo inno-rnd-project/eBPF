@@ -1,7 +1,7 @@
 swagger: '2.0'
 info:
   title: netobs unified API
-  version: 1.4.2
+  version: 1.4.3
 paths:
   /api/v1/cross-level:
     get:
@@ -149,6 +149,43 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_correlation_api.EventsResponse'
+  /api/v1/flows:
+    get:
+      description: netobs_flow_bytes_total(5-tuple pod 간 RX/TX)을 rate 로 환산해 pod 간
+        대역폭 엣지(node·방향·protocol별 bytes/sec 와 Mbps)로 노출한다. flow 메트릭은 NETOBS_FLOW_ALLOW_NAMESPACES
+        allow-list 가 설정된 src namespace 에서만 emit 되며, flow_collection_enabled 로 활성 여부를
+        알린다. dst 는 namespace·pod_uid·ip 로 식별되므로 /pods 인벤토리의 uid 와 매핑한다.
+      produces:
+      - application/json
+      tags:
+      - synthesis
+      summary: pod 간 flow 토폴로지
+      parameters:
+      - type: string
+        description: src_namespace 필터 (생략 시 전체)
+        name: namespace
+        in: query
+      - type: string
+        description: egress 또는 ingress (생략 시 전체)
+        name: direction
+        in: query
+      - type: integer
+        description: 상위 N 엣지 (1-200, 기본 50)
+        name: limit
+        in: query
+      responses:
+        '200':
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.FlowsResponse'
+        '400':
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/gpu-idle:
     get:
       description: 노드별 GPU 유휴 비율과 유휴 원인 가중치 순위, dominant cause 를 합성한다. scope=cluster
@@ -669,6 +706,46 @@ definitions:
         type: array
         items:
           $ref: '#/definitions/internal_correlation_api.Event'
+      generated_at:
+        type: string
+      summary:
+        type: string
+      window:
+        type: string
+  internal_correlation_api.FlowEdge:
+    type: object
+    properties:
+      bytes_per_sec:
+        type: number
+      direction:
+        type: string
+      dst_ip:
+        type: string
+      dst_namespace:
+        type: string
+      dst_pod_uid:
+        type: string
+      mbps:
+        type: number
+      node:
+        type: string
+      protocol:
+        type: string
+      src_namespace:
+        type: string
+      src_pod:
+        type: string
+      src_workload:
+        type: string
+  internal_correlation_api.FlowsResponse:
+    type: object
+    properties:
+      edges:
+        type: array
+        items:
+          $ref: '#/definitions/internal_correlation_api.FlowEdge'
+      flow_collection_enabled:
+        type: boolean
       generated_at:
         type: string
       summary:

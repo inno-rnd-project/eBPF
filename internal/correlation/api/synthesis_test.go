@@ -19,6 +19,7 @@ type fakeQuerier struct {
 		contains string
 		samples  []correlation.InstantSample
 	}
+	lastQuery string
 }
 
 func (f *fakeQuerier) on(contains string, samples ...correlation.InstantSample) *fakeQuerier {
@@ -30,6 +31,7 @@ func (f *fakeQuerier) on(contains string, samples ...correlation.InstantSample) 
 }
 
 func (f *fakeQuerier) Query(_ context.Context, query string) ([]correlation.InstantSample, error) {
+	f.lastQuery = query
 	for _, r := range f.rules {
 		if strings.Contains(query, r.contains) {
 			return r.samples, nil

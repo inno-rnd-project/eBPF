@@ -862,6 +862,33 @@ spec:
               rate(netobs_drop_events_flow_total[1m])
             )
 
+    # netobs-gpuobs.flow-bandwidth.recording 그룹은 #193 flow 토폴로지 API 의 대역폭 해석을 사전 계산한다.
+    # pod:network_mbps:5m 는 항상 수집되는 netobs_pod_bytes_total (nic layer) 기반이라 flow allow-list
+    # 와 무관하게 emit 되고, flow:bytes_by_protocol:5m 는 netobs_flow_bytes_total 기반이라 NETOBS_FLOW_
+    # ALLOW_NAMESPACES 활성 namespace 에서만 emit 된다. cross-node bytes 집계는 flow_bytes 에 dst_node
+    # 라벨이 없어 본 그룹에서 제외하며 dst_node 계측 도입 시 별도 follow-up 으로 추가한다.
+    - name: netobs-gpuobs.flow-bandwidth.recording
+      interval: 30s
+      rules:
+        # pod:network_mbps:5m
+        # Pod 별 방향별 NIC layer 대역폭 (Mbps). bytes/sec rate 에 8 을 곱하고 1e6 으로 나눠 Mbps 로
+        # 환산한다. netobs_pod_bytes_total 은 dst 라벨이 없는 per-pod egress/ingress counter 라 항상
+        # 수집되며 flow allow-list 와 독립이다.
+        - record: pod:network_mbps:5m
+          expr: |
+            sum by(node, src_namespace, src_pod, direction) (
+              rate(netobs_pod_bytes_total{layer="nic"}[5m])
+            ) * 8 / 1e6
+
+        # flow:bytes_by_protocol:5m
+        # L4 protocol (TCP/UDP) 별 방향별 flow 대역폭 (bytes/sec). netobs_flow_bytes_total 의 protocol
+        # 라벨로 분리한다. flow allow-list 가 켜진 namespace 에서만 base 가 emit 된다.
+        - record: flow:bytes_by_protocol:5m
+          expr: |
+            sum by(protocol, direction) (
+              rate(netobs_flow_bytes_total[5m])
+            )
+
     # netobs-gpuobs.cluster-health.recording 그룹은 cluster 전체 단위의 4 카테고리 health score 를
     # 산출한다. observability overview dashboard (#53) 의 single-stat 패널이 본 record 4 종을 직접
     # 참조한다. 각 score 는 0 ~ 1 사이로 정규화되며 1 이 healthy, 0 이 worst 다. cluster 의 어느 노드
