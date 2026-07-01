@@ -48,6 +48,92 @@ definitions:
       pressure:
         type: number
     type: object
+  internal_correlation_api.DropFlow:
+    properties:
+      category:
+        type: string
+      direction:
+        type: string
+      drops_per_sec:
+        type: number
+      dst_ip:
+        type: string
+      dst_port:
+        type: string
+      ip_version:
+        type: string
+      last_seen_unix:
+        type: number
+      namespace:
+        type: string
+      node:
+        type: string
+      pod:
+        type: string
+      protocol:
+        type: string
+      reason:
+        type: string
+      src_ip:
+        type: string
+      src_port:
+        type: string
+    type: object
+  internal_correlation_api.DropGroup:
+    properties:
+      category:
+        type: string
+      direction:
+        type: string
+      drops_per_sec:
+        type: number
+      dst_namespace:
+        type: string
+      dst_workload:
+        type: string
+      namespace:
+        type: string
+      node:
+        type: string
+      reason:
+        type: string
+      workload:
+        type: string
+    type: object
+  internal_correlation_api.DropStack:
+    properties:
+      category:
+        type: string
+      drops_per_sec:
+        type: number
+      func:
+        type: string
+      reason:
+        type: string
+    type: object
+  internal_correlation_api.DropsResponse:
+    properties:
+      drops:
+        items:
+          $ref: '#/definitions/internal_correlation_api.DropGroup'
+        type: array
+      flow_detail_enabled:
+        type: boolean
+      flows:
+        items:
+          $ref: '#/definitions/internal_correlation_api.DropFlow'
+        type: array
+      generated_at:
+        type: string
+      stacks:
+        items:
+          $ref: '#/definitions/internal_correlation_api.DropStack'
+        type: array
+      summary:
+        type: string
+      window:
+        type: string
+    type: object
   internal_correlation_api.ErrorDetail:
     properties:
       code:
@@ -820,6 +906,35 @@ paths:
       summary: List cross-node interference top-N
       tags:
       - correlation
+  /api/v1/drops:
+    get:
+      description: netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction
+        별 drop rate 랭킹을 돌려준다. NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 가 켜진 경우
+        5-tuple flow(pod·src/dst ip:port·마지막 발생 시점)와 커널 stack 함수 상세가 flows/stacks
+        에 채워지며, flow_detail_enabled 로 활성 여부를 알린다.
+      parameters:
+      - description: src_namespace 필터 (생략 시 전체)
+        in: query
+        name: namespace
+        type: string
+      - description: 상위 N (1-100, 기본 20)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.DropsResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+      summary: 패킷 drop 분석
+      tags:
+      - synthesis
   /api/v1/events:
     get:
       description: z-score 이상과 noisy-neighbor 간섭을 공통 severity 로 묶어 정렬된 사건 목록과 자연어
