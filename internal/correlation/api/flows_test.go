@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -52,8 +51,8 @@ func TestFlows_NamespaceFilter(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200", rec.Code)
 	}
-	if !strings.Contains(q.lastQuery, `src_namespace="ebpf-project"`) {
-		t.Errorf("query=%q want src_namespace 셀렉터 포함", q.lastQuery)
+	if !q.sawQuery(`src_namespace="ebpf-project"`) {
+		t.Errorf("실행된 쿼리에 src_namespace 셀렉터 없음")
 	}
 }
 

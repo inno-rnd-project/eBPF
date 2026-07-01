@@ -242,6 +242,45 @@ spec:
               1
             )
 
+        # pod:memory_rss_pressure_score:5m (#194)
+        # 컨테이너 anonymous(RSS) 메모리 대비 limit 비율 (0-1). RSS 는 page cache 와 달리 reclaim 이
+        # 안 되는 non-reclaimable 메모리라 OOM 을 직접 유발한다. working_set 대비 RSS 가 지배적이면
+        # 진짜 메모리 압박이다. cadvisor container_memory_rss 는 pod-level (container 라벨 없음) 이라
+        # sum by(node, namespace, pod) 로 집계 후 (namespace, pod) 로 limit 과 join 한다.
+        - record: pod:memory_rss_pressure_score:5m
+          expr: |
+            clamp_max(
+              label_replace(
+                label_replace(
+                  sum by(node, namespace, pod) (container_memory_rss)
+                  / on(namespace, pod) group_left()
+                  sum by(namespace, pod) (kube_pod_container_resource_limits{resource="memory"}),
+                  "src_namespace", "$1", "namespace", "(.+)"
+                ),
+                "src_pod", "$1", "pod", "(.+)"
+              ),
+              1
+            )
+
+        # pod:memory_cache_pressure_score:5m (#194)
+        # 컨테이너 page cache 메모리 대비 limit 비율 (0-1). cache 는 kernel 이 reclaim 가능한 메모리라
+        # 그 자체로 OOM 압박은 아니지만, working_set 이 cache 로 채워졌다면 RSS 압박과 구분해 "실제
+        # 압박이 아님" 을 판정하는 데 쓴다. rss 룰과 동일하게 pod-level 집계 후 limit 과 join 한다.
+        - record: pod:memory_cache_pressure_score:5m
+          expr: |
+            clamp_max(
+              label_replace(
+                label_replace(
+                  sum by(node, namespace, pod) (container_memory_cache)
+                  / on(namespace, pod) group_left()
+                  sum by(namespace, pod) (kube_pod_container_resource_limits{resource="memory"}),
+                  "src_namespace", "$1", "namespace", "(.+)"
+                ),
+                "src_pod", "$1", "pod", "(.+)"
+              ),
+              1
+            )
+
         # pod:host_compute_stall_score:5m
         # host측 CUDA kernel launch rate 부족과 GPU device memory pressure 둘 중 큰 쪽을 채택한다.
         # 둘 다 GPU가 호스트 측 또는 device 측 자원 한계로 추가 kernel을 실행하지 못하는 상태를

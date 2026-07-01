@@ -479,6 +479,46 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "/api/v1/memory": {
+            "get": {
+                "description": "pod별 cAdvisor 종류별 메모리(working_set / rss / cache / swap bytes)와 limit, OOM 위험(working_set/limit), 지배 종류를 돌려준다. rss(anonymous)는 OOM을 유발하고 cache는 reclaimable이라, working_set이 rss로 채워졌는지 cache로 채워졌는지 구분해 실제 압박 여부를 판정한다. swap은 노드 swap이 켜진 경우만 채워진다. ?namespace로 필터한다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "synthesis"
+                ],
+                "summary": "메모리 병목 분해",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "namespace 필터 (생략 시 전체)",
+                        "name": "namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "상위 N pod (1-200, 기본 30)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.MemoryResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/node/{node}": {
             "get": {
                 "description": "노드의 4 차원 pressure 와 종합(overall), dominant 차원, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다.",
@@ -1376,6 +1416,26 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "internal_correlation_api.MemoryResponse": {
+            "type": "object",
+            "properties": {
+                "generated_at": {
+                    "type": "string"
+                },
+                "pods": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.PodMemory"
+                    }
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "window": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_correlation_api.NodeCapacity": {
             "type": "object",
             "properties": {
@@ -1541,6 +1601,44 @@ const docTemplatecorrelation = `{
                 },
                 "workload_name": {
                     "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.PodMemory": {
+            "type": "object",
+            "properties": {
+                "cache_bytes": {
+                    "type": "number"
+                },
+                "dominant_kind": {
+                    "type": "string"
+                },
+                "limit_bytes": {
+                    "type": "number"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "oom_risk": {
+                    "type": "number"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "rss_bytes": {
+                    "type": "number"
+                },
+                "severity": {
+                    "type": "string"
+                },
+                "swap_bytes": {
+                    "type": "number"
+                },
+                "working_set_bytes": {
+                    "type": "number"
                 }
             }
         },
