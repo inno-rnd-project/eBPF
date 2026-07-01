@@ -8,7 +8,7 @@ resources:
 
 images:
   - name: netobs-agent
-    newTag: "1.4.1"
+    newTag: "1.4.2"
 
 patches:
   - path: patch-daemonset.yaml
