@@ -20,7 +20,7 @@ func TestInventory_Nodes(t *testing.T) {
 			sample(67e9, "node", "gpu", "resource", "memory"),
 			sample(1, "node", "gpu", "resource", "nvidia_com_gpu"))
 
-	h := NewSynthesisHandler(q, nil)
+	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetNodes(rec, httptest.NewRequest(http.MethodGet, "/api/v1/nodes", nil))
 	if rec.Code != http.StatusOK {
@@ -46,7 +46,7 @@ func TestInventory_Nodes(t *testing.T) {
 // 사전순으로 돌려주는지 검증한다.
 func TestInventory_Pods(t *testing.T) {
 	q := podFakeQuerier()
-	h := NewSynthesisHandler(q, nil)
+	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetPods(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil))
 	if rec.Code != http.StatusOK {
@@ -68,7 +68,7 @@ func TestInventory_Pods(t *testing.T) {
 
 // TestInventory_Pods_NamespaceFilter 는 ?namespace 필터가 해당 namespace 만 돌려주는지 검증한다.
 func TestInventory_Pods_NamespaceFilter(t *testing.T) {
-	h := NewSynthesisHandler(podFakeQuerier(), nil)
+	h := NewSynthesisHandler(podFakeQuerier(), nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetPods(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pods?namespace=default", nil))
 	var resp PodsResponse
@@ -82,7 +82,7 @@ func TestInventory_Pods_NamespaceFilter(t *testing.T) {
 
 // TestInventory_NilQuerier 는 querier 가 nil 일 때 panic 없이 빈 응답을 돌려주는지 검증한다.
 func TestInventory_NilQuerier(t *testing.T) {
-	h := NewSynthesisHandler(nil, nil)
+	h := NewSynthesisHandler(nil, nil, nil)
 	for _, path := range []string{"/api/v1/nodes", "/api/v1/pods"} {
 		rec := httptest.NewRecorder()
 		if path == "/api/v1/nodes" {

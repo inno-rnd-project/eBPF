@@ -19,7 +19,7 @@ func TestGpuIdle_Cluster(t *testing.T) {
 			sample(0.0, "cause", "thermal")).
 		on("cluster:gpu_idle_dominant_cause:5m", sample(1.000005, "cause", "memory_pressure"))
 
-	h := NewSynthesisHandler(q, nil)
+	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetGpuIdle(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-idle", nil))
 	if rec.Code != http.StatusOK {
@@ -50,7 +50,7 @@ func TestGpuIdle_Cluster(t *testing.T) {
 // 처리되는지 검증한다.
 func TestGpuIdle_NotIdle(t *testing.T) {
 	q := (&fakeQuerier{}).on("node:gpu_idle:5m", sample(0.2, "node", "gpu"))
-	h := NewSynthesisHandler(q, nil)
+	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetGpuIdle(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-idle", nil))
 	if rec.Code != http.StatusOK {
@@ -81,7 +81,7 @@ func TestGpuIdle_Pod(t *testing.T) {
 			sample(1.0, "node", "gpu", "victim_namespace", "default", "victim_pod", "trainer", "cause", "memory_pressure")).
 		on("gpu_idle_cause_weight:5m", sample(0.6, "cause", "memory_pressure"))
 
-	h := NewSynthesisHandler(q, nil)
+	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetGpuIdle(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-idle?scope=pod", nil))
 	if rec.Code != http.StatusOK {
@@ -111,7 +111,7 @@ func TestGpuIdle_Pod_TieBreaker(t *testing.T) {
 			sample(0.5, "node", "gpu", "victim_namespace", "default", "victim_pod", "aaa", "cause", "memory_pressure")).
 		on("gpu_idle_cause_weight:5m", sample(0.5, "cause", "memory_pressure"))
 
-	h := NewSynthesisHandler(q, nil)
+	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetGpuIdle(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-idle?scope=pod", nil))
 	if rec.Code != http.StatusOK {
@@ -126,7 +126,7 @@ func TestGpuIdle_Pod_TieBreaker(t *testing.T) {
 
 // TestGpuIdle_InvalidScope 는 알 수 없는 scope 에 400 을 돌려주는지 검증한다.
 func TestGpuIdle_InvalidScope(t *testing.T) {
-	h := NewSynthesisHandler(&fakeQuerier{}, nil)
+	h := NewSynthesisHandler(&fakeQuerier{}, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetGpuIdle(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-idle?scope=foo", nil))
 	if rec.Code != http.StatusBadRequest {
@@ -136,7 +136,7 @@ func TestGpuIdle_InvalidScope(t *testing.T) {
 
 // TestGpuIdle_NilQuerier 는 querier 가 nil 일 때 panic 없이 빈 응답을 돌려주는지 검증한다.
 func TestGpuIdle_NilQuerier(t *testing.T) {
-	h := NewSynthesisHandler(nil, nil)
+	h := NewSynthesisHandler(nil, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetGpuIdle(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-idle", nil))
 	if rec.Code != http.StatusOK {

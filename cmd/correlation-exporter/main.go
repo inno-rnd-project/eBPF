@@ -256,7 +256,7 @@ func main() {
 	} else {
 		// collector 가 SnapshotSource (noisy-neighbor) 를 만족해 /api/v1/events 가 anomaly 와 함께
 		// 간섭 사건을 합성한다.
-		api.NewSynthesisHandler(iq, collector).Register(mux)
+		api.NewSynthesisHandler(iq, collector, collector).Register(mux)
 	}
 	correlationdocs.SwaggerInfocorrelation.BasePath = "/"
 	mux.Handle("/api/v1/swagger/", httpSwagger.Handler(httpSwagger.URL("/api/v1/swagger.json"), httpSwagger.InstanceName("correlation")))
