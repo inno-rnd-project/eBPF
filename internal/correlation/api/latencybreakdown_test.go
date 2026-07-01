@@ -26,7 +26,7 @@ func TestLatencyBreakdown_Workload(t *testing.T) {
 		sample(0.005, "src_namespace", "default", "src_workload", "app", "stage", "to_veth"),
 		sample(0.002, "src_namespace", "default", "src_workload", "other", "stage", "rcv_app"))
 
-	h := NewSynthesisHandler(q, nil)
+	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetLatencyBreakdown(rec, httptest.NewRequest(http.MethodGet, "/api/v1/latency-breakdown", nil))
 	if rec.Code != http.StatusOK {
@@ -54,7 +54,7 @@ func TestLatencyBreakdown_Workload(t *testing.T) {
 
 // TestLatencyBreakdown_InvalidScope 는 알 수 없는 scope 에 400 을 돌려주는지 검증한다.
 func TestLatencyBreakdown_InvalidScope(t *testing.T) {
-	h := NewSynthesisHandler(&fakeQuerier{}, nil)
+	h := NewSynthesisHandler(&fakeQuerier{}, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetLatencyBreakdown(rec, httptest.NewRequest(http.MethodGet, "/api/v1/latency-breakdown?scope=disk", nil))
 	if rec.Code != http.StatusBadRequest {
@@ -65,7 +65,7 @@ func TestLatencyBreakdown_InvalidScope(t *testing.T) {
 // TestLatencyBreakdown_InvalidDirection 은 허용되지 않은 direction 에 400 을 돌려주는지 검증한다 (PromQL
 // injection 방지용 리터럴 화이트리스트).
 func TestLatencyBreakdown_InvalidDirection(t *testing.T) {
-	h := NewSynthesisHandler(&fakeQuerier{}, nil)
+	h := NewSynthesisHandler(&fakeQuerier{}, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetLatencyBreakdown(rec, httptest.NewRequest(http.MethodGet, `/api/v1/latency-breakdown?direction=egress"}or(`, nil))
 	if rec.Code != http.StatusBadRequest {
@@ -75,7 +75,7 @@ func TestLatencyBreakdown_InvalidDirection(t *testing.T) {
 
 // TestLatencyBreakdown_QueryError 는 Prometheus 쿼리 실패 시 빈 200 이 아니라 500 을 돌려주는지 검증한다.
 func TestLatencyBreakdown_QueryError(t *testing.T) {
-	h := NewSynthesisHandler(errQuerier{}, nil)
+	h := NewSynthesisHandler(errQuerier{}, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetLatencyBreakdown(rec, httptest.NewRequest(http.MethodGet, "/api/v1/latency-breakdown", nil))
 	if rec.Code != http.StatusInternalServerError {
@@ -85,7 +85,7 @@ func TestLatencyBreakdown_QueryError(t *testing.T) {
 
 // TestLatencyBreakdown_NilQuerier 는 querier 가 nil 일 때 panic 없이 빈 응답을 돌려주는지 검증한다.
 func TestLatencyBreakdown_NilQuerier(t *testing.T) {
-	h := NewSynthesisHandler(nil, nil)
+	h := NewSynthesisHandler(nil, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetLatencyBreakdown(rec, httptest.NewRequest(http.MethodGet, "/api/v1/latency-breakdown", nil))
 	if rec.Code != http.StatusOK {

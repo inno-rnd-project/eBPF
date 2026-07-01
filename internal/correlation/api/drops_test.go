@@ -22,7 +22,7 @@ func dropsFakeQuerier() *fakeQuerier {
 
 // TestDrops 는 labeled 기반 drop 랭킹과 opt-in flows(5-tuple + last_seen join), stacks 를 합성하는지 검증한다.
 func TestDrops(t *testing.T) {
-	h := NewSynthesisHandler(dropsFakeQuerier(), nil)
+	h := NewSynthesisHandler(dropsFakeQuerier(), nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetDrops(rec, httptest.NewRequest(http.MethodGet, "/api/v1/drops", nil))
 	if rec.Code != http.StatusOK {
@@ -54,7 +54,7 @@ func TestDrops(t *testing.T) {
 
 // TestDrops_NamespaceFilter 는 ?namespace 필터가 src_namespace 로 거르는지 검증한다.
 func TestDrops_NamespaceFilter(t *testing.T) {
-	h := NewSynthesisHandler(dropsFakeQuerier(), nil)
+	h := NewSynthesisHandler(dropsFakeQuerier(), nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetDrops(rec, httptest.NewRequest(http.MethodGet, "/api/v1/drops?namespace=cs", nil))
 	var resp DropsResponse
@@ -68,7 +68,7 @@ func TestDrops_NamespaceFilter(t *testing.T) {
 
 // TestDrops_QueryError 는 주 소스(labeled) 쿼리 실패 시 500 을 돌려주는지 검증한다.
 func TestDrops_QueryError(t *testing.T) {
-	h := NewSynthesisHandler(errQuerier{}, nil)
+	h := NewSynthesisHandler(errQuerier{}, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetDrops(rec, httptest.NewRequest(http.MethodGet, "/api/v1/drops", nil))
 	if rec.Code != http.StatusInternalServerError {
@@ -78,7 +78,7 @@ func TestDrops_QueryError(t *testing.T) {
 
 // TestDrops_NilQuerier 는 querier 가 nil 일 때 panic 없이 빈 응답을 돌려주는지 검증한다.
 func TestDrops_NilQuerier(t *testing.T) {
-	h := NewSynthesisHandler(nil, nil)
+	h := NewSynthesisHandler(nil, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetDrops(rec, httptest.NewRequest(http.MethodGet, "/api/v1/drops", nil))
 	if rec.Code != http.StatusOK {

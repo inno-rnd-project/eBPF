@@ -21,13 +21,15 @@ import (
 type SynthesisHandler struct {
 	querier   correlation.InstantQuerier
 	neighbors SnapshotSource
+	crossNode CrossNodeSnapshotSource
 }
 
-// NewSynthesisHandler 는 InstantQuerier 와 noisy-neighbor SnapshotSource 를 주입받아 합성 handler 를
-// 만든다. querier 가 nil 이면 health/pressure/node 가 데이터 부재 (unknown) 응답을, neighbors 가 nil
-// 이면 events 가 anomaly 만 담은 응답을 graceful 하게 돌려준다.
-func NewSynthesisHandler(querier correlation.InstantQuerier, neighbors SnapshotSource) *SynthesisHandler {
-	return &SynthesisHandler{querier: querier, neighbors: neighbors}
+// NewSynthesisHandler 는 InstantQuerier 와 noisy-neighbor SnapshotSource, cross-node interference
+// snapshot source 를 주입받아 합성 handler 를 만든다. querier 가 nil 이면 health/pressure/node/topology
+// 가 데이터 부재 (unknown) 응답을, neighbors 가 nil 이면 events 가 anomaly 만, crossNode 가 nil 이면
+// topology 가 노드 엣지 없이 graceful 하게 응답한다.
+func NewSynthesisHandler(querier correlation.InstantQuerier, neighbors SnapshotSource, crossNode CrossNodeSnapshotSource) *SynthesisHandler {
+	return &SynthesisHandler{querier: querier, neighbors: neighbors, crossNode: crossNode}
 }
 
 // Register 는 합성 API 라우트를 mux 에 등록한다. 기존 correlation API 와 동일하게 Logging / Recover /
@@ -85,6 +87,12 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 	))
 	mux.Handle("/api/v1/drops", apicommon.Chain(
 		http.HandlerFunc(h.GetDrops),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
+	mux.Handle("/api/v1/topology", apicommon.Chain(
+		http.HandlerFunc(h.GetTopology),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,

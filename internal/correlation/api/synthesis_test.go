@@ -60,7 +60,7 @@ func TestSynthesis_GetHealth(t *testing.T) {
 		on("cluster:cpu_throttle_zscore", sample(3.2))
 	// gpu/memory/network 의 node pressure 는 미설정 → hotspot nil (graceful).
 
-	h := NewSynthesisHandler(q, nil)
+	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
 
@@ -100,7 +100,7 @@ func TestSynthesis_GetPressure(t *testing.T) {
 		sample(0.51, "node", "worker2", "src_namespace", "batch", "src_pod", "job-7"),
 		sample(0.78, "node", "worker2", "src_namespace", "default", "src_pod", "app-x"),
 	)
-	h := NewSynthesisHandler(q, nil)
+	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetPressure(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pressure?dimension=cpu&scope=pod&limit=10", nil))
 	if rec.Code != http.StatusOK {
@@ -118,7 +118,7 @@ func TestSynthesis_GetPressure(t *testing.T) {
 
 // TestSynthesis_GetPressure_InvalidDimension 은 알 수 없는 dimension 에 400 을 돌려주는지 검증한다.
 func TestSynthesis_GetPressure_InvalidDimension(t *testing.T) {
-	h := NewSynthesisHandler(&fakeQuerier{}, nil)
+	h := NewSynthesisHandler(&fakeQuerier{}, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetPressure(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pressure?dimension=disk", nil))
 	if rec.Code != http.StatusBadRequest {
@@ -133,7 +133,7 @@ func TestSynthesis_GetNode(t *testing.T) {
 		on("node:memory_pressure_score", sample(0.22, "node", "worker2")).
 		on("node:pressure_score:5m", sample(0.78, "node", "worker2")).
 		on("pod:cpu_throttle_score", sample(0.78, "node", "worker2", "src_namespace", "default", "src_pod", "app-x"))
-	h := NewSynthesisHandler(q, nil)
+	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/worker2", nil))
 	if rec.Code != http.StatusOK {
@@ -175,7 +175,7 @@ func TestSynthesis_GetEvents(t *testing.T) {
 			Dimension: correlation.DimensionCPU, CausalStrength: 0.30, Score: 0.4,
 		},
 	}}
-	h := NewSynthesisHandler(q, nb)
+	h := NewSynthesisHandler(q, nb, nil)
 	rec := httptest.NewRecorder()
 	h.GetEvents(rec, httptest.NewRequest(http.MethodGet, "/api/v1/events", nil))
 	if rec.Code != http.StatusOK {
@@ -218,7 +218,7 @@ func TestSynthesis_GetHealth_NaN(t *testing.T) {
 		on("cluster:cpu_health_score", sample(math.NaN())).
 		on("node:cpu_pressure_score", sample(math.NaN(), "node", "worker2")).
 		on("cluster:cpu_throttle_zscore", sample(math.NaN()))
-	h := NewSynthesisHandler(q, nil)
+	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
 	if rec.Code != http.StatusOK {
@@ -244,7 +244,7 @@ func TestSynthesis_GetPressure_NaN(t *testing.T) {
 		sample(math.NaN(), "node", "worker2", "src_namespace", "default", "src_pod", "nan-pod"),
 		sample(0.62, "node", "worker2", "src_namespace", "default", "src_pod", "app-x"),
 	)
-	h := NewSynthesisHandler(q, nil)
+	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetPressure(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pressure?dimension=cpu&scope=pod", nil))
 	if rec.Code != http.StatusOK {
@@ -262,7 +262,7 @@ func TestSynthesis_GetPressure_NaN(t *testing.T) {
 // TestSynthesis_GetHealth_NilQuerier 는 querier 가 nil 일 때 panic 없이 unknown 응답을 돌려주는지
 // 검증한다.
 func TestSynthesis_GetHealth_NilQuerier(t *testing.T) {
-	h := NewSynthesisHandler(nil, nil)
+	h := NewSynthesisHandler(nil, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
 	if rec.Code != http.StatusOK {
