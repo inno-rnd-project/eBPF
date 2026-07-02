@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"netobs/internal/gpuobs/config"
+	"netobs/internal/gpuobs/contention"
 	"netobs/internal/gpuobs/metrics"
 	"netobs/internal/gpuobs/mps"
 	"netobs/internal/gpuobs/nvml"
@@ -39,6 +40,10 @@ type Collector struct {
 	recordSnapshot func(node string, samples []metrics.PodGPUSample)
 	// recordMigSnapshot 은 #104 MIG 활성 시리즈 발행 test seam. 운영 기본값 metrics.RecordPodMigSnapshot.
 	recordMigSnapshot func(node string, samples []metrics.PodMigGPUSample)
+	// #198 readContention 은 Pod UID 의 cgroup PSI 압박 비율 조회 test seam. 운영 기본값은 cfg.CgroupRoot
+	// 를 bind 한 contention.Read 다. recordContention 은 metrics.RecordPodContention 발행 test seam.
+	readContention   func(podUID string) (contention.Stats, bool)
+	recordContention func(node string, samples []metrics.PodContentionSample)
 }
 
 // New는 NVML 핸들과 Config, 그리고 선택적 PodResolver를 받아 Collector를 구성한다.
@@ -53,6 +58,10 @@ func New(nv nvml.NVML, cfg config.Config, resolver PodResolver) *Collector {
 		resolver:          resolver,
 		recordSnapshot:    metrics.RecordPodSnapshot,
 		recordMigSnapshot: metrics.RecordPodMigSnapshot,
+		readContention: func(podUID string) (contention.Stats, bool) {
+			return contention.Read(podUID, cfg.CgroupRoot)
+		},
+		recordContention: metrics.RecordPodContention,
 	}
 }
 
@@ -128,10 +137,10 @@ type podGPUKey struct {
 // podMigKey 는 #104 MIG 활성 환경의 (Pod, MIG instance) 단위 합산 키다. parent gpuUUID 와 instance
 // 식별자 (migUUID, gpuInstanceID) 조합 으로 동일 device 내 instance 간 분리 보장.
 type podMigKey struct {
-	podUID         string
-	gpuUUID        string
-	migUUID        string
-	gpuInstanceID  uint32
+	podUID        string
+	gpuUUID       string
+	migUUID       string
+	gpuInstanceID uint32
 }
 
 // pollOnce는 DeviceSet.Snapshot 으로 현재 알려진 device 핸들을 받아 각 device 마다 Snapshot 과
@@ -147,9 +156,16 @@ func (c *Collector) pollOnce() {
 
 	var aggregated map[podGPUKey]*metrics.PodGPUSample
 	var aggregatedMig map[podMigKey]*metrics.PodMigGPUSample
+	// #198 contentionEnabled 는 per-pod 경로 위에 얹히는 추가 opt-in 이다. Pod 당 대표 PID 를 1개만
+	// 모아 (podReps) device loop 종료 후 Pod 단위로 1회씩 cgroup PSI 를 읽는다.
+	contentionEnabled := perPodEnabled && c.cfg.ContentionEnabled
+	var contentionPods map[string]kube.PodIdentity
 	if perPodEnabled {
 		aggregated = make(map[podGPUKey]*metrics.PodGPUSample)
 		aggregatedMig = make(map[podMigKey]*metrics.PodMigGPUSample)
+	}
+	if contentionEnabled {
+		contentionPods = make(map[string]kube.PodIdentity)
 	}
 
 	// #104 MPS daemon active 여부 는 노드 단위 신호 라 device loop 진입 전 1회 detect.
@@ -192,6 +208,13 @@ func (c *Collector) pollOnce() {
 			if !id.IsPod() {
 				// unresolved / host process / 미동기화 Pod 등은 합산 키 생성도 건너뛴다.
 				continue
+			}
+			// #198 경합은 host per-pod 신호라 Pod UID 로 cgroup 슬라이스를 직접 찾는다 (transient GPU
+			// PID 에 비의존). 중복 GPU 프로세스가 있어도 Pod 당 1회만 읽도록 UID 로 dedupe 한다.
+			if contentionEnabled {
+				if _, ok := contentionPods[id.PodUID]; !ok {
+					contentionPods[id.PodUID] = id
+				}
 			}
 			key := podGPUKey{
 				podUID:   id.PodUID,
@@ -236,6 +259,25 @@ func (c *Collector) pollOnce() {
 			migSamples = append(migSamples, *v)
 		}
 		c.recordMigSnapshot(c.cfg.NodeName, migSamples)
+	}
+
+	// #198 Pod 별 cgroup PSI 경합 수집. Pod 당 1회 read 하며, read 실패 (프로세스 종료 / PSI 미지원)
+	// Pod 는 samples 에서 빠져 diff cleanup 으로 자연 제거된다. contentionEnabled 가 켜진 경로에서는 빈
+	// samples 여도 호출해 직전 poll 의 stale 시리즈를 정리한다.
+	if contentionEnabled {
+		samples := make([]metrics.PodContentionSample, 0, len(contentionPods))
+		for _, id := range contentionPods {
+			st, ok := c.readContention(id.PodUID)
+			if !ok {
+				continue
+			}
+			samples = append(samples, metrics.PodContentionSample{
+				ID:               id,
+				CPUPressureRatio: st.CPUPressureRatio,
+				MemPressureRatio: st.MemPressureRatio,
+			})
+		}
+		c.recordContention(c.cfg.NodeName, samples)
 	}
 }
 

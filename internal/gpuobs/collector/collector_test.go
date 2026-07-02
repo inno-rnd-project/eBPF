@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"netobs/internal/gpuobs/config"
+	"netobs/internal/gpuobs/contention"
 	"netobs/internal/gpuobs/metrics"
 	"netobs/internal/gpuobs/nvml"
 	"netobs/internal/gpuobs/types"
@@ -949,3 +950,59 @@ func (n *migFakeNVML) DeviceCount() (uint, error)            { return 1, nil }
 func (n *migFakeNVML) Device(_ uint) (nvml.Device, error)    { return n.parent, nil }
 func (n *migFakeNVML) DeviceUUID(_ uint) (string, error)     { return n.parent.info.UUID, nil }
 func (n *migFakeNVML) Shutdown() error                       { return nil }
+
+// TestPollOnce_CollectsPodContention 는 #198 cgroup 경합 수집이 Pod 당 대표 PID 1회만 읽고 (다중 GPU
+// 프로세스 중복 read 회피) PSI 비율을 RecordPodContention 으로 전달하는지 검증한다.
+func TestPollOnce_CollectsPodContention(t *testing.T) {
+	dev := &fakeDevice{
+		info: types.GPUDevice{Index: 0, UUID: "u0"},
+		processes: []types.GPUProcess{
+			{DeviceIndex: 0, PID: 100, MemoryUsedBytes: 1024},
+			{DeviceIndex: 0, PID: 101, MemoryUsedBytes: 2048}, // 동일 Pod 의 두 번째 PID
+		},
+	}
+	pod := kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "p1", PodUID: "u1"}
+	resolver := &fakeResolver{byPID: map[uint32]kube.PodIdentity{100: pod, 101: pod}}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, ContentionEnabled: true, NodeName: "n"}
+	c, _ := newCollectorWithDevs(t, cfg, resolver, dev)
+
+	var readUIDs []string
+	c.readContention = func(podUID string) (contention.Stats, bool) {
+		readUIDs = append(readUIDs, podUID)
+		return contention.Stats{CPUPressureRatio: 0.25, MemPressureRatio: 0.1}, true
+	}
+	var got []metrics.PodContentionSample
+	c.recordContention = func(node string, samples []metrics.PodContentionSample) { got = samples }
+
+	c.pollOnce()
+
+	if len(readUIDs) != 1 || readUIDs[0] != "u1" {
+		t.Fatalf("readContention UIDs=%v want [u1] (Pod 당 1회)", readUIDs)
+	}
+	if len(got) != 1 || got[0].ID.PodUID != "u1" || got[0].CPUPressureRatio != 0.25 || got[0].MemPressureRatio != 0.1 {
+		t.Fatalf("contention samples=%+v want 1건 (u1, cpu 0.25, mem 0.1)", got)
+	}
+}
+
+// TestPollOnce_ContentionSkippedWhenToggleOff 는 ContentionEnabled=false 면 cgroup read / record 가
+// 전혀 호출되지 않아 PSI 파일 read 비용이 0 임을 검증한다.
+func TestPollOnce_ContentionSkippedWhenToggleOff(t *testing.T) {
+	dev := &fakeDevice{
+		info:      types.GPUDevice{Index: 0, UUID: "u0"},
+		processes: []types.GPUProcess{{DeviceIndex: 0, PID: 100, MemoryUsedBytes: 1}},
+	}
+	resolver := &fakeResolver{byPID: map[uint32]kube.PodIdentity{
+		100: {IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "p1", PodUID: "u1"},
+	}}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, ContentionEnabled: false, NodeName: "n"}
+	c, _ := newCollectorWithDevs(t, cfg, resolver, dev)
+	called := false
+	c.readContention = func(podUID string) (contention.Stats, bool) { called = true; return contention.Stats{}, false }
+	c.recordContention = func(node string, samples []metrics.PodContentionSample) { called = true }
+
+	c.pollOnce()
+
+	if called {
+		t.Fatalf("ContentionEnabled=false 인데 contention 경로가 호출됨")
+	}
+}

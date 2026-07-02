@@ -125,6 +125,10 @@ var (
 // gpu_uuid/gpu_index는 GPU 차원을 추가해 한 Pod이 복수 GPU를 사용하는 경우 분리 측정한다.
 var podLabels = []string{"node", "src_namespace", "src_pod", "src_pod_uid", "gpu_uuid", "gpu_index"}
 
+// podContentionLabels 는 #198 pod cgroup 경합 (PSI) 메트릭의 라벨 셋이다. 경합은 host 측 per-pod
+// 신호라 GPU device 라벨 (gpu_uuid / gpu_index) 을 빼고 pod 식별 4종만 둔다.
+var podContentionLabels = []string{"node", "src_namespace", "src_pod", "src_pod_uid"}
+
 // podMigLabels 는 #104 MIG 활성 환경 한정 의 Pod-level utilization 라벨 셋 이다. 기존 podLabels 6종 에
 // mig_uuid 와 gi_id (GPU Instance ID) 2종 을 추가 부착 해 instance 단위 시리즈로 발행 한다. metric 이름
 // 자체를 분리 (gpuobs_pod_mig_utilization_percent) 해 라벨 셋 충돌 을 피하고 dashboard query 가 환경 별
@@ -197,6 +201,14 @@ type PodGPUSample struct {
 	SmUtilPct uint32
 }
 
+// PodContentionSample 은 #198 의 한 GPU Pod 에 대한 cgroup PSI 압박 비율 (0-1) 이다. collector 가
+// Pod 당 대표 PID 로 1회 수집해 RecordPodContention 으로 전달한다. GPU device 무관 per-pod 신호다.
+type PodContentionSample struct {
+	ID               kube.PodIdentity
+	CPUPressureRatio float64
+	MemPressureRatio float64
+}
+
 // PodMigGPUSample 은 #104 MIG 활성 환경 한정 의 (Pod, MIG instance) 단위 SM util 합산 결과다. parent
 // device 정보 (UUID / Index) 외 에 instance 식별자 (MigUUID, GpuInstanceID) 를 함께 운반 한다.
 type PodMigGPUSample struct {
@@ -214,10 +226,11 @@ type PodMigGPUSample struct {
 // #104 podUtilization 은 namespace allow-list 통제 결과로 발행 키 셋 이 podMemoryUsed 와 다를 수 있어
 // lastPodUtilKeys 로 별도 추적 한다. 두 셋 모두 동일 mutex 로 보호.
 var (
-	lastPodSampleKeys   = make(map[string]struct{})
-	lastPodUtilKeys     = make(map[string]struct{})
-	lastPodMigUtilKeys  = make(map[string]struct{})
-	lastPodSampleKeysMu sync.Mutex
+	lastPodSampleKeys     = make(map[string]struct{})
+	lastPodUtilKeys       = make(map[string]struct{})
+	lastPodMigUtilKeys    = make(map[string]struct{})
+	lastPodContentionKeys = make(map[string]struct{})
+	lastPodSampleKeysMu   sync.Mutex
 )
 
 // seenCudaKeys 는 RecordCudaEvent 가 한 번이라도 기록한 (node, ns, pod, uid, gpu_uuid) 5-tuple
@@ -526,6 +539,28 @@ var (
 		podLabels,
 	)
 
+	// #198 podCpuPressureRatio / podMemoryPressureRatio 는 GPU Pod cgroup 의 PSI (Pressure Stall
+	// Information) 압박 비율 (0-1) gauge 다. cgroup v2 cpu.pressure / memory.pressure 의 some avg10 을
+	// 0-1 로 정규화한 값으로, cAdvisor 의 CFS throttle 비율 / working-set 대 limit 비율 휴리스틱과 달리
+	// 실제 stall 시간을 직접 측정한다. pod 간 cgroup 경합 (memcg / cpuset 공동피해) 을 직접 드러내 GPU
+	// 유휴 원인 분석 (host_contention cause) 의 입력이 된다. 라벨은 per-pod (GPU device 무관) 라
+	// podContentionLabels 4종으로 podLabels (gpu 포함 6종) 와 분리한다.
+	podCpuPressureRatio = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_pod_cpu_pressure_ratio",
+			Help: "Fraction (0-1) of the last 10s a GPU Pod's cgroup was stalled on CPU, from cgroup v2 cpu.pressure some avg10. Direct PSI stall signal not exposed by cAdvisor; input to the GPU-idle host_contention cause.",
+		},
+		podContentionLabels,
+	)
+
+	podMemoryPressureRatio = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_pod_memory_pressure_ratio",
+			Help: "Fraction (0-1) of the last 10s a GPU Pod's cgroup was stalled on memory, from cgroup v2 memory.pressure some avg10. Direct PSI stall signal not exposed by cAdvisor; input to the GPU-idle host_contention cause.",
+		},
+		podContentionLabels,
+	)
+
 	// podMigUtilization 은 #104 MIG 활성 환경 한정 의 instance level Pod-level utilization gauge 다.
 	// podUtilization 과 metric 이름 을 분리 하여 라벨 셋 (6 vs 8) 호환성 유지. MIG 활성 device 에서만
 	// 시리즈 가 생기며 collector 가 instance 별 DeviceGetProcessUtilization 결과 를 (podUID, mig_uuid, gi_id)
@@ -715,6 +750,8 @@ func Register(reg prometheus.Registerer) {
 		podMemoryUsed,
 		podUtilization,
 		podMigUtilization,
+		podCpuPressureRatio,
+		podMemoryPressureRatio,
 		cudaKernelLaunchesTotal,
 		cudaH2DBytesTotal,
 		cudaD2HBytesTotal,
@@ -1112,6 +1149,39 @@ func RecordPodSnapshot(node string, samples []PodGPUSample) {
 	}
 	lastPodSampleKeys = currentKeys
 	lastPodUtilKeys = currentUtilKeys
+}
+
+// RecordPodContention 은 #198 의 GPU Pod 별 cgroup PSI 압박 비율을 발행한다. RecordPodSnapshot 과 동일한
+// snapshot + diff cleanup 패턴을 따라, 이번 poll 에 없는 Pod (종료 / 프로세스 소멸 / toggle off) 의 stale
+// 시리즈를 DeleteLabelValues 로 제거한다. podMetricsEnabled 가 false 면 신규 기록은 건너뛰되 cleanup 은
+// 수행해 라벨 잔재를 남기지 않는다. 라벨 셋은 podContentionLabels 4종 (node, src_namespace, src_pod,
+// src_pod_uid) 으로 GPU device 무관 per-pod 신호다.
+func RecordPodContention(node string, samples []PodContentionSample) {
+	currentKeys := make(map[string]struct{}, len(samples))
+
+	if podMetricsEnabled {
+		for _, s := range samples {
+			if !s.ID.IsPod() {
+				continue
+			}
+			labels := []string{node, s.ID.NamespaceLabel(), podName(s.ID), podUID(s.ID)}
+			key := strings.Join(labels, podLabelSeparator)
+			podCpuPressureRatio.WithLabelValues(labels...).Set(s.CPUPressureRatio)
+			podMemoryPressureRatio.WithLabelValues(labels...).Set(s.MemPressureRatio)
+			currentKeys[key] = struct{}{}
+		}
+	}
+
+	lastPodSampleKeysMu.Lock()
+	defer lastPodSampleKeysMu.Unlock()
+	for key := range lastPodContentionKeys {
+		if _, ok := currentKeys[key]; !ok {
+			lv := strings.Split(key, podLabelSeparator)
+			podCpuPressureRatio.DeleteLabelValues(lv...)
+			podMemoryPressureRatio.DeleteLabelValues(lv...)
+		}
+	}
+	lastPodContentionKeys = currentKeys
 }
 
 // RecordPodMigSnapshot 은 #104 MIG 활성 환경 의 (Pod, MIG instance) 단위 util sample 을 일괄 기록한다.
