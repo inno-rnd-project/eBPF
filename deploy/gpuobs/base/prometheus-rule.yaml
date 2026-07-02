@@ -474,6 +474,29 @@ spec:
         - record: cluster:gpu_thermal_score:5m
           expr: max(node:gpu_thermal_score:5m) or vector(0)
 
+        # pod:cgroup_contention_score:5m (#198)
+        # Pod 단위 cgroup PSI 경합 score (0-1). gpuobs 가 cgroup v2 cpu.pressure / memory.pressure 의
+        # some avg10 을 수집한 gpuobs_pod_cpu_pressure_ratio / gpuobs_pod_memory_pressure_ratio 의 5 분
+        # max 를 (node, src_namespace, src_pod) 단위로 취해 CPU / memory stall 중 더 심한 쪽을 pod 경합
+        # 강도로 삼는다. cAdvisor 의 throttle-ratio / working-set-ratio 휴리스틱과 달리 실제 stall 시간을
+        # 직접 반영한다. gpuobs 메트릭은 이미 src_namespace / src_pod 라벨을 달고 나와 label_replace 가
+        # 불필요하다.
+        - record: pod:cgroup_contention_score:5m
+          expr: |
+            clamp_max(
+              max by(node, src_namespace, src_pod) (
+                label_replace(max_over_time(gpuobs_pod_cpu_pressure_ratio[5m]), "psi_kind", "cpu", "", "")
+                or
+                label_replace(max_over_time(gpuobs_pod_memory_pressure_ratio[5m]), "psi_kind", "mem", "", "")
+              ),
+              1
+            )
+
+        # cluster:pod_cgroup_contention_score:5m (#198)
+        # Pod 단위 cgroup 경합 score 의 cluster max. worst-case Pod 의 PSI stall 을 GPU 유휴 cause 로 rollup 한다.
+        - record: cluster:pod_cgroup_contention_score:5m
+          expr: max(pod:cgroup_contention_score:5m) or vector(0)
+
         - record: gpu_idle_cause_sum:5m
           expr: |
             (cluster:gpu_pcie_saturation_score:5m or vector(0))
@@ -484,6 +507,7 @@ spec:
             + (cluster:dcgm_pcie_replay_score:5m or vector(0))
             + (cluster:nccl_collective_stall_score:5m or vector(0))
             + (cluster:gpu_thermal_score:5m or vector(0))
+            + (cluster:pod_cgroup_contention_score:5m or vector(0))
 
         # gpu_idle_cause_weight:5m{cause}
         # 5 cause 의 정규화 가중치 (cause 별 score / 5 cause 합). 분모가 0 인 idle window 는
@@ -517,6 +541,20 @@ spec:
           expr: |
             (
               (cluster:pod_memory_pressure_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        # cause: cgroup_contention (#198)
+        # gpuobs 가 수집한 pod cgroup PSI stall (cpu.pressure / memory.pressure) 기반 경합 원인 가중치.
+        # cAdvisor 의 CFS throttle / working-set 휴리스틱인 cpu_throttle / memory_pressure cause 와 달리
+        # 실제 stall 시간을 반영해 pod 간 공동피해를 직접 드러낸다.
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: cgroup_contention
+          expr: |
+            (
+              (cluster:pod_cgroup_contention_score:5m or vector(0))
               / (gpu_idle_cause_sum:5m > 0)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
@@ -594,11 +632,11 @@ spec:
             and on() (max(node:gpu_idle:5m) > 0.5)
 
         # cluster:gpu_idle_dominant_cause:5m
-        # 8 cause weight 중 최대값을 가진 cause 1 종만 단일 시리즈로 노출한다. 정확한 동률 케이스에
+        # 9 cause weight 중 최대값을 가진 cause 1 종만 단일 시리즈로 노출한다. 정확한 동률 케이스에
         # 서 cause enum 사전순 가장 앞 라벨이 채택되도록 1e-6 단위의 deterministic offset 을
-        # cause 별로 가산해 tie-breaker 로 둔다. offset 은 사전순 (cpu_throttle, dcgm_pcie_replay,
-        # host_compute_stall, memory_pressure, nccl_collective_stall, network_pressure,
-        # pcie_saturation, thermal) 으로 8e-6 부터 1e-6 까지 부여한다. offset 단위는 어떤 실 weight
+        # cause 별로 가산해 tie-breaker 로 둔다. offset 은 사전순 (cgroup_contention, cpu_throttle,
+        # dcgm_pcie_replay, host_compute_stall, memory_pressure, nccl_collective_stall,
+        # network_pressure, pcie_saturation, thermal) 으로 9e-6 부터 1e-6 까지 부여한다. offset 단위는 어떤 실 weight
         # 값에도 미치지 못해 일반 케이스의 정렬을 바꾸지 않는다. weight 시리즈 자체가 idle 게이팅으로
         # emit 되지 않는 시간대는 본 record 도 자연 emit 되지 않는다.
         - record: cluster:gpu_idle_dominant_cause:5m
@@ -606,7 +644,8 @@ spec:
             topk(1,
               gpu_idle_cause_weight:5m
               + on(cause) (
-                label_replace(vector(8e-6), "cause", "cpu_throttle", "", "")
+                label_replace(vector(9e-6), "cause", "cgroup_contention", "", "")
+                or label_replace(vector(8e-6), "cause", "cpu_throttle", "", "")
                 or label_replace(vector(7e-6), "cause", "dcgm_pcie_replay", "", "")
                 or label_replace(vector(6e-6), "cause", "host_compute_stall", "", "")
                 or label_replace(vector(5e-6), "cause", "memory_pressure", "", "")
@@ -703,6 +742,19 @@ spec:
                 "victim_pod", "$1", "src_pod", "(.+)")
             )
 
+        # cause: cgroup_contention (#198) victim 단위. pod:cgroup_contention_score 는 이미 src_namespace /
+        # src_pod 라벨 이라 cpu_throttle / memory_pressure victim 룰 과 동일 하게 victim_* 로 alias 한다.
+        - record: pod:gpu_idle_cause_score:5m
+          labels:
+            cause: cgroup_contention
+          expr: |
+            sum by(node, victim_namespace, victim_pod) (
+              label_replace(label_replace(
+                pod:cgroup_contention_score:5m,
+                "victim_namespace", "$1", "src_namespace", "(.+)"),
+                "victim_pod", "$1", "src_pod", "(.+)")
+            )
+
         # pod:gpu_idle_cause_sum:5m
         # 5 cause base score 의 victim 단위 합. 정규화 분모 로 쓰인다. 일부 cause base 가 비어 있는
         # victim 은 그 cause 항 만 자연 skip 되며 sum 은 존재 하는 cause 의 합 으로 산출 된다. cluster
@@ -732,7 +784,7 @@ spec:
 
         # victim:gpu_idle_dominant_cause:5m{victim_namespace,victim_pod,cause}
         # #101 victim 단위 dominant cause 단일 시리즈. cluster:gpu_idle_dominant_cause:5m 와 동일
-        # topk + tie-breaker 패턴 을 victim 차원 으로 적용 한다. victim 별 5 cause weight 중 최대값
+        # topk + tie-breaker 패턴 을 victim 차원 으로 적용 한다. victim 별 6 cause weight 중 최대값
         # cause 1 종 만 노출 해 dashboard 와 alert 에서 victim 단위 단일 cause string 으로 join 가능
         # 하다. 정확한 동률 케이스 에서 cause enum 사전순 가장 앞 라벨 이 채택 되도록 1e-6 단위 의
         # deterministic offset 을 cause 별로 가산해 tie-breaker 로 둔다. cluster 단위 rule 과 달리
@@ -744,7 +796,8 @@ spec:
             topk by(node, victim_namespace, victim_pod) (1,
               pod:gpu_idle_cause_weight:5m
               + on(cause) group_left() (
-                label_replace(vector(5e-6), "cause", "cpu_throttle", "", "")
+                label_replace(vector(6e-6), "cause", "cgroup_contention", "", "")
+                or label_replace(vector(5e-6), "cause", "cpu_throttle", "", "")
                 or label_replace(vector(4e-6), "cause", "host_compute_stall", "", "")
                 or label_replace(vector(3e-6), "cause", "memory_pressure", "", "")
                 or label_replace(vector(2e-6), "cause", "network_pressure", "", "")

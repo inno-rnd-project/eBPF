@@ -75,6 +75,13 @@ spec:
             - name: host-libcuda
               mountPath: /host/usr/lib/x86_64-linux-gnu
               readOnly: true
+            # #198 pod cgroup 경합 (PSI) 수집 은 host 의 cgroup2 계층 을 읽어야 한다. 컨테이너 자신 의
+            # /sys/fs/cgroup 은 cgroup namespace 로 격리 돼 kubepods.slice 등 타 Pod 경로 가 보이지 않으
+            # 므로 host 의 /sys/fs/cgroup 을 read-only 로 bind mount 해 GPU Pod 의 cpu.pressure /
+            # memory.pressure 를 조회한다. GPUOBS_CGROUP_ROOT 기본값 과 정합.
+            - name: host-cgroup
+              mountPath: /host/sys/fs/cgroup
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /healthz
@@ -98,4 +105,8 @@ spec:
         - name: host-libcuda
           hostPath:
             path: /usr/lib/x86_64-linux-gnu
+            type: Directory
+        - name: host-cgroup
+          hostPath:
+            path: /sys/fs/cgroup
             type: Directory

@@ -1,0 +1,62 @@
+# gpuobs-cgroup-contention.test.yaml 은 #198 의 pod cgroup 경합 (PSI) cause 정합 검증 promtool unit test 다.
+# memory.pressure ratio (0.6) 가 cpu.pressure ratio (0.2) 보다 큰 입력을 주어, pod:cgroup_contention_score
+# 가 두 PSI 중 더 심한 쪽 (0.6) 을 element-wise max 로 취하는지 (psi_kind 라벨 분리 후 max by 집계) 를 단정
+# 한다. cpu / memory 두 메트릭이 동일 라벨 셋이라 단순 `or` 로는 mem 이 버려지는 회귀를 본 케이스가 가드한다.
+# 나머지 cause 입력이 0 이므로 cgroup_contention 이 유일한 non-zero cause 가 되어 weight=1, victim score 편입
+# 을 확인한다. GPU idle 게이팅은 utilization 5% (<20) 상시로 node:gpu_idle:5m=1 을 만든다.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  - interval: 30s
+    input_series:
+      # cgroup PSI: cpu 0.2, memory 0.6 → pod score = max(0.2, 0.6) = 0.6
+      - series: 'gpuobs_pod_cpu_pressure_ratio{node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
+        values: '0.2x12'
+      - series: 'gpuobs_pod_memory_pressure_ratio{node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
+        values: '0.6x12'
+      # GPU idle gating: utilization 5% (<20) 상시 → node:gpu_idle:5m = 1 > 0.5
+      - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
+        values: '5x12'
+
+    promql_expr_test:
+      # pod score = max(cpu 0.2, mem 0.6) = 0.6. src_pod_uid / psi_kind 는 max by 로 정리된다.
+      - expr: pod:cgroup_contention_score:5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'pod:cgroup_contention_score:5m{node="n1",src_namespace="ns1",src_pod="p1"}'
+            value: 0.6
+      # cluster rollup = cluster max = 0.6 (max() 가 모든 라벨 제거).
+      - expr: cluster:pod_cgroup_contention_score:5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'cluster:pod_cgroup_contention_score:5m'
+            value: 0.6
+      # cgroup_contention 이 유일한 non-zero cause 라 weight = score / sum = 0.6 / 0.6 = 1.
+      - expr: gpu_idle_cause_weight:5m{cause="cgroup_contention"}
+        eval_time: 5m
+        exp_samples:
+          - labels: 'gpu_idle_cause_weight:5m{cause="cgroup_contention"}'
+            value: 1
+      # victim (pod-scope) score 도 동일 값으로 편입 (src_* → victim_* alias).
+      - expr: pod:gpu_idle_cause_score:5m{cause="cgroup_contention"}
+        eval_time: 5m
+        exp_samples:
+          - labels: 'pod:gpu_idle_cause_score:5m{cause="cgroup_contention",node="n1",victim_namespace="ns1",victim_pod="p1"}'
+            value: 0.6
+      # cluster dominant cause 로 cgroup_contention 이 선택되는지 검증한다. dominant 룰의 tie-breaker
+      # offset 리스트에 cgroup_contention 이 없으면 + on(cause) 조인이 빈 벡터를 만들어 이 단정이 실패
+      # 하므로, offset 누락 회귀를 본 케이스가 가드한다 (weight 1 + offset 9e-6).
+      - expr: cluster:gpu_idle_dominant_cause:5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'cluster:gpu_idle_dominant_cause:5m{cause="cgroup_contention"}'
+            value: 1.000009
+      # victim 단위 dominant cause 도 동일하게 cgroup_contention 선택 (weight 1 + offset 6e-6).
+      - expr: victim:gpu_idle_dominant_cause:5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'victim:gpu_idle_dominant_cause:5m{cause="cgroup_contention",node="n1",victim_namespace="ns1",victim_pod="p1"}'
+            value: 1.000006

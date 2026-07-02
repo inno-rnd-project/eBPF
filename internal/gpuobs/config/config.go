@@ -24,6 +24,13 @@ type Config struct {
 	// 대규모 클러스터에서 src_pod / src_pod_uid 라벨 카디널리티 폭증을 막기 위한 escape hatch이며,
 	// startup 시점에만 metrics 패키지로 전달되고 그 이후에는 읽기 전용으로 쓴다.
 	PodMetricsEnabled bool
+	// ContentionEnabled 는 #198 의 pod cgroup 경합 (PSI cpu.pressure / memory.pressure) 수집 여부다.
+	// per-pod 경로 (resolver + PodMetricsEnabled) 가 활성일 때만 동작하는 추가 opt-in 이며 기본값 true.
+	// GPU Pod 는 소수라 카디널리티가 낮으나, PSI 파일 read 비용을 완전히 끄는 kill-switch 로 둔다.
+	ContentionEnabled bool
+	// CgroupRoot 는 host cgroup2 계층을 read-only bind mount 한 컨테이너 내 경로다. contention 수집이
+	// /proc/<pid>/cgroup 의 경로를 이 루트 아래에서 resolve 한다. 기본값 /host/sys/fs/cgroup.
+	CgroupRoot string
 	// MetadataRefresh는 kube.Resolver의 informer resync 주기다.
 	// 0 이하 값은 의미 없으므로 검증에서 거부된다. netobs와 동일하게 기본값 30s를 쓴다.
 	MetadataRefresh time.Duration
@@ -117,6 +124,8 @@ func Parse() (Config, error) {
 		GPUPollInterval:            pollInterval,
 		GPUMetricsEnabled:          getenvBool("GPU_METRICS_ENABLED", true),
 		PodMetricsEnabled:          getenvBool("GPUOBS_POD_METRICS_ENABLED", true),
+		ContentionEnabled:          getenvBool("GPUOBS_CONTENTION_ENABLED", true),
+		CgroupRoot:                 getenvDefault("GPUOBS_CGROUP_ROOT", "/host/sys/fs/cgroup"),
 		MetadataRefresh:            metadataRefresh,
 		CudaUprobeEnabled:          getenvBool("GPUOBS_CUDA_UPROBE_ENABLED", true),
 		CudaUprobeLibcudaPath:      getenvDefault("GPUOBS_CUDA_LIBCUDA_PATH", "/host/usr/lib/x86_64-linux-gnu/libcuda.so.1"),
