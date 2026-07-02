@@ -11,18 +11,20 @@ func TestStage(t *testing.T) {
 		name string
 		want string
 	}{
-		{"SKB_DROP_REASON_TC_INGRESS", "ingress_tc"},
-		{"SKB_DROP_REASON_TC_EGRESS", "egress_tc"},
-		{"SKB_DROP_REASON_QDISC_DROP", "egress_qdisc"},
-		{"SKB_DROP_REASON_QUEUE_PURGE", "egress_qdisc"},
-		{"SKB_DROP_REASON_TCP_OFO_DROP", "recv_reorder"},
-		{"SKB_DROP_REASON_TCP_OLD_DATA", "recv_reorder"},
-		{"SKB_DROP_REASON_TCP_INVALID_SEQUENCE", "recv_tcp"},
-		{"SKB_DROP_REASON_NO_SOCKET", "socket"},
-		{"SKB_DROP_REASON_IP_OUTNOROUTES", "routing"},
-		{"SKB_DROP_REASON_XDP", "ingress_early"},
-		{"SKB_DROP_REASON_PKT_TOO_SMALL", "protocol"},
-		{"SKB_DROP_REASON_NOT_SPECIFIED", "unknown"},
+		// 프로덕션 enricher 는 mapper.Describe 가 정규화한 (SKB_DROP_REASON_ 접두사 제거) 이름을
+		// Stage 에 넘기므로, dev drop_reason 라벨과 동일한 정규화형으로 케이스를 고정한다.
+		{"TC_INGRESS", "ingress_tc"},
+		{"TC_EGRESS", "egress_tc"},
+		{"QDISC_DROP", "egress_qdisc"},
+		{"QUEUE_PURGE", "egress_qdisc"},
+		{"TCP_OFO_DROP", "recv_reorder"},
+		{"TCP_OLD_DATA", "recv_reorder"},
+		{"TCP_INVALID_SEQUENCE", "recv_tcp"},
+		{"NO_SOCKET", "socket"},
+		{"IP_OUTNOROUTES", "routing"},
+		{"XDP", "ingress_early"},
+		{"PKT_TOO_SMALL", "protocol"},
+		{"NOT_SPECIFIED", "unknown"},
 		{"", "unknown"},
 	}
 	for _, c := range cases {
