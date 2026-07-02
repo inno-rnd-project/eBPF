@@ -109,6 +109,10 @@ struct {
 struct netobs_recv_state {
     __u64 ts_l3;
     __u64 ts_established;
+    /* #197 첫 미-ACK 데이터 수신 시각. tcp_rcv_established 가 (0 일 때만) stamp 하고 tcp_send_ack 가
+     * ACK 송신 시점 과의 차분 을 "수신측 ACK 대기" latency 로 채택 후 0 으로 리셋 한다. 0 은 미상관 (직전
+     * ACK 이후 신규 데이터 없음 / standalone ACK) 을 뜻해 spurious 0 sample emit 을 막는 데도 쓰인다. */
+    __u64 ts_data;
 };
 
 /* #141 receive path stage latency 의 stale entry 가드 임계 (nanoseconds). socket_cookie 는 socket
@@ -999,8 +1003,26 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
             if (diff < NETOBS_RCV_STALE_NS)
                 latency_us = (__u32)(diff / 1000);
         }
-        if (st)
+        if (st) {
             st->ts_established = now;
+            /* #197 직전 ACK 이후 첫 데이터 수신 시각 을 기준점 으로 기록 해, 지연 ACK 가 여러 세그먼트 를
+             * 누적 ACK 할 때 "첫 미-ACK 데이터 → ACK 송신" 대기 를 측정 한다. tcp_send_ack 가 채택 후 0 으로
+             * 리셋 하므로 다음 데이터 수신 이 다시 기준점 이 된다. 양방향 흐름 에서 ACK 가 데이터 에 piggyback
+             * 되어 tcp_send_ack 를 안 타면 기준점 이 리셋 되지 않는데, 이때 기준점 이 stale (>10s) 해진 소켓 의
+             * 후속 계측 이 영구 누락 되지 않도록 0 또는 stale 일 때 모두 현재 시각 으로 재기록 한다 (monotonic
+             * 역행 now < ts_data 도 방어적 재기록). */
+            if (!st->ts_data || now < st->ts_data || (now - st->ts_data) >= NETOBS_RCV_STALE_NS)
+                st->ts_data = now;
+        }
+    } else if (stage == NETOBS_STAGE_ACK_WAIT) {
+        /* #197 수신측 ACK 대기 = 첫 미-ACK 데이터 수신 (ts_data) 부터 ACK 송신 (now) 까지. ts_data 미상관
+         * (recv_starts entry 부재 / 직전 ACK 이후 신규 데이터 없음) 이거나 stale (>10s) 이면 histogram 에
+         * spurious 0 sample 을 넣지 않도록 emit 을 skip 한다 (rcv_nic 미상관 skip 과 동일 논리). 채택 시 ts_data
+         * 를 0 으로 리셋 해 다음 데이터 수신 이 새 기준점 이 되게 한다. */
+        if (!st || !st->ts_data || now <= st->ts_data || (now - st->ts_data) >= NETOBS_RCV_STALE_NS)
+            return;
+        latency_us = (__u32)((now - st->ts_data) / 1000);
+        st->ts_data = 0;
     } else if (stage == NETOBS_STAGE_RCV_APP) {
         if (st && st->ts_established && now > st->ts_established) {
             __u64 diff = now - st->ts_established;
@@ -1211,6 +1233,18 @@ SEC("kprobe/tcp_recvmsg")
 int BPF_KPROBE(handle_tcp_recvmsg, struct sock *sk)
 {
     emit_rcv_event(sk, NULL, NETOBS_STAGE_RCV_APP);
+    return 0;
+}
+
+/* #197 tcp_send_ack(struct sock *sk) 는 수신측 이 지연 ACK 타이머 만료 / quickack / OFO 등 으로
+ * standalone ACK 를 송신 하는 지점 이다 (데이터 에 piggyback 되는 ACK 는 tcp_write_xmit 경로 라 여기 를
+ * 타지 않는다). tcp_rcv_established 가 stash 한 첫 미-ACK 데이터 수신 시각 과의 차분 을 "수신측 ACK 대기"
+ * latency 로 emit_rcv_event (ACK_WAIT 분기) 가 채택 한다. sk 인자 만 있고 skb 는 없어 RCV_APP 과 동일 하게
+ * skb=NULL 로 호출 한다. */
+SEC("kprobe/tcp_send_ack")
+int BPF_KPROBE(handle_tcp_send_ack, struct sock *sk)
+{
+    emit_rcv_event(sk, NULL, NETOBS_STAGE_ACK_WAIT);
     return 0;
 }
 

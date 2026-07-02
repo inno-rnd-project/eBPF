@@ -42,6 +42,11 @@ enum netobs_event_stage {
      * 는 socket 미해상 단계 라 Pod 귀속 이 불가능 하므로 진입 시각 만 per-CPU 로 stash 하고, L3 진입 의
      * skb->sk (early demux) 로 귀속 해 emit 한다. 기존 rcv stage 4 종 (6-9) 의 가장 앞 단 segment 다. */
     NETOBS_STAGE_RCV_NIC          = 12,
+    /* #197 수신측 ACK 대기. tcp_rcv_established 가 첫 미-ACK 데이터 수신 시각을 stash 하고
+     * tcp_send_ack (지연 ACK 타이머 / quickack 로 standalone ACK 를 송신하는 지점) 가 그 차분을
+     * "수신측이 데이터를 ACK 하기까지 대기한 시간" 으로 emit 한다. data 와 함께 piggyback 되는 ACK 는
+     * tcp_send_ack 를 타지 않아 대기 ~0 이므로 자연 제외 되고, 지연 ACK 경로만 계측된다. */
+    NETOBS_STAGE_ACK_WAIT         = 13,
 };
 
 /* pod_bytes 누적 맵의 key/value. key는 (cgroup_id, direction, layer) 삼중 합성이며 동일 Pod의
