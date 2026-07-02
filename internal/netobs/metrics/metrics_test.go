@@ -27,7 +27,7 @@ func resetMetrics() {
 	)
 	dropEventsLabeled = prometheus.NewCounterVec(
 		prometheus.CounterOpts{Name: "netobs_drop_events_labeled_total"},
-		[]string{"node", "src_namespace", "src_workload", "traffic_scope", "direction", "drop_reason", "drop_category", "dst_namespace", "dst_workload"},
+		[]string{"node", "src_namespace", "src_workload", "traffic_scope", "direction", "drop_reason", "drop_category", "drop_stage", "dst_namespace", "dst_workload"},
 	)
 	retransEventsLabeled = prometheus.NewCounterVec(
 		prometheus.CounterOpts{Name: "netobs_retrans_events_labeled_total"},

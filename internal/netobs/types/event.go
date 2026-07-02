@@ -104,6 +104,7 @@ type EnrichedEvent struct {
 	Dst            kube.PodIdentity
 	DropReasonName string
 	DropCategory   string
+	DropStage      string
 }
 
 // SourceNamespaceLabel/SourceWorkloadLabel은 Src PodIdentity 메서드를 메트릭 호출부에서
