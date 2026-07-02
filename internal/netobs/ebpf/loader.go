@@ -109,6 +109,9 @@ var trackedSymbols = []string{
 	"tcp_v6_do_rcv",
 	"tcp_rcv_established",
 	"tcp_recvmsg",
+	// #197 수신측 ACK 대기 (ack_wait) stage. tcp_send_ack 가 standalone ACK 송신 시점 에 대기 latency 를
+	// emit 한다. 다른 심볼 과 동일 라이프사이클 로 metrics.SetBpfProgramLoaded 에 0 으로 선등록 되게 한다.
+	"tcp_send_ack",
 	// #103 UDP TX/RX probe 4 종. connected UDP 만 추적 (sk_state==TCP_ESTABLISHED).
 	"udp_sendmsg",
 	"udp_recvmsg",

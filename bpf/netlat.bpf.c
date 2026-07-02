@@ -1005,10 +1005,13 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
         }
         if (st) {
             st->ts_established = now;
-            /* #197 직전 ACK 이후 첫 데이터 수신 시각 만 기록 (0 일 때만) 해, 지연 ACK 가 여러 세그먼트 를
+            /* #197 직전 ACK 이후 첫 데이터 수신 시각 을 기준점 으로 기록 해, 지연 ACK 가 여러 세그먼트 를
              * 누적 ACK 할 때 "첫 미-ACK 데이터 → ACK 송신" 대기 를 측정 한다. tcp_send_ack 가 채택 후 0 으로
-             * 리셋 하므로 다음 데이터 수신 이 다시 기준점 이 된다. */
-            if (!st->ts_data)
+             * 리셋 하므로 다음 데이터 수신 이 다시 기준점 이 된다. 양방향 흐름 에서 ACK 가 데이터 에 piggyback
+             * 되어 tcp_send_ack 를 안 타면 기준점 이 리셋 되지 않는데, 이때 기준점 이 stale (>10s) 해진 소켓 의
+             * 후속 계측 이 영구 누락 되지 않도록 0 또는 stale 일 때 모두 현재 시각 으로 재기록 한다 (monotonic
+             * 역행 now < ts_data 도 방어적 재기록). */
+            if (!st->ts_data || now < st->ts_data || (now - st->ts_data) >= NETOBS_RCV_STALE_NS)
                 st->ts_data = now;
         }
     } else if (stage == NETOBS_STAGE_ACK_WAIT) {
