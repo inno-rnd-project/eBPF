@@ -1142,29 +1142,25 @@ int BPF_KPROBE(handle_tcp_v6_do_rcv, struct sock *sk, struct sk_buff *skb)
     return 0;
 }
 
-/* #103 UDP 트래픽 추적 helper. udp_sendmsg / udpv6_sendmsg / udp_recvmsg / udpv6_recvmsg 4 hook 의
- * 공통 흐름 을 추출 한다. connected UDP 만 지원 (sk_state == TCP_ESTABLISHED, value 1). unconnected
- * UDP 의 5-tuple 은 msghdr->msg_name 파싱 이 필요 해 BPF complexity 증가 위험 으로 본 PR 범위 외
- * (follow-up 이슈). entry-only 누적 으로 TX 는 size 인자 정확, RX 는 user buffer size 라 partial recv
- * 시 과대 계상 가능 (docs/netobs/protocol-coverage.md 의 limitation 절 참조).
- */
-static __always_inline void handle_udp_msg(struct sock *sk, size_t size, __u8 direction)
+/* #103 / #197 UDP 트래픽 추적 helper. udp_sendmsg / udpv6_sendmsg / udp_recvmsg / udpv6_recvmsg 4 hook
+ * 의 공통 흐름 을 추출 한다. pod_bytes 볼륨 은 connected / unconnected 무관 하게 누적 해 DNS / QUIC 등
+ * unconnected UDP 볼륨 이 통째 로 누락 되던 #103 의 connected-only 한계 를 보완 한다. 5-tuple flow 는
+ * connected 는 sk peer (skc_daddr / skc_dport), unconnected TX 는 msghdr->msg_name (sendto 목적지) 을
+ * 파싱 해 emit 한다. unconnected RX 의 소스 는 udp_recvmsg 진입 시점 에 msg_name 이 아직 비어 있고 skb
+ * 파싱 이 필요 해 flow 는 미emit (볼륨 은 pod_bytes 로 계상). entry-only 누적 이라 TX 는 size 인자 정확,
+ * RX 는 user buffer size 라 partial recv 시 과대 계상 가능 (docs/netobs/protocol-coverage.md 참조). */
+static __always_inline void handle_udp_msg(struct sock *sk, struct msghdr *msg,
+                                           size_t size, __u8 direction)
 {
     __u64 cgroup_id;
     __u16 family_raw;
     __u8 family;
     __u8 saddr[NETOBS_ADDR_LEN] = {0};
     __u8 daddr[NETOBS_ADDR_LEN] = {0};
-    __u16 sport, dport;
+    __u16 sport = 0, dport = 0;
     __u8 sk_state;
 
     if (!sk || size == 0)
-        return;
-
-    /* connected UDP 만. vmlinux.h 의 TCP_ESTABLISHED enum 사용. unconnected UDP 는 skc_state ==
-     * TCP_CLOSE 라 자연 skip. */
-    sk_state = BPF_CORE_READ(sk, __sk_common.skc_state);
-    if (sk_state != TCP_ESTABLISHED)
         return;
 
     cgroup_id = bpf_get_current_cgroup_id();
@@ -1172,24 +1168,67 @@ static __always_inline void handle_udp_msg(struct sock *sk, size_t size, __u8 di
         return;
 
     family_raw = BPF_CORE_READ(sk, __sk_common.skc_family);
-    if (family_raw == NETOBS_AF_INET) {
-        __u32 v4_src = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-        __u32 v4_dst = BPF_CORE_READ(sk, __sk_common.skc_daddr);
-        __builtin_memcpy(saddr, &v4_src, 4);
-        __builtin_memcpy(daddr, &v4_dst, 4);
+    if (family_raw == NETOBS_AF_INET)
         family = NETOBS_AF_INET;
-    } else if (family_raw == NETOBS_AF_INET6) {
-        /* #103 BPF_CORE_READ_INTO 의 array dst 1 byte 복사 버그 회피. */
-        bpf_core_read(saddr, sizeof(saddr), &sk->__sk_common.skc_v6_rcv_saddr);
-        bpf_core_read(daddr, sizeof(daddr), &sk->__sk_common.skc_v6_daddr);
+    else if (family_raw == NETOBS_AF_INET6)
         family = NETOBS_AF_INET6;
+    else
+        return;
+
+    /* #197 볼륨 은 connected / unconnected 구분 없이 누적. connected 경로 의 기존 동작 은 불변 이고
+     * unconnected UDP 볼륨 이 추가 로 계상 된다 (순수 additive). */
+    inc_pod_bytes(cgroup_id, direction, NETOBS_LAYER_L4, (__u64)size, 0);
+
+    sk_state = BPF_CORE_READ(sk, __sk_common.skc_state);
+    sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+
+    if (sk_state == TCP_ESTABLISHED) {
+        /* connected UDP: 목적지 가 sk 에 고정 돼 skc_daddr / skc_dport 로 읽는다 (#103 기존 경로). */
+        if (family == NETOBS_AF_INET) {
+            __u32 v4_src = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+            __u32 v4_dst = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+            __builtin_memcpy(saddr, &v4_src, 4);
+            __builtin_memcpy(daddr, &v4_dst, 4);
+        } else {
+            /* #103 BPF_CORE_READ_INTO 의 array dst 1 byte 복사 버그 회피. */
+            bpf_core_read(saddr, sizeof(saddr), &sk->__sk_common.skc_v6_rcv_saddr);
+            bpf_core_read(daddr, sizeof(daddr), &sk->__sk_common.skc_v6_daddr);
+        }
+        dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+    } else if (direction == NETOBS_DIR_EGRESS && msg) {
+        /* #197 unconnected UDP TX: 목적지 가 sk 에 없고 sendto/sendmsg 의 msg_name 에 있다. syscall 계층
+         * 이 user sockaddr 을 kernel sockaddr_storage 로 복사 (move_addr_to_kernel) 한 뒤 udp_sendmsg 를
+         * 호출 하므로 msg_name 은 kernel 포인터 라 BPF_CORE_READ 로 읽는다. 소스 는 sk 의 bound 주소
+         * (미bind 시 0.0.0.0) 와 ephemeral 포트. 소켓 family 에 맞는 sockaddr 타입 으로 파싱 하고
+         * sa_family 불일치 / 미제공 (namelen 부족) 은 skip 한다. */
+        void *name = BPF_CORE_READ(msg, msg_name);
+        int namelen = BPF_CORE_READ(msg, msg_namelen);
+        if (!name)
+            return;
+        if (family == NETOBS_AF_INET) {
+            struct sockaddr_in *sin = name;
+            if (namelen < (int)sizeof(struct sockaddr_in) ||
+                BPF_CORE_READ(sin, sin_family) != NETOBS_AF_INET)
+                return;
+            __be32 v4_dst = BPF_CORE_READ(sin, sin_addr.s_addr);
+            __u32 v4_src = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+            __builtin_memcpy(daddr, &v4_dst, 4);
+            __builtin_memcpy(saddr, &v4_src, 4);
+            dport = bpf_ntohs(BPF_CORE_READ(sin, sin_port));
+        } else {
+            struct sockaddr_in6 *sin6 = name;
+            if (namelen < (int)sizeof(struct sockaddr_in6) ||
+                BPF_CORE_READ(sin6, sin6_family) != NETOBS_AF_INET6)
+                return;
+            bpf_core_read(daddr, sizeof(daddr), &sin6->sin6_addr);
+            bpf_core_read(saddr, sizeof(saddr), &sk->__sk_common.skc_v6_rcv_saddr);
+            dport = bpf_ntohs(BPF_CORE_READ(sin6, sin6_port));
+        }
     } else {
+        /* #197 unconnected RX: 소스 가 skb 에만 있어 flow 미emit (볼륨 은 위 pod_bytes 로 계상). */
         return;
     }
-    sport = BPF_CORE_READ(sk, __sk_common.skc_num);
-    dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
 
-    inc_pod_bytes(cgroup_id, direction, NETOBS_LAYER_L4, (__u64)size, 0);
     inc_flow_bytes(cgroup_id, family, saddr, daddr, sport, dport,
                    17 /* IPPROTO_UDP */, direction, (__u64)size);
 }
@@ -1197,28 +1236,28 @@ static __always_inline void handle_udp_msg(struct sock *sk, size_t size, __u8 di
 SEC("kprobe/udp_sendmsg")
 int BPF_KPROBE(handle_udp_sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
 {
-    handle_udp_msg(sk, size, NETOBS_DIR_EGRESS);
+    handle_udp_msg(sk, msg, size, NETOBS_DIR_EGRESS);
     return 0;
 }
 
 SEC("kprobe/udp_recvmsg")
 int BPF_KPROBE(handle_udp_recvmsg, struct sock *sk, struct msghdr *msg, size_t size)
 {
-    handle_udp_msg(sk, size, NETOBS_DIR_INGRESS);
+    handle_udp_msg(sk, msg, size, NETOBS_DIR_INGRESS);
     return 0;
 }
 
 SEC("kprobe/udpv6_sendmsg")
 int BPF_KPROBE(handle_udpv6_sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
 {
-    handle_udp_msg(sk, size, NETOBS_DIR_EGRESS);
+    handle_udp_msg(sk, msg, size, NETOBS_DIR_EGRESS);
     return 0;
 }
 
 SEC("kprobe/udpv6_recvmsg")
 int BPF_KPROBE(handle_udpv6_recvmsg, struct sock *sk, struct msghdr *msg, size_t size)
 {
-    handle_udp_msg(sk, size, NETOBS_DIR_INGRESS);
+    handle_udp_msg(sk, msg, size, NETOBS_DIR_INGRESS);
     return 0;
 }
 

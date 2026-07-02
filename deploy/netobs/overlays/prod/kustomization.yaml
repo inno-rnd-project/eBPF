@@ -9,7 +9,7 @@ resources:
 images:
   - name: netobs-agent
     newName: ghcr.io/inno-rnd-project/netobs-agent
-    newTag: "1.5.2"
+    newTag: "1.5.4"
 
 patches:
   - path: patch-daemonset.yaml

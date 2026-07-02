@@ -5,7 +5,7 @@
 ## 적용 대상과 비목표
 
 - 적용 대상은 dev/staging/prod 모든 cluster의 netobs-agent. kernel 5+ (RTX 3090 dev `6.8.0-60-generic` 와 그 외 노드 `6.2.0-33-generic` 전제). IPv6/UDP probe는 모두 `attachOptionalKprobe` 등록이라 kernel 4.x 노드에서도 fail-close 없이 자연 skip된다
-- 비목표는 SCTP 추적, ICMP/ICMPv6 추적, IPv6 link-local `fe80::/10`/multicast `ff00::/8`/loopback `::1` 추적 (BPF 단 필터로 자동 제외), UDP unconnected (sendto) 5-tuple 추적 (별도 follow-up), UDP packet-level stateful tracking, drop reason enum의 IPv6/UDP specific reason 세분화 (기존 enum 그대로 가드만 해제)
+- 비목표는 SCTP 추적, ICMP/ICMPv6 추적, IPv6 link-local `fe80::/10`/multicast `ff00::/8`/loopback `::1` 추적 (BPF 단 필터로 자동 제외), UDP unconnected RX 5-tuple 소스 추적 (`udp_recvmsg` 진입 시점에 소스가 skb에만 있어 skb 파싱 필요, 별도 follow-up), UDP packet-level stateful tracking, drop reason enum의 IPv6/UDP specific reason 세분화 (기존 enum 그대로 가드만 해제)
 
 ## BPF probe 카탈로그
 
@@ -15,10 +15,10 @@
 |---|---|---|
 | `tcp_v6_rcv` | IPv6 TCP receive entry (stub) | `int(struct sk_buff*)` |
 | `tcp_v6_do_rcv` | IPv6 TCP demux (sock 기반 event emit) | `int(struct sock*, struct sk_buff*)` |
-| `udp_sendmsg` | IPv4 UDP TX (connected only) | `int(struct sock*, struct msghdr*, size_t)` |
-| `udp_recvmsg` | IPv4 UDP RX (connected only) | `int(struct sock*, struct msghdr*, size_t, ...)` |
-| `udpv6_sendmsg` | IPv6 UDP TX (connected only) | `int(struct sock*, struct msghdr*, size_t)` |
-| `udpv6_recvmsg` | IPv6 UDP RX (connected only) | `int(struct sock*, struct msghdr*, size_t, ...)` |
+| `udp_sendmsg` | IPv4 UDP TX (connected sk peer + unconnected msg_name) | `int(struct sock*, struct msghdr*, size_t)` |
+| `udp_recvmsg` | IPv4 UDP RX (connected sk peer, unconnected는 볼륨만) | `int(struct sock*, struct msghdr*, size_t, ...)` |
+| `udpv6_sendmsg` | IPv6 UDP TX (connected sk peer + unconnected msg_name) | `int(struct sock*, struct msghdr*, size_t)` |
+| `udpv6_recvmsg` | IPv6 UDP RX (connected sk peer, unconnected는 볼륨만) | `int(struct sock*, struct msghdr*, size_t, ...)` |
 
 기존 `tcp_v4_rcv`/`tcp_v4_do_rcv`/`tcp_rcv_established`/`tcp_recvmsg` 4 종은 family 무관 단일 함수 (`tcp_rcv_established`와 `tcp_recvmsg`) 와 IPv4 전용 함수 (`tcp_v4_rcv`/`tcp_v4_do_rcv`) 의 조합 으로 동작 한다. `emit_rcv_event` 가 family 분기 처리 라 IPv4/IPv6 양쪽 event 가 동일 hook 으로 capture 된다.
 
@@ -58,7 +58,7 @@ CoreDNS link-local 트래픽 과 IPv6 Router Advertisement 같은 cluster 자체
 
 ## UDP cardinality 추정과 limitation
 
-connected UDP 만 추적 (sk_state == TCP_ESTABLISHED, value 1). unconnected UDP (sendto) 는 sk 에 daddr 부재 라 msghdr->msg_name 파싱 필요 하지만 BPF complexity 회피 위해 본 PR 범위 외.
+UDP 볼륨 (`netobs_pod_bytes_total`) 은 connected / unconnected 무관 하게 계상 한다 (#197). 5-tuple flow (`netobs_flow_bytes_total`) 는 connected 는 sk peer (skc_daddr / skc_dport), unconnected TX 는 `msghdr->msg_name` (sendto 목적지, syscall 이 kernel sockaddr_storage 로 복사 한 뒤라 `BPF_CORE_READ` 로 파싱) 로 emit 한다. unconnected RX 의 소스 는 `udp_recvmsg` 진입 시점 에 msg_name 이 비어 있고 skb 파싱 이 필요 해 flow 는 미emit 이고 볼륨 만 계상 한다 (follow-up).
 
 cardinality 추정.
 
