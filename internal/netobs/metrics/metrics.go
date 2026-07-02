@@ -463,7 +463,8 @@ func Record(ev types.EnrichedEvent) {
 			dstWl,
 		).Inc()
 
-	case types.StageRcvNic, types.StageRcvDemux, types.StageRcvEstablished, types.StageRcvApp:
+	case types.StageRcvNic, types.StageRcvDemux, types.StageRcvEstablished, types.StageRcvApp,
+		types.StageAckWait:
 		// #141 receive path 의 stage 별 커널 처리시간을 송신 경로와 동일한 stage latency histogram 에
 		// Observe 한다. RCV_DEMUX 와 RCV_ESTABLISHED 는 L3 진입 기준 누적 커널 처리시간이고 RCV_APP 은
 		// established 기준 app pickup 대기라 의미가 다르지만 stage 라벨로 구분되며, dashboard 의
@@ -479,7 +480,8 @@ func Record(ev types.EnrichedEvent) {
 		// aggregator 미설정 (nil) 또는 Dst 가 Pod 가 아닌 케이스 (peer 가 외부 / 노드) 는 emit 자체를
 		// skip 해 cardinality 가 클러스터 내 Pod 셋으로만 한정되게 한다. #173 의 rcv_nic 은 동일 sk 의
 		// 중복 sample 이라 tcp_state 집계 source 에서 제외하고 기존 3 stage (#65) 에서만 수집한다.
-		if ev.Raw.Stage != types.StageRcvNic && tcpStateAggregator != nil && ev.Dst.IsPod() {
+		if ev.Raw.Stage != types.StageRcvNic && ev.Raw.Stage != types.StageAckWait &&
+			tcpStateAggregator != nil && ev.Dst.IsPod() {
 			tcpStateAggregator.Observe(TCPStateLabels{
 				Namespace: ev.Dst.NamespaceLabel(),
 				Pod:       ev.Dst.PodName,

@@ -310,6 +310,11 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 	attachOptionalKprobe("tcp_rcv_established", objs.HandleTcpRcvEstablished, &links)
 	attachOptionalKprobe("tcp_recvmsg", objs.HandleTcpRecvmsg, &links)
 
+	// #197 수신측 ACK 대기 (ACK_WAIT) stage. tcp_rcv_established 가 stash 한 첫 미-ACK 데이터 수신 시각과
+	// tcp_send_ack (지연 ACK / quickack standalone ACK 송신 지점) 의 차분을 emit 한다. family 무관 단일
+	// 함수라 IPv4/IPv6 흐름을 함께 capture 하며, 심볼 부재 시 fail-close 되지 않게 optional attach 한다.
+	attachOptionalKprobe("tcp_send_ack", objs.HandleTcpSendAck, &links)
+
 	// #103 IPv6 TCP receive path attach. tcp_v6_rcv 는 stub (cgroup 미식별), tcp_v6_do_rcv 는 sock
 	// 기반 demux event 를 emit 한다. tcp_rcv_established 와 tcp_recvmsg 는 family 무관 단일 함수 라
 	// 이미 IPv4 attach 가 IPv6 흐름 도 함께 capture 한다 (c2 의 emit_rcv_event 가 family 분기 처리).

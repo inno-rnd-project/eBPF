@@ -30,6 +30,10 @@ const (
 	// tcp_v4_rcv / tcp_v6_rcv (L3 진입) 까지의 softirq 처리 시간이다. rcv path 4 종 (6-9) 의 가장
 	// 앞 단 segment 로, BPF 측 netobs_event_stage 의 NETOBS_STAGE_RCV_NIC 와 정합한다.
 	StageRcvNic = 12
+	// #197 수신측 ACK 대기. tcp_rcv_established 가 첫 미-ACK 데이터 수신 시각을 stash 하고 tcp_send_ack
+	// (지연 ACK / quickack 로 standalone ACK 를 송신하는 지점) 가 그 차분을 대기 latency 로 emit 한다.
+	// rcv path 계열이라 ingress 로 분류되며 stage 라벨은 "ack_wait" 다.
+	StageAckWait = 13
 )
 
 type Event struct {
@@ -146,6 +150,8 @@ func StageName(stage uint8) string {
 		return "rcv_established"
 	case StageRcvApp:
 		return "rcv_app"
+	case StageAckWait:
+		return "ack_wait"
 	case StageTcpWriteXmit:
 		return "tcp_write_xmit"
 	case StageTcpTransmitSkb:
@@ -165,7 +171,7 @@ func StageDirection(stage uint8) string {
 	case StageSendmsgRet, StageToVeth, StageToDevQ, StageRetrans, StageDrop,
 		StageTcpWriteXmit, StageTcpTransmitSkb:
 		return "egress"
-	case StageRcvNic, StageRcvL3, StageRcvDemux, StageRcvEstablished, StageRcvApp:
+	case StageRcvNic, StageRcvL3, StageRcvDemux, StageRcvEstablished, StageRcvApp, StageAckWait:
 		return "ingress"
 	}
 	return "unknown"

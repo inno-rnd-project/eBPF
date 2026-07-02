@@ -47,6 +47,7 @@ type NetObsNetobsPodBytesValue struct {
 type NetObsNetobsRecvState struct {
 	TsL3          uint64
 	TsEstablished uint64
+	TsData        uint64
 }
 
 type NetObsNetobsSegAccum struct {
@@ -135,6 +136,7 @@ type NetObsProgramSpecs struct {
 	HandleTcpRcvEstablished *ebpf.ProgramSpec `ebpf:"handle_tcp_rcv_established"`
 	HandleTcpRecvmsg        *ebpf.ProgramSpec `ebpf:"handle_tcp_recvmsg"`
 	HandleTcpRetransmitSkb  *ebpf.ProgramSpec `ebpf:"handle_tcp_retransmit_skb"`
+	HandleTcpSendAck        *ebpf.ProgramSpec `ebpf:"handle_tcp_send_ack"`
 	HandleTcpSendmsg        *ebpf.ProgramSpec `ebpf:"handle_tcp_sendmsg"`
 	HandleTcpSendmsgRet     *ebpf.ProgramSpec `ebpf:"handle_tcp_sendmsg_ret"`
 	HandleTcpTransmitSkb    *ebpf.ProgramSpec `ebpf:"handle_tcp_transmit_skb"`
@@ -238,6 +240,7 @@ type NetObsPrograms struct {
 	HandleTcpRcvEstablished *ebpf.Program `ebpf:"handle_tcp_rcv_established"`
 	HandleTcpRecvmsg        *ebpf.Program `ebpf:"handle_tcp_recvmsg"`
 	HandleTcpRetransmitSkb  *ebpf.Program `ebpf:"handle_tcp_retransmit_skb"`
+	HandleTcpSendAck        *ebpf.Program `ebpf:"handle_tcp_send_ack"`
 	HandleTcpSendmsg        *ebpf.Program `ebpf:"handle_tcp_sendmsg"`
 	HandleTcpSendmsgRet     *ebpf.Program `ebpf:"handle_tcp_sendmsg_ret"`
 	HandleTcpTransmitSkb    *ebpf.Program `ebpf:"handle_tcp_transmit_skb"`
@@ -264,6 +267,7 @@ func (p *NetObsPrograms) Close() error {
 		p.HandleTcpRcvEstablished,
 		p.HandleTcpRecvmsg,
 		p.HandleTcpRetransmitSkb,
+		p.HandleTcpSendAck,
 		p.HandleTcpSendmsg,
 		p.HandleTcpSendmsgRet,
 		p.HandleTcpTransmitSkb,
