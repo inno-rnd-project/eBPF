@@ -474,6 +474,29 @@ spec:
         - record: cluster:gpu_thermal_score:5m
           expr: max(node:gpu_thermal_score:5m) or vector(0)
 
+        # pod:cgroup_contention_score:5m (#198)
+        # Pod 단위 cgroup PSI 경합 score (0-1). gpuobs 가 cgroup v2 cpu.pressure / memory.pressure 의
+        # some avg10 을 수집한 gpuobs_pod_cpu_pressure_ratio / gpuobs_pod_memory_pressure_ratio 의 5 분
+        # max 를 (node, src_namespace, src_pod) 단위로 취해 CPU / memory stall 중 더 심한 쪽을 pod 경합
+        # 강도로 삼는다. cAdvisor 의 throttle-ratio / working-set-ratio 휴리스틱과 달리 실제 stall 시간을
+        # 직접 반영한다. gpuobs 메트릭은 이미 src_namespace / src_pod 라벨을 달고 나와 label_replace 가
+        # 불필요하다.
+        - record: pod:cgroup_contention_score:5m
+          expr: |
+            clamp_max(
+              max by(node, src_namespace, src_pod) (
+                label_replace(max_over_time(gpuobs_pod_cpu_pressure_ratio[5m]), "psi_kind", "cpu", "", "")
+                or
+                label_replace(max_over_time(gpuobs_pod_memory_pressure_ratio[5m]), "psi_kind", "mem", "", "")
+              ),
+              1
+            )
+
+        # cluster:pod_cgroup_contention_score:5m (#198)
+        # Pod 단위 cgroup 경합 score 의 cluster max. worst-case Pod 의 PSI stall 을 GPU 유휴 cause 로 rollup 한다.
+        - record: cluster:pod_cgroup_contention_score:5m
+          expr: max(pod:cgroup_contention_score:5m) or vector(0)
+
         - record: gpu_idle_cause_sum:5m
           expr: |
             (cluster:gpu_pcie_saturation_score:5m or vector(0))
@@ -484,6 +507,7 @@ spec:
             + (cluster:dcgm_pcie_replay_score:5m or vector(0))
             + (cluster:nccl_collective_stall_score:5m or vector(0))
             + (cluster:gpu_thermal_score:5m or vector(0))
+            + (cluster:pod_cgroup_contention_score:5m or vector(0))
 
         # gpu_idle_cause_weight:5m{cause}
         # 5 cause 의 정규화 가중치 (cause 별 score / 5 cause 합). 분모가 0 인 idle window 는
@@ -517,6 +541,20 @@ spec:
           expr: |
             (
               (cluster:pod_memory_pressure_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        # cause: cgroup_contention (#198)
+        # gpuobs 가 수집한 pod cgroup PSI stall (cpu.pressure / memory.pressure) 기반 경합 원인 가중치.
+        # cAdvisor 의 CFS throttle / working-set 휴리스틱인 cpu_throttle / memory_pressure cause 와 달리
+        # 실제 stall 시간을 반영해 pod 간 공동피해를 직접 드러낸다.
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: cgroup_contention
+          expr: |
+            (
+              (cluster:pod_cgroup_contention_score:5m or vector(0))
               / (gpu_idle_cause_sum:5m > 0)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
@@ -699,6 +737,19 @@ spec:
             sum by(node, victim_namespace, victim_pod) (
               label_replace(label_replace(
                 pod:host_compute_stall_score:5m,
+                "victim_namespace", "$1", "src_namespace", "(.+)"),
+                "victim_pod", "$1", "src_pod", "(.+)")
+            )
+
+        # cause: cgroup_contention (#198) victim 단위. pod:cgroup_contention_score 는 이미 src_namespace /
+        # src_pod 라벨 이라 cpu_throttle / memory_pressure victim 룰 과 동일 하게 victim_* 로 alias 한다.
+        - record: pod:gpu_idle_cause_score:5m
+          labels:
+            cause: cgroup_contention
+          expr: |
+            sum by(node, victim_namespace, victim_pod) (
+              label_replace(label_replace(
+                pod:cgroup_contention_score:5m,
                 "victim_namespace", "$1", "src_namespace", "(.+)"),
                 "victim_pod", "$1", "src_pod", "(.+)")
             )
