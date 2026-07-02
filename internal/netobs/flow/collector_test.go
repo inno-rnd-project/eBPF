@@ -2,6 +2,7 @@ package flow
 
 import (
 	"encoding/binary"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -232,6 +233,39 @@ func TestMergeEntry_IngressSwapsSrcDst(t *testing.T) {
 	}
 	if v.dstUID != "uid-client" {
 		t.Errorf("ingress dst_pod_uid=%s want uid-client (localPod)", v.dstUID)
+	}
+}
+
+// TestMergeEntry_EgressBackfillsUnspecifiedSrcWithPodIP 는 #197 unconnected UDP TX 의 회귀 가드 다.
+// 소켓 이 source 에 unbound 라 BPF saddr 가 unspecified (IPv4 "0.0.0.0" / IPv6 "::") 로 오는 egress
+// entry 가 cgroup 으로 해석 된 local pod IP 로 backfill 되어 FlowGuard 의 unspecified skip 을 통과 하고
+// 실제 소스 로 노출 되는지 검증 한다. IPv6 는 클러스터 가 IPv4 단일스택 이라 라이브 검증 이 불가 해 본
+// 단위 테스트 로 "::" 경로 를 결정론적 으로 잠근다.
+func TestMergeEntry_EgressBackfillsUnspecifiedSrcWithPodIP(t *testing.T) {
+	local := podOf("ns-a", "client-x", "uid-client", "client")
+	local.PodIP = "172.16.9.9"
+	cgroupResolver := &fakeCgroup{byCgroup: map[uint64]kube.PodIdentity{111: local}}
+	c := New(cgroupResolver, &fakeIP{}, metrics.NewFlowGuard([]string{"ns-a"}, 100), nil, "node1", true)
+
+	agg := map[aggKey]*aggValue{}
+
+	// IPv4 unconnected UDP TX: saddr 미설정 (0.0.0.0), dst=10.96.0.10:53.
+	k4 := ebpfx.NetObsNetobsFlowKey{CgroupId: 111, Sport: 5000, Dport: 53, Protocol: 17, Direction: 0, Family: 2}
+	binary.NativeEndian.PutUint32(k4.Daddr[:4], ipBytes(10, 96, 0, 10))
+	c.mergeEntry(agg, k4, ebpfx.NetObsNetobsFlowValue{Bytes: 300})
+
+	// IPv6 unconnected UDP TX: saddr :: (미설정), dst=fd00::2:53.
+	k6 := ebpfx.NetObsNetobsFlowKey{CgroupId: 111, Sport: 5001, Dport: 53, Protocol: 17, Direction: 0, Family: 10}
+	copy(k6.Daddr[:], net.ParseIP("fd00::2").To16())
+	c.mergeEntry(agg, k6, ebpfx.NetObsNetobsFlowValue{Bytes: 300})
+
+	if len(agg) != 2 {
+		t.Fatalf("agg size=%d want 2 (IPv4 0.0.0.0 + IPv6 :: backfill 모두 admit)", len(agg))
+	}
+	for k := range agg {
+		if k.srcIP != "172.16.9.9" {
+			t.Errorf("srcIP=%q (dst=%q) want 172.16.9.9 (pod IP backfill)", k.srcIP, k.dstIP)
+		}
 	}
 }
 
