@@ -221,6 +221,12 @@ func (c *Collector) mergeEntry(agg map[aggKey]*aggValue, key ebpfx.NetObsNetobsF
 	if key.Direction == 0 { // egress: local=sender
 		srcIP, dstIP = localIP, remoteIP
 		srcPort, dstPort = localPort, remotePort
+		// #197 unconnected UDP TX 는 소켓 이 source 주소 에 bind 되지 않아 (skc_rcv_saddr=0) BPF 가
+		// saddr 를 0.0.0.0 으로 채운다. egress 의 source 는 cgroup 으로 해석 된 local pod 이므로 pod IP 로
+		// backfill 해 실제 소스 를 노출 하고 FlowGuard 의 0.0.0.0 skip 에 걸리지 않게 한다.
+		if (srcIP == "" || srcIP == "0.0.0.0") && localPod.PodIP != "" {
+			srcIP = localPod.PodIP
+		}
 		srcNS = localPod.NamespaceLabel()
 		srcWorkload = localPod.WorkloadLabel()
 		srcPod = localPod.PodName
