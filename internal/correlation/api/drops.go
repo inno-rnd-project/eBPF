@@ -40,6 +40,7 @@ type DropGroup struct {
 	Direction    string  `json:"direction,omitempty"`
 	Reason       string  `json:"reason,omitempty"`
 	Category     string  `json:"category,omitempty"`
+	Stage        string  `json:"stage,omitempty"`
 	DropsPerSec  float64 `json:"drops_per_sec"`
 }
 
@@ -104,7 +105,7 @@ func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 
 		// 주 소스 (항상 수집): 실패하면 돌려줄 핵심 데이터가 없으므로 500.
-		labeled, err := h.querier.Query(ctx, "sum by(node, src_namespace, src_workload, dst_namespace, dst_workload, direction, drop_reason, drop_category) (rate(netobs_drop_events_labeled_total[5m]))")
+		labeled, err := h.querier.Query(ctx, "sum by(node, src_namespace, src_workload, dst_namespace, dst_workload, direction, drop_reason, drop_category, drop_stage) (rate(netobs_drop_events_labeled_total[5m]))")
 		if err != nil {
 			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", err))
 			return
@@ -139,7 +140,7 @@ func buildDropGroups(samples []correlation.InstantSample, nsFilter string, limit
 		out = append(out, DropGroup{
 			Node: l["node"], Namespace: l["src_namespace"], Workload: l["src_workload"],
 			DstNamespace: l["dst_namespace"], DstWorkload: l["dst_workload"], Direction: l["direction"],
-			Reason: l["drop_reason"], Category: l["drop_category"], DropsPerSec: sm.Value,
+			Reason: l["drop_reason"], Category: l["drop_category"], Stage: l["drop_stage"], DropsPerSec: sm.Value,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
