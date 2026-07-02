@@ -401,8 +401,10 @@ func (e *Enricher) Enrich(ev types.Event, mapper *drop.Mapper) types.EnrichedEve
 
 	reasonName := ""
 	reasonCategory := ""
+	reasonStage := ""
 	if ev.Stage == types.StageDrop && mapper != nil {
 		reasonName, reasonCategory = mapper.Describe(ev.Reason)
+		reasonStage = mapper.Stage(reasonName)
 	}
 
 	return types.EnrichedEvent{
@@ -419,5 +421,6 @@ func (e *Enricher) Enrich(ev types.Event, mapper *drop.Mapper) types.EnrichedEve
 		Dst:            dst,
 		DropReasonName: reasonName,
 		DropCategory:   reasonCategory,
+		DropStage:      reasonStage,
 	}
 }

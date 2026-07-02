@@ -2,6 +2,38 @@ package drop
 
 import "testing"
 
+// TestStage 는 #197 의 drop reason → 경로 단계 귀속을 검증한다. dev 커널 kfree_skb format 에 실재하는
+// reason (TC_INGRESS / TC_EGRESS / QDISC_DROP / QUEUE_PURGE / TCP_OFO_DROP / NOT_SPECIFIED) 로 케이스를
+// 고정해 송신/수신 경로 단계가 정확히 분류되는지 확인한다.
+func TestStage(t *testing.T) {
+	m := &Mapper{}
+	cases := []struct {
+		name string
+		want string
+	}{
+		// 프로덕션 enricher 는 mapper.Describe 가 정규화한 (SKB_DROP_REASON_ 접두사 제거) 이름을
+		// Stage 에 넘기므로, dev drop_reason 라벨과 동일한 정규화형으로 케이스를 고정한다.
+		{"TC_INGRESS", "ingress_tc"},
+		{"TC_EGRESS", "egress_tc"},
+		{"QDISC_DROP", "egress_qdisc"},
+		{"QUEUE_PURGE", "egress_qdisc"},
+		{"TCP_OFO_DROP", "recv_reorder"},
+		{"TCP_OLD_DATA", "recv_reorder"},
+		{"TCP_INVALID_SEQUENCE", "recv_tcp"},
+		{"NO_SOCKET", "socket"},
+		{"IP_OUTNOROUTES", "routing"},
+		{"XDP", "ingress_early"},
+		{"PKT_TOO_SMALL", "protocol"},
+		{"NOT_SPECIFIED", "unknown"},
+		{"", "unknown"},
+	}
+	for _, c := range cases {
+		if got := m.Stage(c.name); got != c.want {
+			t.Errorf("Stage(%q)=%q want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // TestCategory_SocketTokenBoundary 는 #145 의 SOCK / SOCKET 인접 토큰 오분류 회귀 가드다. 부분문자열
 // 매칭이 "SOCKET" 을 찾지 못해 PACKET_SOCK_ERROR (토큰 SOCK) 가 unknown 으로 빠지던 버그가 토큰 경계
 // 매칭으로 socket 으로 분류되는지, 기존 SOCKET 토큰 reason 의 socket 정분류가 유지되는지 검증한다.

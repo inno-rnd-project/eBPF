@@ -141,9 +141,9 @@ var (
 	dropEventsLabeled = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "netobs_drop_events_labeled_total",
-			Help: "Enriched drop events with human-readable drop reason, category, and dst peer.",
+			Help: "Enriched drop events with human-readable drop reason, category, path stage, and dst peer. drop_stage(#197)는 reason 이름에서 파생한 송신/수신 경로 단계(egress_qdisc / ingress_tc / recv_tcp 등)로 direction 라벨을 보완한다.",
 		},
-		[]string{"node", "src_namespace", "src_workload", "traffic_scope", "direction", "drop_reason", "drop_category", "dst_namespace", "dst_workload"},
+		[]string{"node", "src_namespace", "src_workload", "traffic_scope", "direction", "drop_reason", "drop_category", "drop_stage", "dst_namespace", "dst_workload"},
 	)
 
 	retransEventsLabeled = prometheus.NewCounterVec(
@@ -392,6 +392,7 @@ func Record(ev types.EnrichedEvent) {
 			label(ev.Direction),
 			label(ev.DropReasonName),
 			label(ev.DropCategory),
+			label(ev.DropStage),
 			dstNs,
 			dstWl,
 		).Inc()

@@ -1026,6 +1026,9 @@ const docTemplatecorrelation = `{
                 "reason": {
                     "type": "string"
                 },
+                "stage": {
+                    "type": "string"
+                },
                 "workload": {
                     "type": "string"
                 }

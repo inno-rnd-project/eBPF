@@ -175,6 +175,36 @@ func (m *Mapper) Category(name string) string {
 	}
 }
 
+// Stage 는 drop reason 이름에서 패킷이 송신/수신 경로 어느 단계에서 떨어졌는지 귀속한다. Category 가
+// "왜"(socket / queue / policy 등)를 분류하는 반면 Stage 는 "어디"(egress_qdisc / ingress_tc /
+// recv_tcp 등)를 분류해 현재 부정확한 direction 라벨을 보완한다. reason 이름이 이미 커널 drop 지점을
+// 인코딩하므로 신규 eBPF 수집 없이 이름 토큰으로 판정하며, Category 와 동일하게 zero-allocation 이다.
+func (m *Mapper) Stage(name string) string {
+	n := strings.ToUpper(strings.TrimSpace(name))
+	switch {
+	case hasToken(n, "TC") && strings.Contains(n, "INGRESS"):
+		return "ingress_tc"
+	case hasToken(n, "TC") && strings.Contains(n, "EGRESS"):
+		return "egress_tc"
+	case strings.Contains(n, "QDISC"), strings.Contains(n, "QUEUE"), strings.Contains(n, "TSO"):
+		return "egress_qdisc"
+	case strings.Contains(n, "OFO"), strings.Contains(n, "OLD_DATA"), strings.Contains(n, "ZEROWINDOW"):
+		return "recv_reorder"
+	case hasToken(n, "TCP"):
+		return "recv_tcp"
+	case hasToken(n, "SOCK", "SOCKET"):
+		return "socket"
+	case strings.Contains(n, "ROUTE"), strings.Contains(n, "NEIGH"), strings.Contains(n, "RPFILTER"):
+		return "routing"
+	case strings.Contains(n, "XDP"), strings.Contains(n, "NETFILTER"):
+		return "ingress_early"
+	case strings.Contains(n, "IP_"), strings.Contains(n, "IPV6"), strings.Contains(n, "PROTO"), strings.Contains(n, "HDR"), strings.Contains(n, "CSUM"), strings.Contains(n, "PKT"):
+		return "protocol"
+	default:
+		return "unknown"
+	}
+}
+
 func (m *Mapper) Describe(code uint32) (string, string) {
 	name := m.Name(code)
 	return name, m.Category(name)

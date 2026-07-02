@@ -1,7 +1,7 @@
 swagger: '2.0'
 info:
   title: netobs unified API
-  version: 1.4.7
+  version: 1.4.9
 paths:
   /api/v1/cross-level:
     get:
@@ -697,6 +697,8 @@ definitions:
       node:
         type: string
       reason:
+        type: string
+      stage:
         type: string
       workload:
         type: string

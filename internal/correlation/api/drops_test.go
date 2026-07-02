@@ -10,8 +10,8 @@ import (
 func dropsFakeQuerier() *fakeQuerier {
 	return (&fakeQuerier{}).
 		on("netobs_drop_events_labeled_total",
-			sample(2.5, "node", "w1", "src_namespace", "cs", "src_workload", "client", "direction", "egress", "drop_reason", "NOT_SPECIFIED", "drop_category", "unknown", "dst_namespace", "cs", "dst_workload", "client"),
-			sample(0.3, "node", "gpu", "src_namespace", "gm", "src_workload", "dcgm", "direction", "egress", "drop_reason", "QUEUE_PURGE", "drop_category", "queue")).
+			sample(2.5, "node", "w1", "src_namespace", "cs", "src_workload", "client", "direction", "egress", "drop_reason", "NOT_SPECIFIED", "drop_category", "unknown", "drop_stage", "unknown", "dst_namespace", "cs", "dst_workload", "client"),
+			sample(0.3, "node", "gpu", "src_namespace", "gm", "src_workload", "dcgm", "direction", "egress", "drop_reason", "QUEUE_PURGE", "drop_category", "queue", "drop_stage", "egress_qdisc")).
 		on("netobs_drop_events_flow_total",
 			sample(1.2, "node", "gpu", "src_namespace", "ebpf-project", "src_pod", "p1", "direction", "egress", "drop_reason", "REASON_1", "drop_category", "unknown", "protocol", "TCP", "src_ip", "10.0.0.1", "src_port", "5000", "dst_ip", "10.0.0.2", "dst_port", "443", "ip_version", "4")).
 		on("netobs_drop_last_timestamp_seconds",
@@ -37,6 +37,9 @@ func TestDrops(t *testing.T) {
 	}
 	if resp.Drops[0].Reason != "NOT_SPECIFIED" || resp.Drops[1].Reason != "QUEUE_PURGE" {
 		t.Errorf("drop reasons=%+v", resp.Drops)
+	}
+	if resp.Drops[1].Stage != "egress_qdisc" {
+		t.Errorf("drop stage=%q want egress_qdisc (QUEUE_PURGE)", resp.Drops[1].Stage)
 	}
 	if len(resp.Flows) != 1 || resp.Flows[0].Pod != "p1" || resp.Flows[0].SrcIP != "10.0.0.1" {
 		t.Fatalf("flows=%+v want p1 5-tuple 1건", resp.Flows)
