@@ -543,12 +543,12 @@ var (
 	// Information) 압박 비율 (0-1) gauge 다. cgroup v2 cpu.pressure / memory.pressure 의 some avg10 을
 	// 0-1 로 정규화한 값으로, cAdvisor 의 CFS throttle 비율 / working-set 대 limit 비율 휴리스틱과 달리
 	// 실제 stall 시간을 직접 측정한다. pod 간 cgroup 경합 (memcg / cpuset 공동피해) 을 직접 드러내 GPU
-	// 유휴 원인 분석 (host_contention cause) 의 입력이 된다. 라벨은 per-pod (GPU device 무관) 라
+	// 유휴 원인 분석 (cgroup_contention cause) 의 입력이 된다. 라벨은 per-pod (GPU device 무관) 라
 	// podContentionLabels 4종으로 podLabels (gpu 포함 6종) 와 분리한다.
 	podCpuPressureRatio = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "gpuobs_pod_cpu_pressure_ratio",
-			Help: "Fraction (0-1) of the last 10s a GPU Pod's cgroup was stalled on CPU, from cgroup v2 cpu.pressure some avg10. Direct PSI stall signal not exposed by cAdvisor; input to the GPU-idle host_contention cause.",
+			Help: "Fraction (0-1) of the last 10s a GPU Pod's cgroup was stalled on CPU, from cgroup v2 cpu.pressure some avg10. Direct PSI stall signal not exposed by cAdvisor; input to the GPU-idle cgroup_contention cause.",
 		},
 		podContentionLabels,
 	)
@@ -556,7 +556,7 @@ var (
 	podMemoryPressureRatio = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "gpuobs_pod_memory_pressure_ratio",
-			Help: "Fraction (0-1) of the last 10s a GPU Pod's cgroup was stalled on memory, from cgroup v2 memory.pressure some avg10. Direct PSI stall signal not exposed by cAdvisor; input to the GPU-idle host_contention cause.",
+			Help: "Fraction (0-1) of the last 10s a GPU Pod's cgroup was stalled on memory, from cgroup v2 memory.pressure some avg10. Direct PSI stall signal not exposed by cAdvisor; input to the GPU-idle cgroup_contention cause.",
 		},
 		podContentionLabels,
 	)

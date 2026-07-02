@@ -46,3 +46,17 @@ tests:
         exp_samples:
           - labels: 'pod:gpu_idle_cause_score:5m{cause="cgroup_contention",node="n1",victim_namespace="ns1",victim_pod="p1"}'
             value: 0.6
+      # cluster dominant cause 로 cgroup_contention 이 선택되는지 검증한다. dominant 룰의 tie-breaker
+      # offset 리스트에 cgroup_contention 이 없으면 + on(cause) 조인이 빈 벡터를 만들어 이 단정이 실패
+      # 하므로, offset 누락 회귀를 본 케이스가 가드한다 (weight 1 + offset 9e-6).
+      - expr: cluster:gpu_idle_dominant_cause:5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'cluster:gpu_idle_dominant_cause:5m{cause="cgroup_contention"}'
+            value: 1.000009
+      # victim 단위 dominant cause 도 동일하게 cgroup_contention 선택 (weight 1 + offset 6e-6).
+      - expr: victim:gpu_idle_dominant_cause:5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'victim:gpu_idle_dominant_cause:5m{cause="cgroup_contention",node="n1",victim_namespace="ns1",victim_pod="p1"}'
+            value: 1.000006
