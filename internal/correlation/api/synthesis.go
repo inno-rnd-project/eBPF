@@ -67,6 +67,12 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
 	))
+	mux.Handle("/api/v1/gpu-status", apicommon.Chain(
+		http.HandlerFunc(h.GetGpuStatus),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
 	mux.Handle("/api/v1/nodes", apicommon.Chain(
 		http.HandlerFunc(h.GetNodes),
 		apicommon.LoggingMiddleware,
