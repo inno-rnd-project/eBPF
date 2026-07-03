@@ -230,6 +230,42 @@ definitions:
       weight:
         type: number
     type: object
+  internal_correlation_api.GpuDevice:
+    properties:
+      gpu_index:
+        type: string
+      gpu_uuid:
+        type: string
+      memory_total_bytes:
+        type: number
+      memory_used_bytes:
+        type: number
+      memory_used_ratio:
+        type: number
+      model:
+        type: string
+      node:
+        type: string
+      pods:
+        items:
+          $ref: '#/definitions/internal_correlation_api.GpuPod'
+        type: array
+      power_limit_watts:
+        type: number
+      power_usage_watts:
+        type: number
+      temperature_celsius:
+        type: number
+      throttle_reasons:
+        description: |-
+          ThrottleReasons 는 값이 1 (활성) 인 throttle reason 라벨 목록이다. gpu_idle 같은 정보성 사유도
+          NVML 이 주는 그대로 노출해 프론트가 필터 여부를 결정하게 한다.
+        items:
+          type: string
+        type: array
+      utilization_percent:
+        type: number
+    type: object
   internal_correlation_api.GpuIdleAttribution:
     properties:
       causes:
@@ -267,6 +303,28 @@ definitions:
       node:
         type: string
       severity:
+        type: string
+    type: object
+  internal_correlation_api.GpuPod:
+    properties:
+      memory_used_bytes:
+        type: number
+      namespace:
+        type: string
+      pod:
+        type: string
+      utilization_percent:
+        type: number
+    type: object
+  internal_correlation_api.GpuStatusResponse:
+    properties:
+      devices:
+        items:
+          $ref: '#/definitions/internal_correlation_api.GpuDevice'
+        type: array
+      generated_at:
+        type: string
+      summary:
         type: string
     type: object
   internal_correlation_api.GpuVictimIdle:
@@ -1183,6 +1241,25 @@ paths:
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: GPU 유휴 원인 분석
+      tags:
+      - gpu
+  /api/v1/gpu-status:
+    get:
+      description: node 와 GPU device 단위 사용률, 메모리 사용량과 총량, 전력 사용량과 제한, 온도, 활성 throttle
+        reason, device 별 점유 pod 목록을 한 응답으로 합성한다. gpuobs_device_* 와 gpuobs_pod_* instant
+        query 만 사용하며 사용률 외 신호는 수집 공백 시 필드가 생략된다.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.GpuStatusResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+      summary: GPU 자원 현황 조회
       tags:
       - gpu
   /api/v1/health:
