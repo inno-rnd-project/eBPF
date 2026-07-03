@@ -72,7 +72,7 @@ BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 .PHONY: deps generate generate-gpuobs generate-nccl clean tree bump \
 	build-all image-build-all image-push-all \
 	test test-integration setup-envtest \
-	check-prometheus-rules \
+	check-prometheus-rules check-swagger-drift \
 	build-correlation-debug \
 	build-correlation-exporter image-build-correlation-exporter image-push-correlation-exporter \
 	build-workload-injector image-build-workload-injector image-push-workload-injector \
@@ -246,6 +246,16 @@ merged = {'swagger': '2.0', 'info': {'title': 'netobs unified API', 'version': '
 [merged['definitions'].update(s.get('definitions', {})) for s in specs]; \
 yaml.safe_dump(merged, open('docs/api/openapi.yaml', 'w'), allow_unicode=True, sort_keys=False)"
 	@echo "docs/api/openapi.yaml 생성 완료"
+
+# check-swagger-drift 는 swaggo 어노테이션 변경 후 swag-init / swag-merge 재생성 누락으로 스펙
+# 산출물 (임베디드 correlation_* 와 docs/api/openapi.yaml) 이 소스 주석과 어긋나는 drift 를 감지
+# 한다. 재생성을 실제 수행한 뒤 산출물 경로에 git diff 가 남으면 실패하므로, 커밋 전 working tree
+# 가 깨끗한 상태에서 실행해야 한다. openapi.yaml 의 info.version 이 VERSION 파일을 따르므로 bump
+# 후에도 본 타깃이 재생성 누락을 잡아낸다.
+check-swagger-drift: swag-init swag-merge
+	@git diff --exit-code -- internal/correlation/api/docs docs/api/openapi.yaml \
+		|| (echo "swagger 산출물이 어노테이션과 어긋났습니다. make swag-init swag-merge 결과를 커밋하세요."; exit 1)
+	@echo "swagger drift 없음"
 
 generate:
 	@if [ -z "$(BPFTOOL)" ]; then echo "bpftool not found"; exit 1; fi
