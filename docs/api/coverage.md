@@ -33,6 +33,16 @@
 | 통합 대시보드·알림 표시 | 프론트엔드 영역 | 범위 외 |
 | 부하테스트 자동화 | `workload-injector` (dev 전용 LoadScenario CRD) 가 담당 | 범위 외 |
 
+## 접근 제어
+
+correlation-exporter API 는 무인증이므로 클러스터 내부 전용으로 운용하며 공인 노출을 금지한다. Service 는 `type: ClusterIP` 로 고정하고 NodePort 나 LoadBalancer 로 승격하지 않으며, 노드에서 socat 같은 임시 프록시로 공인 IP 에 노출하는 것도 금지한다. 접근은 NetworkPolicy 가 강제하며 허용 출처는 다음과 같다.
+
+- `ebpf-project` 네임스페이스 내부 pod (rca-summarizer 와 workload-injector 와 swagger-ui)
+- `monitoring` 네임스페이스 (Prometheus scrape)
+- `observability.netobs/api-consumer: "true"` 라벨을 부여한 네임스페이스. 프론트엔드 대시보드 등 새 소비처는 해당 네임스페이스에 이 라벨을 추가해 허용한다
+
+외부 노출이 요건이 되는 시점에는 토큰이나 mTLS 기반 인증 도입과 함께 별도 이슈로 재검토한다.
+
 ## 스펙 생성 규약
 
 swagger 스펙은 swaggo 어노테이션이 단일 소스다. 임베디드 스펙(`internal/correlation/api/docs/`)과 통합본(`docs/api/openapi.yaml`)은 모두 `make swag-init` 과 `make swag-merge` 의 생성물이며, 재생성 누락은 `make check-swagger-drift` 가 감지한다.
