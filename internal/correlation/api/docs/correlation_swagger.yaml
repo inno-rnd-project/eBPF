@@ -11,6 +11,56 @@ definitions:
       zscore:
         type: number
     type: object
+  internal_correlation_api.BandwidthNode:
+    properties:
+      nic_capacity_bytes_per_sec:
+        type: number
+      nic_tx_bytes_per_sec:
+        type: number
+      nic_utilization:
+        type: number
+      node:
+        type: string
+      rx_bytes_per_sec:
+        type: number
+      tx_bytes_per_sec:
+        type: number
+    type: object
+  internal_correlation_api.BandwidthPod:
+    properties:
+      namespace:
+        type: string
+      nic_tx_bytes_per_sec:
+        type: number
+      node:
+        type: string
+      pod:
+        type: string
+      rx_bytes_per_sec:
+        type: number
+      tx_bytes_per_sec:
+        type: number
+    type: object
+  internal_correlation_api.BandwidthResponse:
+    properties:
+      generated_at:
+        type: string
+      nodes:
+        description: |-
+          Nodes 는 NIC 포화 판단 근거다. namespace 필터와 무관하게 항상 클러스터 전체 pod 합계로
+          산출해 필터로 합계가 왜곡되지 않게 한다.
+        items:
+          $ref: '#/definitions/internal_correlation_api.BandwidthNode'
+        type: array
+      pods:
+        items:
+          $ref: '#/definitions/internal_correlation_api.BandwidthPod'
+        type: array
+      summary:
+        type: string
+      window:
+        type: string
+    type: object
   internal_correlation_api.CrossLevelListResponse:
     properties:
       items:
@@ -1032,6 +1082,34 @@ info:
   title: netobs correlation-exporter API
   version: "1.0"
 paths:
+  /api/v1/bandwidth:
+    get:
+      description: pod 단위 RX/TX 대역폭 (bytes/sec) 을 rate(netobs_pod_bytes_total[5m])
+        로 반환한다. RX 는 l4 관점만 수집되고 NIC 관점은 TX 만 제공된다. nodes 는 namespace 필터와 무관한 클러스터
+        전체 합계와 NIC capacity 대비 사용률로 NIC 포화 판단 근거를 제공한다.
+      parameters:
+      - description: src_namespace 필터
+        in: query
+        name: namespace
+        type: string
+      - description: 상위 N pod (합산 대역폭 내림차순, 기본 50)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.BandwidthResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+      summary: pod 대역폭 조회
+      tags:
+      - network
   /api/v1/cross-level:
     get:
       description: node 와 pod 와 direction 과 dimension 과 rank 필터 후 pagination 적용한 cross-level
