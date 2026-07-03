@@ -4,6 +4,30 @@
 //
 // 본 binary 는 cluster API 권한이 필요 없으며 Prometheus HTTP API 만 호출한다. correlation-debug
 // CLI 와 동일 라이브러리를 reuse 하므로 동일 endTime 기준의 산출 결과는 두 도구에서 일치한다.
+
+// swaggo general info. 아래 @tag 선언은 REST API 19 종의 기능 도메인 7 분류로, 각 핸들러의
+// @Tags 값과 1:1 정합해야 swagger UI 그룹 헤더에 설명이 노출된다. 태그 추가 시 본 선언과
+// 핸들러 @Tags, docs/api/coverage.md 의 분류 표를 함께 갱신한다.
+
+// @title        netobs correlation-exporter API
+// @version      1.0
+// @description  eBPF 네트워크/GPU 관측 신호를 합성해 노출하는 진단 REST API. 모든 엔드포인트는 GET 이며 Prometheus 를 단일 데이터 소스로 쓴다.
+// @BasePath     /
+
+// @tag.name         meta
+// @tag.description  API 상태와 클러스터 헬스 요약
+// @tag.name         inventory
+// @tag.description  노드와 파드 인벤토리 (k8s 오브젝트 스냅샷)
+// @tag.name         network
+// @tag.description  네트워크 지연 단계 분해와 패킷 drop, pod 간 flow
+// @tag.name         interference
+// @tag.description  자원 압박 랭킹과 노드 상세, 이벤트, 메모리 병목, 간섭 토폴로지
+// @tag.name         impact
+// @tag.description  간섭 상관 top-N 과 영향 전파 그래프 (noisy neighbor, cross-node, service impact)
+// @tag.name         gpu
+// @tag.description  GPU 유휴 원인 분석
+// @tag.name         trends
+// @tag.description  진단 신호 시계열 추이
 package main
 
 import (

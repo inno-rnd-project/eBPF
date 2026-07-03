@@ -43,7 +43,7 @@ type TopologyEdge struct {
 // GetTopology godoc
 // @Summary      클러스터 노드 토폴로지
 // @Description  노드별 status(healthy/warning/critical/unknown, 4개 자원 차원 pressure 의 dominant severity 기준)와 노드간 간섭 엣지(cross-node interference 의 suspect_node→victim_node)를 한 응답으로 합성한다. querier 나 cross-node snapshot 이 없으면 해당 부분을 빈 값으로 graceful 처리한다.
-// @Tags         synthesis
+// @Tags         interference
 // @Produce      json
 // @Success      200  {object}  TopologyResponse
 // @Router       /api/v1/topology [get]

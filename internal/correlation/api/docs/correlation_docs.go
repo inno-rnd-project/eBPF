@@ -22,7 +22,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "correlation"
+                    "impact"
                 ],
                 "summary": "List cross-level interference top-N",
                 "parameters": [
@@ -98,7 +98,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "correlation"
+                    "impact"
                 ],
                 "summary": "List cross-node interference top-N",
                 "parameters": [
@@ -162,7 +162,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "synthesis"
+                    "network"
                 ],
                 "summary": "패킷 drop 분석",
                 "parameters": [
@@ -202,7 +202,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "synthesis"
+                    "interference"
                 ],
                 "summary": "이벤트 분석 (anomaly + noisy-neighbor 종합)",
                 "parameters": [
@@ -236,7 +236,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "synthesis"
+                    "network"
                 ],
                 "summary": "pod 간 flow 토폴로지",
                 "parameters": [
@@ -288,7 +288,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "synthesis"
+                    "gpu"
                 ],
                 "summary": "GPU 유휴 원인 분석",
                 "parameters": [
@@ -328,7 +328,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "synthesis"
+                    "meta"
                 ],
                 "summary": "클러스터 헬스 + 압박 위치 합성",
                 "responses": {
@@ -348,7 +348,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "correlation"
+                    "impact"
                 ],
                 "summary": "Get impact propagation graph",
                 "parameters": [
@@ -388,7 +388,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "correlation"
+                    "impact"
                 ],
                 "summary": "List multi-hop impact propagation paths",
                 "parameters": [
@@ -440,7 +440,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "synthesis"
+                    "network"
                 ],
                 "summary": "지연 단계 분해",
                 "parameters": [
@@ -486,7 +486,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "synthesis"
+                    "interference"
                 ],
                 "summary": "메모리 병목 분해",
                 "parameters": [
@@ -526,7 +526,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "synthesis"
+                    "interference"
                 ],
                 "summary": "노드 1대 전체 압박 상황",
                 "parameters": [
@@ -581,7 +581,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "correlation"
+                    "impact"
                 ],
                 "summary": "List noisy neighbor top-N",
                 "parameters": [
@@ -691,7 +691,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "synthesis"
+                    "interference"
                 ],
                 "summary": "차원별 압박 drill-down 랭킹",
                 "parameters": [
@@ -738,7 +738,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "correlation"
+                    "impact"
                 ],
                 "summary": "List service-impact top-N",
                 "parameters": [
@@ -808,7 +808,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "synthesis"
+                    "interference"
                 ],
                 "summary": "클러스터 노드 토폴로지",
                 "responses": {
@@ -828,7 +828,7 @@ const docTemplatecorrelation = `{
                     "application/json"
                 ],
                 "tags": [
-                    "synthesis"
+                    "trends"
                 ],
                 "summary": "진단 신호 추이",
                 "parameters": [
@@ -2320,17 +2320,47 @@ const docTemplatecorrelation = `{
                 "SignalNone"
             ]
         }
-    }
+    },
+    "tags": [
+        {
+            "description": "API 상태와 클러스터 헬스 요약",
+            "name": "meta"
+        },
+        {
+            "description": "노드와 파드 인벤토리 (k8s 오브젝트 스냅샷)",
+            "name": "inventory"
+        },
+        {
+            "description": "네트워크 지연 단계 분해와 패킷 drop, pod 간 flow",
+            "name": "network"
+        },
+        {
+            "description": "자원 압박 랭킹과 노드 상세, 이벤트, 메모리 병목, 간섭 토폴로지",
+            "name": "interference"
+        },
+        {
+            "description": "간섭 상관 top-N 과 영향 전파 그래프 (noisy neighbor, cross-node, service impact)",
+            "name": "impact"
+        },
+        {
+            "description": "GPU 유휴 원인 분석",
+            "name": "gpu"
+        },
+        {
+            "description": "진단 신호 시계열 추이",
+            "name": "trends"
+        }
+    ]
 }`
 
 // SwaggerInfocorrelation holds exported Swagger Info so clients can modify it
 var SwaggerInfocorrelation = &swag.Spec{
-	Version:          "",
+	Version:          "1.0",
 	Host:             "",
-	BasePath:         "",
+	BasePath:         "/",
 	Schemes:          []string{},
-	Title:            "",
-	Description:      "",
+	Title:            "netobs correlation-exporter API",
+	Description:      "eBPF 네트워크/GPU 관측 신호를 합성해 노출하는 진단 REST API. 모든 엔드포인트는 GET 이며 Prometheus 를 단일 데이터 소스로 쓴다.",
 	InfoInstanceName: "correlation",
 	SwaggerTemplate:  docTemplatecorrelation,
 	LeftDelim:        "{{",

@@ -189,7 +189,7 @@ type ErrorDetail struct {
 //
 // @Summary      List noisy neighbor top-N
 // @Description  victim/suspect 와 dimension 과 rank 필터 후 pagination 적용한 noisy neighbor 시리즈 반환
-// @Tags         correlation
+// @Tags         impact
 // @Produce      json
 // @Param        victim_namespace   query  string  false  "victim Pod 의 namespace 필터"
 // @Param        victim_pod         query  string  false  "victim Pod 의 이름 필터"
@@ -303,7 +303,7 @@ func validVictimSignal(s string) bool {
 //
 // @Summary      List cross-node interference top-N
 // @Description  victim_node 와 suspect_node 와 dimension 과 rank 필터 후 pagination 적용한 cross-node interference 시리즈 반환
-// @Tags         correlation
+// @Tags         impact
 // @Produce      json
 // @Param        victim_node    query  string  false  "victim node 이름 필터"
 // @Param        suspect_node   query  string  false  "suspect node 이름 필터"
@@ -383,7 +383,7 @@ func (h *Handler) ListCrossNode(w http.ResponseWriter, r *http.Request) {
 //
 // @Summary      List service-impact top-N
 // @Description  victim_namespace 와 victim_workload 와 suspect_node 와 dimension 과 rank 필터 후 pagination 적용한 service-impact 시리즈 반환
-// @Tags         correlation
+// @Tags         impact
 // @Produce      json
 // @Param        victim_namespace  query  string  false  "victim workload 의 namespace 필터"
 // @Param        victim_workload   query  string  false  "victim workload (Service 근사) 이름 필터"
@@ -477,7 +477,7 @@ func validDirection(d string) bool {
 //
 // @Summary      List cross-level interference top-N
 // @Description  node 와 pod 와 direction 과 dimension 과 rank 필터 후 pagination 적용한 cross-level 시리즈 반환
-// @Tags         correlation
+// @Tags         impact
 // @Produce      json
 // @Param        node            query  string  false  "공유 node 이름 필터"
 // @Param        pod_namespace   query  string  false  "pod 의 namespace 필터"
@@ -571,7 +571,7 @@ func (h *Handler) ListCrossLevel(w http.ResponseWriter, r *http.Request) {
 //
 // @Summary      Get impact propagation graph
 // @Description  suspect → victim 1-hop 엣지로 구성된 영향 전파 그래프의 정점 (out/in degree 포함) 과 엣지 반환. namespace / min_score 로 유도 부분그래프를 추릴 수 있다
-// @Tags         correlation
+// @Tags         impact
 // @Produce      json
 // @Param        namespace  query  string  false  "suspect 또는 victim 이 이 namespace 인 엣지만 (유도 부분그래프)"
 // @Param        min_score  query  number  false  "score 가 이 값 이상인 엣지만"
@@ -623,7 +623,7 @@ func (h *Handler) GetImpactGraph(w http.ResponseWriter, r *http.Request) {
 //
 // @Summary      List multi-hop impact propagation paths
 // @Description  근원 suspect(root)에서 종착 victim(terminal)으로 이어지는 다단계 경로와 근원 요약 반환. root_pod / terminal_pod / namespace / min_score 필터 지원
-// @Tags         correlation
+// @Tags         impact
 // @Produce      json
 // @Param        root_pod      query  string   false  "근원 suspect pod 이름 필터"
 // @Param        terminal_pod  query  string   false  "종착 victim pod 이름 필터"

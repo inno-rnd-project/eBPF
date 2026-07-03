@@ -44,7 +44,7 @@ type PodMemory struct {
 // GetMemory godoc
 // @Summary      메모리 병목 분해
 // @Description  pod별 cAdvisor 종류별 메모리(working_set / rss / cache / swap bytes)와 limit, OOM 위험(working_set/limit), 지배 종류를 돌려준다. rss(anonymous)는 OOM을 유발하고 cache는 reclaimable이라, working_set이 rss로 채워졌는지 cache로 채워졌는지 구분해 실제 압박 여부를 판정한다. swap은 노드 swap이 켜진 경우만 채워진다. ?namespace로 필터한다.
-// @Tags         synthesis
+// @Tags         interference
 // @Produce      json
 // @Param        namespace  query  string  false  "namespace 필터 (생략 시 전체)"
 // @Param        limit      query  int     false  "상위 N pod (1-200, 기본 30)"

@@ -217,7 +217,7 @@ type Anomaly struct {
 // GetHealth godoc
 // @Summary      클러스터 헬스 + 압박 위치 합성
 // @Description  4 자원 차원(cpu/gpu/memory/network)의 health 점수와 status, 압박이 집중된 node/pod(hotspot), 전체 dominant 압박 지점, z-score 이상, 한 줄 요약을 한 응답으로 돌려준다. 데이터 부재는 null + status=unknown 으로 graceful 처리한다.
-// @Tags         synthesis
+// @Tags         meta
 // @Produce      json
 // @Success      200  {object}  HealthResponse
 // @Router       /api/v1/health [get]
@@ -325,7 +325,7 @@ type PressureEntry struct {
 // GetPressure godoc
 // @Summary      차원별 압박 drill-down 랭킹
 // @Description  한 자원 차원의 node 또는 pod 를 pressure score 내림차순으로 랭킹해, /health 의 hotspot 에서 한 단계 더 파고든다.
-// @Tags         synthesis
+// @Tags         interference
 // @Produce      json
 // @Param        dimension  query  string  true   "압박 차원 (cpu/gpu/memory/network)"
 // @Param        scope      query  string  false  "랭킹 입도 (node/pod, 기본 node)"
@@ -446,7 +446,7 @@ type NodePodPressure struct {
 // GetNode godoc
 // @Summary      노드 1대 전체 압박 상황
 // @Description  노드의 4 차원 pressure 와 종합(overall), dominant 차원, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다.
-// @Tags         synthesis
+// @Tags         interference
 // @Produce      json
 // @Param        node  path  string  true  "노드 이름"
 // @Success      200  {object}  NodeResponse
@@ -556,7 +556,7 @@ type Event struct {
 // GetEvents godoc
 // @Summary      이벤트 분석 (anomaly + noisy-neighbor 종합)
 // @Description  z-score 이상과 noisy-neighbor 간섭을 공통 severity 로 묶어 정렬된 사건 목록과 자연어 설명, drill-down 링크로 돌려준다. min_severity 미만 사건은 제외한다.
-// @Tags         synthesis
+// @Tags         interference
 // @Produce      json
 // @Param        min_severity  query  string  false  "최소 severity (low/elevated/high, 기본 elevated)"
 // @Param        limit         query  int     false  "상위 N 사건 (1-50, 기본 20)"

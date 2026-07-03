@@ -45,7 +45,7 @@ type FlowEdge struct {
 // GetFlows godoc
 // @Summary      pod 간 flow 토폴로지
 // @Description  netobs_flow_bytes_total(5-tuple pod 간 RX/TX)을 rate 로 환산해 pod 간 대역폭 엣지(node·방향·protocol별 bytes/sec 와 Mbps)로 노출한다. flow 메트릭은 NETOBS_FLOW_ALLOW_NAMESPACES allow-list 가 설정된 src namespace 에서만 emit 되며, flow_collection_enabled 로 활성 여부를 알린다. dst 는 namespace·pod_uid·ip 로 식별되므로 /pods 인벤토리의 uid 와 매핑한다.
-// @Tags         synthesis
+// @Tags         network
 // @Produce      json
 // @Param        namespace  query  string  false  "src_namespace 필터 (생략 시 전체)"
 // @Param        direction  query  string  false  "egress 또는 ingress (생략 시 전체)"

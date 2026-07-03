@@ -73,7 +73,7 @@ type DropStack struct {
 // GetDrops godoc
 // @Summary      패킷 drop 분석
 // @Description  netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction 별 drop rate 랭킹을 돌려준다. NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 가 켜진 경우 5-tuple flow(pod·src/dst ip:port·마지막 발생 시점)와 커널 stack 함수 상세가 flows/stacks 에 채워지며, flow_detail_enabled 로 활성 여부를 알린다.
-// @Tags         synthesis
+// @Tags         network
 // @Produce      json
 // @Param        namespace  query  string  false  "src_namespace 필터 (생략 시 전체)"
 // @Param        limit      query  int     false  "상위 N (1-100, 기본 20)"
