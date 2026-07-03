@@ -207,6 +207,7 @@ type PodContentionSample struct {
 	ID               kube.PodIdentity
 	CPUPressureRatio float64
 	MemPressureRatio float64
+	IOPressureRatio  float64
 }
 
 // PodMigGPUSample 은 #104 MIG 활성 환경 한정 의 (Pod, MIG instance) 단위 SM util 합산 결과다. parent
@@ -561,6 +562,16 @@ var (
 		podContentionLabels,
 	)
 
+	// #224 io.pressure 는 디스크 I/O 대기 stall 로, cpu / memory 와 함께 cgroup_contention cause 의
+	// psi_kind 세 축을 이룬다.
+	podIoPressureRatio = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_pod_io_pressure_ratio",
+			Help: "Fraction (0-1) of the last 10s a GPU Pod's cgroup was stalled on disk I/O, from cgroup v2 io.pressure some avg10. Direct PSI stall signal not exposed by cAdvisor; input to the GPU-idle cgroup_contention cause.",
+		},
+		podContentionLabels,
+	)
+
 	// podMigUtilization 은 #104 MIG 활성 환경 한정 의 instance level Pod-level utilization gauge 다.
 	// podUtilization 과 metric 이름 을 분리 하여 라벨 셋 (6 vs 8) 호환성 유지. MIG 활성 device 에서만
 	// 시리즈 가 생기며 collector 가 instance 별 DeviceGetProcessUtilization 결과 를 (podUID, mig_uuid, gi_id)
@@ -752,6 +763,7 @@ func Register(reg prometheus.Registerer) {
 		podMigUtilization,
 		podCpuPressureRatio,
 		podMemoryPressureRatio,
+		podIoPressureRatio,
 		cudaKernelLaunchesTotal,
 		cudaH2DBytesTotal,
 		cudaD2HBytesTotal,
@@ -1168,6 +1180,7 @@ func RecordPodContention(node string, samples []PodContentionSample) {
 			key := strings.Join(labels, podLabelSeparator)
 			podCpuPressureRatio.WithLabelValues(labels...).Set(s.CPUPressureRatio)
 			podMemoryPressureRatio.WithLabelValues(labels...).Set(s.MemPressureRatio)
+			podIoPressureRatio.WithLabelValues(labels...).Set(s.IOPressureRatio)
 			currentKeys[key] = struct{}{}
 		}
 	}
@@ -1179,6 +1192,7 @@ func RecordPodContention(node string, samples []PodContentionSample) {
 			lv := strings.Split(key, podLabelSeparator)
 			podCpuPressureRatio.DeleteLabelValues(lv...)
 			podMemoryPressureRatio.DeleteLabelValues(lv...)
+			podIoPressureRatio.DeleteLabelValues(lv...)
 		}
 	}
 	lastPodContentionKeys = currentKeys

@@ -27,17 +27,20 @@ import (
 // cgroup namespace 로 격리돼 kubepods.slice 등 타 Pod 경로가 보이지 않으므로 별도 host 마운트가 필요하다.
 const DefaultCgroupRoot = "/host/sys/fs/cgroup"
 
-// Stats 는 한 Pod cgroup 의 PSI 압박 비율 (0-1) 이다. cpu.pressure / memory.pressure 의 some avg10
-// (최근 10 초 중 하나 이상의 task 가 해당 자원 대기로 stall 된 시간 비율, 커널이 0-100% 로 노출) 을
-// 0-1 로 정규화한 값이다.
+// Stats 는 한 Pod cgroup 의 PSI 압박 비율 (0-1) 이다. cpu.pressure / memory.pressure / io.pressure 의
+// some avg10 (최근 10 초 중 하나 이상의 task 가 해당 자원 대기로 stall 된 시간 비율, 커널이 0-100% 로
+// 노출) 을 0-1 로 정규화한 값이다. #224 의 io 는 디스크 I/O 대기 stall 로, 간섭 Top-N 의 남은 축인
+// 디스크 노이지 네이버 공동피해를 관측한다.
 type Stats struct {
 	CPUPressureRatio float64
 	MemPressureRatio float64
+	IOPressureRatio  float64
 }
 
-// Read 는 Pod UID 로 host cgroup2 계층의 Pod-level 슬라이스를 찾아 cpu.pressure / memory.pressure PSI 를
-// 읽는다. Pod 슬라이스를 못 찾으면 (cgroup v1 / 미동기화 / 종료) ok=false. 두 PSI 파일 모두 부재하면
-// ok=false 이고, 한쪽만 부재하면 (controller 미활성 등) 나머지는 채워 부분 성공을 허용한다.
+// Read 는 Pod UID 로 host cgroup2 계층의 Pod-level 슬라이스를 찾아 cpu.pressure / memory.pressure /
+// io.pressure PSI 를 읽는다. Pod 슬라이스를 못 찾으면 (cgroup v1 / 미동기화 / 종료) ok=false. PSI 파일
+// 이 모두 부재하면 ok=false 이고, 일부만 부재하면 (controller 미활성 등) 나머지는 채워 부분 성공을
+// 허용한다.
 func Read(podUID, cgroupRoot string) (Stats, bool) {
 	dir, ok := podCgroupDir(podUID, cgroupRoot)
 	if !ok {
@@ -52,6 +55,10 @@ func Read(podUID, cgroupRoot string) (Stats, bool) {
 	}
 	if v, ok := readPSISomeAvg10(filepath.Join(dir, "memory.pressure")); ok {
 		st.MemPressureRatio = v / 100
+		got = true
+	}
+	if v, ok := readPSISomeAvg10(filepath.Join(dir, "io.pressure")); ok {
+		st.IOPressureRatio = v / 100
 		got = true
 	}
 	return st, got

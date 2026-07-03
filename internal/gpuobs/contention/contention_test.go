@@ -38,6 +38,8 @@ func TestReadByPodUID(t *testing.T) {
 		"some avg10=93.44 avg60=91.65 avg300=54.17 total=238450366\nfull avg10=80.00 total=1\n")
 	writeFile(t, filepath.Join(slice, "memory.pressure"),
 		"some avg10=10.00 avg60=5.00 avg300=1.00 total=100\nfull avg10=2.00 total=1\n")
+	writeFile(t, filepath.Join(slice, "io.pressure"),
+		"some avg10=25.00 avg60=12.00 avg300=3.00 total=500\nfull avg10=20.00 total=2\n")
 
 	st, ok := Read(uid, root)
 	if !ok {
@@ -48,6 +50,9 @@ func TestReadByPodUID(t *testing.T) {
 	}
 	if st.MemPressureRatio != 0.1 {
 		t.Errorf("MemPressureRatio=%v want 0.1 (10/100)", st.MemPressureRatio)
+	}
+	if st.IOPressureRatio != 0.25 {
+		t.Errorf("IOPressureRatio=%v want 0.25 (25/100)", st.IOPressureRatio)
 	}
 
 	if _, ok := Read("no-such-uid", root); ok {
