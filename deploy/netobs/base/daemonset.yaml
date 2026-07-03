@@ -52,9 +52,29 @@ spec:
             - name: metrics
               containerPort: 9810
               protocol: TCP
+          # #216 privileged 를 제거하고 drop ALL 후 최소 capabilities 로 축소한다. BPF 는 bpf()
+          # syscall (프로그램 로드와 map), PERFMON 은 kprobe/kretprobe 의 perf_event_open, SYSLOG 는
+          # kptr_restrict=1 상태에서 /proc/kallsyms 실주소 읽기 (drop stack symbol resolve) 에 필요하다.
+          # SYS_ADMIN 은 Ubuntu 커널 전용 kernel.perf_event_paranoid=4 대응이다. 이 레벨은 CAP_PERFMON
+          # 까지 무력화해 perf_kprobe PMU 생성이 permission denied 로 실패함을 dev canary 에서 실측했다
+          # (표준 커널 의 paranoid<=2 환경 에서는 SYS_ADMIN 없이 PERFMON 만으로 충분해 제거 가능하다).
+          # RemoveMemlock 은 kernel 5.11+ 의 memcg 기반 BPF 계정 감지 시 no-op 이라 CAP_SYS_RESOURCE 가
+          # 불필요하고, cgroup 기반 Pod 귀속이라 gpuobs 의 CAP_SYS_PTRACE 도 불필요하다.
+          # readOnlyRootFilesystem 은 BPF 산출물이 바이너리에 임베드되고 로그가 stdout 이라 디스크
+          # 쓰기가 없어 함께 강화한다. privileged 대비 전체 capability 와 장치 접근, LSM/seccomp 해제가
+          # 사라져 blast radius 가 명시된 4 종 으로 한정된다.
           securityContext:
-            privileged: true
-            allowPrivilegeEscalation: true
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - BPF
+                - PERFMON
+                - SYSLOG
+                - SYS_ADMIN
           livenessProbe:
             httpGet:
               path: /healthz
@@ -74,8 +94,10 @@ spec:
             limits:
               memory: 512Mi
           volumeMounts:
+            # #216 map/link pin 을 쓰지 않아 (fd 기반 lifetime) 쓰기가 불필요해 read-only 로 강등한다.
             - name: sys-fs-bpf
               mountPath: /sys/fs/bpf
+              readOnly: true
             - name: sys-kernel-btf
               mountPath: /sys/kernel/btf
               readOnly: true
