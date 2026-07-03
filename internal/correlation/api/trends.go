@@ -37,11 +37,31 @@ func (h *TrendsHandler) Register(mux *http.ServeMux) {
 
 // trendSignals 는 노출 가능한 추이 신호의 화이트리스트다. 임의 PromQL 을 받지 않아 injection 과
 // cardinality 를 동시에 통제한다. 모두 cluster 단위로 aggregate 해 신호당 1 시리즈로 bound 된다.
+// #214 자원 사용량 / 지연 추이 5종 추가. latency_p99 는 send/recv 전 stage 혼합의 클러스터 p99 로
+// 커널 네트워크 지연의 전반 추이를 나타내고, 대역폭은 same-node 트래픽이 egress 와 ingress 양쪽에
+// 계상되는 이중 합산을 피해 방향별 2 신호로 분리한다 (layer=l4 는 syscall 관점). pressure_max 는
+// 기존 recording rule 을 재사용하므로 promtool 검증 대상 신규 rule 이 없다.
 var trendSignals = map[string]string{
 	"noisy_neighbor_intensity": "max(correlation_noisy_neighbor_causal_strength)",
 	"noisy_neighbor_count":     "count(correlation_noisy_neighbor_score >= 0.5)",
 	"cross_node_intensity":     "max(correlation_cross_node_score)",
 	"service_impact_intensity": "max(correlation_service_impact_score)",
+	"latency_p99":              "histogram_quantile(0.99, sum by(le) (rate(netobs_stage_latency_labeled_seconds_bucket[5m])))",
+	"drop_rate":                "sum(rate(netobs_drop_events_labeled_total[5m]))",
+	"bandwidth_rx":             `sum(rate(netobs_pod_bytes_total{direction="ingress",layer="l4"}[5m]))`,
+	"bandwidth_tx":             `sum(rate(netobs_pod_bytes_total{direction="egress",layer="l4"}[5m]))`,
+	"pressure_max":             "max(node:pressure_score:5m)",
+}
+
+// trendSignalNames 는 화이트리스트 키를 정렬해 돌려준다. invalid_signal 에러 메시지가 시그널 추가
+// 시 자동으로 최신 목록을 안내하게 한다.
+func trendSignalNames() string {
+	names := make([]string, 0, len(trendSignals))
+	for k := range trendSignals {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return strings.Join(names, " / ")
 }
 
 // TrendsResponse 는 GET /api/v1/trends 의 typed 응답이다.
@@ -68,10 +88,10 @@ type TrendPoint struct {
 
 // GetTrends godoc
 // @Summary      진단 신호 추이
-// @Description  correlation-exporter 가 emit 하는 correlation_* 시계열을 range query 로 읽어 간섭 강도 추이를 돌려준다. signal 은 화이트리스트(noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity)만 허용해 임의 PromQL injection 과 cardinality 를 통제한다. 적재는 collector 가 이미 수행하며 본 API 는 이력을 노출만 한다.
+// @Description  진단 신호와 자원 사용량, 지연의 클러스터 추이를 range query 로 돌려준다. signal 은 화이트리스트(간섭 4종: noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity, 자원·지연 5종: latency_p99 / drop_rate / bandwidth_rx / bandwidth_tx / pressure_max)만 허용해 임의 PromQL injection 과 cardinality 를 통제하며 신호당 1 시리즈로 bound 된다.
 // @Tags         trends
 // @Produce      json
-// @Param        signal  query  string  true   "추이 신호 (noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity)"
+// @Param        signal  query  string  true   "추이 신호 (noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity / latency_p99 / drop_rate / bandwidth_rx / bandwidth_tx / pressure_max)"
 // @Param        range   query  string  false  "조회 기간 (예: 1h, 6h, 최대 24h, 기본 1h)"
 // @Param        step    query  string  false  "샘플 간격 (예: 5m, 최소 30s, 기본 5m)"
 // @Success      200  {object}  TrendsResponse
@@ -83,7 +103,7 @@ func (h *TrendsHandler) GetTrends(w http.ResponseWriter, r *http.Request) {
 	signal := strings.TrimSpace(q.Get("signal"))
 	expr, ok := trendSignals[signal]
 	if !ok {
-		apicommon.WriteError(w, http.StatusBadRequest, "invalid_signal", "signal 은 noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity 중 하나여야 합니다")
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_signal", "signal 은 "+trendSignalNames()+" 중 하나여야 합니다")
 		return
 	}
 	rng, err := parseDurationParam(q.Get("range"), time.Hour, 24*time.Hour)
