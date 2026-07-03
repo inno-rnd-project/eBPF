@@ -8,6 +8,46 @@
     },
     "basePath": "/",
     "paths": {
+        "/api/v1/bandwidth": {
+            "get": {
+                "description": "pod 단위 RX/TX 대역폭 (bytes/sec) 을 rate(netobs_pod_bytes_total[5m]) 로 반환한다. RX 는 l4 관점만 수집되고 NIC 관점은 TX 만 제공된다. nodes 는 namespace 필터와 무관한 클러스터 전체 합계와 NIC capacity 대비 사용률로 NIC 포화 판단 근거를 제공한다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "network"
+                ],
+                "summary": "pod 대역폭 조회",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "src_namespace 필터",
+                        "name": "namespace",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "상위 N pod (합산 대역폭 내림차순, 기본 50)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.BandwidthResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/cross-level": {
             "get": {
                 "description": "node 와 pod 와 direction 과 dimension 과 rank 필터 후 pagination 적용한 cross-level 시리즈 반환",
@@ -909,6 +949,79 @@
                 },
                 "zscore": {
                     "type": "number"
+                }
+            }
+        },
+        "internal_correlation_api.BandwidthNode": {
+            "type": "object",
+            "properties": {
+                "nic_capacity_bytes_per_sec": {
+                    "type": "number"
+                },
+                "nic_tx_bytes_per_sec": {
+                    "type": "number"
+                },
+                "nic_utilization": {
+                    "type": "number"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "rx_bytes_per_sec": {
+                    "type": "number"
+                },
+                "tx_bytes_per_sec": {
+                    "type": "number"
+                }
+            }
+        },
+        "internal_correlation_api.BandwidthPod": {
+            "type": "object",
+            "properties": {
+                "namespace": {
+                    "type": "string"
+                },
+                "nic_tx_bytes_per_sec": {
+                    "type": "number"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "rx_bytes_per_sec": {
+                    "type": "number"
+                },
+                "tx_bytes_per_sec": {
+                    "type": "number"
+                }
+            }
+        },
+        "internal_correlation_api.BandwidthResponse": {
+            "type": "object",
+            "properties": {
+                "generated_at": {
+                    "type": "string"
+                },
+                "nodes": {
+                    "description": "Nodes 는 NIC 포화 판단 근거다. namespace 필터와 무관하게 항상 클러스터 전체 pod 합계로\n산출해 필터로 합계가 왜곡되지 않게 한다.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.BandwidthNode"
+                    }
+                },
+                "pods": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.BandwidthPod"
+                    }
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "window": {
+                    "type": "string"
                 }
             }
         },

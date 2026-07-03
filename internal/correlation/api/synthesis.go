@@ -73,6 +73,12 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
 	))
+	mux.Handle("/api/v1/bandwidth", apicommon.Chain(
+		http.HandlerFunc(h.GetBandwidth),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
 	mux.Handle("/api/v1/nodes", apicommon.Chain(
 		http.HandlerFunc(h.GetNodes),
 		apicommon.LoggingMiddleware,
