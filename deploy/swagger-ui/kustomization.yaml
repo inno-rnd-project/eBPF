@@ -11,3 +11,4 @@ namespace: ebpf-project
 resources:
   - deployment.yaml
   - service.yaml
+  - networkpolicy.yaml

@@ -1,0 +1,32 @@
+# correlation-exporter 는 무인증 API 라 네트워크 계층에서 내부 접근만 허용한다 (#217). 허용 출처는
+# 세 갈래다. 같은 네임스페이스 pod (rca-summarizer 와 workload-injector 와 swagger-ui), Prometheus
+# scrape 의 monitoring 네임스페이스, 그리고 `observability.netobs/api-consumer: "true"` 라벨을 부여한
+# 소비 네임스페이스 (프론트엔드 대시보드 등 미래 소비처는 네임스페이스 라벨만 추가하면 된다).
+# kubelet 의 liveness/readiness httpGet probe 는 로컬 노드 host 발신이라 Cilium 이 정책과 무관하게
+# 허용한다. egress 는 본 이슈 범위 외라 제한하지 않는다 (policyTypes 에 Egress 미포함).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: correlation-exporter
+  labels:
+    app.kubernetes.io/name: correlation-exporter
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: correlation-exporter
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: correlation-exporter
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        - namespaceSelector:
+            matchLabels:
+              observability.netobs/api-consumer: "true"
+      ports:
+        - port: 9830
+          protocol: TCP

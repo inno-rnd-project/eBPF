@@ -12,4 +12,5 @@ resources:
   - deployment.yaml
   - service.yaml
   - servicemonitor.yaml
+  - networkpolicy.yaml
   - prometheus-rule.yaml

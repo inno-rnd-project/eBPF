@@ -1,0 +1,29 @@
+# swagger-ui 는 correlation-exporter 스펙을 노출하는 문서 UI 라 동일한 내부 전용 정책을 적용한다
+# (#217). 허용 출처 구성은 correlation-exporter NetworkPolicy 와 같다.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swagger-ui
+  namespace: ebpf-project
+  labels:
+    app.kubernetes.io/name: swagger-ui
+    app.kubernetes.io/component: api-docs
+    app.kubernetes.io/part-of: ebpf-project
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: swagger-ui
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        - namespaceSelector:
+            matchLabels:
+              observability.netobs/api-consumer: "true"
+      ports:
+        - port: 8080
+          protocol: TCP

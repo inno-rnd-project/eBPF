@@ -8,6 +8,9 @@ metadata:
     app.kubernetes.io/part-of: ebpf-project
     app.kubernetes.io/component: correlation-exporter
 spec:
+  # 무인증 API 라 공인 노출 (NodePort / LoadBalancer 승격) 을 금지한다 (#217). 내부 소비만 전제하며
+  # 접근 제한은 NetworkPolicy 가 강제한다.
+  type: ClusterIP
   selector:
     app.kubernetes.io/name: correlation-exporter
   ports:
