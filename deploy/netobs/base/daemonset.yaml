@@ -67,6 +67,13 @@ spec:
             privileged: false
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+            # seccomp 를 암묵 상태 (kubelet seccompDefault 의존) 로 두지 않고 RuntimeDefault 로 명시
+            # 고정한다. 런타임 기본 프로파일은 bpf 와 perf_event_open 을 capability 게이팅으로 허용
+            # (CAP_BPF / CAP_PERFMON / CAP_SYS_ADMIN 보유 시) 하므로 아래 add 집합과 함께 정상
+            # 동작함을 dev canary 의 attach 전수로 실측했다. kubelet 이 향후 seccompDefault 를 켜도
+            # 동작이 변하지 않는다.
+            seccompProfile:
+              type: RuntimeDefault
             capabilities:
               drop:
                 - ALL
