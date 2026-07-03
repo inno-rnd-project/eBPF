@@ -9,7 +9,7 @@
 | `meta` | API 상태와 클러스터 헬스 요약 | `/api/v1/health` |
 | `inventory` | 노드와 파드 인벤토리 | `/api/v1/nodes`, `/api/v1/pods` |
 | `network` | 지연 단계 분해, 패킷 drop, pod 간 flow | `/api/v1/latency-breakdown`, `/api/v1/drops`, `/api/v1/flows` |
-| `interference` | 자원 압박 랭킹과 노드 상세, 이벤트, 메모리, 간섭 토폴로지 | `/api/v1/pressure`, `/api/v1/node/{name}`, `/api/v1/events`, `/api/v1/memory`, `/api/v1/topology` |
+| `interference` | 자원 압박 랭킹과 노드 상세, 이벤트, 메모리, 간섭 토폴로지 | `/api/v1/pressure`, `/api/v1/node/{node}`, `/api/v1/events`, `/api/v1/memory`, `/api/v1/topology` |
 | `impact` | 간섭 상관 top-N 과 영향 전파 그래프 | `/api/v1/noisy-neighbor`, `/api/v1/cross-node-interference`, `/api/v1/service-impact`, `/api/v1/cross-level`, `/api/v1/impact-graph`, `/api/v1/impact-paths` |
 | `gpu` | GPU 유휴 원인 분석 | `/api/v1/gpu-idle` |
 | `trends` | 진단 신호 시계열 추이 | `/api/v1/trends` |
@@ -21,7 +21,7 @@
 | 네트워크 지연 커널 단계 분석 | `latency-breakdown` (network). stage 별 p99 와 비중, 지배 단계. `ack_wait` 등 수신 경로 포함 | 커버 |
 | 패킷 drop 지점·원인·시점 특정 | `drops` (network). reason 과 category 와 `drop_stage`, node/pod 귀속, 5-tuple last_seen, kernel stack | 커버 |
 | 워크로드별 간섭 Top-N | `noisy-neighbor` (impact), `pressure` (interference) | 커버 |
-| node 와 pod 단위 정보 수집 | `nodes`, `pods` (inventory), `node/{name}` (interference) | 커버 |
+| node 와 pod 단위 정보 수집 | `nodes`, `pods` (inventory), `node/{node}` (interference) | 커버 |
 | 피어슨 상관계수 스코어링 | `noisy-neighbor`, `cross-node-interference`, `service-impact` (impact) 가 `correlation_*_score` 와 `causal_strength` 노출 | 커버 |
 | 특정 node/pod 의 서비스 영향 분석 | `service-impact`, `impact-graph`, `impact-paths`, `cross-level` (impact) | 커버 |
 | GPU 유휴 원인 (하드웨어 vs 네트워크) | `gpu-idle` (gpu). dominant cause 9종 | 커버 |
