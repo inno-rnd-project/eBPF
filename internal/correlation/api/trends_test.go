@@ -67,6 +67,30 @@ func TestTrends(t *testing.T) {
 	}
 }
 
+// TestTrends_ResourceSignals 는 #214 자원 사용량 / 지연 신호 5종이 화이트리스트로 서빙되고 각각
+// 올바른 PromQL 을 fetcher 에 넘기는지 검증한다.
+func TestTrends_ResourceSignals(t *testing.T) {
+	cases := map[string]string{
+		"latency_p99":  "netobs_stage_latency_labeled_seconds_bucket",
+		"drop_rate":    "netobs_drop_events_labeled_total",
+		"bandwidth_rx": `direction="ingress",layer="l4"`,
+		"bandwidth_tx": `direction="egress",layer="l4"`,
+		"pressure_max": "node:pressure_score:5m",
+	}
+	for signal, want := range cases {
+		f := &fakeFetcher{series: trendSeries()}
+		h := NewTrendsHandler(f)
+		rec := httptest.NewRecorder()
+		h.GetTrends(rec, httptest.NewRequest(http.MethodGet, "/api/v1/trends?signal="+signal, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("signal=%s status=%d want 200", signal, rec.Code)
+		}
+		if !strings.Contains(f.gotQuery, want) {
+			t.Errorf("signal=%s query=%q want %q 포함", signal, f.gotQuery, want)
+		}
+	}
+}
+
 // TestTrends_RangeClamp 는 range 가 24h 상한으로, step 이 30s 하한으로 clamp 되는지 검증한다.
 func TestTrends_RangeClamp(t *testing.T) {
 	f := &fakeFetcher{series: trendSeries()}

@@ -608,10 +608,11 @@ paths:
             $ref: '#/definitions/internal_correlation_api.TopologyResponse'
   /api/v1/trends:
     get:
-      description: correlation-exporter 가 emit 하는 correlation_* 시계열을 range query 로
-        읽어 간섭 강도 추이를 돌려준다. signal 은 화이트리스트(noisy_neighbor_intensity / noisy_neighbor_count
-        / cross_node_intensity / service_impact_intensity)만 허용해 임의 PromQL injection
-        과 cardinality 를 통제한다. 적재는 collector 가 이미 수행하며 본 API 는 이력을 노출만 한다.
+      description: '진단 신호와 자원 사용량, 지연의 클러스터 추이를 range query 로 돌려준다. signal 은 화이트리스트(간섭
+        4종: noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity
+        / service_impact_intensity, 자원·지연 5종: latency_p99 / drop_rate / bandwidth_rx
+        / bandwidth_tx / pressure_max)만 허용해 임의 PromQL injection 과 cardinality 를 통제하며
+        신호당 1 시리즈로 bound 된다.'
       produces:
       - application/json
       tags:
@@ -620,7 +621,8 @@ paths:
       parameters:
       - type: string
         description: 추이 신호 (noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity
-          / service_impact_intensity)
+          / service_impact_intensity / latency_p99 / drop_rate / bandwidth_rx / bandwidth_tx
+          / pressure_max)
         name: signal
         in: query
         required: true
