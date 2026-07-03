@@ -110,7 +110,7 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 	devices := map[gpuDeviceKey]*GpuDevice{}
 	order := []gpuDeviceKey{}
 	for _, sm := range utils {
-		if math.IsNaN(sm.Value) {
+		if math.IsNaN(sm.Value) || math.IsInf(sm.Value, 0) {
 			continue
 		}
 		k := gpuDeviceKey{node: sm.Labels["node"], gpuUUID: sm.Labels["gpu_uuid"]}
@@ -130,7 +130,7 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 
 	assign := func(samples []correlation.InstantSample, set func(d *GpuDevice, v float64)) {
 		for _, sm := range samples {
-			if math.IsNaN(sm.Value) {
+			if math.IsNaN(sm.Value) || math.IsInf(sm.Value, 0) {
 				continue
 			}
 			if d, ok := devices[gpuDeviceKey{node: sm.Labels["node"], gpuUUID: sm.Labels["gpu_uuid"]}]; ok {
@@ -157,7 +157,7 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 	pods := map[gpuPodKey]*GpuPod{}
 	podOwner := map[gpuPodKey]gpuDeviceKey{}
 	for _, sm := range extras[6] {
-		if math.IsNaN(sm.Value) {
+		if math.IsNaN(sm.Value) || math.IsInf(sm.Value, 0) {
 			continue
 		}
 		k := gpuPodKey{gpuUUID: sm.Labels["gpu_uuid"], namespace: sm.Labels["src_namespace"], pod: sm.Labels["src_pod"]}
@@ -172,7 +172,7 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 		pods[k].UtilizationPercent = sm.Value
 	}
 	for _, sm := range extras[7] {
-		if math.IsNaN(sm.Value) {
+		if math.IsNaN(sm.Value) || math.IsInf(sm.Value, 0) {
 			continue
 		}
 		k := gpuPodKey{gpuUUID: sm.Labels["gpu_uuid"], namespace: sm.Labels["src_namespace"], pod: sm.Labels["src_pod"]}

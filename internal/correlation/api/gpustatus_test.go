@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,7 +14,9 @@ func gpuStatusFakeQuerier() *fakeQuerier {
 		on("gpuobs_device_utilization_percent", sample(42, dev...)).
 		on("gpuobs_device_memory_used_bytes", sample(6e9, dev...)).
 		on("gpuobs_device_memory_total_bytes", sample(24e9, dev...)).
-		on("gpuobs_device_power_usage_watts", sample(180, dev...)).
+		// +Inf 샘플은 JSON 직렬화가 불가하므로 필터로 배제되어야 한다. 배제가 깨지면 180 을 Inf 가
+		// 덮어써 응답 인코딩이 실패한다.
+		on("gpuobs_device_power_usage_watts", sample(180, dev...), sample(math.Inf(1), dev...)).
 		on("gpuobs_device_power_limit_watts", sample(350, dev...)).
 		on("gpuobs_device_temperature_celsius", sample(61, dev...)).
 		on("gpuobs_device_throttle_active", sample(1, "node", "gpu", "gpu_uuid", "u1", "reason", "sw_power_cap")).
