@@ -61,7 +61,7 @@ type GpuVictimIdle struct {
 // GetGpuIdle godoc
 // @Summary      GPU 유휴 원인 분석
 // @Description  노드별 GPU 유휴 비율과 유휴 원인 가중치 순위, dominant cause 를 합성한다. scope=cluster 는 cluster 단위 원인, scope=pod 는 victim Pod 단위 원인을 돌려준다. cause weight 는 GPU idle > 0.5 일 때만 산출되며, 미만이면 cluster 가 null 로 graceful 처리된다.
-// @Tags         synthesis
+// @Tags         gpu
 // @Produce      json
 // @Param        scope  query  string  false  "cluster 또는 pod (기본 cluster)"
 // @Param        limit  query  int     false  "scope=pod 상위 N victim (1-100, 기본 10)"

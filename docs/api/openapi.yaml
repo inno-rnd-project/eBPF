@@ -1,7 +1,7 @@
 swagger: '2.0'
 info:
   title: netobs unified API
-  version: 1.4.9
+  version: 1.5.7
 paths:
   /api/v1/cross-level:
     get:
@@ -10,7 +10,7 @@ paths:
       produces:
       - application/json
       tags:
-      - correlation
+      - impact
       summary: List cross-level interference top-N
       parameters:
       - type: string
@@ -61,7 +61,7 @@ paths:
       produces:
       - application/json
       tags:
-      - correlation
+      - impact
       summary: List cross-node interference top-N
       parameters:
       - type: string
@@ -106,7 +106,7 @@ paths:
       produces:
       - application/json
       tags:
-      - synthesis
+      - network
       summary: 패킷 drop 분석
       parameters:
       - type: string
@@ -133,7 +133,7 @@ paths:
       produces:
       - application/json
       tags:
-      - synthesis
+      - interference
       summary: 이벤트 분석 (anomaly + noisy-neighbor 종합)
       parameters:
       - type: string
@@ -158,7 +158,7 @@ paths:
       produces:
       - application/json
       tags:
-      - synthesis
+      - network
       summary: pod 간 flow 토폴로지
       parameters:
       - type: string
@@ -194,7 +194,7 @@ paths:
       produces:
       - application/json
       tags:
-      - synthesis
+      - gpu
       summary: GPU 유휴 원인 분석
       parameters:
       - type: string
@@ -222,7 +222,7 @@ paths:
       produces:
       - application/json
       tags:
-      - synthesis
+      - meta
       summary: 클러스터 헬스 + 압박 위치 합성
       responses:
         '200':
@@ -236,7 +236,7 @@ paths:
       produces:
       - application/json
       tags:
-      - correlation
+      - impact
       summary: Get impact propagation graph
       parameters:
       - type: string
@@ -263,7 +263,7 @@ paths:
       produces:
       - application/json
       tags:
-      - correlation
+      - impact
       summary: List multi-hop impact propagation paths
       parameters:
       - type: string
@@ -299,7 +299,7 @@ paths:
       produces:
       - application/json
       tags:
-      - synthesis
+      - network
       summary: 지연 단계 분해
       parameters:
       - type: string
@@ -332,7 +332,7 @@ paths:
       produces:
       - application/json
       tags:
-      - synthesis
+      - interference
       summary: 메모리 병목 분해
       parameters:
       - type: string
@@ -359,7 +359,7 @@ paths:
       produces:
       - application/json
       tags:
-      - synthesis
+      - interference
       summary: 노드 1대 전체 압박 상황
       parameters:
       - type: string
@@ -397,7 +397,7 @@ paths:
       produces:
       - application/json
       tags:
-      - correlation
+      - impact
       summary: List noisy neighbor top-N
       parameters:
       - type: string
@@ -472,7 +472,7 @@ paths:
       produces:
       - application/json
       tags:
-      - synthesis
+      - interference
       summary: 차원별 압박 drill-down 랭킹
       parameters:
       - type: string
@@ -504,7 +504,7 @@ paths:
       produces:
       - application/json
       tags:
-      - correlation
+      - impact
       summary: List service-impact top-N
       parameters:
       - type: string
@@ -552,7 +552,7 @@ paths:
       produces:
       - application/json
       tags:
-      - synthesis
+      - interference
       summary: 클러스터 노드 토폴로지
       responses:
         '200':
@@ -568,7 +568,7 @@ paths:
       produces:
       - application/json
       tags:
-      - synthesis
+      - trends
       summary: 진단 신호 추이
       parameters:
       - type: string

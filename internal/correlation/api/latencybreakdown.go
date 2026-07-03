@@ -59,7 +59,7 @@ var latencyScopes = map[string]latencyScope{
 // GetLatencyBreakdown godoc
 // @Summary      지연 단계 분해
 // @Description  송신/수신 커널 단계별 p99 latency 와 비중, 지배 단계를 scope(workload/node/pod)별로 분해한다. histogram_quantile 로 stage 라벨을 보존해 산출하며, pod scope 는 send-path 단계만 수집된다. direction(egress/ingress)으로 송신/수신을 좁힐 수 있다.
-// @Tags         synthesis
+// @Tags         network
 // @Produce      json
 // @Param        scope      query  string  false  "workload / node / pod (기본 workload)"
 // @Param        direction  query  string  false  "egress 또는 ingress (생략 시 전체)"

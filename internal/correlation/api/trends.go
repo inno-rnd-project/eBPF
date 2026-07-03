@@ -69,7 +69,7 @@ type TrendPoint struct {
 // GetTrends godoc
 // @Summary      진단 신호 추이
 // @Description  correlation-exporter 가 emit 하는 correlation_* 시계열을 range query 로 읽어 간섭 강도 추이를 돌려준다. signal 은 화이트리스트(noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity)만 허용해 임의 PromQL injection 과 cardinality 를 통제한다. 적재는 collector 가 이미 수행하며 본 API 는 이력을 노출만 한다.
-// @Tags         synthesis
+// @Tags         trends
 // @Produce      json
 // @Param        signal  query  string  true   "추이 신호 (noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity)"
 // @Param        range   query  string  false  "조회 기간 (예: 1h, 6h, 최대 24h, 기본 1h)"

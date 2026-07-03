@@ -1,3 +1,4 @@
+basePath: /
 definitions:
   internal_correlation_api.Anomaly:
     properties:
@@ -968,6 +969,10 @@ definitions:
     - SignalNone
 info:
   contact: {}
+  description: eBPF 네트워크/GPU 관측 신호를 합성해 노출하는 진단 REST API. 모든 엔드포인트는 GET 이며 Prometheus
+    를 단일 데이터 소스로 쓴다.
+  title: netobs correlation-exporter API
+  version: "1.0"
 paths:
   /api/v1/cross-level:
     get:
@@ -1019,7 +1024,7 @@ paths:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
       summary: List cross-level interference top-N
       tags:
-      - correlation
+      - impact
   /api/v1/cross-node-interference:
     get:
       description: victim_node 와 suspect_node 와 dimension 과 rank 필터 후 pagination 적용한
@@ -1062,7 +1067,7 @@ paths:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
       summary: List cross-node interference top-N
       tags:
-      - correlation
+      - impact
   /api/v1/drops:
     get:
       description: netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction
@@ -1091,7 +1096,7 @@ paths:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 패킷 drop 분석
       tags:
-      - synthesis
+      - network
   /api/v1/events:
     get:
       description: z-score 이상과 noisy-neighbor 간섭을 공통 severity 로 묶어 정렬된 사건 목록과 자연어
@@ -1114,7 +1119,7 @@ paths:
             $ref: '#/definitions/internal_correlation_api.EventsResponse'
       summary: 이벤트 분석 (anomaly + noisy-neighbor 종합)
       tags:
-      - synthesis
+      - interference
   /api/v1/flows:
     get:
       description: netobs_flow_bytes_total(5-tuple pod 간 RX/TX)을 rate 로 환산해 pod 간
@@ -1151,7 +1156,7 @@ paths:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: pod 간 flow 토폴로지
       tags:
-      - synthesis
+      - network
   /api/v1/gpu-idle:
     get:
       description: 노드별 GPU 유휴 비율과 유휴 원인 가중치 순위, dominant cause 를 합성한다. scope=cluster
@@ -1179,7 +1184,7 @@ paths:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: GPU 유휴 원인 분석
       tags:
-      - synthesis
+      - gpu
   /api/v1/health:
     get:
       description: 4 자원 차원(cpu/gpu/memory/network)의 health 점수와 status, 압박이 집중된 node/pod(hotspot),
@@ -1194,7 +1199,7 @@ paths:
             $ref: '#/definitions/internal_correlation_api.HealthResponse'
       summary: 클러스터 헬스 + 압박 위치 합성
       tags:
-      - synthesis
+      - meta
   /api/v1/impact-graph:
     get:
       description: suspect → victim 1-hop 엣지로 구성된 영향 전파 그래프의 정점 (out/in degree 포함)
@@ -1221,7 +1226,7 @@ paths:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
       summary: Get impact propagation graph
       tags:
-      - correlation
+      - impact
   /api/v1/impact-paths:
     get:
       description: 근원 suspect(root)에서 종착 victim(terminal)으로 이어지는 다단계 경로와 근원 요약 반환.
@@ -1256,7 +1261,7 @@ paths:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
       summary: List multi-hop impact propagation paths
       tags:
-      - correlation
+      - impact
   /api/v1/latency-breakdown:
     get:
       description: 송신/수신 커널 단계별 p99 latency 와 비중, 지배 단계를 scope(workload/node/pod)별로
@@ -1288,7 +1293,7 @@ paths:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 지연 단계 분해
       tags:
-      - synthesis
+      - network
   /api/v1/memory:
     get:
       description: pod별 cAdvisor 종류별 메모리(working_set / rss / cache / swap bytes)와
@@ -1317,7 +1322,7 @@ paths:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 메모리 병목 분해
       tags:
-      - synthesis
+      - interference
   /api/v1/node/{node}:
     get:
       description: 노드의 4 차원 pressure 와 종합(overall), dominant 차원, 그 노드 위 top 압박 pod
@@ -1341,7 +1346,7 @@ paths:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 노드 1대 전체 압박 상황
       tags:
-      - synthesis
+      - interference
   /api/v1/nodes:
     get:
       description: 노드별 이름, uid, 내부/외부 IP, Ready 상태, 버전, capacity(cpu/memory/gpu)를
@@ -1410,7 +1415,7 @@ paths:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
       summary: List noisy neighbor top-N
       tags:
-      - correlation
+      - impact
   /api/v1/pods:
     get:
       description: 파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by),
@@ -1462,7 +1467,7 @@ paths:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 차원별 압박 drill-down 랭킹
       tags:
-      - synthesis
+      - interference
   /api/v1/service-impact:
     get:
       description: victim_namespace 와 victim_workload 와 suspect_node 와 dimension 과
@@ -1509,7 +1514,7 @@ paths:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
       summary: List service-impact top-N
       tags:
-      - correlation
+      - impact
   /api/v1/topology:
     get:
       description: 노드별 status(healthy/warning/critical/unknown, 4개 자원 차원 pressure
@@ -1524,7 +1529,7 @@ paths:
             $ref: '#/definitions/internal_correlation_api.TopologyResponse'
       summary: 클러스터 노드 토폴로지
       tags:
-      - synthesis
+      - interference
   /api/v1/trends:
     get:
       description: correlation-exporter 가 emit 하는 correlation_* 시계열을 range query 로
@@ -1563,5 +1568,20 @@ paths:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 진단 신호 추이
       tags:
-      - synthesis
+      - trends
 swagger: "2.0"
+tags:
+- description: API 상태와 클러스터 헬스 요약
+  name: meta
+- description: 노드와 파드 인벤토리 (k8s 오브젝트 스냅샷)
+  name: inventory
+- description: 네트워크 지연 단계 분해와 패킷 drop, pod 간 flow
+  name: network
+- description: 자원 압박 랭킹과 노드 상세, 이벤트, 메모리 병목, 간섭 토폴로지
+  name: interference
+- description: 간섭 상관 top-N 과 영향 전파 그래프 (noisy neighbor, cross-node, service impact)
+  name: impact
+- description: GPU 유휴 원인 분석
+  name: gpu
+- description: 진단 신호 시계열 추이
+  name: trends
