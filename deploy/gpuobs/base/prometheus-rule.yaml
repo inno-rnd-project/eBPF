@@ -474,10 +474,10 @@ spec:
         - record: cluster:gpu_thermal_score:5m
           expr: max(node:gpu_thermal_score:5m) or vector(0)
 
-        # pod:cgroup_contention_score:5m (#198)
-        # Pod 단위 cgroup PSI 경합 score (0-1). gpuobs 가 cgroup v2 cpu.pressure / memory.pressure 의
-        # some avg10 을 수집한 gpuobs_pod_cpu_pressure_ratio / gpuobs_pod_memory_pressure_ratio 의 5 분
-        # max 를 (node, src_namespace, src_pod) 단위로 취해 CPU / memory stall 중 더 심한 쪽을 pod 경합
+        # pod:cgroup_contention_score:5m (#198, #224)
+        # Pod 단위 cgroup PSI 경합 score (0-1). gpuobs 가 cgroup v2 cpu.pressure / memory.pressure /
+        # io.pressure 의 some avg10 을 수집한 gpuobs_pod_*_pressure_ratio 3종의 5 분 max 를 (node,
+        # src_namespace, src_pod) 단위로 취해 CPU / memory / 디스크 I/O stall 중 가장 심한 쪽을 pod 경합
         # 강도로 삼는다. cAdvisor 의 throttle-ratio / working-set-ratio 휴리스틱과 달리 실제 stall 시간을
         # 직접 반영한다. gpuobs 메트릭은 이미 src_namespace / src_pod 라벨을 달고 나와 label_replace 가
         # 불필요하다.
@@ -488,6 +488,8 @@ spec:
                 label_replace(max_over_time(gpuobs_pod_cpu_pressure_ratio[5m]), "psi_kind", "cpu", "", "")
                 or
                 label_replace(max_over_time(gpuobs_pod_memory_pressure_ratio[5m]), "psi_kind", "mem", "", "")
+                or
+                label_replace(max_over_time(gpuobs_pod_io_pressure_ratio[5m]), "psi_kind", "io", "", "")
               ),
               1
             )

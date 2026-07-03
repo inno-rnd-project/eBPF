@@ -12,11 +12,20 @@ evaluation_interval: 30s
 tests:
   - interval: 30s
     input_series:
-      # cgroup PSI: cpu 0.2, memory 0.6 → pod score = max(0.2, 0.6) = 0.6
+      # cgroup PSI: cpu 0.2, memory 0.6, io 0.1 → pod score = max 3종 = 0.6
       - series: 'gpuobs_pod_cpu_pressure_ratio{node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
         values: '0.2x12'
       - series: 'gpuobs_pod_memory_pressure_ratio{node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
         values: '0.6x12'
+      - series: 'gpuobs_pod_io_pressure_ratio{node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
+        values: '0.1x12'
+      # #224 io stall 이 지배하는 pod. io 0.7 이 cpu 0.1 / memory 0.05 를 누르고 score 가 되는지 가드한다.
+      - series: 'gpuobs_pod_cpu_pressure_ratio{node="n1",src_namespace="ns2",src_pod="p2",src_pod_uid="u2"}'
+        values: '0.1x12'
+      - series: 'gpuobs_pod_memory_pressure_ratio{node="n1",src_namespace="ns2",src_pod="p2",src_pod_uid="u2"}'
+        values: '0.05x12'
+      - series: 'gpuobs_pod_io_pressure_ratio{node="n1",src_namespace="ns2",src_pod="p2",src_pod_uid="u2"}'
+        values: '0.7x12'
       # GPU idle gating: utilization 5% (<20) 상시 → node:gpu_idle:5m = 1 > 0.5
       - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
         values: '5x12'
@@ -28,13 +37,15 @@ tests:
         exp_samples:
           - labels: 'pod:cgroup_contention_score:5m{node="n1",src_namespace="ns1",src_pod="p1"}'
             value: 0.6
-      # cluster rollup = cluster max = 0.6 (max() 가 모든 라벨 제거).
+          - labels: 'pod:cgroup_contention_score:5m{node="n1",src_namespace="ns2",src_pod="p2"}'
+            value: 0.7
+      # cluster rollup = cluster max = 0.7 (io 지배 pod p2, max() 가 모든 라벨 제거).
       - expr: cluster:pod_cgroup_contention_score:5m
         eval_time: 5m
         exp_samples:
           - labels: 'cluster:pod_cgroup_contention_score:5m'
-            value: 0.6
-      # cgroup_contention 이 유일한 non-zero cause 라 weight = score / sum = 0.6 / 0.6 = 1.
+            value: 0.7
+      # cgroup_contention 이 유일한 non-zero cause 라 weight = score / sum = 0.7 / 0.7 = 1.
       - expr: gpu_idle_cause_weight:5m{cause="cgroup_contention"}
         eval_time: 5m
         exp_samples:
@@ -46,6 +57,8 @@ tests:
         exp_samples:
           - labels: 'pod:gpu_idle_cause_score:5m{cause="cgroup_contention",node="n1",victim_namespace="ns1",victim_pod="p1"}'
             value: 0.6
+          - labels: 'pod:gpu_idle_cause_score:5m{cause="cgroup_contention",node="n1",victim_namespace="ns2",victim_pod="p2"}'
+            value: 0.7
       # cluster dominant cause 로 cgroup_contention 이 선택되는지 검증한다. dominant 룰의 tie-breaker
       # offset 리스트에 cgroup_contention 이 없으면 + on(cause) 조인이 빈 벡터를 만들어 이 단정이 실패
       # 하므로, offset 누락 회귀를 본 케이스가 가드한다 (weight 1 + offset 9e-6).
@@ -59,4 +72,6 @@ tests:
         eval_time: 5m
         exp_samples:
           - labels: 'victim:gpu_idle_dominant_cause:5m{cause="cgroup_contention",node="n1",victim_namespace="ns1",victim_pod="p1"}'
+            value: 1.000006
+          - labels: 'victim:gpu_idle_dominant_cause:5m{cause="cgroup_contention",node="n1",victim_namespace="ns2",victim_pod="p2"}'
             value: 1.000006

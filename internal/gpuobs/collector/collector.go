@@ -274,6 +274,7 @@ func (c *Collector) pollOnce() {
 			samples = append(samples, metrics.PodContentionSample{
 				ID:               id,
 				CPUPressureRatio: st.CPUPressureRatio,
+				IOPressureRatio:  st.IOPressureRatio,
 				MemPressureRatio: st.MemPressureRatio,
 			})
 		}
