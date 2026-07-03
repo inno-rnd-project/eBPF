@@ -78,16 +78,18 @@ func TestTrends_ResourceSignals(t *testing.T) {
 		"pressure_max": "node:pressure_score:5m",
 	}
 	for signal, want := range cases {
-		f := &fakeFetcher{series: trendSeries()}
-		h := NewTrendsHandler(f)
-		rec := httptest.NewRecorder()
-		h.GetTrends(rec, httptest.NewRequest(http.MethodGet, "/api/v1/trends?signal="+signal, nil))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("signal=%s status=%d want 200", signal, rec.Code)
-		}
-		if !strings.Contains(f.gotQuery, want) {
-			t.Errorf("signal=%s query=%q want %q 포함", signal, f.gotQuery, want)
-		}
+		t.Run(signal, func(t *testing.T) {
+			f := &fakeFetcher{series: trendSeries()}
+			h := NewTrendsHandler(f)
+			rec := httptest.NewRecorder()
+			h.GetTrends(rec, httptest.NewRequest(http.MethodGet, "/api/v1/trends?signal="+signal, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d want 200", rec.Code)
+			}
+			if !strings.Contains(f.gotQuery, want) {
+				t.Errorf("query=%q want %q 포함", f.gotQuery, want)
+			}
+		})
 	}
 }
 
