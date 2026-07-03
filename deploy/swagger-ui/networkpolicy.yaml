@@ -1,5 +1,7 @@
-# swagger-ui 는 correlation-exporter 스펙을 노출하는 문서 UI 라 동일한 내부 전용 정책을 적용한다
-# (#217). 허용 출처 구성은 correlation-exporter NetworkPolicy 와 같다.
+# swagger-ui 는 correlation-exporter 스펙을 노출하는 문서 UI 라 내부 전용 정책을 적용한다 (#217).
+# 정적 UI 라 Prometheus scrape 대상이 아니므로 correlation-exporter 정책과 달리 monitoring
+# 네임스페이스는 허용하지 않는다 (최소 권한). 운영자 접근은 CNI 데이터패스를 우회하는 kubectl
+# port-forward 로 정책과 무관하게 가능하다.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -18,9 +20,6 @@ spec:
   ingress:
     - from:
         - podSelector: {}
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: monitoring
         - namespaceSelector:
             matchLabels:
               observability.netobs/api-consumer: "true"
