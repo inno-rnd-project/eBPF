@@ -88,6 +88,18 @@ func TestBuildCiliumDrops_TieBreak(t *testing.T) {
 	}
 }
 
+// TestBuildRetransGroups_TieBreak 는 rate 와 출발지가 동률일 때 traffic_scope 와 dst 사전순으로
+// 결정적 순서가 보장되는지 검증한다.
+func TestBuildRetransGroups_TieBreak(t *testing.T) {
+	out := buildRetransGroups([]correlation.InstantSample{
+		sample(1.0, "node", "n1", "src_namespace", "a", "src_workload", "w", "traffic_scope", "same_node", "dst_namespace", "z", "dst_workload", "zz"),
+		sample(1.0, "node", "n1", "src_namespace", "a", "src_workload", "w", "traffic_scope", "same_node", "dst_namespace", "b", "dst_workload", "bb"),
+	}, "", 10)
+	if len(out) != 2 || out[0].DstNamespace != "b" || out[1].DstNamespace != "z" {
+		t.Errorf("retrans tie-break=%+v want dst_namespace 사전순 b 먼저", out)
+	}
+}
+
 // TestDrops_NamespaceFilter 는 ?namespace 필터가 src_namespace 로 거르는지 검증한다.
 func TestDrops_NamespaceFilter(t *testing.T) {
 	h := NewSynthesisHandler(dropsFakeQuerier(), nil, nil)

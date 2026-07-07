@@ -309,6 +309,8 @@ func buildRetransGroups(samples []correlation.InstantSample, nsFilter string, li
 			TrafficScope: l["traffic_scope"], RetransPerSec: sm.Value,
 		})
 	}
+	// 쿼리 group-by 키 (node, src_*, traffic_scope, dst_*) 전체를 tie-breaker 로 써야 동률에서
+	// 결정적 순서가 보장된다 (sort.Slice 는 불안정 정렬).
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].RetransPerSec != out[j].RetransPerSec {
 			return out[i].RetransPerSec > out[j].RetransPerSec
@@ -319,7 +321,16 @@ func buildRetransGroups(samples []correlation.InstantSample, nsFilter string, li
 		if out[i].Namespace != out[j].Namespace {
 			return out[i].Namespace < out[j].Namespace
 		}
-		return out[i].Workload < out[j].Workload
+		if out[i].Workload != out[j].Workload {
+			return out[i].Workload < out[j].Workload
+		}
+		if out[i].TrafficScope != out[j].TrafficScope {
+			return out[i].TrafficScope < out[j].TrafficScope
+		}
+		if out[i].DstNamespace != out[j].DstNamespace {
+			return out[i].DstNamespace < out[j].DstNamespace
+		}
+		return out[i].DstWorkload < out[j].DstWorkload
 	})
 	if len(out) > limit {
 		out = out[:limit]
