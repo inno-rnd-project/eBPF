@@ -20,6 +20,10 @@ func TestStage(t *testing.T) {
 		{"TCP_OFO_DROP", "recv_reorder"},
 		{"TCP_OLD_DATA", "recv_reorder"},
 		{"TCP_INVALID_SEQUENCE", "recv_tcp"},
+		// #225 LISTEN 계열은 accept queue 문제라 TCP 토큰보다 먼저 socket 으로 분류한다. kernel 6.8
+		// 심볼 셋에는 없는 상위 커널 reason 이라 라이브 발화 대신 본 케이스로 검증한다.
+		{"TCP_LISTEN_OVERFLOW", "socket"},
+		{"LISTENOVERFLOW", "socket"},
 		{"NO_SOCKET", "socket"},
 		{"IP_OUTNOROUTES", "routing"},
 		{"XDP", "ingress_early"},

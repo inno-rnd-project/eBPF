@@ -190,6 +190,11 @@ func (m *Mapper) Stage(name string) string {
 		return "egress_qdisc"
 	case strings.Contains(n, "OFO"), strings.Contains(n, "OLD_DATA"), strings.Contains(n, "ZEROWINDOW"):
 		return "recv_reorder"
+	// LISTEN 계열 (accept queue overflow 등) 은 socket 수용 큐 문제라 TCP 토큰 분기보다 먼저 검사해
+	// recv_tcp 오분류를 막는다. 본 reason 은 kernel 6.8 의 kfree_skb 심볼 셋에는 없고 상위 커널에서
+	// 추가되므로 커널 업그레이드 대비 분류다 (이름 문자열 분류라 단위 테스트로 검증한다).
+	case strings.Contains(n, "LISTEN"):
+		return "socket"
 	case hasToken(n, "TCP"):
 		return "recv_tcp"
 	case hasToken(n, "SOCK", "SOCKET"):
