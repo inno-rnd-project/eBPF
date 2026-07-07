@@ -7,9 +7,9 @@ kind: Kustomization
 namespace: ebpf-project
 
 resources:
+  - alertmanagerconfig.yaml
   - serviceaccount.yaml
   - configmap.yaml
   - deployment.yaml
   - service.yaml
   - servicemonitor.yaml
-  - alertmanagerconfig.yaml
