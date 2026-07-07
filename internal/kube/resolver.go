@@ -757,3 +757,17 @@ func classifyFallbackIP(ip string) PodIdentity {
 
 	return externalIdentity(ip)
 }
+
+// PodsOnNode 는 informer 캐시에서 지정 노드에 스케줄된 Pod 들의 identity 스냅샷을 돌려준다. #228 의
+// cgroup 스캐너가 주기 스캔 대상을 얻는 데 사용한다.
+func (r *Resolver) PodsOnNode(node string) []PodIdentity {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]PodIdentity, 0, len(r.podByUID))
+	for _, id := range r.podByUID {
+		if id.NodeName == node {
+			out = append(out, id)
+		}
+	}
+	return out
+}

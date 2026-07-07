@@ -123,6 +123,11 @@ spec:
             - name: host-proc-kallsyms
               mountPath: /host/proc/kallsyms
               readOnly: true
+            # #228 cgroup id 역매핑 스캐너가 pod 슬라이스 디렉터리 inode 를 stat 하는 host cgroup2
+            # 계층의 read-only bind mount 다. gpuobs-agent 의 동일 마운트와 같은 구성이다.
+            - name: host-sys-fs-cgroup
+              mountPath: /host/sys/fs/cgroup
+              readOnly: true
       volumes:
         - name: sys-fs-bpf
           hostPath:
@@ -148,3 +153,7 @@ spec:
           hostPath:
             path: /proc/kallsyms
             type: File
+        - name: host-sys-fs-cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+            type: Directory

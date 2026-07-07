@@ -49,6 +49,16 @@ type Enricher struct {
 	runtimeTTL        time.Duration
 	runtimeSweepEvery time.Duration
 	lastRuntimeSweep  time.Time
+
+	// cgroupScanner 는 #228 의 cgroup id 역매핑 폴백이다. ringbuf 힌트가 학습되지 않은 (TCP 트래픽
+	// 없는 UDP 전용) pod 의 cgroup 귀속을 informer 기반 inode 스캔 테이블로 해석한다. nil 이면 기존
+	// 동작 그대로 힌트 캐시만 쓴다.
+	cgroupScanner *CgroupScanner
+}
+
+// SetCgroupScanner 는 #228 폴백 스캐너를 주입한다. startup 시 1회 호출한다.
+func (e *Enricher) SetCgroupScanner(c *CgroupScanner) {
+	e.cgroupScanner = c
 }
 
 // NewEnricher는 외부에서 구성된 *kube.Resolver를 받아 netobs 전용 캐시와 함께 Enricher를 구성한다.
@@ -185,10 +195,17 @@ func (e *Enricher) lookupCgroupHint(cgroupID uint64, now time.Time) (kube.PodIde
 	entry, ok := e.runtimeByCgroup[cgroupID]
 	e.mu.RUnlock()
 
-	if !ok || now.Sub(entry.LastSeen) > e.runtimeTTL {
-		return kube.PodIdentity{}, false
+	if ok && now.Sub(entry.LastSeen) <= e.runtimeTTL {
+		return entry.ID, true
 	}
-	return entry.ID, true
+	// #228 힌트 미학습 (TCP 트래픽 없는 UDP 전용 pod) 폴백. 스캐너 테이블은 informer 와 host cgroup
+	// inode 스캔으로 주기 재구성되어 ringbuf 이벤트 없이도 귀속이 성립한다.
+	if e.cgroupScanner != nil {
+		if id, ok := e.cgroupScanner.Lookup(cgroupID); ok {
+			return id, true
+		}
+	}
+	return kube.PodIdentity{}, false
 }
 
 func (e *Enricher) lookupIfindexHint(ifindex uint32, now time.Time) (kube.PodIdentity, bool) {
