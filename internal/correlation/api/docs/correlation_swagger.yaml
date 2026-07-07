@@ -1682,6 +1682,36 @@ paths:
       summary: 차원별 압박 drill-down 랭킹
       tags:
       - interference
+  /api/v1/rca:
+    get:
+      description: rca-summarizer 가 Alertmanager webhook 으로 생성한 alert 별 root cause
+        analysis 요약을 프록시한다. alert 파라미터 생략 시 보관 중인 전체 요약 목록, 지정 시 해당 alert 의 최신 요약을
+        돌려준다 (미보관 alert 는 404). 요약에는 지배 자원 차원과 최우선 의심 pod, 핵심 drop flow, 근거 메트릭 힌트,
+        신뢰도 점수가 담긴다.
+      parameters:
+      - description: alertname (생략 시 전체 목록)
+        in: query
+        name: alert
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+      summary: RCA 요약 조회
+      tags:
+      - rca
   /api/v1/service-impact:
     get:
       description: victim_namespace 와 victim_workload 와 suspect_node 와 dimension 과
@@ -1801,3 +1831,5 @@ tags:
   name: gpu
 - description: 진단 신호 시계열 추이
   name: trends
+- description: alert 별 root cause analysis 요약 (rca-summarizer 프록시)
+  name: rca

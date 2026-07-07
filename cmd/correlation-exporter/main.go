@@ -28,6 +28,8 @@
 // @tag.description  GPU 유휴 원인 분석
 // @tag.name         trends
 // @tag.description  진단 신호 시계열 추이
+// @tag.name         rca
+// @tag.description  alert 별 root cause analysis 요약 (rca-summarizer 프록시)
 package main
 
 import (
@@ -104,6 +106,11 @@ func main() {
 	// env fallback. flag 가 우선이라 후순위로 적용.
 	if v := strings.TrimSpace(os.Getenv("PROMETHEUS_URL")); v != "" {
 		cfg.PrometheusURL = v
+	}
+	// #234 RCA 프록시 대상. 빈 값이면 기본 in-cluster 서비스 주소를 쓴다.
+	rcaURL := "http://rca-summarizer.ebpf-project.svc.cluster.local:9850"
+	if v := strings.TrimSpace(os.Getenv("RCA_SUMMARIZER_URL")); v != "" {
+		rcaURL = v
 	}
 	applyEnvDuration("WINDOW", "window", &cfg.Window)
 	applyEnvDuration("STEP", "step", &cfg.Step)
@@ -285,6 +292,13 @@ func main() {
 	// #195 진단 신호 추이 API. collector 가 이미 emit 하는 correlation_* 시계열을 range query 로 읽어
 	// /api/v1/trends 로 이력을 노출한다. 적재는 collector 가 수행하므로 본 핸들러는 range fetch 만 한다.
 	api.NewTrendsHandler(fetcher).Register(mux)
+	// #234 RCA 요약 프록시. rca-summarizer 의 /rca 를 단일 진입점에서 노출한다. URL 파싱 실패 시
+	// nil 이라 라우트 자체가 등록되지 않는다.
+	if rp := api.NewRCAProxyHandler(rcaURL, cfg.FetchTimeout); rp != nil {
+		rp.Register(mux)
+	} else {
+		log.Printf("warn: rca proxy disabled, invalid RCA_SUMMARIZER_URL: %q", rcaURL)
+	}
 	correlationdocs.SwaggerInfocorrelation.BasePath = "/"
 	mux.Handle("/api/v1/swagger/", httpSwagger.Handler(httpSwagger.URL("/api/v1/swagger.json"), httpSwagger.InstanceName("correlation")))
 	mux.HandleFunc("/api/v1/swagger.json", func(w http.ResponseWriter, _ *http.Request) {

@@ -1,7 +1,7 @@
 swagger: '2.0'
 info:
   title: netobs unified API
-  version: 1.7.0
+  version: 1.7.2
 paths:
   /api/v1/bandwidth:
     get:
@@ -544,6 +544,36 @@ paths:
             $ref: '#/definitions/internal_correlation_api.PressureResponse'
         '400':
           description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+  /api/v1/rca:
+    get:
+      description: rca-summarizer 가 Alertmanager webhook 으로 생성한 alert 별 root cause
+        analysis 요약을 프록시한다. alert 파라미터 생략 시 보관 중인 전체 요약 목록, 지정 시 해당 alert 의 최신 요약을
+        돌려준다 (미보관 alert 는 404). 요약에는 지배 자원 차원과 최우선 의심 pod, 핵심 drop flow, 근거 메트릭 힌트,
+        신뢰도 점수가 담긴다.
+      produces:
+      - application/json
+      tags:
+      - rca
+      summary: RCA 요약 조회
+      parameters:
+      - type: string
+        description: alertname (생략 시 전체 목록)
+        name: alert
+        in: query
+      responses:
+        '200':
+          description: OK
+          schema:
+            type: object
+            additionalProperties: true
+        '404':
+          description: Not Found
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '502':
+          description: Bad Gateway
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/service-impact:

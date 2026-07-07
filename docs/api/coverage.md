@@ -2,7 +2,7 @@
 
 프로젝트 목표의 기능 항목별로 correlation-exporter REST API 의 커버리지를 매핑한 문서다. 프론트엔드가 "어떤 목표 기능을 어느 엔드포인트로 구현하는가" 를 판단하는 계약으로 쓰이며, 엔드포인트나 태그가 바뀌면 본 문서와 `cmd/correlation-exporter/main.go` 의 `@tag` 선언, 핸들러의 `@Tags` 를 함께 갱신한다.
 
-## 분류 태그 7종
+## 분류 태그 8종
 
 | 태그 | 도메인 | 엔드포인트 |
 |---|---|---|
@@ -13,6 +13,7 @@
 | `impact` | 간섭 상관 top-N 과 영향 전파 그래프 | `/api/v1/noisy-neighbor`, `/api/v1/cross-node-interference`, `/api/v1/service-impact`, `/api/v1/cross-level`, `/api/v1/impact-graph`, `/api/v1/impact-paths` |
 | `gpu` | GPU 유휴 원인 분석 | `/api/v1/gpu-idle` |
 | `trends` | 진단 신호 시계열 추이 | `/api/v1/trends` |
+| `rca` | alert 별 root cause analysis 요약 (rca-summarizer 프록시) | `/api/v1/rca` |
 
 ## 목표 대비 커버리지
 
@@ -26,10 +27,11 @@
 | 특정 node/pod 의 서비스 영향 분석 | `service-impact`, `impact-graph`, `impact-paths`, `cross-level` (impact) | 커버 |
 | GPU 유휴 원인 (하드웨어 vs 네트워크) | `gpu-idle` (gpu). dominant cause 9종 | 커버 |
 | Pod 간 네트워크 flow 추적 | `flows` (network), `topology` (interference) | 커버 |
-| GPU 일반 자원 현황 (사용률·메모리·전력·온도) | `gpu-status` (gpu) 신설 예정. `gpuobs_device_*` 와 `gpuobs_pod_*` 기반 | 신설 갭 |
-| Pod 별 RX/TX 대역폭 | `bandwidth` (network) 신설 예정. `netobs_pod_bytes_total` 기반, allow-list 무관 전 pod 커버 | 신설 갭 |
-| 자원 사용량·지연 시계열 추이 | `trends` (trends). 현재 intensity 4종, 시그널 확장 예정 | 확장 갭 |
+| GPU 일반 자원 현황 (사용률·메모리·전력·온도) | `gpu-status` (gpu). `gpuobs_device_*` 와 `gpuobs_pod_*` 기반 | 커버 |
+| Pod 별 RX/TX 대역폭 | `bandwidth` (network). `netobs_pod_bytes_total` 기반, allow-list 무관 전 pod 커버 | 커버 |
+| 자원 사용량·지연 시계열 추이 | `trends` (trends). 간섭 4종 + 자원·지연 7종 시그널 | 커버 |
 | GPU–네트워크 통합 분석 | `gpu-idle` + `pressure` + `bandwidth` 조합 | 프론트 합성 |
+| 이벤트의 종합 원인 서사 (RCA) | `rca` (rca). Alertmanager webhook 으로 생성된 alert 별 RCASummary 를 프록시. 지배 차원과 최우선 의심 pod, 근거 메트릭, 신뢰도 | 커버 |
 | 통합 대시보드·알림 표시 | 프론트엔드 영역 | 범위 외 |
 | 부하테스트 자동화 | `workload-injector` (dev 전용 LoadScenario CRD) 가 담당 | 범위 외 |
 
