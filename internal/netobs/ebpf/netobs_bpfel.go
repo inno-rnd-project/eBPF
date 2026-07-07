@@ -12,6 +12,13 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type NetObsNetobsConnectStash struct {
+	Ts   uint64
+	Pid  uint32
+	Tid  uint32
+	Comm [16]int8
+}
+
 type NetObsNetobsFlowKey struct {
 	CgroupId  uint64
 	Saddr     [16]uint8

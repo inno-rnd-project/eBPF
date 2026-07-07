@@ -141,11 +141,21 @@ struct {
  * 생존 동안 재사용이 불가해 connect→finish 구간 상관에 안전하며, 미완 연결 (timeout / RST) 의
  * free 후 재할당은 stale 가드 (10s) 와 LRU eviction 이 회수한다 (#173 rcv_nic 의 skb 포인터 상관과
  * 동일 기법). */
+/* connect 진입 시각과 함께 개시 프로세스 식별 (pid / tid / comm) 을 담는다. tcp_finish_connect 는
+ * SYN-ACK 수신 softirq 콜체인이라 bpf_get_current_* 가 인터럽트당한 무관 프로세스를 돌려주므로,
+ * 프로세스 컨텍스트인 connect 진입 시점 값을 stash 해 emit 에 사용한다. */
+struct netobs_connect_stash {
+    __u64 ts;
+    __u32 pid;
+    __u32 tid;
+    char  comm[NETOBS_COMM_LEN];
+};
+
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 8192);
     __type(key, __u64);
-    __type(value, __u64);
+    __type(value, struct netobs_connect_stash);
 } connect_starts SEC(".maps");
 
 /* #173 NIC ingress→L3 구간 의 skb->protocol 필터 상수. NIC 진입 stash 를 IP / IPv6 패킷 으로만
@@ -1307,14 +1317,19 @@ int BPF_KPROBE(handle_tcp_send_ack, struct sock *sk)
  * 구간이다. IPv4 / IPv6 는 connect 진입 심볼만 다르고 finish 는 공용이다. */
 static __always_inline void stash_connect_start(struct sock *sk)
 {
+    struct netobs_connect_stash val = {};
     __u64 key;
-    __u64 now;
+    __u64 pid_tgid;
 
     if (!sk)
         return;
     key = (__u64)(unsigned long)sk;
-    now = bpf_ktime_get_ns();
-    bpf_map_update_elem(&connect_starts, &key, &now, BPF_ANY);
+    val.ts = bpf_ktime_get_ns();
+    pid_tgid = bpf_get_current_pid_tgid();
+    val.pid = pid_tgid >> 32;
+    val.tid = (__u32)pid_tgid;
+    bpf_get_current_comm(&val.comm, sizeof(val.comm));
+    bpf_map_update_elem(&connect_starts, &key, &val, BPF_ANY);
 }
 
 SEC("kprobe/tcp_v4_connect")
@@ -1335,9 +1350,8 @@ SEC("kprobe/tcp_finish_connect")
 int BPF_KPROBE(handle_tcp_finish_connect, struct sock *sk, struct sk_buff *skb)
 {
     struct netobs_start_info s = {};
-    __u64 *ts;
+    struct netobs_connect_stash *stash;
     __u64 now;
-    __u64 pid_tgid;
     __u16 family;
     __u32 latency_us;
 
@@ -1349,27 +1363,29 @@ int BPF_KPROBE(handle_tcp_finish_connect, struct sock *sk, struct sk_buff *skb)
 
     now = bpf_ktime_get_ns();
     __u64 key = (__u64)(unsigned long)sk;
-    ts = bpf_map_lookup_elem(&connect_starts, &key);
+    stash = bpf_map_lookup_elem(&connect_starts, &key);
     /* stash 미상관 (attach 전 개시 / LRU evict) 또는 stale (>10s, sk 재할당) 은 spurious sample
      * 을 막기 위해 emit 을 skip 한다 (rcv_nic / ack_wait 의 미상관 skip 과 동일 논리). */
-    if (!ts || now <= *ts || (now - *ts) >= NETOBS_RCV_STALE_NS) {
-        if (ts)
+    if (!stash || now <= stash->ts || (now - stash->ts) >= NETOBS_RCV_STALE_NS) {
+        if (stash)
             bpf_map_delete_elem(&connect_starts, &key);
         return 0;
     }
-    latency_us = (__u32)((now - *ts) / 1000);
-    bpf_map_delete_elem(&connect_starts, &key);
+    latency_us = (__u32)((now - stash->ts) / 1000);
 
-    pid_tgid    = bpf_get_current_pid_tgid();
+    /* softirq 의 current 는 무관 프로세스라 개시 시점 stash 값으로 프로세스를 식별한다. 복사를 마친
+     * 뒤 entry 를 삭제한다. */
     s.ts_ns     = now;
     s.cgroup_id = sock_cgroup_id(sk);
-    s.pid       = pid_tgid >> 32;
-    s.tid       = (__u32)pid_tgid;
+    s.pid       = stash->pid;
+    s.tid       = stash->tid;
+    __builtin_memcpy(s.comm, stash->comm, sizeof(s.comm));
+    bpf_map_delete_elem(&connect_starts, &key);
+
     fill_conn_from_sock(sk, &s);
     fill_tcp_state(sk, &s);
     if (skb)
         fill_dev_from_skb(skb, &s);
-    bpf_get_current_comm(&s.comm, sizeof(s.comm));
     emit_event(&s, NETOBS_STAGE_CONNECT, 0, 0, latency_us, -1, 0, 0);
     return 0;
 }

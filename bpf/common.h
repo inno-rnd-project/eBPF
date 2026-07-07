@@ -48,9 +48,9 @@ enum netobs_event_stage {
      * tcp_send_ack 를 타지 않아 대기 ~0 이므로 자연 제외 되고, 지연 ACK 경로만 계측된다. */
     NETOBS_STAGE_ACK_WAIT         = 13,
     /* #227 client 측 TCP 연결 수립 지연. tcp_v4_connect / tcp_v6_connect 진입 (SYN 송신 개시) 시각을
-     * socket_cookie 키로 stash 하고, SYN-ACK 수신 처리로 established 전환하는 tcp_finish_connect 가
+     * sock 포인터 키로 stash 하고, SYN-ACK 수신 처리로 established 전환하는 tcp_finish_connect 가
      * 차분을 emit 한다. finish 는 softirq 콜체인이라 connect 호출자 tid 와 달라 tid 키 starts 맵 대신
-     * 전용 connect_starts 맵을 쓴다. */
+     * 전용 connect_starts 맵을 쓴다 (socket_cookie 는 connect 진입 시점에 lazy 미할당이라 키 불가). */
     NETOBS_STAGE_CONNECT          = 14,
 };
 
