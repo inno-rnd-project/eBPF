@@ -68,6 +68,12 @@ func (q *PrometheusInstantQuerier) Query(ctx context.Context, query string) ([]I
 	u := *q.queryURL
 	v := url.Values{}
 	v.Set("query", query)
+	// #235 요청 스코프 평가 시점. WithQueryTime 으로 심긴 시점이 있으면 Prometheus instant query 의
+	// time 파라미터로 전달해 과거 시점 평가 (사건 시점 재구성) 를 수행한다. 미지정 시 기존과 동일하게
+	// 현재 시점 평가다.
+	if t, ok := QueryTimeFrom(ctx); ok {
+		v.Set("time", strconv.FormatInt(t.Unix(), 10))
+	}
 	u.RawQuery = v.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)

@@ -37,6 +37,12 @@ const docTemplatecorrelation = `{
                         "description": "상위 N pod (합산 대역폭 내림차순, 기본 50)",
                         "name": "limit",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)",
+                        "name": "at",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -217,6 +223,12 @@ const docTemplatecorrelation = `{
                         "description": "상위 N (1-100, 기본 20)",
                         "name": "limit",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)",
+                        "name": "at",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -343,6 +355,12 @@ const docTemplatecorrelation = `{
                         "description": "scope=pod 상위 N victim (1-100, 기본 10)",
                         "name": "limit",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)",
+                        "name": "at",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -371,6 +389,14 @@ const docTemplatecorrelation = `{
                     "gpu"
                 ],
                 "summary": "GPU 자원 현황 조회",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)",
+                        "name": "at",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -527,6 +553,12 @@ const docTemplatecorrelation = `{
                         "description": "상위 N 대상 (1-100, 기본 10)",
                         "name": "limit",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)",
+                        "name": "at",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -566,6 +598,12 @@ const docTemplatecorrelation = `{
                         "type": "integer",
                         "description": "상위 N pod (1-200, 기본 30)",
                         "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)",
+                        "name": "at",
                         "in": "query"
                     }
                 ],
@@ -778,6 +816,12 @@ const docTemplatecorrelation = `{
                         "type": "integer",
                         "description": "상위 N (1-100, 기본 10)",
                         "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)",
+                        "name": "at",
                         "in": "query"
                     }
                 ],

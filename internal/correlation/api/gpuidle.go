@@ -65,6 +65,7 @@ type GpuVictimIdle struct {
 // @Produce      json
 // @Param        scope  query  string  false  "cluster 또는 pod (기본 cluster)"
 // @Param        limit  query  int     false  "scope=pod 상위 N victim (1-100, 기본 10)"
+// @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  GpuIdleResponse
 // @Failure      400  {object}  apicommon.ErrorBody
 // @Router       /api/v1/gpu-idle [get]
@@ -87,15 +88,20 @@ func (h *SynthesisHandler) GetGpuIdle(w http.ResponseWriter, r *http.Request) {
 		limit = 100
 	}
 
+	evalCtx, evalAt, ok := applyAtParam(w, r, r.Context())
+	if !ok {
+		return
+	}
+
 	resp := GpuIdleResponse{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt: evalAt.Format(time.RFC3339),
 		Window:      "5m",
 		Scope:       scope,
 		Nodes:       []GpuNodeIdle{},
 	}
 
 	if h.querier != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
 		defer cancel()
 
 		if s, err := h.querier.Query(ctx, "node:gpu_idle:5m"); err == nil {

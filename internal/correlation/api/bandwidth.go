@@ -63,6 +63,7 @@ type bandwidthPodKey struct {
 // @Produce      json
 // @Param        namespace  query  string  false  "src_namespace 필터"
 // @Param        limit      query  int     false  "상위 N pod (합산 대역폭 내림차순, 기본 50)"
+// @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  BandwidthResponse
 // @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/bandwidth [get]
@@ -79,8 +80,13 @@ func (h *SynthesisHandler) GetBandwidth(w http.ResponseWriter, r *http.Request) 
 		limit = 500
 	}
 
+	evalCtx, evalAt, ok := applyAtParam(w, r, r.Context())
+	if !ok {
+		return
+	}
+
 	resp := BandwidthResponse{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt: evalAt.Format(time.RFC3339),
 		Window:      "5m",
 		Pods:        []BandwidthPod{},
 		Nodes:       []BandwidthNode{},
@@ -92,7 +98,7 @@ func (h *SynthesisHandler) GetBandwidth(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
 	defer cancel()
 
 	// namespace 는 기존 규약대로 %q 이스케이프로 PromQL label matcher 에 밀어 Prometheus 측에서

@@ -342,6 +342,7 @@ type PressureEntry struct {
 // @Param        dimension  query  string  true   "압박 차원 (cpu/gpu/memory/network)"
 // @Param        scope      query  string  false  "랭킹 입도 (node/pod, 기본 node)"
 // @Param        limit      query  int     false  "상위 N (1-100, 기본 10)"
+// @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  PressureResponse
 // @Failure      400  {object}  apicommon.ErrorBody
 // @Router       /api/v1/pressure [get]
@@ -375,8 +376,13 @@ func (h *SynthesisHandler) GetPressure(w http.ResponseWriter, r *http.Request) {
 		metric = d.podPressure
 	}
 
+	evalCtx, evalAt, ok2 := applyAtParam(w, r, r.Context())
+	if !ok2 {
+		return
+	}
+
 	resp := PressureResponse{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt: evalAt.Format(time.RFC3339),
 		Window:      "5m",
 		Dimension:   d.name,
 		Scope:       scope,
@@ -384,7 +390,7 @@ func (h *SynthesisHandler) GetPressure(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.querier != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
 		defer cancel()
 		if samples, err := h.querier.Query(ctx, fmt.Sprintf("topk(%d, %s)", limit, metric)); err == nil {
 			// NaN 은 JSON 직렬화 실패와 비일관 정렬을 유발하므로 랭킹 전에 걸러낸다.

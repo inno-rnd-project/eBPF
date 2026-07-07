@@ -70,12 +70,18 @@ type gpuPodKey struct {
 // @Description  node 와 GPU device 단위 사용률, 메모리 사용량과 총량, 전력 사용량과 제한, 온도, 활성 throttle reason, device 별 점유 pod 목록을 한 응답으로 합성한다. gpuobs_device_* 와 gpuobs_pod_* instant query 만 사용하며 사용률 외 신호는 수집 공백 시 필드가 생략된다.
 // @Tags         gpu
 // @Produce      json
+// @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  GpuStatusResponse
 // @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/gpu-status [get]
 func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) {
+	evalCtx, evalAt, ok := applyAtParam(w, r, r.Context())
+	if !ok {
+		return
+	}
+
 	resp := GpuStatusResponse{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt: evalAt.Format(time.RFC3339),
 		Devices:     []GpuDevice{},
 	}
 
@@ -85,7 +91,7 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
 	defer cancel()
 
 	// 주 소스인 사용률은 직접 조회해 실패를 500 으로 구분한다. 나머지 신호는 부가 정보라 병렬 조회
