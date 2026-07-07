@@ -112,6 +112,10 @@ var trackedSymbols = []string{
 	// #197 수신측 ACK 대기 (ack_wait) stage. tcp_send_ack 가 standalone ACK 송신 시점 에 대기 latency 를
 	// emit 한다. 다른 심볼 과 동일 라이프사이클 로 metrics.SetBpfProgramLoaded 에 0 으로 선등록 되게 한다.
 	"tcp_send_ack",
+	// #227 client 측 TCP 연결 수립 지연 (connect stage) 3 종.
+	"tcp_v4_connect",
+	"tcp_v6_connect",
+	"tcp_finish_connect",
 	// #103 UDP TX/RX probe 4 종. connected UDP 만 추적 (sk_state==TCP_ESTABLISHED).
 	"udp_sendmsg",
 	"udp_recvmsg",
@@ -317,6 +321,12 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 	// tcp_send_ack (지연 ACK / quickack standalone ACK 송신 지점) 의 차분을 emit 한다. family 무관 단일
 	// 함수라 IPv4/IPv6 흐름을 함께 capture 하며, 심볼 부재 시 fail-close 되지 않게 optional attach 한다.
 	attachOptionalKprobe("tcp_send_ack", objs.HandleTcpSendAck, &links)
+
+	// #227 client 측 TCP 연결 수립 지연 (CONNECT) stage. v4 / v6 connect 진입이 stash 하고 공용
+	// tcp_finish_connect 가 emit 한다. 심볼 부재 시 fail-close 없이 skip 된다.
+	attachOptionalKprobe("tcp_v4_connect", objs.HandleTcpV4Connect, &links)
+	attachOptionalKprobe("tcp_v6_connect", objs.HandleTcpV6Connect, &links)
+	attachOptionalKprobe("tcp_finish_connect", objs.HandleTcpFinishConnect, &links)
 
 	// #103 IPv6 TCP receive path attach. tcp_v6_rcv 는 stub (cgroup 미식별), tcp_v6_do_rcv 는 sock
 	// 기반 demux event 를 emit 한다. tcp_rcv_established 와 tcp_recvmsg 는 family 무관 단일 함수 라

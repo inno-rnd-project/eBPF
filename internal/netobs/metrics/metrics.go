@@ -359,7 +359,7 @@ func Record(ev types.EnrichedEvent) {
 
 		switch ev.Raw.Stage {
 		case types.StageSendmsgRet, types.StageToVeth, types.StageToDevQ,
-			types.StageTcpWriteXmit, types.StageTcpTransmitSkb:
+			types.StageTcpWriteXmit, types.StageTcpTransmitSkb, types.StageConnect:
 			latencySec := float64(ev.Raw.LatencyUs) / 1_000_000.0
 			podStageLatencyLabeled.WithLabelValues(podCommon...).Observe(latencySec)
 		}
@@ -377,7 +377,7 @@ func Record(ev types.EnrichedEvent) {
 
 	switch ev.Raw.Stage {
 	case types.StageSendmsgRet, types.StageToVeth, types.StageToDevQ,
-		types.StageTcpWriteXmit, types.StageTcpTransmitSkb:
+		types.StageTcpWriteXmit, types.StageTcpTransmitSkb, types.StageConnect:
 		latencySec := float64(ev.Raw.LatencyUs) / 1_000_000.0
 		legacyLatencySeconds.WithLabelValues(stage).Observe(latencySec)
 		stageLatencyLabeled.WithLabelValues(common...).Observe(latencySec)
