@@ -263,6 +263,9 @@ func buildCiliumDrops(samples []correlation.InstantSample, limit int) []CiliumDr
 		if out[i].Node != out[j].Node {
 			return out[i].Node < out[j].Node
 		}
+		if out[i].Direction != out[j].Direction {
+			return out[i].Direction < out[j].Direction
+		}
 		return out[i].Reason < out[j].Reason
 	})
 	if len(out) > limit {

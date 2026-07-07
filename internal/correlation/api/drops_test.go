@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"netobs/internal/correlation"
 	"testing"
 )
 
@@ -62,6 +63,18 @@ func TestDrops(t *testing.T) {
 	}
 	if resp.CiliumDrops[0].Direction != "egress" || resp.CiliumDrops[1].Direction != "ingress" {
 		t.Errorf("cilium direction=%+v want 소문자 정규화", resp.CiliumDrops)
+	}
+}
+
+// TestBuildCiliumDrops_TieBreak 는 rate 와 node, reason 이 동률일 때 direction 사전순으로 결정적
+// 순서가 보장되는지 검증한다. sort.Slice 는 불안정 정렬이라 tie-breaker 누락 시 순서가 흔들린다.
+func TestBuildCiliumDrops_TieBreak(t *testing.T) {
+	out := buildCiliumDrops([]correlation.InstantSample{
+		sample(1.0, "node", "n1", "direction", "INGRESS", "reason", "Policy denied"),
+		sample(1.0, "node", "n1", "direction", "EGRESS", "reason", "Policy denied"),
+	}, 10)
+	if len(out) != 2 || out[0].Direction != "egress" || out[1].Direction != "ingress" {
+		t.Errorf("cilium tie-break=%+v want egress 먼저 (direction 사전순)", out)
 	}
 }
 
