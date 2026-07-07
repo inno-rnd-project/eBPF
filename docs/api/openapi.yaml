@@ -1,7 +1,7 @@
 swagger: '2.0'
 info:
   title: netobs unified API
-  version: 1.6.8
+  version: 1.6.9
 paths:
   /api/v1/bandwidth:
     get:
