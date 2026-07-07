@@ -51,6 +51,8 @@ var trendSignals = map[string]string{
 	"bandwidth_rx":             `sum(rate(netobs_pod_bytes_total{direction="ingress",layer="l4"}[5m]))`,
 	"bandwidth_tx":             `sum(rate(netobs_pod_bytes_total{direction="egress",layer="l4"}[5m]))`,
 	"pressure_max":             "max(node:pressure_score:5m)",
+	"retrans_rate":             "sum(rate(netobs_retrans_events_labeled_total[5m]))",
+	"srtt_max":                 "max(netobs_tcp_state_max_srtt_seconds)",
 }
 
 // trendSignalNames 는 화이트리스트 키를 정렬해 돌려준다. invalid_signal 에러 메시지가 시그널 추가
@@ -88,10 +90,10 @@ type TrendPoint struct {
 
 // GetTrends godoc
 // @Summary      진단 신호 추이
-// @Description  진단 신호와 자원 사용량, 지연의 클러스터 추이를 range query 로 돌려준다. signal 은 화이트리스트(간섭 4종: noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity, 자원·지연 5종: latency_p99 / drop_rate / bandwidth_rx / bandwidth_tx / pressure_max)만 허용해 임의 PromQL injection 과 cardinality 를 통제하며 신호당 1 시리즈로 bound 된다.
+// @Description  진단 신호와 자원 사용량, 지연의 클러스터 추이를 range query 로 돌려준다. signal 은 화이트리스트(간섭 4종: noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity, 자원·지연 7종: latency_p99 / drop_rate / bandwidth_rx / bandwidth_tx / pressure_max / retrans_rate / srtt_max)만 허용해 임의 PromQL injection 과 cardinality 를 통제하며 신호당 1 시리즈로 bound 된다.
 // @Tags         trends
 // @Produce      json
-// @Param        signal  query  string  true   "추이 신호 (noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity / latency_p99 / drop_rate / bandwidth_rx / bandwidth_tx / pressure_max)"
+// @Param        signal  query  string  true   "추이 신호 (noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity / latency_p99 / drop_rate / bandwidth_rx / bandwidth_tx / pressure_max / retrans_rate / srtt_max)"
 // @Param        range   query  string  false  "조회 기간 (예: 1h, 6h, 최대 24h, 기본 1h)"
 // @Param        step    query  string  false  "샘플 간격 (예: 5m, 최소 30s, 기본 5m)"
 // @Success      200  {object}  TrendsResponse

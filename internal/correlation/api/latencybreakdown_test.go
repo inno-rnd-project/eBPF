@@ -52,6 +52,43 @@ func TestLatencyBreakdown_Workload(t *testing.T) {
 	}
 }
 
+// TestLatencyBreakdown_PodTcpState 는 #226 의 pod scope 한정 TCP 상태 join 을 검증한다. srtt 와 cwnd
+// 가 (namespace, pod) 키로 붙고, tcp_state 시리즈가 없는 pod 는 필드가 생략된다.
+func TestLatencyBreakdown_PodTcpState(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("netobs_pod_stage_latency_labeled_seconds_bucket",
+			sample(0.003, "src_namespace", "default", "src_pod", "p1", "stage", "sendmsg_ret"),
+			sample(0.001, "src_namespace", "default", "src_pod", "p2", "stage", "sendmsg_ret")).
+		on("netobs_tcp_state_max_srtt_seconds",
+			sample(0.036, "namespace", "default", "pod", "p1")).
+		on("netobs_tcp_state_min_cwnd",
+			sample(10, "namespace", "default", "pod", "p1"))
+
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetLatencyBreakdown(rec, httptest.NewRequest(http.MethodGet, "/api/v1/latency-breakdown?scope=pod", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp LatencyBreakdownResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Targets) != 2 {
+		t.Fatalf("targets=%d want 2", len(resp.Targets))
+	}
+	p1 := resp.Targets[0]
+	if p1.Pod != "p1" || p1.TcpState == nil || p1.TcpState.MaxSrttSeconds == nil || *p1.TcpState.MaxSrttSeconds != 0.036 {
+		t.Errorf("p1 tcp_state=%+v want srtt 0.036 join", p1.TcpState)
+	}
+	if p1.TcpState != nil && (p1.TcpState.MinCwnd == nil || *p1.TcpState.MinCwnd != 10) {
+		t.Errorf("p1 min_cwnd=%+v want 10", p1.TcpState)
+	}
+	if resp.Targets[1].TcpState != nil {
+		t.Errorf("p2 tcp_state=%+v want nil (시리즈 없음)", resp.Targets[1].TcpState)
+	}
+}
+
 // TestLatencyBreakdown_InvalidScope 는 알 수 없는 scope 에 400 을 돌려주는지 검증한다.
 func TestLatencyBreakdown_InvalidScope(t *testing.T) {
 	h := NewSynthesisHandler(&fakeQuerier{}, nil, nil)

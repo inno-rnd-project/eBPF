@@ -21,7 +21,10 @@ func dropsFakeQuerier() *fakeQuerier {
 			sample(0.5, "drop_reason", "QUEUE_PURGE", "drop_category", "queue", "func", "__dev_queue_xmit")).
 		on("cilium_drop_count_total",
 			sample(3.2, "node", "gpu", "direction", "EGRESS", "reason", "Policy denied"),
-			sample(0.4, "node", "w1", "direction", "INGRESS", "reason", "Invalid source ip"))
+			sample(0.4, "node", "w1", "direction", "INGRESS", "reason", "Invalid source ip")).
+		on("netobs_retrans_events_labeled_total",
+			sample(0.9, "node", "gpu", "src_namespace", "cs", "src_workload", "client", "traffic_scope", "to_external", "dst_namespace", "_external", "dst_workload", "_external"),
+			sample(0.2, "node", "w1", "src_namespace", "gm", "src_workload", "dcgm", "traffic_scope", "same_node"))
 }
 
 // TestDrops 는 labeled 기반 drop 랭킹과 opt-in flows(5-tuple + last_seen join), stacks 를 합성하는지 검증한다.
@@ -63,6 +66,13 @@ func TestDrops(t *testing.T) {
 	}
 	if resp.CiliumDrops[0].Direction != "egress" || resp.CiliumDrops[1].Direction != "ingress" {
 		t.Errorf("cilium direction=%+v want 소문자 정규화", resp.CiliumDrops)
+	}
+	// #226 재전송 랭킹. rate 내림차순과 라벨 매핑을 가드한다.
+	if len(resp.Retrans) != 2 || resp.Retrans[0].Workload != "client" || resp.Retrans[0].RetransPerSec != 0.9 {
+		t.Fatalf("retrans=%+v want client 0.9 먼저", resp.Retrans)
+	}
+	if resp.Retrans[0].TrafficScope != "to_external" {
+		t.Errorf("retrans traffic_scope=%q want to_external", resp.Retrans[0].TrafficScope)
 	}
 }
 

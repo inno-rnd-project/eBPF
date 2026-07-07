@@ -34,6 +34,10 @@ type LatencyTarget struct {
 	Node          string         `json:"node,omitempty"`
 	DominantStage string         `json:"dominant_stage"`
 	Stages        []StageLatency `json:"stages"`
+	// TcpState 는 #226 의 수신 pod TCP 상태 (srtt 와 cwnd) 다. netobs_tcp_state_* 가 pod 단위 라벨이라
+	// scope=pod 에서만 join 되고 workload / node scope 에서는 생략된다. srtt 는 경로 RTT 신호라 커널
+	// 단계 처리 지연 (stages) 과 구분해 병목이 경로인지 처리인지 가른다.
+	TcpState *TcpStateInfo `json:"tcp_state,omitempty"`
 }
 
 // StageLatency 는 한 커널 단계의 p99 와 비중이다.
@@ -41,6 +45,13 @@ type StageLatency struct {
 	Stage      string  `json:"stage"`
 	P99Seconds float64 `json:"p99_seconds"`
 	Share      float64 `json:"share"`
+}
+
+// TcpStateInfo 는 수신 pod 의 TCP 상태 요약이다. netobs 가 receive path 에서 집계한 srtt 최대값과
+// congestion window 최소값으로, 값이 수집 공백이면 필드가 생략된다.
+type TcpStateInfo struct {
+	MaxSrttSeconds *float64 `json:"max_srtt_seconds,omitempty"`
+	MinCwnd        *float64 `json:"min_cwnd,omitempty"`
 }
 
 // latencyScope 는 scope 별 히스토그램 메트릭과 그룹 라벨, 대상 식별 라벨을 묶는다.
@@ -116,10 +127,53 @@ func (h *SynthesisHandler) GetLatencyBreakdown(w http.ResponseWriter, r *http.Re
 			return
 		}
 		resp.Targets = groupLatencyTargets(s, sc, limit)
+
+		// #226 pod scope 한정 TCP 상태 join. netobs_tcp_state_* 가 (namespace, pod) 단위 라벨이라
+		// workload / node scope 에는 붙이지 않는다. best-effort 병렬 조회라 실패 시 필드 생략.
+		if scope == "pod" {
+			st := h.queryParallel(ctx,
+				"max by(namespace, pod) (netobs_tcp_state_max_srtt_seconds)",
+				"min by(namespace, pod) (netobs_tcp_state_min_cwnd)",
+			)
+			attachTcpState(resp.Targets, st[0], st[1])
+		}
 	}
 
 	resp.Summary = buildLatencySummary(resp)
 	apicommon.WriteJSON(w, resp)
+}
+
+// attachTcpState 는 pod scope 타겟에 (namespace, pod) 키로 TCP 상태를 join 한다. NaN / Inf 샘플은
+// JSON 직렬화 불가라 배제하고, 두 신호 모두 없는 pod 는 TcpState 자체를 생략한다.
+func attachTcpState(targets []LatencyTarget, srtt, cwnd []correlation.InstantSample) {
+	type podKey struct{ ns, pod string }
+	srttBy := map[podKey]float64{}
+	for _, sm := range srtt {
+		if math.IsNaN(sm.Value) || math.IsInf(sm.Value, 0) {
+			continue
+		}
+		srttBy[podKey{sm.Labels["namespace"], sm.Labels["pod"]}] = sm.Value
+	}
+	cwndBy := map[podKey]float64{}
+	for _, sm := range cwnd {
+		if math.IsNaN(sm.Value) || math.IsInf(sm.Value, 0) {
+			continue
+		}
+		cwndBy[podKey{sm.Labels["namespace"], sm.Labels["pod"]}] = sm.Value
+	}
+	for i := range targets {
+		k := podKey{targets[i].Namespace, targets[i].Pod}
+		info := &TcpStateInfo{}
+		if v, ok := srttBy[k]; ok {
+			info.MaxSrttSeconds = &v
+		}
+		if v, ok := cwndBy[k]; ok {
+			info.MinCwnd = &v
+		}
+		if info.MaxSrttSeconds != nil || info.MinCwnd != nil {
+			targets[i].TcpState = info
+		}
+	}
 }
 
 // groupLatencyTargets 는 (대상, stage) p99 벡터를 대상별로 묶어 단계 분해를 만든다. 대상은 worst stage

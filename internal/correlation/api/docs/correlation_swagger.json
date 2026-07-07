@@ -190,7 +190,7 @@
         },
         "/api/v1/drops": {
             "get": {
-                "description": "netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction 별 drop rate 랭킹을 돌려준다. NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 가 켜진 경우 5-tuple flow(pod·src/dst ip:port·마지막 발생 시점)와 커널 stack 함수 상세가 flows/stacks 에 채워지며, flow_detail_enabled 로 활성 여부를 알린다. cilium_drops 는 CNI(BPF) 계층 drop(NetworkPolicy 거부 등, 커널 kfree_skb 경로의 사각)을 cilium_drop_count_total 로 합성한 node 수준 신호이며 pod 귀속이 없다.",
+                "description": "netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction 별 drop rate 랭킹을 돌려준다. NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 가 켜진 경우 5-tuple flow(pod·src/dst ip:port·마지막 발생 시점)와 커널 stack 함수 상세가 flows/stacks 에 채워지며, flow_detail_enabled 로 활성 여부를 알린다. cilium_drops 는 CNI(BPF) 계층 drop(NetworkPolicy 거부 등, 커널 kfree_skb 경로의 사각)을 cilium_drop_count_total 로 합성한 node 수준 신호이며 pod 귀속이 없다. retrans 는 workload 단위 TCP 재전송 랭킹으로 drop 과 함께 패킷 손실 계열 신호를 한 응답으로 묶는다.",
                 "produces": [
                     "application/json"
                 ],
@@ -882,7 +882,7 @@
         },
         "/api/v1/trends": {
             "get": {
-                "description": "진단 신호와 자원 사용량, 지연의 클러스터 추이를 range query 로 돌려준다. signal 은 화이트리스트(간섭 4종: noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity, 자원·지연 5종: latency_p99 / drop_rate / bandwidth_rx / bandwidth_tx / pressure_max)만 허용해 임의 PromQL injection 과 cardinality 를 통제하며 신호당 1 시리즈로 bound 된다.",
+                "description": "진단 신호와 자원 사용량, 지연의 클러스터 추이를 range query 로 돌려준다. signal 은 화이트리스트(간섭 4종: noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity, 자원·지연 7종: latency_p99 / drop_rate / bandwidth_rx / bandwidth_tx / pressure_max / retrans_rate / srtt_max)만 허용해 임의 PromQL injection 과 cardinality 를 통제하며 신호당 1 시리즈로 bound 된다.",
                 "produces": [
                     "application/json"
                 ],
@@ -893,7 +893,7 @@
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "추이 신호 (noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity / latency_p99 / drop_rate / bandwidth_rx / bandwidth_tx / pressure_max)",
+                        "description": "추이 신호 (noisy_neighbor_intensity / noisy_neighbor_count / cross_node_intensity / service_impact_intensity / latency_p99 / drop_rate / bandwidth_rx / bandwidth_tx / pressure_max / retrans_rate / srtt_max)",
                         "name": "signal",
                         "in": "query",
                         "required": true
@@ -1227,6 +1227,13 @@
                 },
                 "generated_at": {
                     "type": "string"
+                },
+                "retrans": {
+                    "description": "Retrans 는 #226 의 workload 단위 TCP 재전송 랭킹이다. drop 과 함께 패킷 손실 계열 신호라 한\n응답으로 묶는다. 항상 수집되는 netobs_retrans_events_labeled_total 기반이다.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.RetransGroup"
+                    }
                 },
                 "stacks": {
                     "type": "array",
@@ -1708,6 +1715,14 @@
                         "$ref": "#/definitions/internal_correlation_api.StageLatency"
                     }
                 },
+                "tcp_state": {
+                    "description": "TcpState 는 #226 의 수신 pod TCP 상태 (srtt 와 cwnd) 다. netobs_tcp_state_* 가 pod 단위 라벨이라\nscope=pod 에서만 join 되고 workload / node scope 에서는 생략된다. srtt 는 경로 RTT 신호라 커널\n단계 처리 지연 (stages) 과 구분해 병목이 경로인지 처리인지 가른다.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/internal_correlation_api.TcpStateInfo"
+                        }
+                    ]
+                },
                 "workload": {
                     "type": "string"
                 }
@@ -1999,6 +2014,32 @@
                 }
             }
         },
+        "internal_correlation_api.RetransGroup": {
+            "type": "object",
+            "properties": {
+                "dst_namespace": {
+                    "type": "string"
+                },
+                "dst_workload": {
+                    "type": "string"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "retrans_per_sec": {
+                    "type": "number"
+                },
+                "traffic_scope": {
+                    "type": "string"
+                },
+                "workload": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_correlation_api.ServiceImpactListResponse": {
             "type": "object",
             "properties": {
@@ -2024,6 +2065,17 @@
                 },
                 "stage": {
                     "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.TcpStateInfo": {
+            "type": "object",
+            "properties": {
+                "max_srtt_seconds": {
+                    "type": "number"
+                },
+                "min_cwnd": {
+                    "type": "number"
                 }
             }
         },

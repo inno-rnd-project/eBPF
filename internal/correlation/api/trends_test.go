@@ -76,6 +76,8 @@ func TestTrends_ResourceSignals(t *testing.T) {
 		"bandwidth_rx": `direction="ingress",layer="l4"`,
 		"bandwidth_tx": `direction="egress",layer="l4"`,
 		"pressure_max": "node:pressure_score:5m",
+		"retrans_rate": "netobs_retrans_events_labeled_total",
+		"srtt_max":     "netobs_tcp_state_max_srtt_seconds",
 	}
 	for signal, want := range cases {
 		t.Run(signal, func(t *testing.T) {
