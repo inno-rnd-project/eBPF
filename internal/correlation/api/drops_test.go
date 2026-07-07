@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"netobs/internal/correlation"
 	"testing"
 )
 
@@ -17,7 +18,10 @@ func dropsFakeQuerier() *fakeQuerier {
 		on("netobs_drop_last_timestamp_seconds",
 			sample(1782700000, "node", "gpu", "protocol", "TCP", "src_ip", "10.0.0.1", "src_port", "5000", "dst_ip", "10.0.0.2", "dst_port", "443", "direction", "egress", "src_namespace", "ebpf-project", "src_pod", "p1")).
 		on("netobs_drop_stack_total",
-			sample(0.5, "drop_reason", "QUEUE_PURGE", "drop_category", "queue", "func", "__dev_queue_xmit"))
+			sample(0.5, "drop_reason", "QUEUE_PURGE", "drop_category", "queue", "func", "__dev_queue_xmit")).
+		on("cilium_drop_count_total",
+			sample(3.2, "node", "gpu", "direction", "EGRESS", "reason", "Policy denied"),
+			sample(0.4, "node", "w1", "direction", "INGRESS", "reason", "Invalid source ip"))
 }
 
 // TestDrops 는 labeled 기반 drop 랭킹과 opt-in flows(5-tuple + last_seen join), stacks 를 합성하는지 검증한다.
@@ -52,6 +56,25 @@ func TestDrops(t *testing.T) {
 	}
 	if !resp.FlowDetailEnabled {
 		t.Errorf("flow_detail_enabled=false want true (flows/stacks 존재)")
+	}
+	// #225 cilium 계층 drop 합성. rate 내림차순 정렬과 direction 소문자 정규화를 함께 가드한다.
+	if len(resp.CiliumDrops) != 2 || resp.CiliumDrops[0].Reason != "Policy denied" || resp.CiliumDrops[0].DropsPerSec != 3.2 {
+		t.Fatalf("cilium_drops=%+v want Policy denied 3.2 먼저", resp.CiliumDrops)
+	}
+	if resp.CiliumDrops[0].Direction != "egress" || resp.CiliumDrops[1].Direction != "ingress" {
+		t.Errorf("cilium direction=%+v want 소문자 정규화", resp.CiliumDrops)
+	}
+}
+
+// TestBuildCiliumDrops_TieBreak 는 rate 와 node, reason 이 동률일 때 direction 사전순으로 결정적
+// 순서가 보장되는지 검증한다. sort.Slice 는 불안정 정렬이라 tie-breaker 누락 시 순서가 흔들린다.
+func TestBuildCiliumDrops_TieBreak(t *testing.T) {
+	out := buildCiliumDrops([]correlation.InstantSample{
+		sample(1.0, "node", "n1", "direction", "INGRESS", "reason", "Policy denied"),
+		sample(1.0, "node", "n1", "direction", "EGRESS", "reason", "Policy denied"),
+	}, 10)
+	if len(out) != 2 || out[0].Direction != "egress" || out[1].Direction != "ingress" {
+		t.Errorf("cilium tie-break=%+v want egress 먼저 (direction 사전순)", out)
 	}
 }
 

@@ -197,7 +197,7 @@ const docTemplatecorrelation = `{
         },
         "/api/v1/drops": {
             "get": {
-                "description": "netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction 별 drop rate 랭킹을 돌려준다. NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 가 켜진 경우 5-tuple flow(pod·src/dst ip:port·마지막 발생 시점)와 커널 stack 함수 상세가 flows/stacks 에 채워지며, flow_detail_enabled 로 활성 여부를 알린다.",
+                "description": "netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction 별 drop rate 랭킹을 돌려준다. NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 가 켜진 경우 5-tuple flow(pod·src/dst ip:port·마지막 발생 시점)와 커널 stack 함수 상세가 flows/stacks 에 채워지며, flow_detail_enabled 로 활성 여부를 알린다. cilium_drops 는 CNI(BPF) 계층 drop(NetworkPolicy 거부 등, 커널 kfree_skb 경로의 사각)을 cilium_drop_count_total 로 합성한 node 수준 신호이며 pod 귀속이 없다.",
                 "produces": [
                     "application/json"
                 ],
@@ -1032,6 +1032,23 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "internal_correlation_api.CiliumDropGroup": {
+            "type": "object",
+            "properties": {
+                "direction": {
+                    "type": "string"
+                },
+                "drops_per_sec": {
+                    "type": "number"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_correlation_api.CrossLevelListResponse": {
             "type": "object",
             "properties": {
@@ -1193,6 +1210,13 @@ const docTemplatecorrelation = `{
         "internal_correlation_api.DropsResponse": {
             "type": "object",
             "properties": {
+                "cilium_drops": {
+                    "description": "CiliumDrops 는 #225 의 CNI(BPF) 계층 drop 이다. kfree_skb_reason 기반 drops 가 커널 스택 drop\n만 잡는 사각 (NetworkPolicy 거부 등) 을 cilium_drop_count_total 합성으로 보완한다. cilium-agent\n단위 메트릭이라 pod 귀속이 없는 node 수준 신호다.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.CiliumDropGroup"
+                    }
+                },
                 "drops": {
                     "type": "array",
                     "items": {
