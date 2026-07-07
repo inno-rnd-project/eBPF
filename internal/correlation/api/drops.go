@@ -29,9 +29,12 @@ type DropsResponse struct {
 	// CiliumDrops 는 #225 의 CNI(BPF) 계층 drop 이다. kfree_skb_reason 기반 drops 가 커널 스택 drop
 	// 만 잡는 사각 (NetworkPolicy 거부 등) 을 cilium_drop_count_total 합성으로 보완한다. cilium-agent
 	// 단위 메트릭이라 pod 귀속이 없는 node 수준 신호다.
-	CiliumDrops       []CiliumDropGroup `json:"cilium_drops"`
-	FlowDetailEnabled bool              `json:"flow_detail_enabled"`
-	Summary           string            `json:"summary"`
+	CiliumDrops []CiliumDropGroup `json:"cilium_drops"`
+	// Retrans 는 #226 의 workload 단위 TCP 재전송 랭킹이다. drop 과 함께 패킷 손실 계열 신호라 한
+	// 응답으로 묶는다. 항상 수집되는 netobs_retrans_events_labeled_total 기반이다.
+	Retrans           []RetransGroup `json:"retrans"`
+	FlowDetailEnabled bool           `json:"flow_detail_enabled"`
+	Summary           string         `json:"summary"`
 }
 
 // DropGroup 은 workload 단위 drop 집계다 (항상 수집). direction 별 reason / category 와 drops/sec 를 담는다.
@@ -83,9 +86,20 @@ type CiliumDropGroup struct {
 	DropsPerSec float64 `json:"drops_per_sec"`
 }
 
+// RetransGroup 은 workload 단위 TCP 재전송 집계다.
+type RetransGroup struct {
+	Node          string  `json:"node"`
+	Namespace     string  `json:"namespace,omitempty"`
+	Workload      string  `json:"workload,omitempty"`
+	DstNamespace  string  `json:"dst_namespace,omitempty"`
+	DstWorkload   string  `json:"dst_workload,omitempty"`
+	TrafficScope  string  `json:"traffic_scope,omitempty"`
+	RetransPerSec float64 `json:"retrans_per_sec"`
+}
+
 // GetDrops godoc
 // @Summary      패킷 drop 분석
-// @Description  netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction 별 drop rate 랭킹을 돌려준다. NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 가 켜진 경우 5-tuple flow(pod·src/dst ip:port·마지막 발생 시점)와 커널 stack 함수 상세가 flows/stacks 에 채워지며, flow_detail_enabled 로 활성 여부를 알린다. cilium_drops 는 CNI(BPF) 계층 drop(NetworkPolicy 거부 등, 커널 kfree_skb 경로의 사각)을 cilium_drop_count_total 로 합성한 node 수준 신호이며 pod 귀속이 없다.
+// @Description  netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction 별 drop rate 랭킹을 돌려준다. NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 가 켜진 경우 5-tuple flow(pod·src/dst ip:port·마지막 발생 시점)와 커널 stack 함수 상세가 flows/stacks 에 채워지며, flow_detail_enabled 로 활성 여부를 알린다. cilium_drops 는 CNI(BPF) 계층 drop(NetworkPolicy 거부 등, 커널 kfree_skb 경로의 사각)을 cilium_drop_count_total 로 합성한 node 수준 신호이며 pod 귀속이 없다. retrans 는 workload 단위 TCP 재전송 랭킹으로 drop 과 함께 패킷 손실 계열 신호를 한 응답으로 묶는다.
 // @Tags         network
 // @Produce      json
 // @Param        namespace  query  string  false  "src_namespace 필터 (생략 시 전체)"
@@ -112,6 +126,7 @@ func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
 		Flows:       []DropFlow{},
 		Stacks:      []DropStack{},
 		CiliumDrops: []CiliumDropGroup{},
+		Retrans:     []RetransGroup{},
 	}
 
 	if h.querier != nil {
@@ -133,10 +148,12 @@ func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
 			"netobs_drop_last_timestamp_seconds",
 			"sum by(drop_reason, drop_category, func) (rate(netobs_drop_stack_total[5m]))",
 			"sum by(node, reason, direction) (rate(cilium_drop_count_total[5m]))",
+			"sum by(node, src_namespace, src_workload, traffic_scope, dst_namespace, dst_workload) (rate(netobs_retrans_events_labeled_total[5m]))",
 		)
 		resp.Flows = buildDropFlows(res[0], res[1], nsFilter, limit)
 		resp.Stacks = buildDropStacks(res[2], limit)
 		resp.CiliumDrops = buildCiliumDrops(res[3], limit)
+		resp.Retrans = buildRetransGroups(res[4], nsFilter, limit)
 		resp.FlowDetailEnabled = len(resp.Flows) > 0 || len(resp.Stacks) > 0
 	}
 
@@ -267,6 +284,53 @@ func buildCiliumDrops(samples []correlation.InstantSample, limit int) []CiliumDr
 			return out[i].Direction < out[j].Direction
 		}
 		return out[i].Reason < out[j].Reason
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// buildRetransGroups 는 netobs_retrans_events_labeled_total 의 workload 단위 rate 를 내림차순 랭킹으로
+// 만든다. namespace 필터는 drops 랭킹과 동일하게 src_namespace 로 거른다.
+func buildRetransGroups(samples []correlation.InstantSample, nsFilter string, limit int) []RetransGroup {
+	out := []RetransGroup{}
+	for _, sm := range samples {
+		if math.IsNaN(sm.Value) || math.IsInf(sm.Value, 0) || sm.Value <= 0 {
+			continue
+		}
+		l := sm.Labels
+		if nsFilter != "" && l["src_namespace"] != nsFilter {
+			continue
+		}
+		out = append(out, RetransGroup{
+			Node: l["node"], Namespace: l["src_namespace"], Workload: l["src_workload"],
+			DstNamespace: l["dst_namespace"], DstWorkload: l["dst_workload"],
+			TrafficScope: l["traffic_scope"], RetransPerSec: sm.Value,
+		})
+	}
+	// 쿼리 group-by 키 (node, src_*, traffic_scope, dst_*) 전체를 tie-breaker 로 써야 동률에서
+	// 결정적 순서가 보장된다 (sort.Slice 는 불안정 정렬).
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].RetransPerSec != out[j].RetransPerSec {
+			return out[i].RetransPerSec > out[j].RetransPerSec
+		}
+		if out[i].Node != out[j].Node {
+			return out[i].Node < out[j].Node
+		}
+		if out[i].Namespace != out[j].Namespace {
+			return out[i].Namespace < out[j].Namespace
+		}
+		if out[i].Workload != out[j].Workload {
+			return out[i].Workload < out[j].Workload
+		}
+		if out[i].TrafficScope != out[j].TrafficScope {
+			return out[i].TrafficScope < out[j].TrafficScope
+		}
+		if out[i].DstNamespace != out[j].DstNamespace {
+			return out[i].DstNamespace < out[j].DstNamespace
+		}
+		return out[i].DstWorkload < out[j].DstWorkload
 	})
 	if len(out) > limit {
 		out = out[:limit]
