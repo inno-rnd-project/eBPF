@@ -34,6 +34,10 @@ const (
 	// (지연 ACK / quickack 로 standalone ACK 를 송신하는 지점) 가 그 차분을 대기 latency 로 emit 한다.
 	// rcv path 계열이라 ingress 로 분류되며 stage 라벨은 "ack_wait" 다.
 	StageAckWait = 13
+	// #227 client 측 TCP 연결 수립 지연. tcp_v4_connect / tcp_v6_connect 진입부터 tcp_finish_connect
+	// (SYN-ACK 수신 처리로 established 전환) 까지로, 네트워크 왕복과 커널 처리를 합친 서비스 지연의 첫
+	// 구간이다. client 발신 개시라 egress 로 분류한다.
+	StageConnect = 14
 )
 
 type Event struct {
@@ -152,6 +156,8 @@ func StageName(stage uint8) string {
 		return "rcv_app"
 	case StageAckWait:
 		return "ack_wait"
+	case StageConnect:
+		return "connect"
 	case StageTcpWriteXmit:
 		return "tcp_write_xmit"
 	case StageTcpTransmitSkb:
@@ -169,7 +175,7 @@ func StageName(stage uint8) string {
 func StageDirection(stage uint8) string {
 	switch stage {
 	case StageSendmsgRet, StageToVeth, StageToDevQ, StageRetrans, StageDrop,
-		StageTcpWriteXmit, StageTcpTransmitSkb:
+		StageTcpWriteXmit, StageTcpTransmitSkb, StageConnect:
 		return "egress"
 	case StageRcvNic, StageRcvL3, StageRcvDemux, StageRcvEstablished, StageRcvApp, StageAckWait:
 		return "ingress"

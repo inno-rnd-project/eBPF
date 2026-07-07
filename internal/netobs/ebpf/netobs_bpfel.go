@@ -12,6 +12,13 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type NetObsNetobsConnectStash struct {
+	Ts   uint64
+	Pid  uint32
+	Tid  uint32
+	Comm [16]int8
+}
+
 type NetObsNetobsFlowKey struct {
 	CgroupId  uint64
 	Saddr     [16]uint8
@@ -133,6 +140,7 @@ type NetObsProgramSpecs struct {
 	HandleKfreeSkbReason    *ebpf.ProgramSpec `ebpf:"handle_kfree_skb_reason"`
 	HandleNetifReceiveSkb   *ebpf.ProgramSpec `ebpf:"handle_netif_receive_skb"`
 	HandleTcpCleanupRbuf    *ebpf.ProgramSpec `ebpf:"handle_tcp_cleanup_rbuf"`
+	HandleTcpFinishConnect  *ebpf.ProgramSpec `ebpf:"handle_tcp_finish_connect"`
 	HandleTcpRcvEstablished *ebpf.ProgramSpec `ebpf:"handle_tcp_rcv_established"`
 	HandleTcpRecvmsg        *ebpf.ProgramSpec `ebpf:"handle_tcp_recvmsg"`
 	HandleTcpRetransmitSkb  *ebpf.ProgramSpec `ebpf:"handle_tcp_retransmit_skb"`
@@ -141,8 +149,10 @@ type NetObsProgramSpecs struct {
 	HandleTcpSendmsgRet     *ebpf.ProgramSpec `ebpf:"handle_tcp_sendmsg_ret"`
 	HandleTcpTransmitSkb    *ebpf.ProgramSpec `ebpf:"handle_tcp_transmit_skb"`
 	HandleTcpTransmitSkbRet *ebpf.ProgramSpec `ebpf:"handle_tcp_transmit_skb_ret"`
+	HandleTcpV4Connect      *ebpf.ProgramSpec `ebpf:"handle_tcp_v4_connect"`
 	HandleTcpV4DoRcv        *ebpf.ProgramSpec `ebpf:"handle_tcp_v4_do_rcv"`
 	HandleTcpV4Rcv          *ebpf.ProgramSpec `ebpf:"handle_tcp_v4_rcv"`
+	HandleTcpV6Connect      *ebpf.ProgramSpec `ebpf:"handle_tcp_v6_connect"`
 	HandleTcpV6DoRcv        *ebpf.ProgramSpec `ebpf:"handle_tcp_v6_do_rcv"`
 	HandleTcpV6Rcv          *ebpf.ProgramSpec `ebpf:"handle_tcp_v6_rcv"`
 	HandleTcpWriteXmit      *ebpf.ProgramSpec `ebpf:"handle_tcp_write_xmit"`
@@ -158,6 +168,7 @@ type NetObsProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type NetObsMapSpecs struct {
+	ConnectStarts *ebpf.MapSpec `ebpf:"connect_starts"`
 	DropStacks    *ebpf.MapSpec `ebpf:"drop_stacks"`
 	Events        *ebpf.MapSpec `ebpf:"events"`
 	EventsDropped *ebpf.MapSpec `ebpf:"events_dropped"`
@@ -196,6 +207,7 @@ func (o *NetObsObjects) Close() error {
 //
 // It can be passed to LoadNetObsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NetObsMaps struct {
+	ConnectStarts *ebpf.Map `ebpf:"connect_starts"`
 	DropStacks    *ebpf.Map `ebpf:"drop_stacks"`
 	Events        *ebpf.Map `ebpf:"events"`
 	EventsDropped *ebpf.Map `ebpf:"events_dropped"`
@@ -210,6 +222,7 @@ type NetObsMaps struct {
 
 func (m *NetObsMaps) Close() error {
 	return _NetObsClose(
+		m.ConnectStarts,
 		m.DropStacks,
 		m.Events,
 		m.EventsDropped,
@@ -237,6 +250,7 @@ type NetObsPrograms struct {
 	HandleKfreeSkbReason    *ebpf.Program `ebpf:"handle_kfree_skb_reason"`
 	HandleNetifReceiveSkb   *ebpf.Program `ebpf:"handle_netif_receive_skb"`
 	HandleTcpCleanupRbuf    *ebpf.Program `ebpf:"handle_tcp_cleanup_rbuf"`
+	HandleTcpFinishConnect  *ebpf.Program `ebpf:"handle_tcp_finish_connect"`
 	HandleTcpRcvEstablished *ebpf.Program `ebpf:"handle_tcp_rcv_established"`
 	HandleTcpRecvmsg        *ebpf.Program `ebpf:"handle_tcp_recvmsg"`
 	HandleTcpRetransmitSkb  *ebpf.Program `ebpf:"handle_tcp_retransmit_skb"`
@@ -245,8 +259,10 @@ type NetObsPrograms struct {
 	HandleTcpSendmsgRet     *ebpf.Program `ebpf:"handle_tcp_sendmsg_ret"`
 	HandleTcpTransmitSkb    *ebpf.Program `ebpf:"handle_tcp_transmit_skb"`
 	HandleTcpTransmitSkbRet *ebpf.Program `ebpf:"handle_tcp_transmit_skb_ret"`
+	HandleTcpV4Connect      *ebpf.Program `ebpf:"handle_tcp_v4_connect"`
 	HandleTcpV4DoRcv        *ebpf.Program `ebpf:"handle_tcp_v4_do_rcv"`
 	HandleTcpV4Rcv          *ebpf.Program `ebpf:"handle_tcp_v4_rcv"`
+	HandleTcpV6Connect      *ebpf.Program `ebpf:"handle_tcp_v6_connect"`
 	HandleTcpV6DoRcv        *ebpf.Program `ebpf:"handle_tcp_v6_do_rcv"`
 	HandleTcpV6Rcv          *ebpf.Program `ebpf:"handle_tcp_v6_rcv"`
 	HandleTcpWriteXmit      *ebpf.Program `ebpf:"handle_tcp_write_xmit"`
@@ -264,6 +280,7 @@ func (p *NetObsPrograms) Close() error {
 		p.HandleKfreeSkbReason,
 		p.HandleNetifReceiveSkb,
 		p.HandleTcpCleanupRbuf,
+		p.HandleTcpFinishConnect,
 		p.HandleTcpRcvEstablished,
 		p.HandleTcpRecvmsg,
 		p.HandleTcpRetransmitSkb,
@@ -272,8 +289,10 @@ func (p *NetObsPrograms) Close() error {
 		p.HandleTcpSendmsgRet,
 		p.HandleTcpTransmitSkb,
 		p.HandleTcpTransmitSkbRet,
+		p.HandleTcpV4Connect,
 		p.HandleTcpV4DoRcv,
 		p.HandleTcpV4Rcv,
+		p.HandleTcpV6Connect,
 		p.HandleTcpV6DoRcv,
 		p.HandleTcpV6Rcv,
 		p.HandleTcpWriteXmit,
