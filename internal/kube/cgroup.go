@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 // procCgroupPathFmt는 PID에 대응하는 cgroup membership 파일 경로 포맷이다.
@@ -55,4 +57,61 @@ func extractPodUID(lines []string) string {
 		return strings.ReplaceAll(m[1], "_", "-")
 	}
 	return ""
+}
+
+// PodCgroupInodes 는 #228 의 cgroup id 역매핑 입력이다. Pod UID 로 host cgroup2 계층의 Pod-level
+// 슬라이스 후보 경로 (systemd / cgroupfs 드라이버 × QoS class) 를 순회해, 실존하는 슬라이스 디렉터리와
+// 그 1단계 자식 (컨테이너 scope) 디렉터리들의 inode 를 돌려준다. cgroup2 에서 cgroup id 는 디렉터리
+// inode 번호와 같고, BPF 의 bpf_get_current_cgroup_id 는 컨테이너 scope 의 id 를 주므로 자식까지
+// 포함해야 매핑이 성립한다.
+func PodCgroupInodes(podUID, root string) []uint64 {
+	if podUID == "" {
+		return nil
+	}
+	us := strings.ReplaceAll(podUID, "-", "_")
+	candidates := []string{
+		// systemd 드라이버
+		filepath.Join(root, "kubepods.slice", "kubepods-burstable.slice", "kubepods-burstable-pod"+us+".slice"),
+		filepath.Join(root, "kubepods.slice", "kubepods-besteffort.slice", "kubepods-besteffort-pod"+us+".slice"),
+		filepath.Join(root, "kubepods.slice", "kubepods-pod"+us+".slice"),
+		// cgroupfs 드라이버
+		filepath.Join(root, "kubepods", "burstable", "pod"+podUID),
+		filepath.Join(root, "kubepods", "besteffort", "pod"+podUID),
+		filepath.Join(root, "kubepods", "pod"+podUID),
+	}
+	out := []uint64{}
+	for _, dir := range candidates {
+		ino, ok := dirInode(dir)
+		if !ok {
+			continue
+		}
+		out = append(out, ino)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			break
+		}
+		for _, ent := range entries {
+			if !ent.IsDir() {
+				continue
+			}
+			if ino, ok := dirInode(filepath.Join(dir, ent.Name())); ok {
+				out = append(out, ino)
+			}
+		}
+		break
+	}
+	return out
+}
+
+// dirInode 는 디렉터리의 inode 번호를 돌려준다. cgroup2 의 cgroup id 와 동일한 값이다.
+func dirInode(path string) (uint64, bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return st.Ino, true
 }

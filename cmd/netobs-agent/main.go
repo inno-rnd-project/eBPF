@@ -143,6 +143,26 @@ func main() {
 	// Kubernetes metadata informer.
 	go kr.Start(ctx)
 
+	// #228 cgroup id 역매핑 스캐너. TCP 트래픽 없이 UDP 만 쓰는 pod 는 ringbuf 힌트가 학습되지 않아
+	// cgroup 귀속이 실패하므로, informer 의 노드 pod 목록과 host cgroup2 inode 스캔으로 폴백 테이블을
+	// 주기 재구성한다. host cgroup 마운트 부재 (로컬 실행 등) 시에는 테이블이 비어 기존 동작과 같다.
+	if kr.Enabled() {
+		scanner := metadata.NewCgroupScanner(kr, cfg.NodeName, metadata.DefaultCgroupRoot)
+		enricher.SetCgroupScanner(scanner)
+		go func() {
+			// informer 첫 동기화를 기다린 뒤 스캔해야 기동 직후 빈 pod 목록으로 빈 테이블을 만들지
+			// 않는다. Run 은 첫 스캔 직후 테이블 크기를 로그로 남긴다.
+			for !kr.HasSynced() {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(500 * time.Millisecond):
+				}
+			}
+			scanner.Run(ctx, cfg.MetadataRefresh)
+		}()
+	}
+
 	// informer sync lag emitter. 30s 주기로 lastWatchEvent 와 현재 시각의 차이를 self-health
 	// gauge 로 노출한다. kube client 가 비활성 (in-cluster 와 KUBECONFIG 모두 부재) 인 local 환경
 	// 에서는 lastWatchEvent 가 영원히 zero 라 fallback 이 단조 증가해 ObsAgentInformerStale 가
