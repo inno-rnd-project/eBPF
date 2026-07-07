@@ -21,13 +21,17 @@ import (
 
 // DropsResponse 는 GET /api/v1/drops 의 typed 응답이다.
 type DropsResponse struct {
-	GeneratedAt       string      `json:"generated_at"`
-	Window            string      `json:"window"`
-	Drops             []DropGroup `json:"drops"`
-	Flows             []DropFlow  `json:"flows"`
-	Stacks            []DropStack `json:"stacks"`
-	FlowDetailEnabled bool        `json:"flow_detail_enabled"`
-	Summary           string      `json:"summary"`
+	GeneratedAt string      `json:"generated_at"`
+	Window      string      `json:"window"`
+	Drops       []DropGroup `json:"drops"`
+	Flows       []DropFlow  `json:"flows"`
+	Stacks      []DropStack `json:"stacks"`
+	// CiliumDrops 는 #225 의 CNI(BPF) 계층 drop 이다. kfree_skb_reason 기반 drops 가 커널 스택 drop
+	// 만 잡는 사각 (NetworkPolicy 거부 등) 을 cilium_drop_count_total 합성으로 보완한다. cilium-agent
+	// 단위 메트릭이라 pod 귀속이 없는 node 수준 신호다.
+	CiliumDrops       []CiliumDropGroup `json:"cilium_drops"`
+	FlowDetailEnabled bool              `json:"flow_detail_enabled"`
+	Summary           string            `json:"summary"`
 }
 
 // DropGroup 은 workload 단위 drop 집계다 (항상 수집). direction 별 reason / category 와 drops/sec 를 담는다.
@@ -70,9 +74,18 @@ type DropStack struct {
 	DropsPerSec float64 `json:"drops_per_sec"`
 }
 
+// CiliumDropGroup 은 CNI(BPF) 계층 drop 의 node 단위 집계다. cilium-agent 가 emit 하는 시계열이라
+// pod 귀속이 없으며, reason 은 Cilium 의 사람 읽는 사유 문자열 (Policy denied 등) 그대로다.
+type CiliumDropGroup struct {
+	Node        string  `json:"node"`
+	Direction   string  `json:"direction,omitempty"`
+	Reason      string  `json:"reason,omitempty"`
+	DropsPerSec float64 `json:"drops_per_sec"`
+}
+
 // GetDrops godoc
 // @Summary      패킷 drop 분석
-// @Description  netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction 별 drop rate 랭킹을 돌려준다. NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 가 켜진 경우 5-tuple flow(pod·src/dst ip:port·마지막 발생 시점)와 커널 stack 함수 상세가 flows/stacks 에 채워지며, flow_detail_enabled 로 활성 여부를 알린다.
+// @Description  netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction 별 drop rate 랭킹을 돌려준다. NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 가 켜진 경우 5-tuple flow(pod·src/dst ip:port·마지막 발생 시점)와 커널 stack 함수 상세가 flows/stacks 에 채워지며, flow_detail_enabled 로 활성 여부를 알린다. cilium_drops 는 CNI(BPF) 계층 drop(NetworkPolicy 거부 등, 커널 kfree_skb 경로의 사각)을 cilium_drop_count_total 로 합성한 node 수준 신호이며 pod 귀속이 없다.
 // @Tags         network
 // @Produce      json
 // @Param        namespace  query  string  false  "src_namespace 필터 (생략 시 전체)"
@@ -98,6 +111,7 @@ func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
 		Drops:       []DropGroup{},
 		Flows:       []DropFlow{},
 		Stacks:      []DropStack{},
+		CiliumDrops: []CiliumDropGroup{},
 	}
 
 	if h.querier != nil {
@@ -112,14 +126,17 @@ func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.Drops = buildDropGroups(labeled, nsFilter, limit)
 
-		// opt-in 상세: allow-list 미설정 시 빈 결과. best-effort 라 실패해도 무시한다.
+		// opt-in 상세와 CNI 계층 drop: best-effort 라 실패해도 무시한다. cilium 은 미설치 클러스터에서
+		// 시계열 부재로 자연히 빈 결과가 된다.
 		res := h.queryParallel(ctx,
 			"sum by(node, src_namespace, src_pod, direction, drop_reason, drop_category, protocol, src_ip, src_port, dst_ip, dst_port, ip_version) (rate(netobs_drop_events_flow_total[5m]))",
 			"netobs_drop_last_timestamp_seconds",
 			"sum by(drop_reason, drop_category, func) (rate(netobs_drop_stack_total[5m]))",
+			"sum by(node, reason, direction) (rate(cilium_drop_count_total[5m]))",
 		)
 		resp.Flows = buildDropFlows(res[0], res[1], nsFilter, limit)
 		resp.Stacks = buildDropStacks(res[2], limit)
+		resp.CiliumDrops = buildCiliumDrops(res[3], limit)
 		resp.FlowDetailEnabled = len(resp.Flows) > 0 || len(resp.Stacks) > 0
 	}
 
@@ -217,6 +234,37 @@ func buildDropStacks(samples []correlation.InstantSample, limit int) []DropStack
 		out = append(out, DropStack{Reason: l["drop_reason"], Category: l["drop_category"], Func: l["func"], DropsPerSec: sm.Value})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].DropsPerSec > out[j].DropsPerSec })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// buildCiliumDrops 는 cilium_drop_count_total 의 (node, direction, reason) rate 를 내림차순 랭킹으로
+// 만든다. direction 은 Cilium 이 대문자 (EGRESS / INGRESS) 로 emit 하므로 기존 필드 관례에 맞춰
+// 소문자로 정규화한다.
+func buildCiliumDrops(samples []correlation.InstantSample, limit int) []CiliumDropGroup {
+	out := []CiliumDropGroup{}
+	for _, sm := range samples {
+		if math.IsNaN(sm.Value) || sm.Value <= 0 {
+			continue
+		}
+		out = append(out, CiliumDropGroup{
+			Node:        sm.Labels["node"],
+			Direction:   strings.ToLower(sm.Labels["direction"]),
+			Reason:      sm.Labels["reason"],
+			DropsPerSec: sm.Value,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].DropsPerSec != out[j].DropsPerSec {
+			return out[i].DropsPerSec > out[j].DropsPerSec
+		}
+		if out[i].Node != out[j].Node {
+			return out[i].Node < out[j].Node
+		}
+		return out[i].Reason < out[j].Reason
+	})
 	if len(out) > limit {
 		out = out[:limit]
 	}
