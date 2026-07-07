@@ -50,8 +50,9 @@ func (h *RCAProxyHandler) Register(mux *http.ServeMux) {
 // @Failure      502  {object}  apicommon.ErrorBody
 // @Router       /api/v1/rca [get]
 func (h *RCAProxyHandler) GetRCA(w http.ResponseWriter, r *http.Request) {
-	u := *h.base
-	u.Path = "/rca"
+	// ResolveReference 로 경로를 구성해 base 에 인코딩된 경로가 있어도 RawPath 잔존 없이 안전하게
+	// /rca 로 해석되게 한다.
+	u := h.base.ResolveReference(&url.URL{Path: "/rca"})
 	// alert 파라미터만 통과시켜 임의 파라미터 주입을 차단한다.
 	v := url.Values{}
 	if alert := strings.TrimSpace(r.URL.Query().Get("alert")); alert != "" {
@@ -71,7 +72,13 @@ func (h *RCAProxyHandler) GetRCA(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	w.Header().Set("Content-Type", "application/json")
+	// 상류의 Content-Type 을 그대로 전달해 비JSON 에러 본문이 JSON 으로 오표기되지 않게 하고,
+	// 헤더 부재 시에만 기본 JSON 으로 둔다.
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, io.LimitReader(resp.Body, 1<<20))
 }

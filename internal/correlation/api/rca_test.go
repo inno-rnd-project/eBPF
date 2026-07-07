@@ -39,6 +39,26 @@ func TestRCAProxy(t *testing.T) {
 	}
 }
 
+// TestRCAProxy_ContentTypeForward 는 상류의 비JSON Content-Type 이 그대로 전달되는지 검증한다.
+func TestRCAProxy_ContentTypeForward(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("upstream maintenance"))
+	}))
+	defer up.Close()
+
+	h := NewRCAProxyHandler(up.URL, 2*time.Second)
+	rec := httptest.NewRecorder()
+	h.GetRCA(rec, httptest.NewRequest(http.MethodGet, "/api/v1/rca", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d want 503", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("content-type=%q want 상류 값 전달", ct)
+	}
+}
+
 // TestRCAProxy_UpstreamDown 은 상류 불가 시 502 를 돌려주는지 검증한다.
 func TestRCAProxy_UpstreamDown(t *testing.T) {
 	h := NewRCAProxyHandler("http://127.0.0.1:1", 200*time.Millisecond)
