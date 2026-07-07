@@ -151,7 +151,7 @@ func main() {
 		enricher.SetCgroupScanner(scanner)
 		go func() {
 			// informer 첫 동기화를 기다린 뒤 스캔해야 기동 직후 빈 pod 목록으로 빈 테이블을 만들지
-			// 않는다.
+			// 않는다. Run 은 첫 스캔 직후 테이블 크기를 로그로 남긴다.
 			for !kr.HasSynced() {
 				select {
 				case <-ctx.Done():
@@ -159,9 +159,7 @@ func main() {
 				case <-time.After(500 * time.Millisecond):
 				}
 			}
-			go scanner.Run(ctx, cfg.MetadataRefresh)
-			time.Sleep(2 * time.Second)
-			scanner.LogSize()
+			scanner.Run(ctx, cfg.MetadataRefresh)
 		}()
 	}
 

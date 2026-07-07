@@ -33,9 +33,11 @@ func NewCgroupScanner(kr *kube.Resolver, node, root string) *CgroupScanner {
 	return &CgroupScanner{kr: kr, node: node, root: root}
 }
 
-// Run 은 주기 스캔 루프다. 첫 스캔을 즉시 수행해 agent 기동 직후의 미해상 창을 줄인다.
+// Run 은 주기 스캔 루프다. 첫 스캔을 즉시 수행해 agent 기동 직후의 미해상 창을 줄이고, 첫 스캔
+// 완료 직후 테이블 크기를 로그로 남겨 mount / 드라이버 문제를 조기 노출한다.
 func (c *CgroupScanner) Run(ctx context.Context, interval time.Duration) {
 	c.scan()
+	c.LogSize()
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -72,7 +74,7 @@ func (c *CgroupScanner) Lookup(cgroupID uint64) (kube.PodIdentity, bool) {
 	return id, ok
 }
 
-// LogSize 는 기동 직후 첫 스캔 결과 크기를 로그로 남겨 mount / 드라이버 문제를 조기 노출한다.
+// LogSize 는 현재 테이블 크기를 로그로 남긴다. Run 이 첫 스캔 완료 직후 호출한다.
 func (c *CgroupScanner) LogSize() {
 	t := c.table.Load()
 	n := 0

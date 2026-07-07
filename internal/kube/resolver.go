@@ -763,7 +763,8 @@ func classifyFallbackIP(ip string) PodIdentity {
 func (r *Resolver) PodsOnNode(node string) []PodIdentity {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]PodIdentity, 0, len(r.podByUID))
+	// 노드당 pod 는 수십 개 수준이라 클러스터 전체 크기로 capacity 를 잡지 않는다.
+	out := []PodIdentity{}
 	for _, id := range r.podByUID {
 		if id.NodeName == node {
 			out = append(out, id)
