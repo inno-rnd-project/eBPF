@@ -9,7 +9,7 @@
 | `meta` | API 상태와 클러스터 헬스 요약 | `/api/v1/health` |
 | `inventory` | 노드와 파드 인벤토리 | `/api/v1/nodes`, `/api/v1/pods` |
 | `network` | 지연 단계 분해, 패킷 drop, pod 간 flow | `/api/v1/latency-breakdown`, `/api/v1/drops`, `/api/v1/flows` |
-| `interference` | 자원 압박 랭킹과 노드 상세, 이벤트, 메모리, 간섭 토폴로지 | `/api/v1/pressure`, `/api/v1/node/{node}`, `/api/v1/events`, `/api/v1/memory`, `/api/v1/topology` |
+| `interference` | 자원 압박 랭킹과 노드 상세, 이벤트와 발화 이력, 메모리, 간섭 토폴로지 | `/api/v1/pressure`, `/api/v1/node/{node}`, `/api/v1/events`, `/api/v1/incidents`, `/api/v1/memory`, `/api/v1/topology` |
 | `impact` | 간섭 상관 top-N 과 영향 전파 그래프 | `/api/v1/noisy-neighbor`, `/api/v1/cross-node-interference`, `/api/v1/service-impact`, `/api/v1/cross-level`, `/api/v1/impact-graph`, `/api/v1/impact-paths` |
 | `gpu` | GPU 유휴 원인 분석 | `/api/v1/gpu-idle` |
 | `trends` | 진단 신호 시계열 추이 | `/api/v1/trends` |
@@ -31,6 +31,7 @@
 | Pod 별 RX/TX 대역폭 | `bandwidth` (network). `netobs_pod_bytes_total` 기반, allow-list 무관 전 pod 커버 | 커버 |
 | 자원 사용량·지연 시계열 추이 | `trends` (trends). 간섭 4종 + 자원·지연 7종 시그널 | 커버 |
 | GPU–네트워크 통합 분석 | `gpu-idle` + `pressure` + `bandwidth` 조합 | 프론트 합성 |
+| 이벤트 발화 이력 (시간축) | `incidents` (interference). `ALERTS` range 합성으로 기간 내 발화 에피소드 (firing/resolved, 시작·종료 시각). `starts_at`을 `at` 파라미터에 결합해 사건 시점 재구성 진입점 | 커버 |
 | 이벤트의 종합 원인 서사 (RCA) | `rca` (rca). Alertmanager webhook 으로 생성된 alert 별 RCASummary 를 프록시. 지배 차원과 최우선 의심 pod, 근거 메트릭, 신뢰도 | 커버 |
 | 통합 대시보드·알림 표시 | 프론트엔드 영역 | 범위 외 |
 | 부하테스트 자동화 | `workload-injector` (dev 전용 LoadScenario CRD) 가 담당 | 범위 외 |

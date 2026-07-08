@@ -292,6 +292,8 @@ func main() {
 	// #195 진단 신호 추이 API. collector 가 이미 emit 하는 correlation_* 시계열을 range query 로 읽어
 	// /api/v1/trends 로 이력을 노출한다. 적재는 collector 가 수행하므로 본 핸들러는 range fetch 만 한다.
 	api.NewTrendsHandler(fetcher).Register(mux)
+	// #236 alert 발화 이력. ALERTS 시계열 range 합성이라 trends 와 동일하게 fetcher 를 쓴다.
+	api.NewIncidentsHandler(fetcher).Register(mux)
 	// #234 RCA 요약 프록시. rca-summarizer 의 /rca 를 단일 진입점에서 노출한다. URL 파싱 실패 시
 	// nil 이라 라우트 자체가 등록되지 않는다.
 	if rp := api.NewRCAProxyHandler(rcaURL, cfg.FetchTimeout); rp != nil {
