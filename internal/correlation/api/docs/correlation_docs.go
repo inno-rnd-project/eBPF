@@ -525,6 +525,58 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "/api/v1/incidents": {
+            "get": {
+                "description": "Prometheus 의 ALERTS 시계열을 range 합성해 기간 내 alert 발화 이력을 돌려준다. 동일 alert 의 재발화는 샘플 간극으로 별개 에피소드로 분리되고, range 끝까지 발화 중이면 status=firing, 중간에 끊겼으면 status=resolved 와 종료 시각이 채워진다. starts_at 은 synthesis API 의 at 파라미터에 그대로 넣어 발화 시점 상태를 재구성하는 진입점이다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "interference"
+                ],
+                "summary": "alert 발화 이력",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "조회 기간 (예: 1h, 6h, 최대 24h, 기본 1h)",
+                        "name": "range",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "샘플 간격 (예: 1m, 최소 30s, 기본 1m)",
+                        "name": "step",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "상위 N 에피소드 (1-200, 기본 50)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.IncidentsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/latency-breakdown": {
             "get": {
                 "description": "송신/수신 커널 단계별 p99 latency 와 비중, 지배 단계를 scope(workload/node/pod)별로 분해한다. histogram_quantile 로 stage 라벨을 보존해 산출하며, pod scope 는 send-path 단계만 수집된다. direction(egress/ingress)으로 송신/수신을 좁힐 수 있다.",
@@ -1757,6 +1809,61 @@ const docTemplatecorrelation = `{
                 },
                 "root_count": {
                     "type": "integer"
+                }
+            }
+        },
+        "internal_correlation_api.Incident": {
+            "type": "object",
+            "properties": {
+                "alertname": {
+                    "type": "string"
+                },
+                "component": {
+                    "type": "string"
+                },
+                "ends_at": {
+                    "type": "string"
+                },
+                "labels": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "severity": {
+                    "type": "string"
+                },
+                "starts_at": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "truncated": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "internal_correlation_api.IncidentsResponse": {
+            "type": "object",
+            "properties": {
+                "generated_at": {
+                    "type": "string"
+                },
+                "incidents": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.Incident"
+                    }
+                },
+                "range": {
+                    "type": "string"
+                },
+                "step": {
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
                 }
             }
         },
