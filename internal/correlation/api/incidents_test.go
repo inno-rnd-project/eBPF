@@ -109,6 +109,35 @@ func TestIncidents_Truncated(t *testing.T) {
 	}
 }
 
+// TestIncidents_StableTieOrder 는 동일 시각 동일 alertname 의 다건 발화 (라벨만 상이) 가 입력
+// 시리즈 순서를 보존하는지 검증한다. 불안정 정렬이면 호출마다 순서가 흔들릴 수 있다.
+func TestIncidents_StableTieOrder(t *testing.T) {
+	now := time.Now()
+	ts := now.Add(-10 * time.Minute).UnixMilli()
+	mk := func(node string) correlation.LabeledSeries {
+		return correlation.LabeledSeries{Series: correlation.TimeSeries{
+			Labels:  map[string]string{"alertname": "SameAlert", "node": node},
+			Samples: []correlation.Sample{{TimestampMs: ts, Value: 1}},
+		}}
+	}
+	f := &fakeFetcher{series: []correlation.LabeledSeries{mk("a"), mk("b"), mk("c")}}
+	h := NewIncidentsHandler(f)
+	rec := httptest.NewRecorder()
+	h.GetIncidents(rec, httptest.NewRequest(http.MethodGet, "/api/v1/incidents?step=5m", nil))
+	var resp IncidentsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Incidents) != 3 {
+		t.Fatalf("incidents=%d want 3", len(resp.Incidents))
+	}
+	for i, want := range []string{"a", "b", "c"} {
+		if resp.Incidents[i].Labels["node"] != want {
+			t.Errorf("incidents[%d].node=%q want %q (입력 순서 보존)", i, resp.Incidents[i].Labels["node"], want)
+		}
+	}
+}
+
 // TestIncidents_InvalidRange 는 파싱 불가 range 가 400 인지 검증한다.
 func TestIncidents_InvalidRange(t *testing.T) {
 	h := NewIncidentsHandler(&fakeFetcher{})

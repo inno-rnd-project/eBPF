@@ -170,8 +170,10 @@ func buildIncidents(series []correlation.LabeledSeries, start, end time.Time, st
 		}
 		flush(prev)
 	}
-	// 최근 발화 우선, 동률은 alertname 사전순으로 결정적 정렬.
-	sort.Slice(out, func(i, j int) bool {
+	// 최근 발화 우선, 동률은 alertname 사전순. 동일 alert 가 같은 시각에 라벨만 다르게 다건 발화하는
+	// 실측 케이스가 있어, 안정 정렬로 Prometheus 의 라벨 기준 시리즈 순서를 보존해 응답 결정성을
+	// 확보한다.
+	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].StartsAt != out[j].StartsAt {
 			return out[i].StartsAt > out[j].StartsAt
 		}
