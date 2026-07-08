@@ -3,6 +3,7 @@ package correlation
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 )
@@ -273,6 +274,11 @@ func TestFilterWeakSuspects(t *testing.T) {
 	}
 	if got := filterWeakSuspects([]LabeledSeries{weak, strong, victim}, 0); len(got) != 3 {
 		t.Errorf("floor=0 인데 filtered=%d want 3 (게이트 비활성)", len(got))
+	}
+	// NaN floor 는 env/flag 의 "NaN" 이 ParseFloat 를 무오류 통과해 도달할 수 있다. 모든 비교가
+	// false 라 suspect 전체가 유실되는 대신 비활성으로 취급되어야 한다.
+	if got := filterWeakSuspects([]LabeledSeries{weak, strong, victim}, math.NaN()); len(got) != 3 {
+		t.Errorf("floor=NaN 인데 filtered=%d want 3 (게이트 비활성)", len(got))
 	}
 }
 

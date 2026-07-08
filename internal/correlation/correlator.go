@@ -243,9 +243,11 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 // 시계열의 window 내 최대 절대값이 floor 미만이면 입력에서 제거한다. 상수 시리즈는 SkippedConstant
 // 로 이미 걸러지지만 근제로 변동은 통과하고, 피어슨 상관은 크기와 무관하게 파형 유사성만으로 1.0
 // 에 접근하므로 절대 크기를 여기서 강제한다. victim 시계열은 latency 초나 bytes rate 같은 native
-// 단위라 게이트 대상이 아니다. floor <= 0 이면 비활성이다.
+// 단위라 게이트 대상이 아니다. floor <= 0 이면 비활성이다. floor 는 env/flag 로 들어오는 운영자
+// 입력이고 strconv.ParseFloat 가 "NaN" 을 무오류로 통과시키는데, NaN 은 모든 비교가 false 라
+// suspect 전체가 조용히 유실되므로 비활성으로 취급한다.
 func filterWeakSuspects(items []LabeledSeries, floor float64) []LabeledSeries {
-	if floor <= 0 {
+	if math.IsNaN(floor) || floor <= 0 {
 		return items
 	}
 	out := make([]LabeledSeries, 0, len(items))
