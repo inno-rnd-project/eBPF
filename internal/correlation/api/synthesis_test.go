@@ -235,6 +235,38 @@ func TestSynthesis_GetEvents(t *testing.T) {
 	if !foundNN {
 		t.Errorf("noisy_neighbor 사건 없음: %+v", resp.Events)
 	}
+	// #237 원인 축 링크 확장. network dimension 의 noisy-neighbor 는 drops 와 latency_breakdown 링크,
+	// cpu anomaly 는 detail (pressure) 만. 모든 링크에 관찰 시점 at 이 포함되어 #235 와 결합된다.
+	for _, e := range resp.Events {
+		if e.Links["detail"] == "" || !strings.Contains(e.Links["detail"], "at="+resp.GeneratedAt) {
+			t.Errorf("kind=%s detail=%q want at=%s 포함", e.Kind, e.Links["detail"], resp.GeneratedAt)
+		}
+		switch e.Kind {
+		case "noisy_neighbor": // dimension=network
+			if !strings.Contains(e.Links["drops"], "/api/v1/drops?at=") || !strings.Contains(e.Links["latency_breakdown"], "/api/v1/latency-breakdown?at=") {
+				t.Errorf("network links=%v want drops/latency_breakdown", e.Links)
+			}
+		case "anomaly": // dimension=cpu
+			if len(e.Links) != 1 {
+				t.Errorf("cpu links=%v want detail 만", e.Links)
+			}
+		}
+	}
+}
+
+// TestCauseLinks_Dimensions 는 gpu 와 memory dimension 의 원인 축 링크 셋을 검증한다.
+func TestCauseLinks_Dimensions(t *testing.T) {
+	gpu := causeLinks("gpu", "2026-07-08T00:00:00Z", "/api/v1/pressure?dimension=gpu&scope=pod")
+	if gpu["gpu_idle"] != "/api/v1/gpu-idle?at=2026-07-08T00:00:00Z" || gpu["gpu_status"] != "/api/v1/gpu-status?at=2026-07-08T00:00:00Z" {
+		t.Errorf("gpu links=%v", gpu)
+	}
+	if gpu["detail"] != "/api/v1/pressure?dimension=gpu&scope=pod&at=2026-07-08T00:00:00Z" {
+		t.Errorf("gpu detail=%q want 기존 쿼리에 & 로 결합", gpu["detail"])
+	}
+	mem := causeLinks("memory", "2026-07-08T00:00:00Z", "/api/v1/pressure?dimension=memory&scope=pod")
+	if mem["memory"] != "/api/v1/memory?at=2026-07-08T00:00:00Z" {
+		t.Errorf("memory links=%v", mem)
+	}
 }
 
 // TestSynthesis_GetHealth_NaN 은 health·node pressure 가 NaN 으로 와도 (division-by-zero recording
