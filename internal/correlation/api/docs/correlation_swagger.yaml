@@ -1153,6 +1153,10 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: 평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)
+        in: query
+        name: at
+        type: string
       produces:
       - application/json
       responses:
@@ -1278,6 +1282,10 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: 평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)
+        in: query
+        name: at
+        type: string
       produces:
       - application/json
       responses:
@@ -1366,6 +1374,10 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: 평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)
+        in: query
+        name: at
+        type: string
       produces:
       - application/json
       responses:
@@ -1385,6 +1397,11 @@ paths:
       description: node 와 GPU device 단위 사용률, 메모리 사용량과 총량, 전력 사용량과 제한, 온도, 활성 throttle
         reason, device 별 점유 pod 목록을 한 응답으로 합성한다. gpuobs_device_* 와 gpuobs_pod_* instant
         query 만 사용하며 사용률 외 신호는 수집 공백 시 필드가 생략된다.
+      parameters:
+      - description: 평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)
+        in: query
+        name: at
+        type: string
       produces:
       - application/json
       responses:
@@ -1494,6 +1511,10 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: 평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)
+        in: query
+        name: at
+        type: string
       produces:
       - application/json
       responses:
@@ -1523,6 +1544,10 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: 평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)
+        in: query
+        name: at
+        type: string
       produces:
       - application/json
       responses:
@@ -1668,6 +1693,10 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: 평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)
+        in: query
+        name: at
+        type: string
       produces:
       - application/json
       responses:

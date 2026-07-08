@@ -79,3 +79,34 @@ func TestPrometheusInstantQuerier_PrometheusError(t *testing.T) {
 		t.Errorf("err=nil want non-nil (400 / error status)")
 	}
 }
+
+// TestPrometheusInstantQuerier_QueryTime 는 #235 의 시점 지정 조회가 Prometheus instant query 의
+// time 파라미터로 전달되고, 미지정 시 파라미터가 붙지 않는지 검증한다.
+func TestPrometheusInstantQuerier_QueryTime(t *testing.T) {
+	var gotTime string
+	var hasTime bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTime = r.URL.Query().Get("time")
+		_, hasTime = r.URL.Query()["time"]
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[]}}`))
+	}))
+	defer srv.Close()
+
+	q, err := NewPrometheusInstantQuerier(srv.URL, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Unix(1783400000, 0)
+	if _, err := q.Query(WithQueryTime(context.Background(), at), "up"); err != nil {
+		t.Fatal(err)
+	}
+	if gotTime != "1783400000" {
+		t.Errorf("time=%q want 1783400000", gotTime)
+	}
+	if _, err := q.Query(context.Background(), "up"); err != nil {
+		t.Fatal(err)
+	}
+	if hasTime {
+		t.Errorf("미지정인데 time 파라미터가 전송됨")
+	}
+}

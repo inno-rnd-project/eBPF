@@ -104,6 +104,7 @@ type RetransGroup struct {
 // @Produce      json
 // @Param        namespace  query  string  false  "src_namespace 필터 (생략 시 전체)"
 // @Param        limit      query  int     false  "상위 N (1-100, 기본 20)"
+// @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  DropsResponse
 // @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/drops [get]
@@ -119,8 +120,13 @@ func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
 		limit = 100
 	}
 
+	evalCtx, evalAt, ok := applyAtParam(w, r, r.Context())
+	if !ok {
+		return
+	}
+
 	resp := DropsResponse{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt: evalAt.Format(time.RFC3339),
 		Window:      "5m",
 		Drops:       []DropGroup{},
 		Flows:       []DropFlow{},
@@ -130,7 +136,7 @@ func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.querier != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
 		defer cancel()
 
 		// 주 소스 (항상 수집): 실패하면 돌려줄 핵심 데이터가 없으므로 500.

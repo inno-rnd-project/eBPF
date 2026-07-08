@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"netobs/internal/correlation"
 )
@@ -23,6 +24,7 @@ type fakeQuerier struct {
 	mu        sync.Mutex
 	lastQuery string
 	queries   []string
+	lastAt    time.Time
 }
 
 // sawQuery 는 실행된 쿼리 중 sub 를 포함하는 것이 있는지 돌려준다. queryParallel 이 Query 를 동시
@@ -46,10 +48,14 @@ func (f *fakeQuerier) on(contains string, samples ...correlation.InstantSample) 
 	return f
 }
 
-func (f *fakeQuerier) Query(_ context.Context, query string) ([]correlation.InstantSample, error) {
+func (f *fakeQuerier) Query(ctx context.Context, query string) ([]correlation.InstantSample, error) {
 	f.mu.Lock()
 	f.lastQuery = query
 	f.queries = append(f.queries, query)
+	// #235 시점 지정 조회 검증용. ctx 에 실린 평가 시점을 기록한다.
+	if t, ok := correlation.QueryTimeFrom(ctx); ok {
+		f.lastAt = t
+	}
 	f.mu.Unlock()
 	for _, r := range f.rules {
 		if strings.Contains(query, r.contains) {

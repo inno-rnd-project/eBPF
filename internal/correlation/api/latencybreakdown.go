@@ -75,6 +75,7 @@ var latencyScopes = map[string]latencyScope{
 // @Param        scope      query  string  false  "workload / node / pod (기본 workload)"
 // @Param        direction  query  string  false  "egress 또는 ingress (생략 시 전체)"
 // @Param        limit      query  int     false  "상위 N 대상 (1-100, 기본 10)"
+// @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  LatencyBreakdownResponse
 // @Failure      400  {object}  apicommon.ErrorBody
 // @Router       /api/v1/latency-breakdown [get]
@@ -105,8 +106,13 @@ func (h *SynthesisHandler) GetLatencyBreakdown(w http.ResponseWriter, r *http.Re
 		limit = 100
 	}
 
+	evalCtx, evalAt, ok := applyAtParam(w, r, r.Context())
+	if !ok {
+		return
+	}
+
 	resp := LatencyBreakdownResponse{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt: evalAt.Format(time.RFC3339),
 		Window:      "5m",
 		Scope:       scope,
 		Direction:   direction,
@@ -114,7 +120,7 @@ func (h *SynthesisHandler) GetLatencyBreakdown(w http.ResponseWriter, r *http.Re
 	}
 
 	if h.querier != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
 		defer cancel()
 		selector := ""
 		if direction != "" {

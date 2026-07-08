@@ -48,6 +48,7 @@ type PodMemory struct {
 // @Produce      json
 // @Param        namespace  query  string  false  "namespace 필터 (생략 시 전체)"
 // @Param        limit      query  int     false  "상위 N pod (1-200, 기본 30)"
+// @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  MemoryResponse
 // @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/memory [get]
@@ -63,14 +64,19 @@ func (h *SynthesisHandler) GetMemory(w http.ResponseWriter, r *http.Request) {
 		limit = 200
 	}
 
+	evalCtx, evalAt, ok := applyAtParam(w, r, r.Context())
+	if !ok {
+		return
+	}
+
 	resp := MemoryResponse{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt: evalAt.Format(time.RFC3339),
 		Window:      "5m",
 		Pods:        []PodMemory{},
 	}
 
 	if h.querier != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
 		defer cancel()
 		// namespace 는 fmt %q 로 이스케이프해 PromQL label matcher 로 밀어 Prometheus 측에서 필터한다.
 		nsSel := ""
