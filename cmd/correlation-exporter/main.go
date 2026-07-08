@@ -5,7 +5,7 @@
 // 본 binary 는 cluster API 권한이 필요 없으며 Prometheus HTTP API 만 호출한다. correlation-debug
 // CLI 와 동일 라이브러리를 reuse 하므로 동일 endTime 기준의 산출 결과는 두 도구에서 일치한다.
 
-// swaggo general info. 아래 @tag 선언은 REST API 19 종의 기능 도메인 7 분류로, 각 핸들러의
+// swaggo general info. 아래 @tag 선언은 REST API 24 종의 기능 도메인 9 분류로, 각 핸들러의
 // @Tags 값과 1:1 정합해야 swagger UI 그룹 헤더에 설명이 노출된다. 태그 추가 시 본 선언과
 // 핸들러 @Tags, docs/api/coverage.md 의 분류 표를 함께 갱신한다.
 
@@ -30,6 +30,8 @@
 // @tag.description  진단 신호 시계열 추이
 // @tag.name         rca
 // @tag.description  alert 별 root cause analysis 요약 (rca-summarizer 프록시)
+// @tag.name         playbook
+// @tag.description  원인 식별자별 대응 안내 (확인 절차와 권고 조치) 정적 카탈로그
 package main
 
 import (
@@ -301,6 +303,8 @@ func main() {
 	} else {
 		log.Printf("warn: rca proxy disabled, invalid RCA_SUMMARIZER_URL: %q", rcaURL)
 	}
+	// #238 원인별 대응 안내. 정적 카탈로그라 의존성이 없다.
+	api.NewPlaybooksHandler().Register(mux)
 	correlationdocs.SwaggerInfocorrelation.BasePath = "/"
 	mux.Handle("/api/v1/swagger/", httpSwagger.Handler(httpSwagger.URL("/api/v1/swagger.json"), httpSwagger.InstanceName("correlation")))
 	mux.HandleFunc("/api/v1/swagger.json", func(w http.ResponseWriter, _ *http.Request) {
