@@ -2,7 +2,7 @@
 
 프로젝트 목표의 기능 항목별로 correlation-exporter REST API 의 커버리지를 매핑한 문서다. 프론트엔드가 "어떤 목표 기능을 어느 엔드포인트로 구현하는가" 를 판단하는 계약으로 쓰이며, 엔드포인트나 태그가 바뀌면 본 문서와 `cmd/correlation-exporter/main.go` 의 `@tag` 선언, 핸들러의 `@Tags` 를 함께 갱신한다.
 
-## 분류 태그 8종
+## 분류 태그 9종
 
 | 태그 | 도메인 | 엔드포인트 |
 |---|---|---|
@@ -14,6 +14,7 @@
 | `gpu` | GPU 유휴 원인 분석 | `/api/v1/gpu-idle` |
 | `trends` | 진단 신호 시계열 추이 | `/api/v1/trends` |
 | `rca` | alert 별 root cause analysis 요약 (rca-summarizer 프록시) | `/api/v1/rca` |
+| `playbook` | 원인 식별자별 대응 안내 정적 카탈로그 | `/api/v1/playbooks` |
 
 ## 목표 대비 커버리지
 
@@ -33,6 +34,7 @@
 | GPU–네트워크 통합 분석 | `gpu-idle` + `pressure` + `bandwidth` 조합 | 프론트 합성 |
 | 이벤트 발화 이력 (시간축) | `incidents` (interference). `ALERTS` range 합성으로 기간 내 발화 에피소드 (firing/resolved, 시작·종료 시각). `starts_at`을 `at` 파라미터에 결합해 사건 시점 재구성 진입점 | 커버 |
 | 이벤트의 종합 원인 서사 (RCA) | `rca` (rca). Alertmanager webhook 으로 생성된 alert 별 RCASummary 를 프록시. 지배 차원과 최우선 의심 pod, 근거 메트릭, 신뢰도 | 커버 |
+| 원인별 대응 안내 (playbook) | `playbooks` (playbook). gpu-idle cause 와 drop stage, dimension, alertname 별 확인 절차와 권고 조치. `cause` 단일 조회와 alertname 별칭 매칭, `at` 결합 링크 | 커버 |
 | 통합 대시보드·알림 표시 | 프론트엔드 영역 | 범위 외 |
 | 부하테스트 자동화 | `workload-injector` (dev 전용 LoadScenario CRD) 가 담당 | 범위 외 |
 

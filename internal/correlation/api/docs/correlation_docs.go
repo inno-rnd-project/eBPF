@@ -812,6 +812,52 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "/api/v1/playbooks": {
+            "get": {
+                "description": "gpu-idle cause 와 drop stage, 이벤트 dimension, 주요 alertname 별 대응 안내 (원인 설명, 확인 절차 API 경로, 권고 조치) 를 정적 카탈로그로 돌려준다. cause 파라미터로 단일 항목을 조회하며 GPUIdleWith* 같은 alertname 별칭으로도 매칭된다. at 파라미터를 주면 확인 절차의 API 링크 중 시점 지정 조회를 지원하는 경로에 at 이 이어 붙어 사건 시점 재구성과 결합된다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "playbook"
+                ],
+                "summary": "원인별 대응 안내 카탈로그",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "원인 식별자 (예: network_pressure, egress_qdisc, gpu, NetObsDropBurst). 미등록 식별자는 404",
+                        "name": "cause",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "확인 절차 링크에 결합할 평가 시점 (RFC3339 또는 unix seconds)",
+                        "name": "at",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.PlaybooksResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/pods": {
             "get": {
                 "description": "파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by), priority, phase, qos를 kube-state-metrics 기반으로 돌려준다. ?namespace 로 필터한다. 다른 API의 src_namespace/src_pod/pod_uid와 동일 키로 매핑한다.",
@@ -2077,6 +2123,69 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "internal_correlation_api.Playbook": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "aliases": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "cause": {
+                    "type": "string"
+                },
+                "checks": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.PlaybookCheck"
+                    }
+                },
+                "description": {
+                    "type": "string"
+                },
+                "kind": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.PlaybookCheck": {
+            "type": "object",
+            "properties": {
+                "api": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.PlaybooksResponse": {
+            "type": "object",
+            "properties": {
+                "generated_at": {
+                    "type": "string"
+                },
+                "playbooks": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.Playbook"
+                    }
+                },
+                "summary": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_correlation_api.PodInventory": {
             "type": "object",
             "properties": {
@@ -2845,6 +2954,10 @@ const docTemplatecorrelation = `{
         {
             "description": "alert 별 root cause analysis 요약 (rca-summarizer 프록시)",
             "name": "rca"
+        },
+        {
+            "description": "원인 식별자별 대응 안내 (확인 절차와 권고 조치) 정적 카탈로그",
+            "name": "playbook"
         }
     ]
 }`
