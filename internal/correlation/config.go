@@ -120,6 +120,12 @@ type Config struct {
 	// ImpactPathMaxPaths 는 추출 경로 수의 상한이다. 조밀 그래프의 조합 폭발을 방어하는 backstop 이며
 	// 0 이하면 1024 로 fallback 한다.
 	ImpactPathMaxPaths int
+
+	// MinSuspectScore 는 #245 의 무부하 노이즈 게이트다. suspect (cause score) 시계열의 window 내
+	// 최대 절대값이 본 값 미만이면 페어 생성 전에 시리즈를 제거해, 근제로 노이즈 간 파형 유사성이
+	// 강한 상관으로 산출되는 것을 차단한다. suspect 는 모두 0-1 정규화 score 라 단일 임계가 정합하며
+	// victim 시계열 (native 단위) 은 게이트 대상이 아니다. 0 이하면 비활성이다.
+	MinSuspectScore float64
 }
 
 // PlannedQueries 는 활성 layer 를 반영해 Correlate 가 fetch 할 query 의 dedup 합집합을 반환한다.
@@ -238,6 +244,7 @@ func DefaultConfig() Config {
 		// 엣지를 가지치기하며 max_paths 1024 를 조합 폭발 backstop 으로 둔다.
 		ImpactPathMaxDepth: 5,
 		ImpactPathMinScore: 0.5,
+		MinSuspectScore:    0.1,
 		ImpactPathMaxPaths: 1024,
 	}
 }

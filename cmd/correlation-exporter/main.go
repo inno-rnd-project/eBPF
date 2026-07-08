@@ -125,6 +125,8 @@ func main() {
 	applyEnvInt("IMPACT_PATH_MAX_DEPTH", "impact-path-max-depth", &cfg.ImpactPathMaxDepth)
 	applyEnvFloat("IMPACT_PATH_MIN_SCORE", "impact-path-min-score", &cfg.ImpactPathMinScore)
 	applyEnvInt("IMPACT_PATH_MAX_PATHS", "impact-path-max-paths", &cfg.ImpactPathMaxPaths)
+	// #245 무부하 노이즈 게이트 임계의 env override. 0 이하로 두면 게이트가 비활성된다.
+	applyEnvFloat("MIN_SUSPECT_SCORE", "min-suspect-score", &cfg.MinSuspectScore)
 	if v := strings.TrimSpace(os.Getenv("LAG_STEPS")); v != "" {
 		var parsed intSlice
 		if err := parsed.Set(v); err != nil {
@@ -197,6 +199,7 @@ func main() {
 	fs.IntVar(&cfg.ImpactPathMaxDepth, "impact-path-max-depth", cfg.ImpactPathMaxDepth, "#151 Phase 2: max hop depth for impact path extraction (env IMPACT_PATH_MAX_DEPTH)")
 	fs.Float64Var(&cfg.ImpactPathMinScore, "impact-path-min-score", cfg.ImpactPathMinScore, "#151 Phase 2: min edge score to include in impact paths; raise on dense graphs to surface roots (env IMPACT_PATH_MIN_SCORE)")
 	fs.IntVar(&cfg.ImpactPathMaxPaths, "impact-path-max-paths", cfg.ImpactPathMaxPaths, "#151 Phase 2: max extracted impact paths (combinatorial backstop, env IMPACT_PATH_MAX_PATHS)")
+	fs.Float64Var(&cfg.MinSuspectScore, "min-suspect-score", cfg.MinSuspectScore, "#245: min window max-abs value for suspect (cause score) series to enter pair enumeration; <=0 disables (env MIN_SUSPECT_SCORE)")
 
 	var extra stringSlice
 	fs.Var(&extra, "extra-metric", "additional Prometheus query (repeat for multiple)")

@@ -3,6 +3,7 @@ package correlation
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -84,6 +85,11 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 	if len(queries) > 0 && len(fetchErrors) == len(queries) {
 		return nil, fmt.Errorf("all %d queries failed: %v", len(queries), fetchErrors)
 	}
+
+	// #245 무부하 노이즈 게이트. 아래 4개 layer (pod / cross-node / service-impact / cross-level) 가
+	// 모두 all 을 입력으로 페어를 열거하므로, 여기서 한 번 거르면 전 layer 와 이를 소비하는 impact
+	// graph / RCA 까지 일괄 전파된다. Pearson / Granger 이전 차단이라 무부하 시 계산 비용도 함께 준다.
+	all = filterWeakSuspects(all, c.config.MinSuspectScore)
 
 	pairs := EnumeratePairs(all)
 	// 동일 시계열이 여러 페어에 반복 등장하므로 samplesToValues 변환 결과를 cache 한다. 키는 시리즈
@@ -231,6 +237,36 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 	}
 
 	return results, nil
+}
+
+// filterWeakSuspects 는 #245 의 무부하 노이즈 게이트다. suspect (victim 신호가 아닌 cause score)
+// 시계열의 window 내 최대 절대값이 floor 미만이면 입력에서 제거한다. 상수 시리즈는 SkippedConstant
+// 로 이미 걸러지지만 근제로 변동은 통과하고, 피어슨 상관은 크기와 무관하게 파형 유사성만으로 1.0
+// 에 접근하므로 절대 크기를 여기서 강제한다. victim 시계열은 latency 초나 bytes rate 같은 native
+// 단위라 게이트 대상이 아니다. floor <= 0 이면 비활성이다.
+func filterWeakSuspects(items []LabeledSeries, floor float64) []LabeledSeries {
+	if floor <= 0 {
+		return items
+	}
+	out := make([]LabeledSeries, 0, len(items))
+	for _, it := range items {
+		if isVictimMetric(it.Metric) || seriesMaxAbs(it.Series.Samples) >= floor {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// seriesMaxAbs 는 표본 중 최대 절대값을 반환한다. NaN 은 비교에서 자연 탈락하고, 표본이 없거나
+// 전부 NaN 이면 0 이라 게이트에 걸린다.
+func seriesMaxAbs(samples []Sample) float64 {
+	max := 0.0
+	for _, s := range samples {
+		if v := math.Abs(s.Value); v > max {
+			max = v
+		}
+	}
+	return max
 }
 
 // samplesToValues 는 Sample slice 의 Value 만 추출해 Granger 입력 형태로 변환한다. Granger 산정은

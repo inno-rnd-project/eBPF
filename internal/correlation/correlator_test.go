@@ -250,3 +250,68 @@ func TestDefaultConfigContainsCorrelationInputs(t *testing.T) {
 		t.Errorf("CrossNodeMaxPairs default must be positive, got %d", cfg.CrossNodeMaxPairs)
 	}
 }
+
+// TestFilterWeakSuspects 는 #245 무부하 노이즈 게이트의 단위 판정을 검증한다. suspect 는 window 내
+// 최대 절대값이 floor 미만이면 제거되고, victim 시계열은 native 단위라 크기와 무관하게 유지되며,
+// floor 0 이하는 게이트 비활성이다.
+func TestFilterWeakSuspects(t *testing.T) {
+	weak := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, 10, 0, 0.001)
+	weak.Metric = "pod:network_pressure_score:5m"
+	strong := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, 10, 0.5, 0.01)
+	strong.Metric = "pod:cpu_throttle_score:5m"
+	victim := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p3"}, 10, 0, 0.0001)
+	victim.Metric = "netobs_pod_stage_latency_p99"
+
+	out := filterWeakSuspects([]LabeledSeries{weak, strong, victim}, 0.1)
+	if len(out) != 2 {
+		t.Fatalf("filtered=%d want 2 (weak suspect 제거, strong suspect 와 victim 유지)", len(out))
+	}
+	for _, it := range out {
+		if it.Metric == weak.Metric {
+			t.Errorf("근제로 suspect %q 가 게이트를 통과함", it.Metric)
+		}
+	}
+	if got := filterWeakSuspects([]LabeledSeries{weak, strong, victim}, 0); len(got) != 3 {
+		t.Errorf("floor=0 인데 filtered=%d want 3 (게이트 비활성)", len(got))
+	}
+}
+
+// TestCorrelator_WeakSuspectGate 는 게이트가 Correlate end-to-end 에서 근제로 suspect 의 페어 산출
+// 을 차단하는지 검증한다. 무부하 노이즈 (max 0.006) suspect 는 victim 과 파형이 완전히 닮아도 결과
+// 가 0 이어야 하고, 동일 구성에서 suspect 크기만 키우면 페어가 산출되어야 한다.
+func TestCorrelator_WeakSuspectGate(t *testing.T) {
+	mkFetcher := func(base, slope float64) *mockFetcher {
+		suspect := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, 60, base, slope)
+		suspect.Metric = "pod:network_pressure_score:5m"
+		victim := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, 60, 0, 0.001)
+		victim.Metric = "netobs_pod_stage_latency_p99"
+		return &mockFetcher{responses: map[string][]LabeledSeries{
+			"pod:network_pressure_score:5m": {suspect},
+			"netobs_pod_stage_latency_p99":  {victim},
+		}}
+	}
+	cfg := Config{
+		Window:          60 * time.Second,
+		Step:            1 * time.Second,
+		MinSamples:      5,
+		LagSteps:        []int{0},
+		DefaultMetrics:  []string{"pod:network_pressure_score:5m", "netobs_pod_stage_latency_p99"},
+		MinSuspectScore: 0.1,
+	}
+
+	results, err := New(mkFetcher(0, 0.0001), cfg).Correlate(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("Correlate(weak): %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("근제로 suspect 인데 results=%d want 0: %+v", len(results), results)
+	}
+
+	results, err = New(mkFetcher(0.3, 0.005), cfg).Correlate(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("Correlate(strong): %v", err)
+	}
+	if len(results) == 0 {
+		t.Errorf("유의미한 suspect 인데 results=0 (게이트 과차단)")
+	}
+}
