@@ -38,8 +38,12 @@ func TestAtParam(t *testing.T) {
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("rfc3339 status=%d want 200", rec2.Code)
 	}
-	if fq2.lastAt.UTC().Format(time.RFC3339) != "2026-07-01T00:00:00Z" {
+	if fq2.lastAt.Format(time.RFC3339) != "2026-07-01T00:00:00Z" {
 		t.Errorf("querier lastAt=%v want RFC3339 시점", fq2.lastAt)
+	}
+	// 입력 형식과 무관하게 ctx 에 실린 시각은 UTC 로 정규화되어야 한다.
+	if fq.lastAt.Location() != time.UTC || fq2.lastAt.Location() != time.UTC {
+		t.Errorf("locations=%v/%v want UTC 정규화", fq.lastAt.Location(), fq2.lastAt.Location())
 	}
 }
 
