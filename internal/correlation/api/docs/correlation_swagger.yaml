@@ -1339,7 +1339,10 @@ paths:
   /api/v1/events:
     get:
       description: z-score 이상과 noisy-neighbor 간섭을 공통 severity 로 묶어 정렬된 사건 목록과 자연어
-        설명, drill-down 링크로 돌려준다. min_severity 미만 사건은 제외한다.
+        설명, drill-down 링크로 돌려준다. links 는 이벤트 종류별 detail 에 dimension 별 원인 축 API (gpu
+        는 gpu-idle 과 gpu-status, network 는 drops 와 latency-breakdown, memory 는 memory)
+        를 더하고, 모든 링크에 관찰 시점의 at 파라미터가 포함되어 사건 시점 조회로 바로 이어진다. min_severity 미만 사건은
+        제외한다.
       parameters:
       - description: 최소 severity (low/elevated/high, 기본 elevated)
         in: query

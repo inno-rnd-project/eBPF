@@ -123,6 +123,34 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 	))
 }
 
+// causeLinks 는 #237 의 이벤트 drill-down 링크 셋을 만든다. detail (이벤트 종류별 기본 상세) 에
+// dimension 별 원인 축 API 링크를 더하고, 모든 링크에 이벤트 관찰 시점의 at 파라미터를 포함해
+// 프론트엔드가 나중에 클릭해도 사건 시점 상태로 바로 이어지게 한다 (#235 의 시점 지정 조회와 결합).
+// cpu 는 detail 의 pressure drill-down 이 원인 축을 겸하므로 추가 링크가 없다.
+func causeLinks(dimension, at, detail string) map[string]string {
+	links := map[string]string{"detail": withAt(detail, at)}
+	switch dimension {
+	case "gpu":
+		links["gpu_idle"] = withAt("/api/v1/gpu-idle", at)
+		links["gpu_status"] = withAt("/api/v1/gpu-status", at)
+	case "network":
+		links["drops"] = withAt("/api/v1/drops", at)
+		links["latency_breakdown"] = withAt("/api/v1/latency-breakdown", at)
+	case "memory":
+		links["memory"] = withAt("/api/v1/memory", at)
+	}
+	return links
+}
+
+// withAt 은 링크에 at 파라미터를 기존 쿼리 유무에 맞는 구분자로 덧붙인다.
+func withAt(link, at string) string {
+	sep := "?"
+	if strings.Contains(link, "?") {
+		sep = "&"
+	}
+	return link + sep + "at=" + at
+}
+
 // severityRank 는 severity 라벨을 정렬용 정수로 환산한다 (높을수록 심각). events 정렬과 min_severity
 // 필터에 쓴다.
 func severityRank(sev string) int {
@@ -573,7 +601,7 @@ type Event struct {
 
 // GetEvents godoc
 // @Summary      이벤트 분석 (anomaly + noisy-neighbor 종합)
-// @Description  z-score 이상과 noisy-neighbor 간섭을 공통 severity 로 묶어 정렬된 사건 목록과 자연어 설명, drill-down 링크로 돌려준다. min_severity 미만 사건은 제외한다.
+// @Description  z-score 이상과 noisy-neighbor 간섭을 공통 severity 로 묶어 정렬된 사건 목록과 자연어 설명, drill-down 링크로 돌려준다. links 는 이벤트 종류별 detail 에 dimension 별 원인 축 API (gpu 는 gpu-idle 과 gpu-status, network 는 drops 와 latency-breakdown, memory 는 memory) 를 더하고, 모든 링크에 관찰 시점의 at 파라미터가 포함되어 사건 시점 조회로 바로 이어진다. min_severity 미만 사건은 제외한다.
 // @Tags         interference
 // @Produce      json
 // @Param        min_severity  query  string  false  "최소 severity (low/elevated/high, 기본 elevated)"
@@ -598,8 +626,9 @@ func (h *SynthesisHandler) GetEvents(w http.ResponseWriter, r *http.Request) {
 		limit = 50
 	}
 
+	observedAt := time.Now().UTC().Format(time.RFC3339)
 	resp := EventsResponse{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt: observedAt,
 		Window:      "5m",
 		Events:      []Event{},
 	}
@@ -621,7 +650,7 @@ func (h *SynthesisHandler) GetEvents(w http.ResponseWriter, r *http.Request) {
 						Dimension:   d.name,
 						ZScore:      &zc,
 						Explanation: fmt.Sprintf("%s 압박이 최근 5m 기준선 대비 z=%.1f로 이탈.", d.name, z),
-						Links:       map[string]string{"detail": "/api/v1/pressure?dimension=" + d.name + "&scope=pod"},
+						Links:       causeLinks(d.name, observedAt, "/api/v1/pressure?dimension="+d.name+"&scope=pod"),
 					})
 				}
 			}
@@ -639,7 +668,7 @@ func (h *SynthesisHandler) GetEvents(w http.ResponseWriter, r *http.Request) {
 				Dimension:      string(n.Dimension),
 				CausalStrength: &cs,
 				Explanation:    neighborExplanation(n),
-				Links:          map[string]string{"detail": "/api/v1/noisy-neighbor?victim_pod=" + n.Victim.Pod},
+				Links:          causeLinks(string(n.Dimension), observedAt, "/api/v1/noisy-neighbor?victim_pod="+n.Victim.Pod),
 			})
 		}
 	}
