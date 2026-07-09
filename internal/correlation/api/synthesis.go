@@ -68,6 +68,13 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
 	))
+	// #249 랜딩 노드 그리드. 노드별 pod 상태 맵을 서버 판정으로 내장한다.
+	mux.Handle("/api/v1/node-map", apicommon.Chain(
+		http.HandlerFunc(h.GetNodeMap),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
 	mux.Handle("/api/v1/gpu-idle", apicommon.Chain(
 		http.HandlerFunc(h.GetGpuIdle),
 		apicommon.LoggingMiddleware,

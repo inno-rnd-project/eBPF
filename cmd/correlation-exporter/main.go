@@ -5,7 +5,7 @@
 // 본 binary 는 cluster API 권한이 필요 없으며 Prometheus HTTP API 만 호출한다. correlation-debug
 // CLI 와 동일 라이브러리를 reuse 하므로 동일 endTime 기준의 산출 결과는 두 도구에서 일치한다.
 
-// swaggo general info. 아래 @tag 선언은 REST API 24 종의 기능 도메인 9 분류로, 각 핸들러의
+// swaggo general info. 아래 @tag 선언은 REST API 26 종의 기능 도메인 9 분류로, 각 핸들러의
 // @Tags 값과 1:1 정합해야 swagger UI 그룹 헤더에 설명이 노출된다. 태그 추가 시 본 선언과
 // 핸들러 @Tags, docs/api/coverage.md 의 분류 표를 함께 갱신한다.
 
@@ -17,7 +17,7 @@
 // @tag.name         meta
 // @tag.description  API 상태와 클러스터 헬스 요약
 // @tag.name         inventory
-// @tag.description  노드와 파드 인벤토리 (k8s 오브젝트 스냅샷)
+// @tag.description  노드와 파드 인벤토리 (k8s 오브젝트 스냅샷) 와 노드 그리드 맵
 // @tag.name         network
 // @tag.description  네트워크 지연 단계 분해와 패킷 drop, pod 간 flow
 // @tag.name         interference
