@@ -9,8 +9,11 @@ import (
 
 func overviewFakeQuerier() *fakeQuerier {
 	return (&fakeQuerier{}).
+		// gpu 노드는 kube-state-metrics 롤링 업데이트 중복 시계열 (instance 상이) 을 재현해 dedup 을
+		// 가드한다. 중복이 계상되면 아래 Total/GPU 단정이 깨진다.
 		on("kube_node_info",
-			sample(1, "node", "gpu"),
+			sample(1, "node", "gpu", "instance", "ksm-a"),
+			sample(1, "node", "gpu", "instance", "ksm-b"),
 			sample(1, "node", "worker1"),
 			sample(1, "node", "worker2"),
 			sample(1, "node", "deadnode")).
@@ -32,7 +35,9 @@ func overviewFakeQuerier() *fakeQuerier {
 			sample(1, "namespace", "ns1", "pod", "idle", "node", "worker1"),
 			sample(1, "namespace", "ns2", "pod", "web", "node", "worker2")).
 		on("netobs_pod_bytes_total", sample(3, "src_namespace", "ns1", "src_pod", "trainer")).
-		on("kube_node_status_capacity", sample(2, "node", "gpu", "resource", "nvidia_com_gpu")).
+		on("kube_node_status_capacity",
+			sample(2, "node", "gpu", "resource", "nvidia_com_gpu", "instance", "ksm-a"),
+			sample(2, "node", "gpu", "resource", "nvidia_com_gpu", "instance", "ksm-b")).
 		on("cluster:cpu_health_score", sample(0.9)).
 		on("cluster:gpu_health_score", sample(0.23)).
 		on("cluster:memory_health_score", sample(0.8)).

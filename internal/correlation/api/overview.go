@@ -126,11 +126,16 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 			pressure[name] = sm.Value
 		}
 	}
+	// kube-state-metrics 롤링 업데이트 중에는 동일 노드 시계열이 instance 라벨만 다르게 중복될 수
+	// 있어 이름 기준으로 dedup 한다. nodes / node-map 은 map 병합이라 자연 면역이고 본 핸들러만
+	// 카운터 직접 증가라 가드가 필요하다.
+	seenNodes := map[string]bool{}
 	for _, sm := range res[0] {
 		name := sm.Labels["node"]
-		if name == "" {
+		if name == "" || seenNodes[name] {
 			continue
 		}
+		seenNodes[name] = true
 		resp.Nodes.Total++
 		switch nodeStatus(ready[name], alertedNodes[name], pressure[name]) {
 		case "down":
@@ -176,11 +181,15 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// GPU fleet: capacity 선언 기준. devices 는 노드별 선언 수량의 합이다.
+	// GPU fleet: capacity 선언 기준. devices 는 노드별 선언 수량의 합이며, 노드 집계와 동일하게
+	// 중복 시계열을 이름 기준으로 dedup 한다.
+	seenGPUNodes := map[string]bool{}
 	for _, sm := range res[6] {
-		if sm.Labels["node"] == "" || math.IsNaN(sm.Value) || sm.Value <= 0 {
+		node := sm.Labels["node"]
+		if node == "" || seenGPUNodes[node] || math.IsNaN(sm.Value) || sm.Value <= 0 {
 			continue
 		}
+		seenGPUNodes[node] = true
 		resp.GPU.Nodes++
 		resp.GPU.Devices += int(sm.Value)
 	}

@@ -137,6 +137,10 @@ func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, sm := range res[6] {
 		ns, pod, node := sm.Labels["namespace"], sm.Labels["pod"], sm.Labels["node"]
+		// 단일 노드 조회면 타 노드 pod 의 판정 (특히 firing 순회하는 podIssues) 을 건너뛴다.
+		if nodeFilter != "" && node != nodeFilter {
+			continue
+		}
 		n, ok := nodes[node]
 		if pod == "" || !ok {
 			continue
