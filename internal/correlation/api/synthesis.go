@@ -61,6 +61,13 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
 	))
+	// #249 랜딩 대시보드 요약. 기존 판정 (alert 매칭, 압박 임계, weakest) 의 합성이라 의존성이 같다.
+	mux.Handle("/api/v1/overview", apicommon.Chain(
+		http.HandlerFunc(h.GetOverview),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
 	mux.Handle("/api/v1/gpu-idle", apicommon.Chain(
 		http.HandlerFunc(h.GetGpuIdle),
 		apicommon.LoggingMiddleware,

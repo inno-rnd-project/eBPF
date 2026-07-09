@@ -679,6 +679,63 @@ definitions:
       page:
         $ref: '#/definitions/netobs_internal_apicommon.Page'
     type: object
+  internal_correlation_api.OverviewGPU:
+    properties:
+      devices:
+        type: integer
+      nodes:
+        type: integer
+    type: object
+  internal_correlation_api.OverviewIssues:
+    properties:
+      critical:
+        type: integer
+      total:
+        type: integer
+      warning:
+        type: integer
+    type: object
+  internal_correlation_api.OverviewNodes:
+    properties:
+      down:
+        type: integer
+      healthy:
+        type: integer
+      total:
+        type: integer
+      warning:
+        type: integer
+    type: object
+  internal_correlation_api.OverviewPods:
+    properties:
+      live:
+        type: integer
+      no_data:
+        type: integer
+      total:
+        type: integer
+    type: object
+  internal_correlation_api.OverviewResponse:
+    properties:
+      generated_at:
+        type: string
+      gpu:
+        $ref: '#/definitions/internal_correlation_api.OverviewGPU'
+      issues:
+        $ref: '#/definitions/internal_correlation_api.OverviewIssues'
+      nodes:
+        $ref: '#/definitions/internal_correlation_api.OverviewNodes'
+      pods:
+        $ref: '#/definitions/internal_correlation_api.OverviewPods'
+      summary:
+        type: string
+      weakest:
+        allOf:
+        - $ref: '#/definitions/internal_correlation_api.WeakestSignal'
+        description: |-
+          Weakest 는 health 의 가장 약한 고리 (#248) 와 동일 판정이다. health 를 아는 차원이 없으면
+          생략된다.
+    type: object
   internal_correlation_api.Playbook:
     properties:
       actions:
@@ -1811,6 +1868,31 @@ paths:
       summary: List noisy neighbor top-N
       tags:
       - impact
+  /api/v1/overview:
+    get:
+      description: 랜딩 요약 카드 5장 (노드 3단 상태, pod 관측 커버리지, firing alert severity 집계, GPU
+        fleet, weakest signal) 을 한 응답으로 돌려준다. 노드 warning 은 firing alert 또는 통합 압박 elevated
+        초과, pod live 는 netobs eBPF 시리즈 존재, issues 는 alertname 단위 집계다. at 파라미터로 사건
+        시점의 랜딩 화면을 재구성할 수 있다.
+      parameters:
+      - description: 평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)
+        in: query
+        name: at
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.OverviewResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+      summary: 랜딩 대시보드 요약
+      tags:
+      - meta
   /api/v1/playbooks:
     get:
       description: gpu-idle cause 와 drop stage, 이벤트 dimension, 주요 alertname 별 대응 안내
