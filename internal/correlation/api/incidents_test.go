@@ -138,6 +138,50 @@ func TestIncidents_StableTieOrder(t *testing.T) {
 	}
 }
 
+// TestIncidents_PodNodeFilter 는 #248 의 node / pod 필터가 라벨 규약 3종 (pod / src_pod /
+// victim_pod) 매칭으로 에피소드를 좁히는지 검증한다.
+func TestIncidents_PodNodeFilter(t *testing.T) {
+	now := time.Now()
+	ts := now.Add(-10 * time.Minute).UnixMilli()
+	mk := func(labels map[string]string) correlation.LabeledSeries {
+		return correlation.LabeledSeries{Series: correlation.TimeSeries{
+			Labels:  labels,
+			Samples: []correlation.Sample{{TimestampMs: ts, Value: 1}},
+		}}
+	}
+	f := &fakeFetcher{series: []correlation.LabeledSeries{
+		mk(map[string]string{"alertname": "NetObsDropBurst", "node": "gpu", "src_pod": "trainer"}),
+		mk(map[string]string{"alertname": "CorrelationStrongNoisyNeighbor", "victim_pod": "trainer"}),
+		mk(map[string]string{"alertname": "GPUIdleWithMemoryPressure", "node": "worker1", "pod": "other"}),
+	}}
+	h := NewIncidentsHandler(f)
+
+	get := func(target string) IncidentsResponse {
+		rec := httptest.NewRecorder()
+		h.GetIncidents(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		var resp IncidentsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return resp
+	}
+
+	// pod 필터: src_pod 와 victim_pod 규약 모두 매칭돼 2건.
+	resp := get("/api/v1/incidents?pod=trainer")
+	if len(resp.Incidents) != 2 {
+		t.Fatalf("pod=trainer incidents=%d want 2: %+v", len(resp.Incidents), resp.Incidents)
+	}
+	// node 필터: node=gpu 1건.
+	resp = get("/api/v1/incidents?node=gpu")
+	if len(resp.Incidents) != 1 || resp.Incidents[0].Alertname != "NetObsDropBurst" {
+		t.Fatalf("node=gpu incidents=%+v want NetObsDropBurst 1건", resp.Incidents)
+	}
+	// 미매칭 필터는 빈 결과.
+	if resp = get("/api/v1/incidents?pod=absent"); len(resp.Incidents) != 0 {
+		t.Errorf("pod=absent incidents=%d want 0", len(resp.Incidents))
+	}
+}
+
 // TestIncidents_InvalidRange 는 파싱 불가 range 가 400 인지 검증한다.
 func TestIncidents_InvalidRange(t *testing.T) {
 	h := NewIncidentsHandler(&fakeFetcher{})

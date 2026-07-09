@@ -385,6 +385,14 @@ paths:
         description: 상위 N 에피소드 (1-200, 기본 50)
         name: limit
         in: query
+      - type: string
+        description: node 라벨이 이 노드를 가리키는 에피소드만 조회
+        name: node
+        in: query
+      - type: string
+        description: pod/src_pod/victim_pod 라벨이 이 pod 를 가리키는 에피소드만 조회
+        name: pod
+        in: query
       responses:
         '200':
           description: OK

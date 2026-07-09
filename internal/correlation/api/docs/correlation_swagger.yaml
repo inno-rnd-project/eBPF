@@ -1623,6 +1623,14 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: node 라벨이 이 노드를 가리키는 에피소드만 조회
+        in: query
+        name: node
+        type: string
+      - description: pod/src_pod/victim_pod 라벨이 이 pod 를 가리키는 에피소드만 조회
+        in: query
+        name: pod
+        type: string
       produces:
       - application/json
       responses:
