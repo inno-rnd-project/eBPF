@@ -499,31 +499,123 @@ spec:
         - record: cluster:pod_cgroup_contention_score:5m
           expr: max(pod:cgroup_contention_score:5m) or vector(0)
 
+        # pod:*_score_rise:5m (#244)
+        # pod 계열 cause score 의 baseline (30m~1h30m 전 평균) 대비 상승분 (0 하한). memory limit 에
+        # 상시 근접한 관측 인프라 pod (dcgm-exporter 등) 처럼 GPU 유휴 여부와 무관하게 일정한 신호는
+        # baseline 과 현재값이 같아 0 에 수렴하고, GPU 유휴와 함께 나타난 신규 압박만 남는다. baseline
+        # 이 없는 신생 시리즈는 `or (score * 0)` fallback 으로 rise = 현재값이 되어 onset 감지가 즉시
+        # 동작하며, pod 재시작 직후 약 30분간 상시 포화가 rise 로 잡히는 과도기는 알려진 한계다.
+        # 압박이 1.5h 이상 지속되면 baseline 이 따라잡아 rise 가 감쇠하는데, 장기 지속 압박은 절대값
+        # 기반의 pod:*_score:5m 과 victim 단위 rule, pressure API 가 계속 노출한다.
+        - record: pod:cpu_throttle_score_rise:5m
+          expr: |
+            clamp_min(
+              pod:cpu_throttle_score:5m
+              - (avg_over_time(pod:cpu_throttle_score:5m[1h] offset 30m) or (pod:cpu_throttle_score:5m * 0)),
+              0
+            )
+
+        - record: pod:memory_pressure_score_rise:5m
+          expr: |
+            clamp_min(
+              pod:memory_pressure_score:5m
+              - (avg_over_time(pod:memory_pressure_score:5m[1h] offset 30m) or (pod:memory_pressure_score:5m * 0)),
+              0
+            )
+
+        - record: pod:network_pressure_score_rise:5m
+          expr: |
+            clamp_min(
+              pod:network_pressure_score:5m
+              - (avg_over_time(pod:network_pressure_score:5m[1h] offset 30m) or (pod:network_pressure_score:5m * 0)),
+              0
+            )
+
+        # network 서브 신호 2종의 rise. GPUIdleWithNetworkPressure alert 가 throughput (임계 0.7) 과
+        # retrans (임계 0.05) 를 스케일이 달라 분리 판정하므로 canonical rise 와 별도로 둔다.
+        - record: pod:network_throughput_score_rise:5m
+          expr: |
+            clamp_min(
+              pod:network_throughput_score:5m
+              - (avg_over_time(pod:network_throughput_score:5m[1h] offset 30m) or (pod:network_throughput_score:5m * 0)),
+              0
+            )
+
+        - record: pod:network_retrans_score_rise:5m
+          expr: |
+            clamp_min(
+              pod:network_retrans_score:5m
+              - (avg_over_time(pod:network_retrans_score:5m[1h] offset 30m) or (pod:network_retrans_score:5m * 0)),
+              0
+            )
+
+        - record: pod:cgroup_contention_score_rise:5m
+          expr: |
+            clamp_min(
+              pod:cgroup_contention_score:5m
+              - (avg_over_time(pod:cgroup_contention_score:5m[1h] offset 30m) or (pod:cgroup_contention_score:5m * 0)),
+              0
+            )
+
+        - record: pod:host_compute_stall_score_rise:5m
+          expr: |
+            clamp_min(
+              pod:host_compute_stall_score:5m
+              - (avg_over_time(pod:host_compute_stall_score:5m[1h] offset 30m) or (pod:host_compute_stall_score:5m * 0)),
+              0
+            )
+
+        # cluster:gpu_idle_*_rise:5m (#244)
+        # GPU 유휴 노드의 pod rise max. 기존 cluster:pod_*_score (클러스터 전체 pod max) 가 GPU 와
+        # 무관한 노드의 압박까지 dominant cause 로 둔갑시키던 것을, `and on(node)` 조인으로 GPU 유휴
+        # 노드의 pod 로 좁힌다. gpu_idle_cause_sum 과 weight 의 pod 계열 5종이 본 시리즈를 소비하고,
+        # cluster:pod_*_score 는 운영자용 클러스터 worst-case 뷰로 유지된다.
+        - record: cluster:gpu_idle_cpu_throttle_rise:5m
+          expr: max(pod:cpu_throttle_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: cluster:gpu_idle_memory_pressure_rise:5m
+          expr: max(pod:memory_pressure_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: cluster:gpu_idle_network_pressure_rise:5m
+          expr: max(pod:network_pressure_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: cluster:gpu_idle_cgroup_contention_rise:5m
+          expr: max(pod:cgroup_contention_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: cluster:gpu_idle_host_compute_stall_rise:5m
+          expr: max(pod:host_compute_stall_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
         - record: gpu_idle_cause_sum:5m
           expr: |
             (cluster:gpu_pcie_saturation_score:5m or vector(0))
-            + (cluster:pod_cpu_throttle_score:5m or vector(0))
-            + (cluster:pod_memory_pressure_score:5m or vector(0))
-            + (cluster:pod_network_pressure_score:5m or vector(0))
-            + (cluster:pod_host_compute_stall_score:5m or vector(0))
+            + (cluster:gpu_idle_cpu_throttle_rise:5m or vector(0))
+            + (cluster:gpu_idle_memory_pressure_rise:5m or vector(0))
+            + (cluster:gpu_idle_network_pressure_rise:5m or vector(0))
+            + (cluster:gpu_idle_host_compute_stall_rise:5m or vector(0))
             + (cluster:dcgm_pcie_replay_score:5m or vector(0))
             + (cluster:nccl_collective_stall_score:5m or vector(0))
             + (cluster:gpu_thermal_score:5m or vector(0))
-            + (cluster:pod_cgroup_contention_score:5m or vector(0))
+            + (cluster:gpu_idle_cgroup_contention_rise:5m or vector(0))
 
         # gpu_idle_cause_weight:5m{cause}
-        # 5 cause 의 정규화 가중치 (cause 별 score / 5 cause 합). 분모가 0 인 idle window 는
-        # `(gpu_idle_cause_sum:5m > 0)` 필터로 시리즈 자체가 emit 되지 않아 NaN 이 라벨 세트에
-        # 끼지 않는다. cluster 의 어느 노드라도 GPU idle > 0.5 인 상태에서만 emit 되도록 AND 게이팅
+        # cause 의 정규화 가중치 (cause 별 base / cause 합). 분모가 0 인 idle window 는
+        # `(gpu_idle_cause_sum:5m > 0.05)` 필터로 시리즈 자체가 emit 되지 않아 NaN 이 라벨 세트에
+        # 끼지 않는다. 하한 0.05 는 노이즈 게이트다 (#244). 정규화가 잔여 노이즈 rise (실측 sum
+        # 0.01 수준) 를 큰 weight 로 부풀려 무부하에서도 dominant 가 지목되는 것을 막고, 실제
+        # onset (rise 0.3 이상) 은 하한을 크게 웃돌아 영향이 없다. cluster 의 어느 노드라도 GPU idle > 0.5 인 상태에서만 emit 되도록 AND 게이팅
         # 을 두어 idle 이 아닌 시간대의 cause weight 잡음이 dashboard 와 alert 의 신호 대 잡음비를
         # 떨어뜨리지 않게 한다. cause 라벨 enum 은 GPUIdleWith* 8 종 alert 와 1:1 매핑된다.
+        # #244 부터 pod 계열 5종 (cpu_throttle / memory_pressure / network_pressure /
+        # cgroup_contention / host_compute_stall) 의 base 는 클러스터 전체 max 가 아니라 GPU 유휴
+        # 노드 스코프의 rise (cluster:gpu_idle_*_rise:5m) 라, GPU 와 무관한 노드의 압박과 상시
+        # 포화 신호는 dominant cause 로 둔갑하지 않는다.
         - record: gpu_idle_cause_weight:5m
           labels:
             cause: pcie_saturation
           expr: |
             (
               (cluster:gpu_pcie_saturation_score:5m or vector(0))
-              / (gpu_idle_cause_sum:5m > 0)
+              / (gpu_idle_cause_sum:5m > 0.05)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
 
@@ -532,8 +624,8 @@ spec:
             cause: cpu_throttle
           expr: |
             (
-              (cluster:pod_cpu_throttle_score:5m or vector(0))
-              / (gpu_idle_cause_sum:5m > 0)
+              (cluster:gpu_idle_cpu_throttle_rise:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0.05)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
 
@@ -542,8 +634,8 @@ spec:
             cause: memory_pressure
           expr: |
             (
-              (cluster:pod_memory_pressure_score:5m or vector(0))
-              / (gpu_idle_cause_sum:5m > 0)
+              (cluster:gpu_idle_memory_pressure_rise:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0.05)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
 
@@ -556,8 +648,8 @@ spec:
             cause: cgroup_contention
           expr: |
             (
-              (cluster:pod_cgroup_contention_score:5m or vector(0))
-              / (gpu_idle_cause_sum:5m > 0)
+              (cluster:gpu_idle_cgroup_contention_rise:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0.05)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
 
@@ -566,8 +658,8 @@ spec:
             cause: network_pressure
           expr: |
             (
-              (cluster:pod_network_pressure_score:5m or vector(0))
-              / (gpu_idle_cause_sum:5m > 0)
+              (cluster:gpu_idle_network_pressure_rise:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0.05)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
 
@@ -576,8 +668,8 @@ spec:
             cause: host_compute_stall
           expr: |
             (
-              (cluster:pod_host_compute_stall_score:5m or vector(0))
-              / (gpu_idle_cause_sum:5m > 0)
+              (cluster:gpu_idle_host_compute_stall_rise:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0.05)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
 
@@ -604,7 +696,7 @@ spec:
           expr: |
             (
               (cluster:nccl_collective_stall_score:5m or vector(0))
-              / (gpu_idle_cause_sum:5m > 0)
+              / (gpu_idle_cause_sum:5m > 0.05)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
 
@@ -614,7 +706,7 @@ spec:
           expr: |
             (
               (cluster:dcgm_pcie_replay_score:5m or vector(0))
-              / (gpu_idle_cause_sum:5m > 0)
+              / (gpu_idle_cause_sum:5m > 0.05)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
 
@@ -629,7 +721,7 @@ spec:
           expr: |
             (
               (cluster:gpu_thermal_score:5m or vector(0))
-              / (gpu_idle_cause_sum:5m > 0)
+              / (gpu_idle_cause_sum:5m > 0.05)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
 
@@ -1259,9 +1351,9 @@ spec:
         - alert: GPUIdleWithNetworkPressure
           expr: |
             (
-              pod:network_throughput_score:5m > 0.7
+              pod:network_throughput_score_rise:5m > 0.7
               or
-              pod:network_retrans_score:5m > 0.05
+              pod:network_retrans_score_rise:5m > 0.05
             )
               and on(node)
             (node:gpu_idle:5m > 0.5)
@@ -1271,7 +1363,7 @@ spec:
             component: correlation
           annotations:
             summary: "GPU idle with network pressure on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} score={{ $value }})"
-            description: "Pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} on node {{ $labels.node }} shows network throughput or retransmission score {{ $value }} while GPU is idle. Check whether the GPU workload depends on this pod's network I/O."
+            description: "Pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} on node {{ $labels.node }} network throughput or retransmission score rose by {{ $value }} over its 30m-1h30m baseline while GPU is idle. Check whether the GPU workload depends on this pod's network I/O."
 
         # GPUIdleWithCPUThrottle
         # GPU 유휴 + 컨테이너 CPU CFS throttle. CPU limit 으로 인해 host측이 GPU에 작업을 보내지
@@ -1279,7 +1371,7 @@ spec:
         # $value 와 pod 라벨 이 보존된다.
         - alert: GPUIdleWithCPUThrottle
           expr: |
-            (pod:cpu_throttle_score:5m > 0.3)
+            (pod:cpu_throttle_score_rise:5m > 0.3)
               and on(node)
             (node:gpu_idle:5m > 0.5)
           for: 5m
@@ -1288,15 +1380,18 @@ spec:
             component: correlation
           annotations:
             summary: "GPU idle with CPU throttle on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} score={{ $value }})"
-            description: "Pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} on node {{ $labels.node }} is CPU-throttled (score={{ $value }}) while GPU is idle. Consider raising CPU limit or reducing concurrent CPU work."
+            description: "Pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} on node {{ $labels.node }} CPU throttle score rose by {{ $value }} over its 30m-1h30m baseline while GPU is idle. Consider raising CPU limit or reducing concurrent CPU work."
 
         # GPUIdleWithMemoryPressure
         # GPU 유휴 + 컨테이너 메모리 working_set 이 limit에 임박. OOMKilled 전조이며 GPU 작업이 host
         # 메모리 부족으로 stall될 수 있다. cutoff 0.9은 working_set이 limit의 90%를 넘는 상태. cause
         # score를 LHS에 두어 $value (메모리 working_set / limit 비율) 와 pod 라벨 이 보존된다.
+        # #244 절대 비율 (0.9) 대신 baseline 대비 상승분으로 판정한다. limit 에 상시 근접한 관측
+        # 인프라 pod (dcgm-exporter 등) 의 오탐을 제거하고, 상승분 기준에서는 0.9 상승이 사실상
+        # 불가능해 유의미한 신규 압박 임계로 0.3 을 쓴다.
         - alert: GPUIdleWithMemoryPressure
           expr: |
-            (pod:memory_pressure_score:5m > 0.9)
+            (pod:memory_pressure_score_rise:5m > 0.3)
               and on(node)
             (node:gpu_idle:5m > 0.5)
           for: 5m
@@ -1305,7 +1400,7 @@ spec:
             component: correlation
           annotations:
             summary: "GPU idle with memory pressure on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }})"
-            description: "Pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} on node {{ $labels.node }} memory working_set / limit ratio is {{ $value | humanizePercentage }} while GPU is idle. Consider raising memory limit before OOMKill."
+            description: "Pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} on node {{ $labels.node }} memory working_set / limit ratio rose by {{ $value | humanizePercentage }} over its 30m-1h30m baseline while GPU is idle. Consider raising memory limit before OOMKill."
 
         # GPUIdleWithHostComputeStall
         # GPU 유휴 + host측 CUDA launch 부족 또는 GPU device memory 포화. host 또는 device 측에서
@@ -1314,7 +1409,7 @@ spec:
         # score를 LHS에 두어 $value 와 pod 라벨 이 보존된다.
         - alert: GPUIdleWithHostComputeStall
           expr: |
-            (pod:host_compute_stall_score:5m > 0.7)
+            (pod:host_compute_stall_score_rise:5m > 0.7)
               and on(node)
             (node:gpu_idle:5m > 0.5)
           for: 5m
@@ -1323,7 +1418,7 @@ spec:
             component: correlation
           annotations:
             summary: "GPU idle with host compute stall on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} score={{ $value }})"
-            description: "Pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} on node {{ $labels.node }} shows host compute stall (low CUDA launch rate or GPU memory saturation, score={{ $value }}) while GPU is idle. Inspect kernel launches via gpuobs_cuda_kernel_launches_total and GPU memory via pod:gpu_memory_utilization_ratio:5m."
+            description: "Pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} on node {{ $labels.node }} host compute stall score (low CUDA launch rate or GPU memory saturation) rose by {{ $value }} over its 30m-1h30m baseline while GPU is idle. Inspect kernel launches via gpuobs_cuda_kernel_launches_total and GPU memory via pod:gpu_memory_utilization_ratio:5m."
 
         # GPUIdleWithDCGMPCIeReplay (#155)
         # GPU 유휴 + DCGM PCIe replay score 상승. dcgm_pcie_replay 는 dominant cause 엔진의 7 cause 중

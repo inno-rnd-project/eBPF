@@ -6,8 +6,10 @@
 
 cluster 차원 (#66 도입).
 
-- `cluster:gpu_pcie_saturation_score:5m`, `cluster:pod_cpu_throttle_score:5m`, `cluster:pod_memory_pressure_score:5m`, `cluster:pod_network_pressure_score:5m`, `cluster:pod_host_compute_stall_score:5m`. 5 cause base score 의 cluster max rollup
-- `gpu_idle_cause_sum:5m`. 5 cause base score 의 합 (정규화 분모)
+- `pod:*_score_rise:5m` (#244). pod 계열 cause score 의 baseline (30m~1h30m 전 평균) 대비 상승분. limit 에 상시 근접한 관측 인프라 pod 처럼 GPU 유휴와 무관하게 일정한 신호는 0 에 수렴하고, 유휴와 함께 나타난 신규 압박만 남는다
+- `cluster:gpu_idle_*_rise:5m` (#244). pod 계열 cause 5종 (cpu_throttle, memory_pressure, network_pressure, cgroup_contention, host_compute_stall) rise 의 GPU 유휴 노드 스코프 max rollup. weight 와 sum 이 소비하는 base 이며, `cluster:pod_*_score:5m` (클러스터 전체 pod max) 는 운영자용 절대값 worst-case 뷰로 유지된다
+- `cluster:gpu_pcie_saturation_score:5m` 등 device 계열 base score (pcie/dcgm/nccl/thermal). GPU 스코프 신호라 rise 없이 절대값 그대로 weight 에 편입
+- `gpu_idle_cause_sum:5m`. cause base (pod 계열 rise 5종 + device 계열 4종) 의 합 (정규화 분모)
 - `gpu_idle_cause_weight:5m{cause}`. 5 cause 정규화 가중치. cluster 의 어느 노드라도 `node:gpu_idle:5m > 0.5` 일 때만 emit
 - `cluster:gpu_idle_dominant_cause:5m{cause}`. weight 최대값을 가진 cause 1 종을 단일 시리즈로 노출. 동률 시 cause enum 사전순 가장 앞 라벨이 채택
 - `gpu_idle_dominant_cause_indicator:5m{cause}`. cause 별 0/1 indicator. `GPUIdleDominantCauseSwitch` alert 가 changes() 합산에 사용
@@ -141,6 +143,8 @@ cluster 차원 총 20 시리즈 상한. victim 차원 총 약 `20 * V` 시리즈
 ## 알려진 한계
 
 - single GPU cluster 전제. multi-GPU 노드의 GPU 별 cause 분리는 본 PR 범위 밖이며 `node:gpu_idle:5m` 의 노드 단위 평균에 흡수된다
-- `cluster:pod_network_pressure_score:5m` 는 throughput saturation score 만 사용한다. retrans 신호는 `GPUIdleWithNetworkPressure` alert 의 OR 보조 신호로 남고 cause weighting 합산에 합치면 threshold 스케일 차이로 cause 간 비교 의미가 흐려진다
+- network cause weighting 은 canonical `pod:network_pressure_score:5m` (throughput 과 retrans 의 element-wise max, #154) 의 rise 를 쓴다. `GPUIdleWithNetworkPressure` alert 는 throughput (임계 0.7) 과 retrans (임계 0.05) 의 스케일이 달라 서브 신호 rise 2종으로 분리 판정을 유지한다
 - RTX 3090 같은 consumer GPU 는 ECC 미지원, throttle reason 일부 미발생 등으로 일부 cause 의 base score 가 항상 0 인 경우가 많다. 본 환경에서는 0 cause 가 weighting 에서 자연 제외된다
+- rise 기반 weight (#244) 는 pod 재시작 직후 약 30분간 baseline 공백 fallback 으로 상시 포화도 rise 로 잡히는 과도기가 있고, 1.5h 이상 지속되는 압박은 baseline 이 따라잡아 weight 가 감쇠한다. 장기 지속 압박은 절대값 기반 `pod:*_score:5m` 과 victim 단위 rule, pressure API 가 계속 노출한다
+- victim 단위 rule (#101) 은 절대값 base 를 유지하므로 상시 포화 pod 가 victim dominant 에는 남을 수 있다. cluster dominant 와 victim dominant 가 일시적으로 다른 cause 를 가리킬 수 있다
 - LLM 기반 자연어 cause 설명은 본 PR 범위 밖이다. rule-based weighting 까지가 책임이다

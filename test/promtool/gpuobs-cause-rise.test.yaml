@@ -1,0 +1,114 @@
+# gpuobs-cause-rise.test.yaml 은 #244 의 rise 기반 cause weight 정합 검증 promtool unit test 다.
+# 세 케이스를 단정한다. (1) 상시 포화: memory limit 에 상시 근접한 pod (dcgm-exporter 패턴) 는
+# baseline 과 현재값이 같아 rise 0 이 되어 weight 와 alert 에서 배제된다. (2) 신규 압박 onset:
+# baseline 이 낮다가 상승한 pod 는 rise 가 잡혀 weight 와 alert 가 활성된다. (3) 노드 스코핑:
+# GPU 유휴 노드가 아닌 노드의 onset 은 cluster:gpu_idle_*_rise 와 weight 에 편입되지 않는다.
+# 부동소수점 잡음 회피를 위해 정확 값 단정은 rise=0 (clamp_min 이 0 을 보장) 과 weight=1 (분자
+# 분모 동일로 잡음 상쇄) 만 두고, onset 크기는 alert firing 으로 단정한다. working_set / limit 은
+# 이진 표현이 정확한 500 / 1000 조합을 쓴다.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # (1) 상시 포화 배제: score 0.5 상시 (0m~100m). eval 90m 의 baseline 창 (0m~60m) 이 동일 값이라
+  # rise 0. weight 는 분모 (gpu_idle_cause_sum > 0) 필터로 시리즈 자체가 비고 alert 도 안 뜬다.
+  - interval: 30s
+    input_series:
+      - series: 'container_memory_working_set_bytes{node="n1",namespace="ns1",pod="p1"}'
+        values: '500x200'
+      - series: 'kube_pod_container_resource_limits{namespace="ns1",pod="p1",resource="memory"}'
+        values: '1000x200'
+      # GPU idle gating: utilization 5% (<20) 상시 → node:gpu_idle:5m = 1 > 0.5
+      - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
+        values: '5x200'
+    promql_expr_test:
+      # 절대 score 는 0.5 로 살아 있다 (운영자용 절대값 뷰는 유지).
+      - expr: pod:memory_pressure_score:5m
+        eval_time: 90m
+        exp_samples:
+          - labels: 'pod:memory_pressure_score:5m{node="n1",namespace="ns1",pod="p1",src_namespace="ns1",src_pod="p1"}'
+            value: 0.5
+      # rise 는 baseline 과 동일해 0 (clamp_min 이 정확 0 보장).
+      - expr: pod:memory_pressure_score_rise:5m
+        eval_time: 90m
+        exp_samples:
+          - labels: 'pod:memory_pressure_score_rise:5m{node="n1",namespace="ns1",pod="p1",src_namespace="ns1",src_pod="p1"}'
+            value: 0
+      # 상시 포화는 cause weight 에 편입되지 않는다 (sum=0 → 시리즈 부재).
+      - expr: gpu_idle_cause_weight:5m{cause="memory_pressure"}
+        eval_time: 90m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: GPUIdleWithMemoryPressure
+        exp_alerts: []
+
+  # (2) 신규 압박 onset: score 0.5 (0m~60m) → 0.95 (60m~80m). eval 70m 의 baseline 창은 0.5 라
+  # rise 0.45 > 0.3 으로 alert firing, 유일한 non-zero cause 라 weight = 1.
+  - interval: 30s
+    input_series:
+      - series: 'container_memory_working_set_bytes{node="n1",namespace="ns1",pod="p1"}'
+        values: '500x120 950x40'
+      - series: 'kube_pod_container_resource_limits{namespace="ns1",pod="p1",resource="memory"}'
+        values: '1000x160'
+      - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
+        values: '5x160'
+    promql_expr_test:
+      - expr: gpu_idle_cause_weight:5m{cause="memory_pressure"}
+        eval_time: 70m
+        exp_samples:
+          - labels: 'gpu_idle_cause_weight:5m{cause="memory_pressure"}'
+            value: 1
+      # dominant cause 산정도 rule 변경 없이 자연 정합된다. 값은 weight 1 에 동률 tiebreak 용
+      # 사전순 epsilon (memory_pressure 5e-6) 이 더해진 1.000005 다.
+      - expr: cluster:gpu_idle_dominant_cause:5m
+        eval_time: 70m
+        exp_samples:
+          - labels: 'cluster:gpu_idle_dominant_cause:5m{cause="memory_pressure"}'
+            value: 1.000005
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: GPUIdleWithMemoryPressure
+        exp_alerts:
+          - exp_labels:
+              node: n1
+              namespace: ns1
+              pod: p1
+              src_namespace: ns1
+              src_pod: p1
+              severity: warning
+              component: correlation
+            exp_annotations:
+              summary: "GPU idle with memory pressure on n1 (pod ns1/p1)"
+              description: "Pod ns1/p1 on node n1 memory working_set / limit ratio rose by 45% over its 30m-1h30m baseline while GPU is idle. Consider raising memory limit before OOMKill."
+
+  # (3) 노드 스코핑: onset 이 GPU 유휴 노드 (n1) 가 아닌 n2 에서 발생. n2 는 GPU 시리즈가 없어
+  # node:gpu_idle:5m 이 비고, and on(node) 조인으로 rise rollup 과 weight, alert 모두 배제된다.
+  - interval: 30s
+    input_series:
+      - series: 'container_memory_working_set_bytes{node="n2",namespace="ns1",pod="p2"}'
+        values: '500x120 950x40'
+      - series: 'kube_pod_container_resource_limits{namespace="ns1",pod="p2",resource="memory"}'
+        values: '1000x160'
+      - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
+        values: '5x160'
+    promql_expr_test:
+      # n2 pod 의 rise 자체는 잡히지만
+      - expr: pod:memory_pressure_score_rise:5m > 0.3
+        eval_time: 70m
+        exp_samples:
+          - labels: 'pod:memory_pressure_score_rise:5m{node="n2",namespace="ns1",pod="p2",src_namespace="ns1",src_pod="p2"}'
+            value: 0.44999999999999996
+      # GPU 유휴 노드 스코프 rollup 과 weight 에는 편입되지 않는다.
+      - expr: cluster:gpu_idle_memory_pressure_rise:5m
+        eval_time: 70m
+        exp_samples: []
+      - expr: gpu_idle_cause_weight:5m{cause="memory_pressure"}
+        eval_time: 70m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: GPUIdleWithMemoryPressure
+        exp_alerts: []
