@@ -149,7 +149,7 @@ func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 			Namespace: ns,
 			Pod:       pod,
 			NoData:    !observed[[2]string{ns, pod}],
-			Issues:    podIssues(firing, pod),
+			Issues:    podIssues(firing, ns, pod),
 		}
 		p.Status = podStatus(phase[sm.Labels["uid"]], len(p.Issues) > 0)
 		n.Pods = append(n.Pods, p)
@@ -204,11 +204,11 @@ func podStatus(phase string, hasIssue bool) string {
 }
 
 // podIssues 는 이 pod 를 가리키는 firing alertname 의 dedup 정렬 목록이다. 매칭은 #248 의
-// alertTargetsPod 규약을 공유한다.
-func podIssues(firing []correlation.InstantSample, pod string) []string {
+// alertTargetsPod 규약을 공유하며 #252 부터 namespace 를 함께 제약해 동명 pod 오탐을 막는다.
+func podIssues(firing []correlation.InstantSample, namespace, pod string) []string {
 	seen := map[string]bool{}
 	for _, sm := range firing {
-		if name := sm.Labels["alertname"]; name != "" && alertTargetsPod(sm.Labels, pod) {
+		if name := sm.Labels["alertname"]; name != "" && alertTargetsPod(sm.Labels, namespace, pod) {
 			seen[name] = true
 		}
 	}

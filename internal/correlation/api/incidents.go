@@ -62,9 +62,25 @@ type Incident struct {
 
 // alertTargetsPod 는 alert 라벨이 해당 pod 를 가리키는지 판정한다 (#248). netobs/gpuobs 계열은
 // src_pod, correlation 계열은 victim_pod, k8s 계열은 pod 라벨을 쓰므로 세 규약을 모두 본다.
-// incidents 의 pod 필터와 후속 node-map 의 pod-alert 매칭이 본 함수를 공유한다.
-func alertTargetsPod(labels map[string]string, pod string) bool {
-	return labels["pod"] == pod || labels["src_pod"] == pod || labels["victim_pod"] == pod
+// incidents 의 pod 필터와 node-map 의 pod-alert 매칭이 본 함수를 공유한다.
+//
+// #252 namespace 인지 매칭. 동일 이름 pod 가 여러 namespace 에 흔해 (Helm 차트, 공통 사이드카)
+// pod 이름만 비교하면 한 namespace 의 alert 가 다른 namespace 의 동명 pod 에 잘못 붙는다. 규약
+// 쌍별로 pod 라벨이 일치하고 그 쌍의 namespace 라벨이 존재하면 함께 일치해야 매칭한다. namespace
+// 인자가 비면 제약하지 않아 incidents 의 pod 필터 (pod 파라미터만 받는 기존 계약) 가 유지되고,
+// alert 에 해당 namespace 라벨이 없으면 pod 이름만으로 매칭해 정보 부족 시 보수적으로 잡는다.
+func alertTargetsPod(labels map[string]string, namespace, pod string) bool {
+	match := func(nsKey, podKey string) bool {
+		if labels[podKey] != pod {
+			return false
+		}
+		if namespace == "" {
+			return true
+		}
+		ns := labels[nsKey]
+		return ns == "" || ns == namespace
+	}
+	return match("namespace", "pod") || match("src_namespace", "src_pod") || match("victim_namespace", "victim_pod")
 }
 
 // alertTargetsNode 는 alert 라벨이 해당 node 를 가리키는지 판정한다 (#248).
@@ -142,7 +158,7 @@ func (h *IncidentsHandler) GetIncidents(w http.ResponseWriter, r *http.Request) 
 		}
 		if pod := strings.TrimSpace(q.Get("pod")); pod != "" {
 			series = filterIncidentSeries(series, func(labels map[string]string) bool {
-				return alertTargetsPod(labels, pod)
+				return alertTargetsPod(labels, "", pod)
 			})
 		}
 		resp.Incidents = buildIncidents(series, start, end, step, limit)
