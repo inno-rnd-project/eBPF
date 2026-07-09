@@ -3,6 +3,8 @@ package loadgen
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
@@ -10,6 +12,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 )
+
+// bandwidthPattern 은 sh -c 스크립트에 결합을 허용하는 iperf3 -b 값의 형태다 (#253). 셸 안전성이
+// safety.CheckIntensity (checkBandwidth) 에만 의존하면 그쪽이 다른 -b 형식 지원 등으로 완화될 때
+// 임의 명령 실행 경로가 조용히 열리므로, 문자열 결합의 당사자인 본 패키지 경계에서 재검증한다.
+var bandwidthPattern = regexp.MustCompile(`^[0-9]+[KkMmGg]?$`)
 
 // networkGen 은 iperf3 server 를 target node 에 두고 client 를 다른 노드에 두어 server 로 트래픽을
 // 발사한다. server Pod 의 hostIP 를 사용하면 Service 없이도 client 가 직접 접근 가능하지만 본 모듈은
@@ -31,9 +38,17 @@ func (g *networkGen) Start(ctx context.Context, params Params) error {
 	if params.TargetNode == "" {
 		return fmt.Errorf("network loadgen: target node is empty")
 	}
-	bandwidth := params.Intensity
+	// safety.parseBandwidthBps 가 TrimSpace 후 검증하므로 " 100M " 같은 공백 포함 값이 safety 를
+	// 통과한다. loadgen 도 동일하게 trim 후 재검증해 safety 를 통과한 정상 입력이 여기서 거부되는
+	// 불일치를 막는다.
+	bandwidth := strings.TrimSpace(params.Intensity)
 	if bandwidth == "" {
 		bandwidth = "100M"
+	}
+	// sh -c 결합 전 재검증 (#253). client 조립 직전이 아니라 여기서 fail-fast 해 server Pod 만
+	// spawn 된 채 실패하는 고아 경로도 함께 막는다.
+	if !bandwidthPattern.MatchString(bandwidth) {
+		return fmt.Errorf("network loadgen: invalid bandwidth %q (want digits with optional K/M/G suffix)", bandwidth)
 	}
 
 	serverName := sanitizeName("stress-net-server", params.TargetPod)
