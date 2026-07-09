@@ -680,6 +680,52 @@
                 }
             }
         },
+        "/api/v1/node-map": {
+            "get": {
+                "description": "노드별 pod 목록에 3단 상태 (live/warning/down) 와 관측 no-data, 해당 pod 를 가리키는 firing alertname 을 내장해 돌려준다. pod down 은 phase Failed/Unknown, warning 은 Pending 또는 firing alert 매칭이며, issues 의 alertname 은 rca 와 playbooks 조회 입력과 호환된다. node 파라미터로 단일 노드를 조회하고 미등록 노드는 404 다. at 파라미터로 사건 시점의 그리드를 재구성할 수 있다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "노드 그리드 (노드별 pod 상태 맵)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "단일 노드 조회 (미등록 노드는 404)",
+                        "name": "node",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)",
+                        "name": "at",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.NodeMapResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/node/{node}": {
             "get": {
                 "description": "노드의 4 차원 pressure 와 종합(overall), dominant 차원, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다.",
@@ -812,6 +858,40 @@
                         "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/overview": {
+            "get": {
+                "description": "랜딩 요약 카드 5장 (노드 3단 상태, pod 관측 커버리지, firing alert severity 집계, GPU fleet, weakest signal) 을 한 응답으로 돌려준다. 노드 warning 은 firing alert 또는 통합 압박 elevated 초과, pod live 는 netobs eBPF 시리즈 존재, issues 는 alertname 단위 집계다. at 파라미터로 사건 시점의 랜딩 화면을 재구성할 수 있다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "meta"
+                ],
+                "summary": "랜딩 대시보드 요약",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)",
+                        "name": "at",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.OverviewResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
                     }
                 }
@@ -2066,6 +2146,78 @@
                 }
             }
         },
+        "internal_correlation_api.NodeMapNode": {
+            "type": "object",
+            "properties": {
+                "gpu": {
+                    "type": "boolean"
+                },
+                "gpu_devices": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "pod_count": {
+                    "type": "integer"
+                },
+                "pods": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.NodeMapPod"
+                    }
+                },
+                "roles": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.NodeMapPod": {
+            "type": "object",
+            "properties": {
+                "issues": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "no_data": {
+                    "type": "boolean"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.NodeMapResponse": {
+            "type": "object",
+            "properties": {
+                "generated_at": {
+                    "type": "string"
+                },
+                "nodes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.NodeMapNode"
+                    }
+                },
+                "summary": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_correlation_api.NodePodPressure": {
             "type": "object",
             "properties": {
@@ -2144,6 +2296,93 @@
                 },
                 "page": {
                     "$ref": "#/definitions/netobs_internal_apicommon.Page"
+                }
+            }
+        },
+        "internal_correlation_api.OverviewGPU": {
+            "type": "object",
+            "properties": {
+                "devices": {
+                    "type": "integer"
+                },
+                "nodes": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_correlation_api.OverviewIssues": {
+            "type": "object",
+            "properties": {
+                "critical": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                },
+                "warning": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_correlation_api.OverviewNodes": {
+            "type": "object",
+            "properties": {
+                "down": {
+                    "type": "integer"
+                },
+                "healthy": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                },
+                "warning": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_correlation_api.OverviewPods": {
+            "type": "object",
+            "properties": {
+                "live": {
+                    "type": "integer"
+                },
+                "no_data": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_correlation_api.OverviewResponse": {
+            "type": "object",
+            "properties": {
+                "generated_at": {
+                    "type": "string"
+                },
+                "gpu": {
+                    "$ref": "#/definitions/internal_correlation_api.OverviewGPU"
+                },
+                "issues": {
+                    "$ref": "#/definitions/internal_correlation_api.OverviewIssues"
+                },
+                "nodes": {
+                    "$ref": "#/definitions/internal_correlation_api.OverviewNodes"
+                },
+                "pods": {
+                    "$ref": "#/definitions/internal_correlation_api.OverviewPods"
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "weakest": {
+                    "description": "Weakest 는 health 의 가장 약한 고리 (#248) 와 동일 판정이다. health 를 아는 차원이 없으면\n생략된다.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/internal_correlation_api.WeakestSignal"
+                        }
+                    ]
                 }
             }
         },
@@ -2970,7 +3209,7 @@
             "name": "meta"
         },
         {
-            "description": "노드와 파드 인벤토리 (k8s 오브젝트 스냅샷)",
+            "description": "노드와 파드 인벤토리 (k8s 오브젝트 스냅샷) 와 노드 그리드 맵",
             "name": "inventory"
         },
         {

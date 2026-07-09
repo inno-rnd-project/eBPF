@@ -626,6 +626,53 @@ definitions:
       uid:
         type: string
     type: object
+  internal_correlation_api.NodeMapNode:
+    properties:
+      gpu:
+        type: boolean
+      gpu_devices:
+        type: integer
+      name:
+        type: string
+      pod_count:
+        type: integer
+      pods:
+        items:
+          $ref: '#/definitions/internal_correlation_api.NodeMapPod'
+        type: array
+      roles:
+        items:
+          type: string
+        type: array
+      status:
+        type: string
+    type: object
+  internal_correlation_api.NodeMapPod:
+    properties:
+      issues:
+        items:
+          type: string
+        type: array
+      namespace:
+        type: string
+      no_data:
+        type: boolean
+      pod:
+        type: string
+      status:
+        type: string
+    type: object
+  internal_correlation_api.NodeMapResponse:
+    properties:
+      generated_at:
+        type: string
+      nodes:
+        items:
+          $ref: '#/definitions/internal_correlation_api.NodeMapNode'
+        type: array
+      summary:
+        type: string
+    type: object
   internal_correlation_api.NodePodPressure:
     properties:
       dimension:
@@ -678,6 +725,63 @@ definitions:
         type: array
       page:
         $ref: '#/definitions/netobs_internal_apicommon.Page'
+    type: object
+  internal_correlation_api.OverviewGPU:
+    properties:
+      devices:
+        type: integer
+      nodes:
+        type: integer
+    type: object
+  internal_correlation_api.OverviewIssues:
+    properties:
+      critical:
+        type: integer
+      total:
+        type: integer
+      warning:
+        type: integer
+    type: object
+  internal_correlation_api.OverviewNodes:
+    properties:
+      down:
+        type: integer
+      healthy:
+        type: integer
+      total:
+        type: integer
+      warning:
+        type: integer
+    type: object
+  internal_correlation_api.OverviewPods:
+    properties:
+      live:
+        type: integer
+      no_data:
+        type: integer
+      total:
+        type: integer
+    type: object
+  internal_correlation_api.OverviewResponse:
+    properties:
+      generated_at:
+        type: string
+      gpu:
+        $ref: '#/definitions/internal_correlation_api.OverviewGPU'
+      issues:
+        $ref: '#/definitions/internal_correlation_api.OverviewIssues'
+      nodes:
+        $ref: '#/definitions/internal_correlation_api.OverviewNodes'
+      pods:
+        $ref: '#/definitions/internal_correlation_api.OverviewPods'
+      summary:
+        type: string
+      weakest:
+        allOf:
+        - $ref: '#/definitions/internal_correlation_api.WeakestSignal'
+        description: |-
+          Weakest 는 health 의 가장 약한 고리 (#248) 와 동일 판정이다. health 를 아는 차원이 없으면
+          생략된다.
     type: object
   internal_correlation_api.Playbook:
     properties:
@@ -1718,6 +1822,39 @@ paths:
       summary: 메모리 병목 분해
       tags:
       - interference
+  /api/v1/node-map:
+    get:
+      description: 노드별 pod 목록에 3단 상태 (live/warning/down) 와 관측 no-data, 해당 pod 를 가리키는
+        firing alertname 을 내장해 돌려준다. pod down 은 phase Failed/Unknown, warning 은 Pending
+        또는 firing alert 매칭이며, issues 의 alertname 은 rca 와 playbooks 조회 입력과 호환된다. node
+        파라미터로 단일 노드를 조회하고 미등록 노드는 404 다. at 파라미터로 사건 시점의 그리드를 재구성할 수 있다.
+      parameters:
+      - description: 단일 노드 조회 (미등록 노드는 404)
+        in: query
+        name: node
+        type: string
+      - description: 평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)
+        in: query
+        name: at
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.NodeMapResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+      summary: 노드 그리드 (노드별 pod 상태 맵)
+      tags:
+      - inventory
   /api/v1/node/{node}:
     get:
       description: 노드의 4 차원 pressure 와 종합(overall), dominant 차원, 그 노드 위 top 압박 pod
@@ -1811,6 +1948,31 @@ paths:
       summary: List noisy neighbor top-N
       tags:
       - impact
+  /api/v1/overview:
+    get:
+      description: 랜딩 요약 카드 5장 (노드 3단 상태, pod 관측 커버리지, firing alert severity 집계, GPU
+        fleet, weakest signal) 을 한 응답으로 돌려준다. 노드 warning 은 firing alert 또는 통합 압박 elevated
+        초과, pod live 는 netobs eBPF 시리즈 존재, issues 는 alertname 단위 집계다. at 파라미터로 사건
+        시점의 랜딩 화면을 재구성할 수 있다.
+      parameters:
+      - description: 평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)
+        in: query
+        name: at
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.OverviewResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+      summary: 랜딩 대시보드 요약
+      tags:
+      - meta
   /api/v1/playbooks:
     get:
       description: gpu-idle cause 와 drop stage, 이벤트 dimension, 주요 alertname 별 대응 안내
@@ -2039,7 +2201,7 @@ swagger: "2.0"
 tags:
 - description: API 상태와 클러스터 헬스 요약
   name: meta
-- description: 노드와 파드 인벤토리 (k8s 오브젝트 스냅샷)
+- description: 노드와 파드 인벤토리 (k8s 오브젝트 스냅샷) 와 노드 그리드 맵
   name: inventory
 - description: 네트워크 지연 단계 분해와 패킷 drop, pod 간 flow
   name: network

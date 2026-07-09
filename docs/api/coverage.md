@@ -6,8 +6,8 @@
 
 | 태그 | 도메인 | 엔드포인트 |
 |---|---|---|
-| `meta` | API 상태와 클러스터 헬스 요약 | `/api/v1/health` |
-| `inventory` | 노드와 파드 인벤토리 | `/api/v1/nodes`, `/api/v1/pods` |
+| `meta` | API 상태와 클러스터 헬스 요약 | `/api/v1/health`, `/api/v1/overview` |
+| `inventory` | 노드와 파드 인벤토리, 노드 그리드 맵 | `/api/v1/nodes`, `/api/v1/pods`, `/api/v1/node-map` |
 | `network` | 지연 단계 분해, 패킷 drop, pod 간 flow | `/api/v1/latency-breakdown`, `/api/v1/drops`, `/api/v1/flows` |
 | `interference` | 자원 압박 랭킹과 노드 상세, 이벤트와 발화 이력, 메모리, 간섭 토폴로지 | `/api/v1/pressure`, `/api/v1/node/{node}`, `/api/v1/events`, `/api/v1/incidents`, `/api/v1/memory`, `/api/v1/topology` |
 | `impact` | 간섭 상관 top-N 과 영향 전파 그래프 | `/api/v1/noisy-neighbor`, `/api/v1/cross-node-interference`, `/api/v1/service-impact`, `/api/v1/cross-level`, `/api/v1/impact-graph`, `/api/v1/impact-paths` |
@@ -35,7 +35,8 @@
 | 이벤트 발화 이력 (시간축) | `incidents` (interference). `ALERTS` range 합성으로 기간 내 발화 에피소드 (firing/resolved, 시작·종료 시각). `starts_at`을 `at` 파라미터에 결합해 사건 시점 재구성 진입점 | 커버 |
 | 이벤트의 종합 원인 서사 (RCA) | `rca` (rca). Alertmanager webhook 으로 생성된 alert 별 RCASummary 를 프록시. 지배 차원과 최우선 의심 pod, 근거 메트릭, 신뢰도 | 커버 |
 | 원인별 대응 안내 (playbook) | `playbooks` (playbook). gpu-idle cause 와 drop stage, dimension, alertname 별 확인 절차와 권고 조치. `cause` 단일 조회와 alertname 별칭 매칭, `at` 결합 링크 | 커버 |
-| 통합 대시보드·알림 표시 | 프론트엔드 영역 | 범위 외 |
+| 통합 대시보드 랜딩 데이터 | `overview` (meta) 가 요약 카드 (노드 3단 상태, pod 관측 커버리지, firing alert severity 집계, GPU fleet, weakest signal) 를, `node-map` (inventory) 이 노드 그리드 (노드별 pod 상태와 firing alertname) 를 공급. 둘 다 `at` 결합으로 사건 시점 재구성 | 커버 |
+| 통합 대시보드·알림 표시 | 프론트엔드 영역 (데이터는 `overview` 와 `node-map` 이 공급) | 범위 외 |
 | 부하테스트 자동화 | `workload-injector` (dev 전용 LoadScenario CRD) 가 담당 | 범위 외 |
 
 ## 접근 제어
