@@ -90,6 +90,39 @@ func TestNodeMap_NodeFilter(t *testing.T) {
 	}
 }
 
+// TestNodeMap_CrossNamespaceAlert 는 #252 의 회귀 케이스다. 동일 이름 pod 가 두 namespace 에 있을
+// 때 한 namespace 를 가리키는 alert (src_namespace 쌍) 가 다른 namespace 의 동명 pod 에 붙지 않아야
+// 한다.
+func TestNodeMap_CrossNamespaceAlert(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("kube_node_info", sample(1, "node", "n1")).
+		on("kube_node_status_condition", sample(1, "node", "n1", "condition", "Ready", "status", "true")).
+		on("ALERTS", sample(1, "alertname", "NetObsDropBurst", "severity", "critical", "src_namespace", "ns-a", "src_pod", "sidecar")).
+		on("kube_pod_info",
+			sample(1, "namespace", "ns-a", "pod", "sidecar", "uid", "u1", "node", "n1"),
+			sample(1, "namespace", "ns-b", "pod", "sidecar", "uid", "u2", "node", "n1")).
+		on("kube_pod_status_phase",
+			sample(1, "uid", "u1", "phase", "Running"),
+			sample(1, "uid", "u2", "phase", "Running"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodeMap(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node-map", nil))
+	var resp NodeMapResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byNS := map[string]NodeMapPod{}
+	for _, p := range resp.Nodes[0].Pods {
+		byNS[p.Namespace] = p
+	}
+	if a := byNS["ns-a"]; a.Status != "warning" || len(a.Issues) != 1 {
+		t.Errorf("ns-a/sidecar=%+v want warning + issues 1건 (alert 귀속)", a)
+	}
+	if b := byNS["ns-b"]; b.Status != "live" || len(b.Issues) != 0 {
+		t.Errorf("ns-b/sidecar=%+v want live + issues 없음 (cross-namespace 오탐 금지)", b)
+	}
+}
+
 // TestNodeMap_AtParam 은 at 전파와 잘못된 at 의 400 을 검증한다.
 func TestNodeMap_AtParam(t *testing.T) {
 	q := nodeMapFakeQuerier()
