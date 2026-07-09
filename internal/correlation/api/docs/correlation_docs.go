@@ -415,7 +415,7 @@ const docTemplatecorrelation = `{
         },
         "/api/v1/health": {
             "get": {
-                "description": "4 자원 차원(cpu/gpu/memory/network)의 health 점수와 status, 압박이 집중된 node/pod(hotspot), 전체 dominant 압박 지점, z-score 이상, 한 줄 요약을 한 응답으로 돌려준다. 데이터 부재는 null + status=unknown 으로 graceful 처리한다.",
+                "description": "4 자원 차원(cpu/gpu/memory/network)의 health 점수와 status, 압박이 집중된 node/pod(hotspot), 전체 dominant 압박 지점, z-score 이상, 한 줄 요약을 한 응답으로 돌려준다. cluster_health 는 차원 health 의 최솟값(가장 약한 고리)이고 weakest 가 그 차원을 가리켜 랜딩 카드의 단일 % 표기에 쓰인다. 데이터 부재는 null + status=unknown 으로 graceful 처리한다.",
                 "produces": [
                     "application/json"
                 ],
@@ -712,7 +712,7 @@ const docTemplatecorrelation = `{
         },
         "/api/v1/nodes": {
             "get": {
-                "description": "노드별 이름, uid, 내부/외부 IP, Ready 상태, 버전, capacity(cpu/memory/gpu)를 kube-state-metrics 기반으로 돌려준다. 다른 API의 node 라벨과 동일 키로 매핑한다.",
+                "description": "노드별 이름, uid, 내부/외부 IP, Ready 상태, 역할(control-plane 등), 버전, capacity(cpu/memory/gpu)를 kube-state-metrics 기반으로 돌려준다. 다른 API의 node 라벨과 동일 키로 매핑한다.",
                 "produces": [
                     "application/json"
                 ],
@@ -860,7 +860,7 @@ const docTemplatecorrelation = `{
         },
         "/api/v1/pods": {
             "get": {
-                "description": "파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by), priority, phase, qos를 kube-state-metrics 기반으로 돌려준다. ?namespace 로 필터한다. 다른 API의 src_namespace/src_pod/pod_uid와 동일 키로 매핑한다.",
+                "description": "파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by), priority, phase, qos, 관측 커버리지(observed)를 kube-state-metrics 기반으로 돌려준다. observed 는 netobs 의 eBPF 시리즈가 존재하는지로, false 면 관측 no-data pod 다. ?namespace 로 필터한다. 다른 API의 src_namespace/src_pod/pod_uid와 동일 키로 매핑한다.",
                 "produces": [
                     "application/json"
                 ],
@@ -1759,6 +1759,10 @@ const docTemplatecorrelation = `{
                         "$ref": "#/definitions/internal_correlation_api.Anomaly"
                     }
                 },
+                "cluster_health": {
+                    "description": "ClusterHealth 는 차원 health 의 최솟값 (가장 약한 고리 원칙, #248) 이다. 프론트 랜딩 카드의\n단일 % 표기가 본 필드를 그대로 쓴다. health 를 아는 차원이 하나도 없으면 생략된다.",
+                    "type": "number"
+                },
                 "dimensions": {
                     "type": "object",
                     "additionalProperties": {
@@ -1773,6 +1777,14 @@ const docTemplatecorrelation = `{
                 },
                 "summary": {
                     "type": "string"
+                },
+                "weakest": {
+                    "description": "Weakest 는 ClusterHealth 를 만든 차원이다. 동률은 차원 이름 사전순 첫 항목으로 결정적이다.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/internal_correlation_api.WeakestSignal"
+                        }
+                    ]
                 },
                 "window": {
                     "type": "string"
@@ -2034,6 +2046,13 @@ const docTemplatecorrelation = `{
                 "ready": {
                     "type": "boolean"
                 },
+                "roles": {
+                    "description": "Roles 는 kube_node_role 기반 노드 역할 (control-plane 등) 이다 (#248). 역할 라벨이 없는\nworker 노드는 생략된다.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "runtime_version": {
                     "type": "string"
                 },
@@ -2197,6 +2216,10 @@ const docTemplatecorrelation = `{
                 },
                 "node": {
                     "type": "string"
+                },
+                "observed": {
+                    "description": "Observed 는 eBPF 관측 커버리지다 (#248). netobs 가 상시 수집하는 netobs_pod_bytes_total\n시리즈가 이 pod 에 존재하면 true, 없으면 no-data 로 판정한다.",
+                    "type": "boolean"
                 },
                 "phase": {
                     "type": "string"
@@ -2501,6 +2524,20 @@ const docTemplatecorrelation = `{
                     "type": "string"
                 },
                 "summary": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.WeakestSignal": {
+            "type": "object",
+            "properties": {
+                "dimension": {
+                    "type": "string"
+                },
+                "health": {
+                    "type": "number"
+                },
+                "status": {
                     "type": "string"
                 }
             }

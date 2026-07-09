@@ -19,11 +19,14 @@ import (
 
 // NodeInventory 는 한 노드의 기본 정보다.
 type NodeInventory struct {
-	Name           string       `json:"name"`
-	UID            string       `json:"uid,omitempty"`
-	InternalIP     string       `json:"internal_ip,omitempty"`
-	ExternalIP     string       `json:"external_ip,omitempty"`
-	Ready          bool         `json:"ready"`
+	Name       string `json:"name"`
+	UID        string `json:"uid,omitempty"`
+	InternalIP string `json:"internal_ip,omitempty"`
+	ExternalIP string `json:"external_ip,omitempty"`
+	Ready      bool   `json:"ready"`
+	// Roles 는 kube_node_role 기반 노드 역할 (control-plane 등) 이다 (#248). 역할 라벨이 없는
+	// worker 노드는 생략된다.
+	Roles          []string     `json:"roles,omitempty"`
 	KubeletVersion string       `json:"kubelet_version,omitempty"`
 	RuntimeVersion string       `json:"runtime_version,omitempty"`
 	KernelVersion  string       `json:"kernel_version,omitempty"`
@@ -52,6 +55,9 @@ type PodInventory struct {
 	PriorityClass string `json:"priority_class,omitempty"`
 	Phase         string `json:"phase,omitempty"`
 	QOSClass      string `json:"qos_class,omitempty"`
+	// Observed 는 eBPF 관측 커버리지다 (#248). netobs 가 상시 수집하는 netobs_pod_bytes_total
+	// 시리즈가 이 pod 에 존재하면 true, 없으면 no-data 로 판정한다.
+	Observed bool `json:"observed"`
 }
 
 // NodesResponse 는 GET /api/v1/nodes 의 typed 응답이다.
@@ -87,7 +93,7 @@ func (h *SynthesisHandler) queryParallel(ctx context.Context, queries ...string)
 
 // GetNodes godoc
 // @Summary      노드 인벤토리
-// @Description  노드별 이름, uid, 내부/외부 IP, Ready 상태, 버전, capacity(cpu/memory/gpu)를 kube-state-metrics 기반으로 돌려준다. 다른 API의 node 라벨과 동일 키로 매핑한다.
+// @Description  노드별 이름, uid, 내부/외부 IP, Ready 상태, 역할(control-plane 등), 버전, capacity(cpu/memory/gpu)를 kube-state-metrics 기반으로 돌려준다. 다른 API의 node 라벨과 동일 키로 매핑한다.
 // @Tags         inventory
 // @Produce      json
 // @Success      200  {object}  NodesResponse
@@ -107,6 +113,7 @@ func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
 		`kube_node_status_addresses{type="ExternalIP"}`,
 		`kube_node_status_condition{condition="Ready",status="true"}`,
 		"kube_node_status_capacity",
+		"kube_node_role",
 	)
 
 	nodes := map[string]*NodeInventory{}
@@ -162,6 +169,17 @@ func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 역할 (control-plane 등). 라벨이 없는 worker 는 자연 생략되고, 다중 역할은 사전순으로 결정적이다.
+	for _, sm := range res[4] {
+		if name, role := sm.Labels["node"], sm.Labels["role"]; name != "" && role != "" {
+			n := get(name)
+			n.Roles = append(n.Roles, role)
+		}
+	}
+	for _, n := range nodes {
+		sort.Strings(n.Roles)
+	}
+
 	for _, n := range nodes {
 		resp.Nodes = append(resp.Nodes, *n)
 	}
@@ -171,7 +189,7 @@ func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
 
 // GetPods godoc
 // @Summary      파드 인벤토리
-// @Description  파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by), priority, phase, qos를 kube-state-metrics 기반으로 돌려준다. ?namespace 로 필터한다. 다른 API의 src_namespace/src_pod/pod_uid와 동일 키로 매핑한다.
+// @Description  파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by), priority, phase, qos, 관측 커버리지(observed)를 kube-state-metrics 기반으로 돌려준다. observed 는 netobs 의 eBPF 시리즈가 존재하는지로, false 면 관측 no-data pod 다. ?namespace 로 필터한다. 다른 API의 src_namespace/src_pod/pod_uid와 동일 키로 매핑한다.
 // @Tags         inventory
 // @Produce      json
 // @Param        namespace  query  string  false  "namespace 필터 (생략 시 전체)"
@@ -187,8 +205,15 @@ func (h *SynthesisHandler) GetPods(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// base(kube_pod_info)와 enrich(phase/qos)를 동시에 조회하고 배리어 뒤에서 uid join 으로 병합한다.
-	res := h.queryParallel(ctx, "kube_pod_info", "kube_pod_status_phase", "kube_pod_status_qos_class")
+	// base(kube_pod_info)와 enrich(phase/qos/관측 커버리지)를 동시에 조회하고 배리어 뒤에서 join 으로
+	// 병합한다. 관측 커버리지는 netobs 가 allow-list 무관 상시 수집하는 netobs_pod_bytes_total 의
+	// 시리즈 존재로 판정한다 (#248).
+	res := h.queryParallel(ctx,
+		"kube_pod_info",
+		"kube_pod_status_phase",
+		"kube_pod_status_qos_class",
+		"count by(src_namespace, src_pod) (netobs_pod_bytes_total)",
+	)
 
 	// kube_pod_info: base set. namespace 필터는 PromQL injection 을 피해 Go 측에서 적용한다.
 	pods := []*PodInventory{}
@@ -229,6 +254,14 @@ func (h *SynthesisHandler) GetPods(w http.ResponseWriter, r *http.Request) {
 				p.QOSClass = sm.Labels["qos_class"]
 			}
 		}
+	}
+	// 관측 커버리지는 netobs 시리즈의 (src_namespace, src_pod) 를 (namespace, pod) 로 join 한다.
+	observed := map[[2]string]bool{}
+	for _, sm := range res[3] {
+		observed[[2]string{sm.Labels["src_namespace"], sm.Labels["src_pod"]}] = true
+	}
+	for _, p := range pods {
+		p.Observed = observed[[2]string{p.Namespace, p.Pod}]
 	}
 
 	for _, p := range pods {

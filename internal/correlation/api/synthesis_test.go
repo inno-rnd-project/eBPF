@@ -118,6 +118,13 @@ func TestSynthesis_GetHealth(t *testing.T) {
 	if !strings.Contains(resp.Summary, "cpu") {
 		t.Errorf("summary=%q want cpu 언급", resp.Summary)
 	}
+	// #248 가장 약한 고리: 최저 health 차원 (cpu 0.45) 이 cluster_health 와 weakest 로 승격된다.
+	if resp.ClusterHealth == nil || *resp.ClusterHealth != 0.45 {
+		t.Errorf("cluster_health=%v want 0.45", resp.ClusterHealth)
+	}
+	if resp.Weakest == nil || resp.Weakest.Dimension != "cpu" || resp.Weakest.Health != 0.45 || resp.Weakest.Status != "degraded" {
+		t.Errorf("weakest=%+v want cpu/0.45/degraded", resp.Weakest)
+	}
 }
 
 // TestSynthesis_GetPressure 는 dimension=cpu&scope=pod 가 pressure 내림차순 랭킹을 rank·severity 와
