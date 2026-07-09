@@ -60,6 +60,18 @@ type Incident struct {
 	Labels    map[string]string `json:"labels,omitempty"`
 }
 
+// alertTargetsPod 는 alert 라벨이 해당 pod 를 가리키는지 판정한다 (#248). netobs/gpuobs 계열은
+// src_pod, correlation 계열은 victim_pod, k8s 계열은 pod 라벨을 쓰므로 세 규약을 모두 본다.
+// incidents 의 pod 필터와 후속 node-map 의 pod-alert 매칭이 본 함수를 공유한다.
+func alertTargetsPod(labels map[string]string, pod string) bool {
+	return labels["pod"] == pod || labels["src_pod"] == pod || labels["victim_pod"] == pod
+}
+
+// alertTargetsNode 는 alert 라벨이 해당 node 를 가리키는지 판정한다 (#248).
+func alertTargetsNode(labels map[string]string, node string) bool {
+	return labels["node"] == node
+}
+
 // incidentDropLabels 는 응답 라벨에서 제외할 라벨이다. 식별에 무의미한 scrape 계열과 이미 전용
 // 필드로 승격된 라벨을 걸러 응답을 좁힌다.
 var incidentDropLabels = map[string]bool{
@@ -75,6 +87,8 @@ var incidentDropLabels = map[string]bool{
 // @Param        range  query  string  false  "조회 기간 (예: 1h, 6h, 최대 24h, 기본 1h)"
 // @Param        step   query  string  false  "샘플 간격 (예: 1m, 최소 30s, 기본 1m)"
 // @Param        limit  query  int     false  "상위 N 에피소드 (1-200, 기본 50)"
+// @Param        node   query  string  false  "node 라벨이 이 노드를 가리키는 에피소드만 조회"
+// @Param        pod    query  string  false  "pod/src_pod/victim_pod 라벨이 이 pod 를 가리키는 에피소드만 조회"
 // @Success      200  {object}  IncidentsResponse
 // @Failure      400  {object}  apicommon.ErrorBody
 // @Failure      500  {object}  apicommon.ErrorBody
@@ -118,6 +132,18 @@ func (h *IncidentsHandler) GetIncidents(w http.ResponseWriter, r *http.Request) 
 		if err != nil {
 			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", "Prometheus range 쿼리 실행 실패: "+err.Error())
 			return
+		}
+		// #248 node / pod 필터. 에피소드 분해 전 시리즈 단계에서 걸러 limit 이 필터 후 집합에
+		// 적용되게 한다.
+		if node := strings.TrimSpace(q.Get("node")); node != "" {
+			series = filterIncidentSeries(series, func(labels map[string]string) bool {
+				return alertTargetsNode(labels, node)
+			})
+		}
+		if pod := strings.TrimSpace(q.Get("pod")); pod != "" {
+			series = filterIncidentSeries(series, func(labels map[string]string) bool {
+				return alertTargetsPod(labels, pod)
+			})
 		}
 		resp.Incidents = buildIncidents(series, start, end, step, limit)
 	}
@@ -181,6 +207,17 @@ func buildIncidents(series []correlation.LabeledSeries, start, end time.Time, st
 	})
 	if len(out) > limit {
 		out = out[:limit]
+	}
+	return out
+}
+
+// filterIncidentSeries 는 라벨 술어를 만족하는 시리즈만 남긴다.
+func filterIncidentSeries(series []correlation.LabeledSeries, match func(map[string]string) bool) []correlation.LabeledSeries {
+	out := make([]correlation.LabeledSeries, 0, len(series))
+	for _, ls := range series {
+		if match(ls.Series.Labels) {
+			out = append(out, ls)
+		}
 	}
 	return out
 }

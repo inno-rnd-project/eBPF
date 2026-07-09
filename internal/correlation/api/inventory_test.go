@@ -18,7 +18,8 @@ func TestInventory_Nodes(t *testing.T) {
 		on("kube_node_status_capacity",
 			sample(8, "node", "gpu", "resource", "cpu"),
 			sample(67e9, "node", "gpu", "resource", "memory"),
-			sample(1, "node", "gpu", "resource", "nvidia_com_gpu"))
+			sample(1, "node", "gpu", "resource", "nvidia_com_gpu")).
+		on("kube_node_role", sample(1, "node", "gpu", "role", "control-plane"))
 
 	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
@@ -39,6 +40,10 @@ func TestInventory_Nodes(t *testing.T) {
 	}
 	if n.Capacity.CPU == nil || *n.Capacity.CPU != 8 || n.Capacity.GPU == nil || *n.Capacity.GPU != 1 || n.Capacity.MemoryBytes == nil {
 		t.Errorf("capacity=%+v want cpu 8/gpu 1/memory 설정", n.Capacity)
+	}
+	// #248 역할: kube_node_role 라벨이 병합된다.
+	if len(n.Roles) != 1 || n.Roles[0] != "control-plane" {
+		t.Errorf("roles=%v want [control-plane]", n.Roles)
 	}
 }
 
@@ -63,6 +68,13 @@ func TestInventory_Pods(t *testing.T) {
 	if p.Pod != "trainer" || p.UID != "u1" || p.PodIP != "10.1.1.1" || p.Node != "gpu" ||
 		p.WorkloadKind != "ReplicaSet" || p.WorkloadName != "trainer-abc" || p.Phase != "Running" || p.QOSClass != "Burstable" {
 		t.Errorf("pod=%+v want trainer 완전 enrich", p)
+	}
+	// #248 관측 커버리지: netobs 시리즈가 있는 trainer 만 observed, coredns 는 no-data.
+	if !resp.Pods[0].Observed {
+		t.Errorf("trainer observed=false want true (netobs 시리즈 존재)")
+	}
+	if resp.Pods[1].Observed {
+		t.Errorf("coredns observed=true want false (no-data)")
 	}
 }
 
@@ -105,5 +117,6 @@ func podFakeQuerier() *fakeQuerier {
 			sample(1, "uid", "u1", "phase", "Running"),
 			sample(0, "uid", "u1", "phase", "Pending"),
 			sample(1, "uid", "u2", "phase", "Running")).
-		on("kube_pod_status_qos_class", sample(1, "uid", "u1", "qos_class", "Burstable"))
+		on("kube_pod_status_qos_class", sample(1, "uid", "u1", "qos_class", "Burstable")).
+		on("netobs_pod_bytes_total", sample(3, "src_namespace", "default", "src_pod", "trainer"))
 }

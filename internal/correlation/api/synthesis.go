@@ -213,12 +213,24 @@ var synthDimensions = []synthDimension{
 // HealthResponse 는 GET /api/v1/health 의 typed 응답이다. swagger definition 과 frontend 타입의 단일
 // 출처다.
 type HealthResponse struct {
-	GeneratedAt      string                     `json:"generated_at"`
-	Window           string                     `json:"window"`
+	GeneratedAt string `json:"generated_at"`
+	Window      string `json:"window"`
+	// ClusterHealth 는 차원 health 의 최솟값 (가장 약한 고리 원칙, #248) 이다. 프론트 랜딩 카드의
+	// 단일 % 표기가 본 필드를 그대로 쓴다. health 를 아는 차원이 하나도 없으면 생략된다.
+	ClusterHealth *float64 `json:"cluster_health,omitempty"`
+	// Weakest 는 ClusterHealth 를 만든 차원이다. 동률은 차원 이름 사전순 첫 항목으로 결정적이다.
+	Weakest          *WeakestSignal             `json:"weakest,omitempty"`
 	Dimensions       map[string]DimensionHealth `json:"dimensions"`
 	DominantPressure *DominantPressure          `json:"dominant_pressure"`
 	Anomalies        []Anomaly                  `json:"anomalies"`
 	Summary          string                     `json:"summary"`
+}
+
+// WeakestSignal 은 health 가 가장 낮은 차원의 요약이다.
+type WeakestSignal struct {
+	Dimension string  `json:"dimension"`
+	Health    float64 `json:"health"`
+	Status    string  `json:"status"`
 }
 
 // DimensionHealth 는 한 차원의 health 점수와 status, 압박 집중 hotspot 이다. Health 가 null 이면 데이터
@@ -256,7 +268,7 @@ type Anomaly struct {
 
 // GetHealth godoc
 // @Summary      클러스터 헬스 + 압박 위치 합성
-// @Description  4 자원 차원(cpu/gpu/memory/network)의 health 점수와 status, 압박이 집중된 node/pod(hotspot), 전체 dominant 압박 지점, z-score 이상, 한 줄 요약을 한 응답으로 돌려준다. 데이터 부재는 null + status=unknown 으로 graceful 처리한다.
+// @Description  4 자원 차원(cpu/gpu/memory/network)의 health 점수와 status, 압박이 집중된 node/pod(hotspot), 전체 dominant 압박 지점, z-score 이상, 한 줄 요약을 한 응답으로 돌려준다. cluster_health 는 차원 health 의 최솟값(가장 약한 고리)이고 weakest 가 그 차원을 가리켜 랜딩 카드의 단일 % 표기에 쓰인다. 데이터 부재는 null + status=unknown 으로 graceful 처리한다.
 // @Tags         meta
 // @Produce      json
 // @Success      200  {object}  HealthResponse
@@ -316,6 +328,12 @@ func (h *SynthesisHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 		}
 		if res.anomaly != nil {
 			resp.Anomalies = append(resp.Anomalies, *res.anomaly)
+		}
+		// #248 가장 약한 고리. results 는 synthDimensions 선언 순서 (사전순) 라 동률 시 첫 항목이
+		// 결정적으로 채택된다.
+		if res.dh.Health != nil && (resp.Weakest == nil || *res.dh.Health < resp.Weakest.Health) {
+			resp.Weakest = &WeakestSignal{Dimension: res.name, Health: *res.dh.Health, Status: res.dh.Status}
+			resp.ClusterHealth = res.dh.Health
 		}
 	}
 
