@@ -361,3 +361,30 @@ func TestNetwork_RejectsShellMetaIntensity(t *testing.T) {
 		}
 	}
 }
+
+// TestNetwork_TrimsIntensityWhitespace 는 safety 와의 일관성을 검증한다. 앞뒤 공백만 있는 정상
+// 값은 trim 후 통과해 spawn 되고, 내부 공백은 셸 토큰 분리라 여전히 거부되어야 한다.
+func TestNetwork_TrimsIntensityWhitespace(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	g, err := New(KindNetwork, client)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	params := defaultParams()
+	params.Intensity = "  200M  "
+	if err := g.Start(context.Background(), params); err != nil {
+		t.Fatalf("Start(공백 trim 대상): %v want 통과", err)
+	}
+	pods, _ := client.CoreV1().Pods("ebpf-project").List(context.Background(), metav1.ListOptions{})
+	if len(pods.Items) != 2 {
+		t.Fatalf("pods=%d want 2 (공백 trim 후 정상 spawn)", len(pods.Items))
+	}
+
+	// 내부 공백은 trim 으로 사라지지 않아 거부된다.
+	client2 := fake.NewSimpleClientset()
+	g2, _ := New(KindNetwork, client2)
+	params.Intensity = "100 M"
+	if err := g2.Start(context.Background(), params); err == nil {
+		t.Errorf("intensity %q 인데 통과함 (내부 공백은 거부)", params.Intensity)
+	}
+}

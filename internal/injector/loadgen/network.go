@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
@@ -37,7 +38,10 @@ func (g *networkGen) Start(ctx context.Context, params Params) error {
 	if params.TargetNode == "" {
 		return fmt.Errorf("network loadgen: target node is empty")
 	}
-	bandwidth := params.Intensity
+	// safety.parseBandwidthBps 가 TrimSpace 후 검증하므로 " 100M " 같은 공백 포함 값이 safety 를
+	// 통과한다. loadgen 도 동일하게 trim 후 재검증해 safety 를 통과한 정상 입력이 여기서 거부되는
+	// 불일치를 막는다.
+	bandwidth := strings.TrimSpace(params.Intensity)
 	if bandwidth == "" {
 		bandwidth = "100M"
 	}
