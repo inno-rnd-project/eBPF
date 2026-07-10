@@ -33,6 +33,12 @@ const docTemplatecorrelation = `{
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "단일 노드 필터 (DNS-1123 형식, 생략 시 전체)",
+                        "name": "node",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "상위 N pod (합산 대역폭 내림차순, 기본 50)",
                         "name": "limit",
@@ -50,6 +56,12 @@ const docTemplatecorrelation = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.BandwidthResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
                     },
                     "500": {
@@ -219,6 +231,12 @@ const docTemplatecorrelation = `{
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "단일 노드 필터 (DNS-1123 형식, 생략 시 전체)",
+                        "name": "node",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "상위 N (1-100, 기본 20)",
                         "name": "limit",
@@ -236,6 +254,12 @@ const docTemplatecorrelation = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.DropsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
                     },
                     "500": {
@@ -445,6 +469,12 @@ const docTemplatecorrelation = `{
                 "parameters": [
                     {
                         "type": "string",
+                        "description": "단일 노드 필터 (DNS-1123 형식, 생략 시 전체)",
+                        "name": "node",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
                         "description": "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)",
                         "name": "at",
                         "in": "query"
@@ -455,6 +485,12 @@ const docTemplatecorrelation = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.GpuStatusResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
                     },
                     "500": {
@@ -663,6 +699,12 @@ const docTemplatecorrelation = `{
                         "type": "string",
                         "description": "egress 또는 ingress (생략 시 전체)",
                         "name": "direction",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "단일 노드 필터 (DNS-1123 형식, 생략 시 전체)",
+                        "name": "node",
                         "in": "query"
                     },
                     {
@@ -1053,6 +1095,12 @@ const docTemplatecorrelation = `{
                         "type": "string",
                         "description": "랭킹 입도 (node/pod, 기본 node)",
                         "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "단일 노드 필터 (DNS-1123 형식, 생략 시 전체)",
+                        "name": "node",
                         "in": "query"
                     },
                     {

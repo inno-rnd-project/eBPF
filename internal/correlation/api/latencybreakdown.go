@@ -74,6 +74,7 @@ var latencyScopes = map[string]latencyScope{
 // @Produce      json
 // @Param        scope      query  string  false  "workload / node / pod (기본 workload)"
 // @Param        direction  query  string  false  "egress 또는 ingress (생략 시 전체)"
+// @Param        node       query  string  false  "단일 노드 필터 (DNS-1123 형식, 생략 시 전체)"
 // @Param        limit      query  int     false  "상위 N 대상 (1-100, 기본 10)"
 // @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  LatencyBreakdownResponse
@@ -105,6 +106,11 @@ func (h *SynthesisHandler) GetLatencyBreakdown(w http.ResponseWriter, r *http.Re
 	if limit > 100 {
 		limit = 100
 	}
+	node, err := parseNodeParam(strings.TrimSpace(q.Get("node")))
+	if err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node", err.Error())
+		return
+	}
 
 	evalCtx, evalAt, ok := applyAtParam(w, r, r.Context())
 	if !ok {
@@ -122,10 +128,13 @@ func (h *SynthesisHandler) GetLatencyBreakdown(w http.ResponseWriter, r *http.Re
 	if h.querier != nil {
 		ctx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
 		defer cancel()
-		selector := ""
+		// #263 node 필터. 세 scope 의 히스토그램 메트릭 모두 node 라벨을 보유하므로 direction 과 함께
+		// 하나의 selector 로 병합해 노드로 좁힌다. node 미지정이면 directionMatcher 만 남는다.
+		directionMatcher := ""
 		if direction != "" {
-			selector = fmt.Sprintf("{direction=%q}", direction)
+			directionMatcher = fmt.Sprintf("direction=%q", direction)
 		}
+		selector := promSelector(directionMatcher, nodeMatcher(node))
 		query := fmt.Sprintf("histogram_quantile(0.99, sum by(%s) (rate(%s%s[5m])))", sc.byLabels, sc.metric, selector)
 		s, err := h.querier.Query(ctx, query)
 		if err != nil {

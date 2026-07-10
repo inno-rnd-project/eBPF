@@ -62,9 +62,11 @@ type bandwidthPodKey struct {
 // @Tags         network
 // @Produce      json
 // @Param        namespace  query  string  false  "src_namespace 필터"
+// @Param        node       query  string  false  "단일 노드 필터 (DNS-1123 형식, 생략 시 전체)"
 // @Param        limit      query  int     false  "상위 N pod (합산 대역폭 내림차순, 기본 50)"
 // @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  BandwidthResponse
+// @Failure      400  {object}  apicommon.ErrorBody
 // @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/bandwidth [get]
 func (h *SynthesisHandler) GetBandwidth(w http.ResponseWriter, r *http.Request) {
@@ -78,6 +80,11 @@ func (h *SynthesisHandler) GetBandwidth(w http.ResponseWriter, r *http.Request) 
 	}
 	if limit > 500 {
 		limit = 500
+	}
+	node, err := parseNodeParam(strings.TrimSpace(q.Get("node")))
+	if err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node", err.Error())
+		return
 	}
 
 	evalCtx, evalAt, ok := applyAtParam(w, r, r.Context())
@@ -102,12 +109,16 @@ func (h *SynthesisHandler) GetBandwidth(w http.ResponseWriter, r *http.Request) 
 	defer cancel()
 
 	// namespace 는 기존 규약대로 %q 이스케이프로 PromQL label matcher 에 밀어 Prometheus 측에서
-	// 필터한다.
-	selector := ""
+	// 필터한다. #263 node 필터도 같은 selector 에 병합해 pod 쿼리를 노드로 좁힌다.
+	nsMatcher := ""
 	if nsFilter != "" {
-		selector = fmt.Sprintf("{src_namespace=%q}", nsFilter)
+		nsMatcher = fmt.Sprintf("src_namespace=%q", nsFilter)
 	}
+	selector := promSelector(nsMatcher, nodeMatcher(node))
 	podQuery := fmt.Sprintf("sum by(node, src_namespace, src_pod, direction, layer) (rate(netobs_pod_bytes_total%s[5m]))", selector)
+
+	// node 합계와 capacity 는 namespace 와 무관한 노드 단위 집계라 node 필터만 적용한다.
+	nodeSel := promSelector(nodeMatcher(node))
 
 	// 주 소스인 pod 대역폭은 직접 조회해 실패를 500 으로 구분한다. node 합계와 capacity 는 포화
 	// 판단 보조라 병렬 조회 후 실패 (nil) 를 필드 생략으로 graceful 처리한다.
@@ -117,8 +128,8 @@ func (h *SynthesisHandler) GetBandwidth(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	extras := h.queryParallel(ctx,
-		"sum by(node, direction, layer) (rate(netobs_pod_bytes_total[5m]))",
-		"netobs_node_nic_capacity_bytes_per_sec",
+		fmt.Sprintf("sum by(node, direction, layer) (rate(netobs_pod_bytes_total%s[5m]))", nodeSel),
+		"netobs_node_nic_capacity_bytes_per_sec"+nodeSel,
 	)
 
 	pods := map[bandwidthPodKey]*BandwidthPod{}
