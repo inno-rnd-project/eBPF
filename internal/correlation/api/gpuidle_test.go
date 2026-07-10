@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -121,6 +122,60 @@ func TestGpuIdle_Pod_TieBreaker(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	if len(resp.Victims) != 2 || resp.Victims[0].Pod != "aaa" || resp.Victims[1].Pod != "bbb" {
 		t.Errorf("victims=%+v want 동률 시 aaa, bbb 순 (사전순 타이브레이커)", resp.Victims)
+	}
+}
+
+// TestGpuIdle_Node 는 scope=node 가 노드별 cause weight 순위와 dominant cause 를 돌려주고, node
+// 파라미터가 exact = 매처로 PromQL 에 결합되는지 검증한다.
+func TestGpuIdle_Node(t *testing.T) {
+	q := (&fakeQuerier{}).
+		// node 규칙을 cluster 규칙보다 먼저 둬 "node:gpu_idle_cause_weight:5m" 가 먼저 매칭되게 한다.
+		on("node:gpu_idle_cause_weight:5m",
+			sample(0.7, "node", "gpu", "cause", "memory_pressure"),
+			sample(0.3, "node", "gpu", "cause", "network_pressure")).
+		on("node:gpu_idle_dominant_cause:5m",
+			sample(1.0, "node", "gpu", "cause", "memory_pressure")).
+		on("gpu_idle_cause_weight:5m", sample(0.7, "cause", "memory_pressure")).
+		on("node:gpu_idle:5m", sample(0.9, "node", "gpu"))
+
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetGpuIdle(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-idle?scope=node&node=gpu", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp GpuIdleResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if len(resp.NodeAttributions) != 1 {
+		t.Fatalf("node_attributions=%d want 1", len(resp.NodeAttributions))
+	}
+	n := resp.NodeAttributions[0]
+	if n.Node != "gpu" || n.DominantCause != "memory_pressure" || len(n.Causes) != 2 || n.Causes[0].Cause != "memory_pressure" {
+		t.Errorf("node attribution=%+v want gpu/memory_pressure dominant", n)
+	}
+	// node 파라미터가 exact = 매처와 %q 로 결합됐는지 확인 (=~ 정규식 매처 미사용).
+	if !q.sawQuery(`node:gpu_idle_cause_weight:5m{node="gpu"}`) {
+		t.Errorf("exact = 매처 결합 쿼리 미확인: %v", q.queries)
+	}
+	if q.sawQuery("=~") {
+		t.Errorf("정규식 매처(=~)가 쓰임: %v", q.queries)
+	}
+}
+
+// TestGpuIdle_InvalidNode 는 DNS-1123 위반 node 값이 PromQL 결합 전에 400 으로 거부되는지 검증한다.
+func TestGpuIdle_InvalidNode(t *testing.T) {
+	for _, bad := range []string{`gpu"} or up{`, "UPPER", "node;drop", "a/b", "-lead"} {
+		q := &fakeQuerier{}
+		h := NewSynthesisHandler(q, nil, nil)
+		rec := httptest.NewRecorder()
+		target := "/api/v1/gpu-idle?scope=node&node=" + url.QueryEscape(bad)
+		h.GetGpuIdle(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("node=%q status=%d want 400", bad, rec.Code)
+		}
+		if len(q.queries) != 0 {
+			t.Errorf("node=%q 거부 후 쿼리 실행됨: %v (PromQL 결합 전 차단이어야 함)", bad, q.queries)
+		}
 	}
 }
 

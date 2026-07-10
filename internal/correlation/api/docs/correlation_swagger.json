@@ -328,7 +328,7 @@
         },
         "/api/v1/gpu-idle": {
             "get": {
-                "description": "노드별 GPU 유휴 비율과 유휴 원인 가중치 순위, dominant cause 를 합성한다. scope=cluster 는 cluster 단위 원인, scope=pod 는 victim Pod 단위 원인을 돌려준다. cause weight 는 GPU idle \u003e 0.5 일 때만 산출되며, 미만이면 cluster 가 null 로 graceful 처리된다.",
+                "description": "노드별 GPU 유휴 비율과 유휴 원인 가중치 순위, dominant cause 를 합성한다. scope=cluster 는 cluster 단위 원인, scope=node 는 노드 단위 원인 (node 파라미터로 단일 노드 조회), scope=pod 는 victim Pod 단위 원인을 돌려준다. cause weight 는 GPU idle \u003e 0.5 일 때만 산출되며, 미만이면 cluster 가 null 로 graceful 처리된다.",
                 "produces": [
                     "application/json"
                 ],
@@ -339,8 +339,14 @@
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "cluster 또는 pod (기본 cluster)",
+                        "description": "cluster 또는 node 또는 pod (기본 cluster)",
                         "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "scope=node 단일 노드 필터 (DNS-1123 형식, 생략 시 전체 노드)",
+                        "name": "node",
                         "in": "query"
                     },
                     {
@@ -1741,6 +1747,12 @@
                 "generated_at": {
                     "type": "string"
                 },
+                "node_attributions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.GpuNodeAttribution"
+                    }
+                },
                 "nodes": {
                     "type": "array",
                     "items": {
@@ -1760,6 +1772,23 @@
                     }
                 },
                 "window": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.GpuNodeAttribution": {
+            "type": "object",
+            "properties": {
+                "causes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.GpuCauseWeight"
+                    }
+                },
+                "dominant_cause": {
+                    "type": "string"
+                },
+                "node": {
                     "type": "string"
                 }
             }
