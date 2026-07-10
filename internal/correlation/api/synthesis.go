@@ -408,6 +408,7 @@ type PressureEntry struct {
 // @Produce      json
 // @Param        dimension  query  string  true   "압박 차원 (cpu/gpu/memory/network)"
 // @Param        scope      query  string  false  "랭킹 입도 (node/pod, 기본 node)"
+// @Param        node       query  string  false  "단일 노드 필터 (DNS-1123 형식, 생략 시 전체)"
 // @Param        limit      query  int     false  "상위 N (1-100, 기본 10)"
 // @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  PressureResponse
@@ -437,11 +438,19 @@ func (h *SynthesisHandler) GetPressure(w http.ResponseWriter, r *http.Request) {
 	if limit > 100 {
 		limit = 100
 	}
+	node, err := parseNodeParam(strings.TrimSpace(q.Get("node")))
+	if err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node", err.Error())
+		return
+	}
 
 	metric := d.nodePressure
 	if scope == "pod" {
 		metric = d.podPressure
 	}
+	// #263 node 필터. pressure recording rule 은 node 라벨을 보유하므로 검증된 node 로 exact 매처를
+	// metric 뒤에 붙인다. node 미지정이면 selector 가 빈 문자열이라 기존 전체 동작을 유지한다.
+	metric += promSelector(nodeMatcher(node))
 
 	evalCtx, evalAt, ok2 := applyAtParam(w, r, r.Context())
 	if !ok2 {

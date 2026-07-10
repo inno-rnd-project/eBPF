@@ -103,15 +103,18 @@ type RetransGroup struct {
 // @Tags         network
 // @Produce      json
 // @Param        namespace  query  string  false  "src_namespace 필터 (생략 시 전체)"
+// @Param        node       query  string  false  "단일 노드 필터 (DNS-1123 형식, 생략 시 전체)"
 // @Param        limit      query  int     false  "상위 N (1-100, 기본 20)"
 // @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  DropsResponse
+// @Failure      400  {object}  apicommon.ErrorBody
 // @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/drops [get]
 func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
-	nsFilter := strings.TrimSpace(r.URL.Query().Get("namespace"))
+	q := r.URL.Query()
+	nsFilter := strings.TrimSpace(q.Get("namespace"))
 	limit := 20
-	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+	if v := strings.TrimSpace(q.Get("limit")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			limit = n
 		}
@@ -119,6 +122,14 @@ func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
 	if limit > 100 {
 		limit = 100
 	}
+	node, err := parseNodeParam(strings.TrimSpace(q.Get("node")))
+	if err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node", err.Error())
+		return
+	}
+	// #263 node 필터. drop / cilium / retrans 5 신호 모두 node 라벨을 보유하므로 검증된 node 로 exact
+	// 매처를 rate() 안 metric selector 에 삽입한다. node 미지정이면 sel 이 빈 문자열이라 전체 조회.
+	sel := promSelector(nodeMatcher(node))
 
 	evalCtx, evalAt, ok := applyAtParam(w, r, r.Context())
 	if !ok {
@@ -140,7 +151,7 @@ func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 
 		// 주 소스 (항상 수집): 실패하면 돌려줄 핵심 데이터가 없으므로 500.
-		labeled, err := h.querier.Query(ctx, "sum by(node, src_namespace, src_workload, dst_namespace, dst_workload, direction, drop_reason, drop_category, drop_stage) (rate(netobs_drop_events_labeled_total[5m]))")
+		labeled, err := h.querier.Query(ctx, fmt.Sprintf("sum by(node, src_namespace, src_workload, dst_namespace, dst_workload, direction, drop_reason, drop_category, drop_stage) (rate(netobs_drop_events_labeled_total%s[5m]))", sel))
 		if err != nil {
 			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", err))
 			return
@@ -150,11 +161,11 @@ func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
 		// opt-in 상세와 CNI 계층 drop: best-effort 라 실패해도 무시한다. cilium 은 미설치 클러스터에서
 		// 시계열 부재로 자연히 빈 결과가 된다.
 		res := h.queryParallel(ctx,
-			"sum by(node, src_namespace, src_pod, direction, drop_reason, drop_category, protocol, src_ip, src_port, dst_ip, dst_port, ip_version) (rate(netobs_drop_events_flow_total[5m]))",
-			"netobs_drop_last_timestamp_seconds",
-			"sum by(drop_reason, drop_category, func) (rate(netobs_drop_stack_total[5m]))",
-			"sum by(node, reason, direction) (rate(cilium_drop_count_total[5m]))",
-			"sum by(node, src_namespace, src_workload, traffic_scope, dst_namespace, dst_workload) (rate(netobs_retrans_events_labeled_total[5m]))",
+			fmt.Sprintf("sum by(node, src_namespace, src_pod, direction, drop_reason, drop_category, protocol, src_ip, src_port, dst_ip, dst_port, ip_version) (rate(netobs_drop_events_flow_total%s[5m]))", sel),
+			"netobs_drop_last_timestamp_seconds"+sel,
+			fmt.Sprintf("sum by(drop_reason, drop_category, func) (rate(netobs_drop_stack_total%s[5m]))", sel),
+			fmt.Sprintf("sum by(node, reason, direction) (rate(cilium_drop_count_total%s[5m]))", sel),
+			fmt.Sprintf("sum by(node, src_namespace, src_workload, traffic_scope, dst_namespace, dst_workload) (rate(netobs_retrans_events_labeled_total%s[5m]))", sel),
 		)
 		resp.Flows = buildDropFlows(res[0], res[1], nsFilter, limit)
 		resp.Stacks = buildDropStacks(res[2], limit)

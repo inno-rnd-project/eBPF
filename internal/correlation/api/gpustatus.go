@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"netobs/internal/apicommon"
@@ -70,11 +71,18 @@ type gpuPodKey struct {
 // @Description  node 와 GPU device 단위 사용률, 메모리 사용량과 총량, 전력 사용량과 제한, 온도, 활성 throttle reason, device 별 점유 pod 목록을 한 응답으로 합성한다. gpuobs_device_* 와 gpuobs_pod_* instant query 만 사용하며 사용률 외 신호는 수집 공백 시 필드가 생략된다.
 // @Tags         gpu
 // @Produce      json
+// @Param        node       query  string  false  "단일 노드 필터 (DNS-1123 형식, 생략 시 전체)"
 // @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  GpuStatusResponse
+// @Failure      400  {object}  apicommon.ErrorBody
 // @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/gpu-status [get]
 func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) {
+	node, err := parseNodeParam(strings.TrimSpace(r.URL.Query().Get("node")))
+	if err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node", err.Error())
+		return
+	}
 	evalCtx, evalAt, ok := applyAtParam(w, r, r.Context())
 	if !ok {
 		return
@@ -94,23 +102,27 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
 	defer cancel()
 
+	// #263 node 필터. gpuobs_device_* / gpuobs_pod_* 는 node 라벨을 보유하므로 검증된 node 로 exact
+	// 매처를 각 metric 에 붙인다. node 미지정이면 sel 이 빈 문자열이라 기존 전체 조회를 유지한다.
+	sel := promSelector(nodeMatcher(node))
+
 	// 주 소스인 사용률은 직접 조회해 실패를 500 으로 구분한다. 나머지 신호는 부가 정보라 병렬 조회
 	// 후 실패 (nil) 를 필드 생략으로 graceful 처리한다.
-	utils, err := h.querier.Query(ctx, "gpuobs_device_utilization_percent")
+	utils, err := h.querier.Query(ctx, "gpuobs_device_utilization_percent"+sel)
 	if err != nil {
 		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", err))
 		return
 	}
 
 	extras := h.queryParallel(ctx,
-		"gpuobs_device_memory_used_bytes",
-		"gpuobs_device_memory_total_bytes",
-		"gpuobs_device_power_usage_watts",
-		"gpuobs_device_power_limit_watts",
-		"gpuobs_device_temperature_celsius",
-		"gpuobs_device_throttle_active == 1",
-		"gpuobs_pod_utilization_percent",
-		"gpuobs_pod_memory_used_bytes",
+		"gpuobs_device_memory_used_bytes"+sel,
+		"gpuobs_device_memory_total_bytes"+sel,
+		"gpuobs_device_power_usage_watts"+sel,
+		"gpuobs_device_power_limit_watts"+sel,
+		"gpuobs_device_temperature_celsius"+sel,
+		"gpuobs_device_throttle_active"+sel+" == 1",
+		"gpuobs_pod_utilization_percent"+sel,
+		"gpuobs_pod_memory_used_bytes"+sel,
 	)
 
 	devices := map[gpuDeviceKey]*GpuDevice{}

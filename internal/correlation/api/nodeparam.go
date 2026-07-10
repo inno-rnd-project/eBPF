@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // nodeNamePattern 은 Kubernetes 노드 이름 (kubernetes.io/hostname) 의 DNS-1123 subdomain 형식이다.
@@ -26,4 +27,30 @@ func parseNodeParam(raw string) (string, error) {
 		return "", fmt.Errorf("node 이름이 DNS-1123 형식이 아닙니다: %q", raw)
 	}
 	return raw, nil
+}
+
+// nodeMatcher 는 검증된 node 로 PromQL exact matcher 조각 (node="...") 을 만든다. node 가 비면 빈
+// 문자열을 돌려줘 promSelector 에서 자연 제외된다. 값은 parseNodeParam 검증을 통과한 DNS-1123 문자열
+// 이라 %q 결합이 안전하다.
+func nodeMatcher(node string) string {
+	if node == "" {
+		return ""
+	}
+	return fmt.Sprintf("node=%q", node)
+}
+
+// promSelector 는 빈 조각을 제외한 matcher 들을 PromQL label selector `{...}` 로 조립한다. 조각이
+// 모두 비면 빈 문자열을 돌려줘 호출부가 bare metric (selector 없는 형태) 을 그대로 유지하게 한다.
+// node-scoped 필터가 기존 namespace 등 다른 matcher 와 하나의 selector 로 병합될 때 쓴다.
+func promSelector(matchers ...string) string {
+	nz := make([]string, 0, len(matchers))
+	for _, m := range matchers {
+		if m != "" {
+			nz = append(nz, m)
+		}
+	}
+	if len(nz) == 0 {
+		return ""
+	}
+	return "{" + strings.Join(nz, ",") + "}"
 }
