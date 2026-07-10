@@ -111,9 +111,10 @@ type RetransGroup struct {
 // @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/drops [get]
 func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
-	nsFilter := strings.TrimSpace(r.URL.Query().Get("namespace"))
+	q := r.URL.Query()
+	nsFilter := strings.TrimSpace(q.Get("namespace"))
 	limit := 20
-	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+	if v := strings.TrimSpace(q.Get("limit")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			limit = n
 		}
@@ -121,7 +122,7 @@ func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
 	if limit > 100 {
 		limit = 100
 	}
-	node, err := parseNodeParam(strings.TrimSpace(r.URL.Query().Get("node")))
+	node, err := parseNodeParam(strings.TrimSpace(q.Get("node")))
 	if err != nil {
 		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node", err.Error())
 		return
