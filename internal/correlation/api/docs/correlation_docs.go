@@ -385,6 +385,53 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "/api/v1/gpu-rca": {
+            "get": {
+                "description": "노드 하나의 GPU 유휴 dominant cause 와 cause 별 가중치, 신뢰도, 원인 후보 pod 랭킹, 한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와 가중치는 scope=node gpu-idle 결과를 재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor suspect pod (namespace-aware) 와 cross-node-interference suspect node 를 점수순으로 집계한다. 신뢰도는 top1 과 top2 cause 격차다. raw 사용률/온도/전력/시계열은 Grafana 가 직접 읽으므로 싣지 않는다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "gpu"
+                ],
+                "summary": "노드 GPU RCA 합성",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "대상 노드 (DNS-1123 형식)",
+                        "name": "node",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "원인 후보 상위 N (1-50, 기본 10)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)",
+                        "name": "at",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.NodeGpuRcaResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/gpu-status": {
             "get": {
                 "description": "node 와 GPU device 단위 사용률, 메모리 사용량과 총량, 전력 사용량과 제한, 온도, 활성 throttle reason, device 별 점유 pod 목록을 한 응답으로 합성한다. gpuobs_device_* 와 gpuobs_pod_* instant query 만 사용하며 사용률 외 신호는 수집 공백 시 필드가 생략된다.",
@@ -2140,6 +2187,43 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "internal_correlation_api.NodeGpuRcaResponse": {
+            "type": "object",
+            "properties": {
+                "causes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.GpuCauseWeight"
+                    }
+                },
+                "confidence": {
+                    "description": "Confidence 는 dominant 판정 신뢰도 (0-1). top1 과 top2 cause weight 의 격차 (margin) 로,\n단일 cause 가 지배적일수록 1 에 가깝고 두 cause 가 백중이면 0 에 가깝다. GPUIdleDominantCause\nAmbiguous alert 의 격차 \u003c 0.1 판정과 동일 축이다.",
+                    "type": "number"
+                },
+                "dominant_cause": {
+                    "type": "string"
+                },
+                "generated_at": {
+                    "type": "string"
+                },
+                "idle": {
+                    "description": "Idle 은 node:gpu_idle:5m (0-1). 유휴 게이팅 미충족 시 cause 귀속이 비므로 함께 노출한다.",
+                    "type": "number"
+                },
+                "narrative": {
+                    "type": "string"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "suspects": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.RcaSuspect"
+                    }
+                }
+            }
+        },
         "internal_correlation_api.NodeInventory": {
             "type": "object",
             "properties": {
@@ -2621,6 +2705,35 @@ const docTemplatecorrelation = `{
                     "type": "string"
                 },
                 "window": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.RcaSuspect": {
+            "type": "object",
+            "properties": {
+                "dimension": {
+                    "type": "string"
+                },
+                "issues": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "score": {
+                    "type": "number"
+                },
+                "source": {
                     "type": "string"
                 }
             }
