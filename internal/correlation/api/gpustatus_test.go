@@ -24,7 +24,20 @@ func gpuStatusFakeQuerier() *fakeQuerier {
 			sample(30, "node", "gpu", "gpu_uuid", "u1", "src_namespace", "ml", "src_pod", "train-a"),
 			sample(12, "node", "gpu", "gpu_uuid", "u1", "src_namespace", "ml", "src_pod", "infer-b")).
 		on("gpuobs_pod_memory_used_bytes",
-			sample(4e9, "node", "gpu", "gpu_uuid", "u1", "src_namespace", "ml", "src_pod", "train-a"))
+			sample(4e9, "node", "gpu", "gpu_uuid", "u1", "src_namespace", "ml", "src_pod", "train-a")).
+		// #267 device 상세 확장. 단일값과 서브라벨(clock/threshold), reason 합산(throttle_violation).
+		on("gpuobs_device_fan_speed_percent", sample(45, dev...)).
+		on("gpuobs_device_performance_state", sample(2, dev...)).
+		on("gpuobs_device_pcie_link_generation_current", sample(4, dev...)).
+		on("gpuobs_device_pcie_link_width_current", sample(16, dev...)).
+		on("gpuobs_device_clock_mhz",
+			sample(1800, "node", "gpu", "gpu_uuid", "u1", "clock", "sm"),
+			sample(9500, "node", "gpu", "gpu_uuid", "u1", "clock", "mem")).
+		on("gpuobs_device_temperature_threshold_celsius",
+			sample(83, "node", "gpu", "gpu_uuid", "u1", "threshold", "slowdown"),
+			sample(90, "node", "gpu", "gpu_uuid", "u1", "threshold", "shutdown")).
+		on("gpuobs_device_throttle_violation_seconds_total",
+			sample(4, "node", "gpu", "gpu_uuid", "u1"))
 }
 
 // TestGpuStatus 는 device 현황 신호 병합과 memory ratio 산출, 활성 throttle reason 수집, pod 점유
@@ -64,6 +77,27 @@ func TestGpuStatus(t *testing.T) {
 	}
 	if d.Pods[1].MemoryUsedBytes != nil {
 		t.Errorf("infer-b memory=%v want nil (memory 미수집 pod)", d.Pods[1].MemoryUsedBytes)
+	}
+	// #267 device 상세 확장. 단일값 필드.
+	if d.FanSpeedPercent == nil || *d.FanSpeedPercent != 45 {
+		t.Errorf("fan_speed=%v want 45", d.FanSpeedPercent)
+	}
+	if d.PcieLinkGeneration == nil || *d.PcieLinkGeneration != 4 || d.PcieLinkWidth == nil || *d.PcieLinkWidth != 16 {
+		t.Errorf("pcie=%v/%v want gen 4/width 16", d.PcieLinkGeneration, d.PcieLinkWidth)
+	}
+	if d.ThrottleViolationSeconds == nil || *d.ThrottleViolationSeconds != 4 {
+		t.Errorf("throttle_violation=%v want 4 (reason 합)", d.ThrottleViolationSeconds)
+	}
+	// 서브라벨 map (clock, threshold).
+	if d.ClocksMhz["sm"] != 1800 || d.ClocksMhz["mem"] != 9500 {
+		t.Errorf("clocks_mhz=%v want sm 1800/mem 9500", d.ClocksMhz)
+	}
+	if d.TemperatureThresholdsCelsius["slowdown"] != 83 || d.TemperatureThresholdsCelsius["shutdown"] != 90 {
+		t.Errorf("temperature_thresholds=%v want slowdown 83/shutdown 90", d.TemperatureThresholdsCelsius)
+	}
+	// SM active 는 fixture 에 gpm 시리즈가 없어 (consumer GPU 재현) 생략돼야 한다.
+	if d.SMActivePercent != nil {
+		t.Errorf("sm_active_percent=%v want nil (GPM 미지원 재현)", d.SMActivePercent)
 	}
 }
 

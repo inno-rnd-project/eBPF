@@ -37,6 +37,34 @@ type GpuDevice struct {
 	PowerUsageWatts    *float64 `json:"power_usage_watts,omitempty"`
 	PowerLimitWatts    *float64 `json:"power_limit_watts,omitempty"`
 	TemperatureCelsius *float64 `json:"temperature_celsius,omitempty"`
+	// 아래는 #267 의 device 상세 확장 필드다. gpuobs 가 수집하나 기존 gpu-status 가 노출하지 않던
+	// 신호로, heatmap 온도 위험도 색칠 (temperature_thresholds_celsius) 과 GPU Detail 페이지
+	// (클럭, 팬, PCIe, performance state 등) 의 데이터를 채운다. 전부 수집 공백 시 생략되도록
+	// pointer 또는 omitempty map 이다.
+	//
+	// SMActivePercent 는 gpm_utilization_percent 의 sm_occupancy 다. consumer GPU (RTX 등) 는 GPM
+	// 미지원이라 빈 값이고 데이터센터 GPU (A100+) 에서만 채워진다.
+	SMActivePercent           *float64 `json:"sm_active_percent,omitempty"`
+	EncoderUtilizationPercent *float64 `json:"encoder_utilization_percent,omitempty"`
+	DecoderUtilizationPercent *float64 `json:"decoder_utilization_percent,omitempty"`
+	Bar1MemoryUsedBytes       *float64 `json:"bar1_memory_used_bytes,omitempty"`
+	Bar1MemoryTotalBytes      *float64 `json:"bar1_memory_total_bytes,omitempty"`
+	PowerLimitEnforcedWatts   *float64 `json:"power_limit_enforced_watts,omitempty"`
+	EnergyConsumptionJoules   *float64 `json:"energy_consumption_joules,omitempty"`
+	FanSpeedPercent           *float64 `json:"fan_speed_percent,omitempty"`
+	PerformanceState          *float64 `json:"performance_state,omitempty"`
+	ComputeMode               *float64 `json:"compute_mode,omitempty"`
+	PersistenceMode           *float64 `json:"persistence_mode,omitempty"`
+	PcieLinkGeneration        *float64 `json:"pcie_link_generation,omitempty"`
+	PcieLinkWidth             *float64 `json:"pcie_link_width,omitempty"`
+	PcieRxBytesPerSecond      *float64 `json:"pcie_rx_bytes_per_second,omitempty"`
+	PcieTxBytesPerSecond      *float64 `json:"pcie_tx_bytes_per_second,omitempty"`
+	ThrottleViolationSeconds  *float64 `json:"throttle_violation_seconds,omitempty"`
+	// ClocksMhz 는 clock 라벨 (sm / mem / graphics) 별 클럭이고, TemperatureThresholdsCelsius 는
+	// threshold 라벨 (slowdown / shutdown / mem_max / gpu_max) 별 임계다. 서브라벨로 device 당
+	// 다중 시리즈라 단일 필드가 아닌 map 으로 담는다.
+	ClocksMhz                    map[string]float64 `json:"clocks_mhz,omitempty"`
+	TemperatureThresholdsCelsius map[string]float64 `json:"temperature_thresholds_celsius,omitempty"`
 	// ThrottleReasons 는 값이 1 (활성) 인 throttle reason 라벨 목록이다. gpu_idle 같은 정보성 사유도
 	// NVML 이 주는 그대로 노출해 프론트가 필터 여부를 결정하게 한다.
 	ThrottleReasons []string `json:"throttle_reasons"`
@@ -68,7 +96,7 @@ type gpuPodKey struct {
 
 // GetGpuStatus godoc
 // @Summary      GPU 자원 현황 조회
-// @Description  node 와 GPU device 단위 사용률, 메모리 사용량과 총량, 전력 사용량과 제한, 온도, 활성 throttle reason, device 별 점유 pod 목록을 한 응답으로 합성한다. gpuobs_device_* 와 gpuobs_pod_* instant query 만 사용하며 사용률 외 신호는 수집 공백 시 필드가 생략된다.
+// @Description  node 와 GPU device 단위 사용률, 메모리, 전력, 온도, 활성 throttle reason, 점유 pod 에 더해 device 상세(SM active, encoder/decoder 사용률, bar1 메모리, 클럭, 팬, performance state, PCIe 링크, 온도 임계, throttle violation, compute/persistence mode, energy)를 한 응답으로 합성한다. gpuobs_device_* 와 gpuobs_pod_* instant query 만 쓰며 수집 공백 신호는 필드가 생략된다. SM active(gpm sm_occupancy)는 데이터센터 GPU 에서만 채워진다.
 // @Tags         gpu
 // @Produce      json
 // @Param        node       query  string  false  "단일 노드 필터 (DNS-1123 형식, 생략 시 전체)"
@@ -114,13 +142,48 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	extras := h.queryParallel(ctx,
-		"gpuobs_device_memory_used_bytes"+sel,
-		"gpuobs_device_memory_total_bytes"+sel,
-		"gpuobs_device_power_usage_watts"+sel,
-		"gpuobs_device_power_limit_watts"+sel,
-		"gpuobs_device_temperature_celsius"+sel,
+	// 단일값 device 메트릭은 (query, setter) 바인딩으로 묶어 인덱스 실수를 막는다. throttle_violation
+	// 은 reason 별 다중이라 sum 으로, sm_occupancy 는 gpm 라벨로 좁혀 단일값으로 만든다. gpm 은
+	// consumer GPU 에서 시리즈가 없어 자연 생략된다.
+	gpmSel := promSelector(nodeMatcher(node), `gpm="sm_occupancy"`)
+	binds := []struct {
+		query string
+		set   func(d *GpuDevice, v float64)
+	}{
+		{"gpuobs_device_memory_used_bytes" + sel, func(d *GpuDevice, v float64) { d.MemoryUsedBytes = &v }},
+		{"gpuobs_device_memory_total_bytes" + sel, func(d *GpuDevice, v float64) { d.MemoryTotalBytes = &v }},
+		{"gpuobs_device_power_usage_watts" + sel, func(d *GpuDevice, v float64) { d.PowerUsageWatts = &v }},
+		{"gpuobs_device_power_limit_watts" + sel, func(d *GpuDevice, v float64) { d.PowerLimitWatts = &v }},
+		{"gpuobs_device_temperature_celsius" + sel, func(d *GpuDevice, v float64) { d.TemperatureCelsius = &v }},
+		{"gpuobs_device_gpm_utilization_percent" + gpmSel, func(d *GpuDevice, v float64) { d.SMActivePercent = &v }},
+		{"gpuobs_device_encoder_utilization_percent" + sel, func(d *GpuDevice, v float64) { d.EncoderUtilizationPercent = &v }},
+		{"gpuobs_device_decoder_utilization_percent" + sel, func(d *GpuDevice, v float64) { d.DecoderUtilizationPercent = &v }},
+		{"gpuobs_device_bar1_memory_used_bytes" + sel, func(d *GpuDevice, v float64) { d.Bar1MemoryUsedBytes = &v }},
+		{"gpuobs_device_bar1_memory_total_bytes" + sel, func(d *GpuDevice, v float64) { d.Bar1MemoryTotalBytes = &v }},
+		{"gpuobs_device_power_limit_enforced_watts" + sel, func(d *GpuDevice, v float64) { d.PowerLimitEnforcedWatts = &v }},
+		{"gpuobs_device_energy_consumption_joules_total" + sel, func(d *GpuDevice, v float64) { d.EnergyConsumptionJoules = &v }},
+		{"gpuobs_device_fan_speed_percent" + sel, func(d *GpuDevice, v float64) { d.FanSpeedPercent = &v }},
+		{"gpuobs_device_performance_state" + sel, func(d *GpuDevice, v float64) { d.PerformanceState = &v }},
+		{"gpuobs_device_compute_mode" + sel, func(d *GpuDevice, v float64) { d.ComputeMode = &v }},
+		{"gpuobs_device_persistence_mode" + sel, func(d *GpuDevice, v float64) { d.PersistenceMode = &v }},
+		{"gpuobs_device_pcie_link_generation_current" + sel, func(d *GpuDevice, v float64) { d.PcieLinkGeneration = &v }},
+		{"gpuobs_device_pcie_link_width_current" + sel, func(d *GpuDevice, v float64) { d.PcieLinkWidth = &v }},
+		{"gpuobs_device_pcie_rx_bytes_per_second" + sel, func(d *GpuDevice, v float64) { d.PcieRxBytesPerSecond = &v }},
+		{"gpuobs_device_pcie_tx_bytes_per_second" + sel, func(d *GpuDevice, v float64) { d.PcieTxBytesPerSecond = &v }},
+		{fmt.Sprintf("sum by(node, gpu_uuid) (gpuobs_device_throttle_violation_seconds_total%s)", sel), func(d *GpuDevice, v float64) { d.ThrottleViolationSeconds = &v }},
+	}
+	bq := make([]string, len(binds))
+	for i, b := range binds {
+		bq[i] = b.query
+	}
+	bres := h.queryParallel(ctx, bq...)
+
+	// 목록 (throttle 활성 reason) 과 서브라벨 map (clock, temperature threshold), pod 점유는 단일값이
+	// 아니라 별도로 조회한다.
+	sub := h.queryParallel(ctx,
 		"gpuobs_device_throttle_active"+sel+" == 1",
+		"gpuobs_device_clock_mhz"+sel,
+		"gpuobs_device_temperature_threshold_celsius"+sel,
 		"gpuobs_pod_utilization_percent"+sel,
 		"gpuobs_pod_memory_used_bytes"+sel,
 	)
@@ -156,14 +219,12 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 	}
-	assign(extras[0], func(d *GpuDevice, v float64) { d.MemoryUsedBytes = &v })
-	assign(extras[1], func(d *GpuDevice, v float64) { d.MemoryTotalBytes = &v })
-	assign(extras[2], func(d *GpuDevice, v float64) { d.PowerUsageWatts = &v })
-	assign(extras[3], func(d *GpuDevice, v float64) { d.PowerLimitWatts = &v })
-	assign(extras[4], func(d *GpuDevice, v float64) { d.TemperatureCelsius = &v })
+	for i, b := range binds {
+		assign(bres[i], b.set)
+	}
 
 	// throttle 은 `== 1` 필터로 활성 reason 만 남으므로 라벨을 목록에 수집한다.
-	for _, sm := range extras[5] {
+	for _, sm := range sub[0] {
 		if d, ok := devices[gpuDeviceKey{node: sm.Labels["node"], gpuUUID: sm.Labels["gpu_uuid"]}]; ok {
 			if reason := sm.Labels["reason"]; reason != "" {
 				d.ThrottleReasons = append(d.ThrottleReasons, reason)
@@ -171,10 +232,34 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// clock 과 temperature threshold 는 서브라벨 (clock, threshold) 별 다중 시리즈라 map 에 채운다.
+	assignLabeled := func(samples []correlation.InstantSample, labelKey string, get func(d *GpuDevice) *map[string]float64) {
+		for _, sm := range samples {
+			if math.IsNaN(sm.Value) || math.IsInf(sm.Value, 0) {
+				continue
+			}
+			d, ok := devices[gpuDeviceKey{node: sm.Labels["node"], gpuUUID: sm.Labels["gpu_uuid"]}]
+			if !ok {
+				continue
+			}
+			lv := sm.Labels[labelKey]
+			if lv == "" {
+				continue
+			}
+			m := get(d)
+			if *m == nil {
+				*m = map[string]float64{}
+			}
+			(*m)[lv] = sm.Value
+		}
+	}
+	assignLabeled(sub[1], "clock", func(d *GpuDevice) *map[string]float64 { return &d.ClocksMhz })
+	assignLabeled(sub[2], "threshold", func(d *GpuDevice) *map[string]float64 { return &d.TemperatureThresholdsCelsius })
+
 	// pod 점유는 (gpu_uuid, namespace, pod) 로 병합해 utilization 과 memory 를 한 항목에 합친다.
 	pods := map[gpuPodKey]*GpuPod{}
 	podOwner := map[gpuPodKey]gpuDeviceKey{}
-	for _, sm := range extras[6] {
+	for _, sm := range sub[3] {
 		if math.IsNaN(sm.Value) || math.IsInf(sm.Value, 0) {
 			continue
 		}
@@ -189,7 +274,7 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 		}
 		pods[k].UtilizationPercent = sm.Value
 	}
-	for _, sm := range extras[7] {
+	for _, sm := range sub[4] {
 		if math.IsNaN(sm.Value) || math.IsInf(sm.Value, 0) {
 			continue
 		}

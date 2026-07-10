@@ -317,9 +317,11 @@ paths:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/gpu-status:
     get:
-      description: node 와 GPU device 단위 사용률, 메모리 사용량과 총량, 전력 사용량과 제한, 온도, 활성 throttle
-        reason, device 별 점유 pod 목록을 한 응답으로 합성한다. gpuobs_device_* 와 gpuobs_pod_* instant
-        query 만 사용하며 사용률 외 신호는 수집 공백 시 필드가 생략된다.
+      description: node 와 GPU device 단위 사용률, 메모리, 전력, 온도, 활성 throttle reason, 점유 pod
+        에 더해 device 상세(SM active, encoder/decoder 사용률, bar1 메모리, 클럭, 팬, performance
+        state, PCIe 링크, 온도 임계, throttle violation, compute/persistence mode, energy)를
+        한 응답으로 합성한다. gpuobs_device_* 와 gpuobs_pod_* instant query 만 쓰며 수집 공백 신호는 필드가
+        생략된다. SM active(gpm sm_occupancy)는 데이터센터 GPU 에서만 채워진다.
       produces:
       - application/json
       tags:
@@ -1266,6 +1268,32 @@ definitions:
   internal_correlation_api.GpuDevice:
     type: object
     properties:
+      bar1_memory_total_bytes:
+        type: number
+      bar1_memory_used_bytes:
+        type: number
+      clocks_mhz:
+        description: 'ClocksMhz 는 clock 라벨 (sm / mem / graphics) 별 클럭이고, TemperatureThresholdsCelsius
+          는
+
+          threshold 라벨 (slowdown / shutdown / mem_max / gpu_max) 별 임계다. 서브라벨로 device
+          당
+
+          다중 시리즈라 단일 필드가 아닌 map 으로 담는다.'
+        type: object
+        additionalProperties:
+          type: number
+          format: float64
+      compute_mode:
+        type: number
+      decoder_utilization_percent:
+        type: number
+      encoder_utilization_percent:
+        type: number
+      energy_consumption_joules:
+        type: number
+      fan_speed_percent:
+        type: number
       gpu_index:
         type: string
       gpu_uuid:
@@ -1280,16 +1308,51 @@ definitions:
         type: string
       node:
         type: string
+      pcie_link_generation:
+        type: number
+      pcie_link_width:
+        type: number
+      pcie_rx_bytes_per_second:
+        type: number
+      pcie_tx_bytes_per_second:
+        type: number
+      performance_state:
+        type: number
+      persistence_mode:
+        type: number
       pods:
         type: array
         items:
           $ref: '#/definitions/internal_correlation_api.GpuPod'
+      power_limit_enforced_watts:
+        type: number
       power_limit_watts:
         type: number
       power_usage_watts:
         type: number
+      sm_active_percent:
+        description: '아래는 #267 의 device 상세 확장 필드다. gpuobs 가 수집하나 기존 gpu-status 가 노출하지
+          않던
+
+          신호로, heatmap 온도 위험도 색칠 (temperature_thresholds_celsius) 과 GPU Detail 페이지
+
+          (클럭, 팬, PCIe, performance state 등) 의 데이터를 채운다. 전부 수집 공백 시 생략되도록
+
+          pointer 또는 omitempty map 이다.
+
+
+          SMActivePercent 는 gpm_utilization_percent 의 sm_occupancy 다. consumer GPU
+          (RTX 등) 는 GPM
+
+          미지원이라 빈 값이고 데이터센터 GPU (A100+) 에서만 채워진다.'
+        type: number
       temperature_celsius:
         type: number
+      temperature_thresholds_celsius:
+        type: object
+        additionalProperties:
+          type: number
+          format: float64
       throttle_reasons:
         description: 'ThrottleReasons 는 값이 1 (활성) 인 throttle reason 라벨 목록이다. gpu_idle
           같은 정보성 사유도
@@ -1298,6 +1361,8 @@ definitions:
         type: array
         items:
           type: string
+      throttle_violation_seconds:
+        type: number
       utilization_percent:
         type: number
   internal_correlation_api.GpuIdleAttribution:
