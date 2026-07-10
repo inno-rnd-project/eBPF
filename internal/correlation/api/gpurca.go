@@ -182,17 +182,16 @@ func dominantConfidence(causes []GpuCauseWeight) float64 {
 // 으로 firing alertname 을 붙인다.
 func (h *SynthesisHandler) rcaSuspects(node string, nodePods map[[2]string]bool, firing []correlation.InstantSample, limit int) []RcaSuspect {
 	type key struct{ source, ns, pod, node string }
-	best := map[key]*RcaSuspect{}
+	best := map[key]RcaSuspect{}
 	order := []key{}
 	upsert := func(k key, cand RcaSuspect) {
 		if cur, ok := best[k]; ok {
 			if cand.Score > cur.Score {
-				*cur = cand
+				best[k] = cand
 			}
 			return
 		}
-		c := cand
-		best[k] = &c
+		best[k] = cand
 		order = append(order, k)
 	}
 	if h.neighbors != nil {
@@ -227,7 +226,7 @@ func (h *SynthesisHandler) rcaSuspects(node string, nodePods map[[2]string]bool,
 	}
 	out := make([]RcaSuspect, 0, len(order))
 	for _, k := range order {
-		out = append(out, *best[k])
+		out = append(out, best[k])
 	}
 	// score 내림차순, 동률은 source·식별자 사전순으로 결정성을 확보한다.
 	sort.SliceStable(out, func(i, j int) bool {
