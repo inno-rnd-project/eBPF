@@ -162,6 +162,30 @@ func TestGpuIdle_Node(t *testing.T) {
 	}
 }
 
+// TestGpuIdle_NodeParamIgnoredOutsideNodeScope 는 node 필터가 scope=node 전용임을 검증한다. scope=
+// cluster 에서 node 파라미터를 줘도 공통 필드 resp.Nodes 가 특정 노드로 좁혀지지 않아야 (Cluster
+// 와의 불일치 방지) 한다.
+func TestGpuIdle_NodeParamIgnoredOutsideNodeScope(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("node:gpu_idle:5m", sample(0.9, "node", "gpu"), sample(0.8, "node", "worker1")).
+		on("gpu_idle_cause_weight:5m", sample(0.6, "cause", "memory_pressure"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetGpuIdle(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-idle?scope=cluster&node=gpu", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp GpuIdleResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if len(resp.Nodes) != 2 {
+		t.Errorf("nodes=%d want 2 (scope=cluster 에서 node 필터 무시)", len(resp.Nodes))
+	}
+	// node selector 가 PromQL 에 결합되지 않아야 한다.
+	if q.sawQuery(`{node="gpu"}`) {
+		t.Errorf("scope=cluster 인데 node selector 결합됨: %v", q.queries)
+	}
+}
+
 // TestGpuIdle_InvalidNode 는 DNS-1123 위반 node 값이 PromQL 결합 전에 400 으로 거부되는지 검증한다.
 func TestGpuIdle_InvalidNode(t *testing.T) {
 	for _, bad := range []string{`gpu"} or up{`, "UPPER", "node;drop", "a/b", "-lead"} {

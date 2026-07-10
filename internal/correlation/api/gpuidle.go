@@ -121,9 +121,11 @@ func (h *SynthesisHandler) GetGpuIdle(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 
 		// node 파라미터는 parseNodeParam 으로 DNS-1123 검증을 통과한 값이라 exact = 매처와 %q 결합이
-		// 안전하다. 빈 값이면 selector 없이 전체 노드를 조회한다.
+		// 안전하다. node 필터는 scope=node 전용이다. scope=cluster/pod 에서도 적용하면 공통 필드인
+		// resp.Nodes 만 한 노드로 좁혀지고 Cluster/Victims 는 전체 기준이라 한 응답 안에서 불일치가
+		// 생기므로 scope 를 함께 가드한다. 빈 값이면 selector 없이 전체 노드를 조회한다.
 		nodeSelector := ""
-		if node != "" {
+		if scope == "node" && node != "" {
 			nodeSelector = fmt.Sprintf("{node=%q}", node)
 		}
 
