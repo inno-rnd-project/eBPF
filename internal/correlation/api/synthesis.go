@@ -82,6 +82,13 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
 	))
+	// #265 노드 raw 사용률 프록시. cadvisor / gpuobs 원시 게이지를 노드별로 얇게 노출한다.
+	mux.Handle("/api/v1/node-vitals", apicommon.Chain(
+		http.HandlerFunc(h.GetNodeVitals),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
 	mux.Handle("/api/v1/gpu-idle", apicommon.Chain(
 		http.HandlerFunc(h.GetGpuIdle),
 		apicommon.LoggingMiddleware,
