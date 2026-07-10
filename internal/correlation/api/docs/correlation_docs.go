@@ -828,6 +828,47 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "/api/v1/node-vitals": {
+            "get": {
+                "description": "노드의 live pod 평균 CPU 와 memory 사용률 퍼센트, GPU 사용률과 GPU 메모리를 instant query 로 읽어 노드 단위로 돌려준다. cadvisor 와 gpuobs 원시 게이지 기반이며 압박 score 로 변환하지 않는다. CPU 와 memory 는 pod 의 사용량 대비 limit 비율의 노드 평균이라 limit 이 없는 pod 는 자연 제외된다. 프론트가 주기 폴링으로 실시간 값을 받는 경로이며, 시계열 range 는 trends 가 담당한다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "interference"
+                ],
+                "summary": "노드 raw 사용률 (Vitals)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "대상 노드 (DNS-1123 형식)",
+                        "name": "node",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)",
+                        "name": "at",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.NodeVitalsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/node/{node}": {
             "get": {
                 "description": "노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다.",
@@ -2447,6 +2488,38 @@ const docTemplatecorrelation = `{
                     }
                 },
                 "window": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.NodeVitalsResponse": {
+            "type": "object",
+            "properties": {
+                "cpu_percent": {
+                    "type": "number"
+                },
+                "generated_at": {
+                    "type": "string"
+                },
+                "gpu_memory_percent": {
+                    "type": "number"
+                },
+                "gpu_memory_total_bytes": {
+                    "type": "number"
+                },
+                "gpu_memory_used_bytes": {
+                    "type": "number"
+                },
+                "gpu_percent": {
+                    "type": "number"
+                },
+                "memory_percent": {
+                    "type": "number"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "summary": {
                     "type": "string"
                 }
             }
