@@ -75,6 +75,13 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
 	))
+	// #258 노드 GPU RCA 합성. scope=node gpu-idle 과 noisy-neighbor/cross-node snapshot 을 합성한다.
+	mux.Handle("/api/v1/gpu-rca", apicommon.Chain(
+		http.HandlerFunc(h.GetNodeGpuRca),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
 	mux.Handle("/api/v1/gpu-idle", apicommon.Chain(
 		http.HandlerFunc(h.GetGpuIdle),
 		apicommon.LoggingMiddleware,
