@@ -166,6 +166,8 @@ func TestSynthesis_GetNode(t *testing.T) {
 		on("node:cpu_pressure_score", sample(0.78, "node", "worker2")).
 		on("node:memory_pressure_score", sample(0.22, "node", "worker2")).
 		on("node:pressure_score:5m", sample(0.78, "node", "worker2")).
+		on("node:cpu_health_score:5m", sample(0.3, "node", "worker2")).
+		on("node:memory_health_score:5m", sample(0.85, "node", "worker2")).
 		on("pod:cpu_throttle_score", sample(0.78, "node", "worker2", "src_namespace", "default", "src_pod", "app-x"))
 	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
@@ -183,6 +185,14 @@ func TestSynthesis_GetNode(t *testing.T) {
 	}
 	if len(resp.TopPods) == 0 || resp.TopPods[0].Pod != "default/app-x" {
 		t.Errorf("top_pods=%+v want default/app-x 먼저", resp.TopPods)
+	}
+	// #264 health 4차원과 신뢰도. health 는 node health rule 값, 신뢰도는 pressure top1(cpu 0.78)
+	// 과 top2(memory 0.22) 격차 0.56.
+	if resp.Health["cpu"] != 0.3 || resp.Health["memory"] != 0.85 {
+		t.Errorf("health=%v want cpu 0.3/memory 0.85", resp.Health)
+	}
+	if resp.Confidence < 0.559 || resp.Confidence > 0.561 {
+		t.Errorf("confidence=%v want ~0.56 (0.78-0.22)", resp.Confidence)
 	}
 }
 

@@ -830,7 +830,7 @@ const docTemplatecorrelation = `{
         },
         "/api/v1/node/{node}": {
             "get": {
-                "description": "노드의 4 차원 pressure 와 종합(overall), dominant 차원, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다.",
+                "description": "노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다.",
                 "produces": [
                     "application/json"
                 ],
@@ -2403,11 +2403,23 @@ const docTemplatecorrelation = `{
         "internal_correlation_api.NodeResponse": {
             "type": "object",
             "properties": {
+                "confidence": {
+                    "description": "Confidence 는 dominant 차원 판정 신뢰도 (0-1, #264) 다. 압박 top1 과 top2 차원의 격차로,\ngpu-rca 의 신뢰도와 동일 축이라 한 차원이 지배적일수록 1 에 가깝다.",
+                    "type": "number"
+                },
                 "dominant_dimension": {
                     "type": "string"
                 },
                 "generated_at": {
                     "type": "string"
+                },
+                "health": {
+                    "description": "Health 는 차원별 health score (0-1, #264) 다. node:*_health_score:5m 룰 기반이며 cluster\nhealth 와 동일 산식의 노드 차원 판이라 GPU 와 비GPU 노드가 같은 해석을 공유한다.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "number",
+                        "format": "float64"
+                    }
                 },
                 "node": {
                     "type": "string"
