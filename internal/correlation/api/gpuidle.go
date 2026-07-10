@@ -18,13 +18,14 @@ import (
 // 원인 가중치 순위로 합성한다. recording rule (gpu_idle_cause_weight:5m 계열) 을 instant query 로 읽어
 // Grafana 에만 있던 신호를 API 로 노출한다.
 type GpuIdleResponse struct {
-	GeneratedAt string              `json:"generated_at"`
-	Window      string              `json:"window"`
-	Scope       string              `json:"scope"`
-	Nodes       []GpuNodeIdle       `json:"nodes"`
-	Cluster     *GpuIdleAttribution `json:"cluster"`
-	Victims     []GpuVictimIdle     `json:"victims,omitempty"`
-	Summary     string              `json:"summary"`
+	GeneratedAt      string               `json:"generated_at"`
+	Window           string               `json:"window"`
+	Scope            string               `json:"scope"`
+	Nodes            []GpuNodeIdle        `json:"nodes"`
+	Cluster          *GpuIdleAttribution  `json:"cluster"`
+	NodeAttributions []GpuNodeAttribution `json:"node_attributions,omitempty"`
+	Victims          []GpuVictimIdle      `json:"victims,omitempty"`
+	Summary          string               `json:"summary"`
 }
 
 // GpuNodeIdle 는 한 노드의 GPU 유휴 비율 (0-1) 과 severity 다. higher 가 더 많이 노는 worst 다.
@@ -48,6 +49,15 @@ type GpuCauseWeight struct {
 	Weight float64 `json:"weight"`
 }
 
+// GpuNodeAttribution 은 scope=node 에서 노드 단위 유휴 원인 귀속이다 (#256 rule, #257 노출). node
+// scope cause set 은 device 신호 (dcgm / nccl / thermal / pcie) 를 포함한 9 종으로 cluster 와 동일
+// 하며, 노드별로 독립 산출된다.
+type GpuNodeAttribution struct {
+	Node          string           `json:"node"`
+	DominantCause string           `json:"dominant_cause"`
+	Causes        []GpuCauseWeight `json:"causes"`
+}
+
 // GpuVictimIdle 는 scope=pod 에서 victim Pod 단위 유휴 원인 귀속이다. pod 단위 cause set 은 node
 // 단위 신호 (dcgm / nccl / thermal) 를 제외한 cluster cause 의 부분집합이다.
 type GpuVictimIdle struct {
@@ -60,10 +70,11 @@ type GpuVictimIdle struct {
 
 // GetGpuIdle godoc
 // @Summary      GPU 유휴 원인 분석
-// @Description  노드별 GPU 유휴 비율과 유휴 원인 가중치 순위, dominant cause 를 합성한다. scope=cluster 는 cluster 단위 원인, scope=pod 는 victim Pod 단위 원인을 돌려준다. cause weight 는 GPU idle > 0.5 일 때만 산출되며, 미만이면 cluster 가 null 로 graceful 처리된다.
+// @Description  노드별 GPU 유휴 비율과 유휴 원인 가중치 순위, dominant cause 를 합성한다. scope=cluster 는 cluster 단위 원인, scope=node 는 노드 단위 원인 (node 파라미터로 단일 노드 조회), scope=pod 는 victim Pod 단위 원인을 돌려준다. cause weight 는 GPU idle > 0.5 일 때만 산출되며, 미만이면 cluster 가 null 로 graceful 처리된다.
 // @Tags         gpu
 // @Produce      json
-// @Param        scope  query  string  false  "cluster 또는 pod (기본 cluster)"
+// @Param        scope  query  string  false  "cluster 또는 node 또는 pod (기본 cluster)"
+// @Param        node   query  string  false  "scope=node 단일 노드 필터 (DNS-1123 형식, 생략 시 전체 노드)"
 // @Param        limit  query  int     false  "scope=pod 상위 N victim (1-100, 기본 10)"
 // @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  GpuIdleResponse
@@ -74,8 +85,13 @@ func (h *SynthesisHandler) GetGpuIdle(w http.ResponseWriter, r *http.Request) {
 	if scope == "" {
 		scope = "cluster"
 	}
-	if scope != "cluster" && scope != "pod" {
-		apicommon.WriteError(w, http.StatusBadRequest, "invalid_scope", "scope 는 cluster 또는 pod 여야 합니다")
+	if scope != "cluster" && scope != "node" && scope != "pod" {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_scope", "scope 는 cluster 또는 node 또는 pod 여야 합니다")
+		return
+	}
+	node, err := parseNodeParam(strings.TrimSpace(r.URL.Query().Get("node")))
+	if err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node", err.Error())
 		return
 	}
 	limit := 10
@@ -104,7 +120,16 @@ func (h *SynthesisHandler) GetGpuIdle(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
 		defer cancel()
 
-		if s, err := h.querier.Query(ctx, "node:gpu_idle:5m"); err == nil {
+		// node 파라미터는 parseNodeParam 으로 DNS-1123 검증을 통과한 값이라 exact = 매처와 %q 결합이
+		// 안전하다. node 필터는 scope=node 전용이다. scope=cluster/pod 에서도 적용하면 공통 필드인
+		// resp.Nodes 만 한 노드로 좁혀지고 Cluster/Victims 는 전체 기준이라 한 응답 안에서 불일치가
+		// 생기므로 scope 를 함께 가드한다. 빈 값이면 selector 없이 전체 노드를 조회한다.
+		nodeSelector := ""
+		if scope == "node" && node != "" {
+			nodeSelector = fmt.Sprintf("{node=%q}", node)
+		}
+
+		if s, err := h.querier.Query(ctx, "node:gpu_idle:5m"+nodeSelector); err == nil {
 			for _, sm := range s {
 				if math.IsNaN(sm.Value) {
 					continue
@@ -124,7 +149,10 @@ func (h *SynthesisHandler) GetGpuIdle(w http.ResponseWriter, r *http.Request) {
 		}
 
 		resp.Cluster = h.clusterIdleAttribution(ctx)
-		if scope == "pod" {
+		switch scope {
+		case "node":
+			resp.NodeAttributions = h.nodeIdleAttribution(ctx, nodeSelector)
+		case "pod":
 			resp.Victims = h.victimIdleAttribution(ctx, limit)
 		}
 	}
@@ -229,6 +257,64 @@ func (h *SynthesisHandler) victimIdleAttribution(ctx context.Context, limit int)
 	if len(out) > limit {
 		out = out[:limit]
 	}
+	return out
+}
+
+// nodeIdleAttribution 은 node 단위 원인 가중치를 node 별로 묶어 dominant cause 와 함께 돌려준다
+// (#256 rule, #257 노출). nodeSelector 는 parseNodeParam 검증을 통과한 exact 매처 (또는 빈 문자열)
+// 라 안전하다. top cause weight 내림차순, 동률은 node 이름 사전순으로 정렬한다.
+func (h *SynthesisHandler) nodeIdleAttribution(ctx context.Context, nodeSelector string) []GpuNodeAttribution {
+	s, err := h.querier.Query(ctx, "node:gpu_idle_cause_weight:5m"+nodeSelector)
+	if err != nil || len(s) == 0 {
+		return nil
+	}
+	groups := map[string]*GpuNodeAttribution{}
+	order := []string{}
+	for _, sm := range s {
+		if math.IsNaN(sm.Value) {
+			continue
+		}
+		cause := sm.Labels["cause"]
+		node := sm.Labels["node"]
+		if cause == "" || node == "" {
+			continue
+		}
+		v, ok := groups[node]
+		if !ok {
+			v = &GpuNodeAttribution{Node: node, Causes: []GpuCauseWeight{}}
+			groups[node] = v
+			order = append(order, node)
+		}
+		v.Causes = append(v.Causes, GpuCauseWeight{Cause: cause, Weight: sm.Value})
+	}
+
+	dom := map[string]string{}
+	if ds, err := h.querier.Query(ctx, "node:gpu_idle_dominant_cause:5m"+nodeSelector); err == nil {
+		for _, sm := range ds {
+			if c := sm.Labels["cause"]; c != "" {
+				dom[sm.Labels["node"]] = c
+			}
+		}
+	}
+
+	out := make([]GpuNodeAttribution, 0, len(order))
+	for _, node := range order {
+		v := groups[node]
+		sortCauses(v.Causes)
+		if d, ok := dom[node]; ok {
+			v.DominantCause = d
+		} else if len(v.Causes) > 0 {
+			v.DominantCause = v.Causes[0].Cause
+		}
+		out = append(out, *v)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		wi, wj := topCauseWeight(out[i].Causes), topCauseWeight(out[j].Causes)
+		if wi != wj {
+			return wi > wj
+		}
+		return out[i].Node < out[j].Node
+	})
 	return out
 }
 
