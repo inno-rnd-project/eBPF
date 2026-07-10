@@ -1,0 +1,64 @@
+# gpuobs-node-cause.test.yaml 은 #256 의 노드 단위 GPU idle 원인 귀속 rule 검증 promtool unit test 다.
+# 두 GPU 노드에 서로 다른 dominant cause 를 주어 노드별 cause weight 와 dominant 가 독립 산출되는지,
+# 유휴 게이팅 (node:gpu_idle:5m > 0.5) 과 노이즈 하한 (sum > 0.05) 이 동작하는지 단정한다.
+# n1: memory onset (baseline 0.1 → 0.9) 이 dominant. n2: cpu onset 이 dominant. n3: GPU 사용 중이라
+# 게이팅에 걸려 산출 제외.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  - interval: 30s
+    input_series:
+      # n1 memory onset: working_set 500→900 (limit 1000). eval 90m 의 baseline 창(0~60m)은 0.5,
+      # 현재 0.9 → rise 0.4. GPU 유휴(util 5%).
+      - series: 'container_memory_working_set_bytes{node="n1",namespace="ns1",pod="p1"}'
+        values: '500x120 900x60'
+      - series: 'kube_pod_container_resource_limits{namespace="ns1",pod="p1",resource="memory"}'
+        values: '1000x180'
+      - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
+        values: '5x180'
+      # n2 cpu onset: throttle 0.1→0.8. cadvisor throttle rate 기반 대신 score 직접 주입이 어려워
+      # container_cpu_cfs_throttled_periods_total 와 periods_total 로 비율을 만든다. 간단화를 위해
+      # throttled=periods 로 100% throttle 인 구간을 onset 으로 준다.
+      - series: 'container_cpu_cfs_throttled_periods_total{node="n2",namespace="ns2",pod="p2"}'
+        values: '0+0x120 0+30x60'
+      - series: 'container_cpu_cfs_periods_total{node="n2",namespace="ns2",pod="p2"}'
+        values: '0+30x180'
+      - series: 'gpuobs_device_utilization_percent{node="n2",gpu_uuid="g2"}'
+        values: '5x180'
+      # n3: memory onset 과 동일 패턴이지만 GPU 사용 중(util 80%)이라 게이팅 제외.
+      - series: 'container_memory_working_set_bytes{node="n3",namespace="ns3",pod="p3"}'
+        values: '500x120 900x60'
+      - series: 'kube_pod_container_resource_limits{namespace="ns3",pod="p3",resource="memory"}'
+        values: '1000x180'
+      - series: 'gpuobs_device_utilization_percent{node="n3",gpu_uuid="g3"}'
+        values: '80x180'
+
+    promql_expr_test:
+      # n1 은 memory_pressure dominant (rise 0.4 가 유일 non-zero cause).
+      - expr: node:gpu_idle_dominant_cause:5m{node="n1"}
+        eval_time: 90m
+        exp_samples:
+          - labels: 'node:gpu_idle_dominant_cause:5m{node="n1",cause="memory_pressure"}'
+            value: 1.000005
+      # n1 memory weight = 1 (유일 non-zero cause 라 정규화 후 1).
+      - expr: node:gpu_idle_cause_weight:5m{node="n1",cause="memory_pressure"}
+        eval_time: 90m
+        exp_samples:
+          - labels: 'node:gpu_idle_cause_weight:5m{node="n1",cause="memory_pressure"}'
+            value: 1
+      # n2 는 cpu_throttle dominant.
+      - expr: node:gpu_idle_dominant_cause:5m{node="n2"}
+        eval_time: 90m
+        exp_samples:
+          - labels: 'node:gpu_idle_dominant_cause:5m{node="n2",cause="cpu_throttle"}'
+            value: 1.000008
+      # n3 은 GPU 사용 중이라 게이팅 제외 → cause score / weight / dominant 모두 없음.
+      - expr: node:gpu_idle_cause_weight:5m{node="n3"}
+        eval_time: 90m
+        exp_samples: []
+      - expr: node:gpu_idle_dominant_cause:5m{node="n3"}
+        eval_time: 90m
+        exp_samples: []

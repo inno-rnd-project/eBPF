@@ -764,6 +764,99 @@ spec:
             (cluster:gpu_idle_dominant_cause:5m * 0 + 1)
             or (gpu_idle_cause_weight:5m * 0)
 
+        # node:gpu_idle_cause_score:5m{node,cause} (#256)
+        # 노드 단위 GPU idle 원인 귀속 base score 9 종. cluster 단위 gpu_idle_cause_weight:5m 와 pod
+        # 단위 pod:gpu_idle_cause_score:5m 사이의 노드 scope 계층으로, 노드 하나의 GPU 가 왜 노는지를
+        # 원인별로 설명한다. cause 정의와 정규화 규약은 cluster rule 과 동일해 세 scope 의 cause 해석이
+        # 단일 진실원을 공유한다. 모든 cause 는 node:gpu_idle:5m > 0.5 게이팅으로 유휴 노드에서만
+        # 산출되고, node 신호가 없는 원인 (dev 의 dcgm/nccl 등) 은 series 자체가 자연 제외된다.
+        #
+        # pod 계열 5 종은 pod:*_score_rise:5m (#244 baseline 대비 상승분) 을 node 별 max 로 집계한다.
+        # cluster:gpu_idle_*_rise:5m 는 max() 로 node 라벨이 이미 소거돼 by(node) 재집계가 불가하므로
+        # 동일 소스인 pod rise 를 직접 집계한다. device 계열 4 종은 node:gpu_*_score:5m 노드 신호를
+        # 그대로 쓰되 유휴 게이팅만 덧댄다.
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: cpu_throttle
+          expr: max by(node) (pod:cpu_throttle_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: memory_pressure
+          expr: max by(node) (pod:memory_pressure_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: network_pressure
+          expr: max by(node) (pod:network_pressure_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: cgroup_contention
+          expr: max by(node) (pod:cgroup_contention_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: host_compute_stall
+          expr: max by(node) (pod:host_compute_stall_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: pcie_saturation
+          expr: node:gpu_pcie_saturation_score:5m and on(node) (node:gpu_idle:5m > 0.5)
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: dcgm_pcie_replay
+          expr: node:dcgm_pcie_replay_score:5m and on(node) (node:gpu_idle:5m > 0.5)
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: nccl_collective_stall
+          expr: node:nccl_collective_stall_score:5m and on(node) (node:gpu_idle:5m > 0.5)
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: thermal
+          expr: node:gpu_thermal_score:5m and on(node) (node:gpu_idle:5m > 0.5)
+
+        # node:gpu_idle_cause_sum:5m{node}
+        # 노드별 9 cause base 의 합 (정규화 분모). 존재하는 cause 만 합산되고 pod:gpu_idle_cause_sum
+        # 과 동일하게 vector(0) fallback 을 두지 않는다 (sum by(node) 의 라벨 매칭에 무라벨 항이 섞이지
+        # 않게 하려는 것).
+        - record: node:gpu_idle_cause_sum:5m
+          expr: sum by(node) (node:gpu_idle_cause_score:5m)
+
+        # node:gpu_idle_cause_weight:5m{node,cause}
+        # 노드별 정규화 가중치 (cause score / 노드 cause 합). cluster weight 와 동일하게 분모에 노이즈
+        # 하한 (> 0.05) 을 둬 무부하 잔여 노이즈가 dominant 로 부풀지 않게 하고, 분모 0 인 노드는 시리즈
+        # 자체가 emit 되지 않아 NaN 잡음을 차단한다. on(node) group_left() 로 cause 라벨을 보존한다.
+        - record: node:gpu_idle_cause_weight:5m
+          expr: |
+            node:gpu_idle_cause_score:5m
+            / on(node) group_left()
+            (node:gpu_idle_cause_sum:5m > 0.05)
+
+        # node:gpu_idle_dominant_cause:5m{node,cause}
+        # 노드별 dominant cause 단일 시리즈. cluster:gpu_idle_dominant_cause:5m 와 동일한 tie-breaker
+        # (cause enum 사전순 epsilon) 를 노드 차원으로 적용해 동률 시 결정성을 확보한다.
+        - record: node:gpu_idle_dominant_cause:5m
+          expr: |
+            topk by(node) (1,
+              node:gpu_idle_cause_weight:5m
+              + on(cause) group_left() (
+                label_replace(vector(9e-6), "cause", "cgroup_contention", "", "")
+                or label_replace(vector(8e-6), "cause", "cpu_throttle", "", "")
+                or label_replace(vector(7e-6), "cause", "dcgm_pcie_replay", "", "")
+                or label_replace(vector(6e-6), "cause", "host_compute_stall", "", "")
+                or label_replace(vector(5e-6), "cause", "memory_pressure", "", "")
+                or label_replace(vector(4e-6), "cause", "nccl_collective_stall", "", "")
+                or label_replace(vector(3e-6), "cause", "network_pressure", "", "")
+                or label_replace(vector(2e-6), "cause", "pcie_saturation", "", "")
+                or label_replace(vector(1e-6), "cause", "thermal", "", "")
+              )
+            )
+
         # pod:gpu_idle_cause_score:5m{victim_namespace,victim_pod,cause}
         # #101 victim 단위 cause weight 산정 의 입력 helper. 기존 cluster 단위 cause score 5 종을
         # victim Pod 라벨 (victim_namespace 와 victim_pod) 로 정합 한다. 4 cause (cpu_throttle 와
