@@ -17,6 +17,13 @@ cluster 차원 (#66 도입).
 - `GPUIdleDominantCauseSwitch` alert. 10 분 안에 2 회 이상 swap 시 발화 (changes 합산 임계 4)
 - `GPUIdleDominantCauseAmbiguous` alert. top1 과 top2 weight 격차 < 0.1 이면서 magnitude (top1) > 0.3 일 때 5 분 지속 시 발화
 
+node 차원 (#256 도입). cluster 와 pod 사이의 노드 scope 계층으로, 노드 하나의 GPU 가 왜 노는지를 원인별로 설명한다. cause 정의와 정규화 규약은 cluster rule 과 동일하다.
+
+- `node:gpu_idle_cause_score:5m{node,cause}`. 노드별 9 cause base score. pod 계열 5 종은 `pod:*_score_rise:5m` 를 node 별 max 로 집계하고, device 계열 4 종은 `node:gpu_*_score:5m` 노드 신호에 유휴 게이팅만 덧댄다. `node:gpu_idle:5m > 0.5` 게이팅으로 유휴 노드에서만 산출되고 node 신호가 없는 원인은 series 가 자연 제외된다
+- `node:gpu_idle_cause_sum:5m{node}`. 노드별 cause base 합 (정규화 분모)
+- `node:gpu_idle_cause_weight:5m{node,cause}`. 노드별 정규화 가중치. cluster weight 와 동일하게 분모 노이즈 하한 (> 0.05) 을 둔다
+- `node:gpu_idle_dominant_cause:5m{node,cause}`. 노드별 dominant cause 단일 시리즈 (topk by node + cluster 와 동일 tie-breaker)
+
 victim 차원 (#101 도입).
 
 - `pod:gpu_idle_cause_score:5m{victim_namespace,victim_pod,cause}`. 5 cause base score 의 victim 단위 정합 helper. PCIe 는 `kube_pod_info` 매핑으로 GPU 노드 Pod 에 broadcast, 4 cause 는 기존 pod 단위 score 를 label_replace 로 victim 라벨 alias
