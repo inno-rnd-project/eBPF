@@ -519,15 +519,21 @@ func buildPressureSummary(r PressureResponse) string {
 // 차원, top 압박 pod 를 모은다. anomaly 는 cluster 단위 z-score 라 node 로 scope 되지 않아 본 응답에는
 // 싣지 않고 /health 또는 /events 에서 본다.
 type NodeResponse struct {
-	GeneratedAt       string             `json:"generated_at"`
-	Window            string             `json:"window"`
-	Node              string             `json:"node"`
-	Pressure          map[string]float64 `json:"pressure"`
-	Overall           *float64           `json:"overall"`
-	Status            string             `json:"status"`
-	DominantDimension string             `json:"dominant_dimension"`
-	TopPods           []NodePodPressure  `json:"top_pods"`
-	Summary           string             `json:"summary"`
+	GeneratedAt string             `json:"generated_at"`
+	Window      string             `json:"window"`
+	Node        string             `json:"node"`
+	Pressure    map[string]float64 `json:"pressure"`
+	// Health 는 차원별 health score (0-1, #264) 다. node:*_health_score:5m 룰 기반이며 cluster
+	// health 와 동일 산식의 노드 차원 판이라 GPU 와 비GPU 노드가 같은 해석을 공유한다.
+	Health map[string]float64 `json:"health"`
+	Overall *float64          `json:"overall"`
+	Status  string            `json:"status"`
+	// Confidence 는 dominant 차원 판정 신뢰도 (0-1, #264) 다. 압박 top1 과 top2 차원의 격차로,
+	// gpu-rca 의 신뢰도와 동일 축이라 한 차원이 지배적일수록 1 에 가깝다.
+	Confidence        float64           `json:"confidence"`
+	DominantDimension string            `json:"dominant_dimension"`
+	TopPods           []NodePodPressure `json:"top_pods"`
+	Summary           string            `json:"summary"`
 }
 
 // NodePodPressure 는 노드 위 한 pod 의 차원별 압박이다.
@@ -539,7 +545,7 @@ type NodePodPressure struct {
 
 // GetNode godoc
 // @Summary      노드 1대 전체 압박 상황
-// @Description  노드의 4 차원 pressure 와 종합(overall), dominant 차원, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다.
+// @Description  노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다.
 // @Tags         interference
 // @Produce      json
 // @Param        node  path  string  true  "노드 이름"
@@ -558,6 +564,7 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 		Window:      "5m",
 		Node:        node,
 		Pressure:    map[string]float64{},
+		Health:      map[string]float64{},
 		Status:      "unknown",
 		TopPods:     []NodePodPressure{},
 	}
@@ -575,6 +582,10 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 					domDim = d.name
 				}
 			}
+			// #264 노드 차원 health. node:{dim}_health_score:5m 룰을 노드로 좁혀 읽는다.
+			if s, err := h.querier.Query(ctx, fmt.Sprintf("node:%s_health_score:5m{node=%q}", d.name, node)); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
+				resp.Health[d.name] = s[0].Value
+			}
 			if ps, err := h.querier.Query(ctx, fmt.Sprintf("topk(3, %s{node=%q})", d.podPressure, node)); err == nil {
 				for _, p := range ps {
 					if math.IsNaN(p.Value) {
@@ -586,6 +597,7 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		resp.Confidence = pressureConfidence(resp.Pressure)
 		if s, err := h.querier.Query(ctx, fmt.Sprintf("node:pressure_score:5m{node=%q}", node)); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
 			v := s[0].Value
 			resp.Overall = &v
@@ -614,12 +626,37 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 	apicommon.WriteJSON(w, resp)
 }
 
-// buildNodeSummary 는 dominant 차원과 status, 주 압박 pod 를 한 줄로 요약한다.
+// pressureConfidence 는 dominant 차원 판정 신뢰도 (#264) 다. 차원 pressure 를 내림차순으로 봤을 때
+// top1 과 top2 의 격차 (margin) 로, 한 차원이 지배적일수록 1 에 가깝고 두 차원이 백중이면 0 에
+// 가깝다. gpu-rca 의 dominantConfidence 와 동일 축이다. 차원이 하나뿐이면 그 값이 그대로 신뢰도다.
+func pressureConfidence(pressure map[string]float64) float64 {
+	vals := make([]float64, 0, len(pressure))
+	for _, v := range pressure {
+		vals = append(vals, v)
+	}
+	if len(vals) == 0 {
+		return 0
+	}
+	sort.Sort(sort.Reverse(sort.Float64Slice(vals)))
+	margin := vals[0]
+	if len(vals) >= 2 {
+		margin = vals[0] - vals[1]
+	}
+	if margin < 0 {
+		margin = 0
+	}
+	if margin > 1 {
+		margin = 1
+	}
+	return margin
+}
+
+// buildNodeSummary 는 dominant 차원과 status, 신뢰도, 주 압박 pod 를 한 줄 narrative 로 요약한다.
 func buildNodeSummary(r NodeResponse) string {
 	if r.DominantDimension == "" {
 		return fmt.Sprintf("%s 의 압박 데이터가 없습니다.", r.Node)
 	}
-	seg := fmt.Sprintf("%s는 %s가 dominant(%.2f, %s)", r.Node, r.DominantDimension, r.Pressure[r.DominantDimension], r.Status)
+	seg := fmt.Sprintf("%s는 %s가 dominant(%.2f, %s, 신뢰도 %.2f)", r.Node, r.DominantDimension, r.Pressure[r.DominantDimension], r.Status, r.Confidence)
 	if len(r.TopPods) > 0 {
 		seg += fmt.Sprintf(". 주 압박 pod %s", r.TopPods[0].Pod)
 	}

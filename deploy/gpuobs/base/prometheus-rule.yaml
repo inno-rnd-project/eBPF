@@ -1218,6 +1218,36 @@ spec:
               1
             )
 
+        # node:*_health_score:5m 4종 (#264)
+        # cluster health 와 동일 산식을 노드 차원으로 이식해 node/{node} 가 노드별 4차원 health 를
+        # 노출하게 한다. cpu 와 memory 는 노드 pod 의 pressure p95 inversion (quantile by(node)),
+        # network 는 노드 drop rate inversion, gpu 는 노드 device 사용률 평균이다. gpu 는
+        # node:gpu_util_ratio:5m 가 gpu_uuid 라벨로 device 별 다중 시리즈라 avg by(node) 로 노드 단위
+        # 집계한다. cluster health rule 은 변경하지 않는다.
+        - record: node:cpu_health_score:5m
+          expr: |
+            1 - clamp_max(
+              quantile by(node) (0.95, pod:cpu_throttle_score:5m),
+              1
+            )
+
+        - record: node:memory_health_score:5m
+          expr: |
+            1 - clamp_max(
+              quantile by(node) (0.95, pod:memory_pressure_score:5m),
+              1
+            )
+
+        - record: node:network_health_score:5m
+          expr: |
+            1 - clamp_max(
+              sum by(node) (rate(netobs_drop_events_labeled_total[5m])) / 100,
+              1
+            )
+
+        - record: node:gpu_health_score:5m
+          expr: clamp_max(avg by(node) (node:gpu_util_ratio:5m), 1)
+
     # netobs-gpuobs.alerts 그룹은 운영 임계 초과를 Alertmanager로 전달하는 alert rule을 모은다.
     # severity 라벨로 critical(즉시 대응)과 warning(추세 관찰)을 구분한다. for 절은 false-positive
     # 차단 목적으로 2분 이상을 기본으로 둔다. ECC와 PCIe replay 알람은 본 그룹에서 제외했다.
