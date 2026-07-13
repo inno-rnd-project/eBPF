@@ -210,6 +210,9 @@ type GPUProcess struct {
 	DeviceIndex     uint
 	PID             uint32
 	MemoryUsedBytes uint64
+	// Type 은 NVML 실행 모드다. "compute" (CUDA), "graphics" (OpenGL/Vulkan), 두 모드에 동시 등장하면
+	// "compute+graphics". RunningProcesses 의 compute/graphics 병합 단계에서 판정된다.
+	Type string
 }
 
 // CudaEventKind 는 CUDA uprobe 가 캡처한 이벤트의 종류를 표현한다.
