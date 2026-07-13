@@ -1,0 +1,64 @@
+# gpuobs-memory-node-measured.test.yaml 은 #274 의 노드 실측 memory 재정의 회귀 검증 promtool
+# unit test 다. 핵심 회귀는 "tight-limit pod 가 노드·클러스터 지표를 지배하지 않는다" 다. n1 에
+# working_set/limit 0.95 인 pod (dcgm-exporter 패턴) 가 있어도 노드 실측 사용률이 0.3 이면 노드
+# pressure 는 0.3, health 는 0.7 이어야 한다 (기존 산식이면 pressure 0.95, health ~0.05). pod 단위
+# score 는 그 pod 의 OOM 근접도로 0.95 그대로 유지된다.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  - interval: 30s
+    input_series:
+      # n1 노드 실측: Available 700 / Total 1000 → 사용률 0.3.
+      - series: 'node_memory_MemAvailable_bytes{instance="10.0.0.1:9100"}'
+        values: '700x20'
+      - series: 'node_memory_MemTotal_bytes{instance="10.0.0.1:9100"}'
+        values: '1000x20'
+      - series: 'node_uname_info{instance="10.0.0.1:9100",nodename="n1"}'
+        values: '1x20'
+      # 동일 instance 를 다른 job 이 이중 scrape 한 중복 uname 시리즈. 사전 집계 (max by) 가 없으면
+      # group_left 조인이 many-to-many 로 평가 실패해 memory pressure 가 전멸하는 회귀를 가드한다.
+      - series: 'node_uname_info{instance="10.0.0.1:9100",nodename="n1",job="dup-scrape"}'
+        values: '1x20'
+      # n2 노드 실측: 사용률 0.1 (cluster worst 판정 대조용).
+      - series: 'node_memory_MemAvailable_bytes{instance="10.0.0.2:9100"}'
+        values: '900x20'
+      - series: 'node_memory_MemTotal_bytes{instance="10.0.0.2:9100"}'
+        values: '1000x20'
+      - series: 'node_uname_info{instance="10.0.0.2:9100",nodename="n2"}'
+        values: '1x20'
+      # n1 의 tight-limit pod: working_set 950 / limit 1000 → pod score 0.95 (dcgm-exporter 패턴).
+      - series: 'container_memory_working_set_bytes{node="n1",namespace="mon",pod="dcgm"}'
+        values: '950x20'
+      - series: 'kube_pod_container_resource_limits{namespace="mon",pod="dcgm",resource="memory"}'
+        values: '1000x20'
+
+    promql_expr_test:
+      # 핵심 회귀: 노드 pressure 는 실측 0.3 (tight-limit pod 0.95 가 승격되지 않음).
+      - expr: node:memory_pressure_score:5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'node:memory_pressure_score:5m{node="n1"}'
+            value: 0.30000000000000004
+          - labels: 'node:memory_pressure_score:5m{node="n2"}'
+            value: 0.09999999999999998
+      # 노드 health 는 실측 역수.
+      - expr: node:memory_health_score:5m{node="n1"}
+        eval_time: 5m
+        exp_samples:
+          - labels: 'node:memory_health_score:5m{node="n1"}'
+            value: 0.7
+      # cluster health 는 worst 노드 (n1 0.3) 기준 0.7.
+      - expr: cluster:memory_health_score:5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'cluster:memory_health_score:5m'
+            value: 0.7
+      # pod 단위 score 는 OOM 근접도 의미로 0.95 그대로 유지된다 (pressure?scope=pod 랭킹 소스).
+      - expr: pod:memory_pressure_score:5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'pod:memory_pressure_score:5m{node="n1",namespace="mon",pod="dcgm",src_namespace="mon",src_pod="dcgm"}'
+            value: 0.95

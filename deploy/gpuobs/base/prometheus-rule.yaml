@@ -313,8 +313,27 @@ spec:
         - record: node:cpu_pressure_score:5m
           expr: max by(node) (pod:cpu_throttle_score:5m)
 
+        # node:memory_pressure_score:5m (#274 재정의)
+        # 기존 max(pod:memory_pressure_score) 는 pod 의 working_set 대비 limit 비율을 노드 지표로
+        # 승격해, limit 을 타이트하게 잡은 관측 인프라 pod (dcgm-exporter 등) 가 노드를 영구 degraded
+        # 로 만들었다 (실측: pod 지표 0.97 vs 노드 실제 사용률 19.8%). 노드의 메모리 압박은
+        # node_exporter 실측 (1 - MemAvailable/MemTotal) 로 재정의한다. node_exporter 메트릭은 node
+        # 라벨이 없어 node_uname_info 의 nodename 을 instance 조인으로 부여한다 (value 1 이라 곱해도
+        # 값 불변). pod 단위 score (pod:memory_pressure_score) 는 그 pod 의 OOM 근접도로 의미가
+        # 유효해 유지하며, 문제였던 것은 pod 지표의 노드 승격이다.
+        # node_uname_info 는 max by(instance, nodename) 로 사전 집계한다. node-exporter 를 여러
+        # scrape job 이 수집하는 구성에서는 job 라벨만 다른 중복 시리즈가 생겨 group_left 조인이
+        # many-to-many 로 평가 실패 (시리즈 전멸) 할 수 있는데, 이는 본 저장소 밖의 monitoring 스택
+        # 설정에 좌우되는 경계라 사전 집계로 방어한다.
         - record: node:memory_pressure_score:5m
-          expr: max by(node) (pod:memory_pressure_score:5m)
+          expr: |
+            max by(node) (
+              label_replace(
+                (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+                * on(instance) group_left(nodename) max by(instance, nodename) (node_uname_info),
+                "node", "$1", "nodename", "(.+)"
+              )
+            )
 
         # network 압박은 pod:network_pressure_score:5m (throughput 과 retrans 의 element-wise max) 을
         # node 단위로 max rollup 한다. 기존 max(throughput or retrans) 는 동일 라벨 Pod 에서 OR 충돌로
@@ -1230,14 +1249,13 @@ spec:
               1
             )
 
-        # cluster:memory_health_score:5m
-        # cluster 전체 Pod 의 memory_pressure_score p95 의 inversion. cpu_health 와 동일한 구조다.
+        # cluster:memory_health_score:5m (#274 재정의)
+        # 기존 pod score p95 inversion 은 tight-limit 관측 인프라 pod 가 지배해 health 가 영구 ~0.2
+        # 로 고정됐다. 노드 실측 압박 (node:memory_pressure_score, node_exporter 기반, #274) 의
+        # worst 노드 역수로 재정의한다. 참조 rule 이 다른 그룹에 있어 그룹 간 평가는 최대 1 interval
+        # 지연될 수 있으나 기존 rollup 체인들과 동일한 허용 범위다.
         - record: cluster:memory_health_score:5m
-          expr: |
-            1 - clamp_max(
-              quantile(0.95, pod:memory_pressure_score:5m),
-              1
-            )
+          expr: 1 - max(node:memory_pressure_score:5m)
 
         # node:*_health_score:5m 4종 (#264)
         # cluster health 와 동일 산식을 노드 차원으로 이식해 node/{node} 가 노드별 4차원 health 를
@@ -1252,12 +1270,9 @@ spec:
               1
             )
 
+        # #274 재정의. cluster 판과 동일하게 노드 실측 압박의 역수다.
         - record: node:memory_health_score:5m
-          expr: |
-            1 - clamp_max(
-              quantile by(node) (0.95, pod:memory_pressure_score:5m),
-              1
-            )
+          expr: 1 - node:memory_pressure_score:5m
 
         - record: node:network_health_score:5m
           expr: |
