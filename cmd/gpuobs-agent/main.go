@@ -120,23 +120,6 @@ func main() {
 		return true, ""
 	}
 
-	mux := server.NewMux("gpuobs-agent", reg, ready)
-
-	srv := &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: mux,
-	}
-
-	// HTTP 서버. ListenAndServe는 Shutdown 전까지 블록되는 것이 정상 동작이며,
-	// 포트 바인드 실패 등 비정상 종료 시에는 fail-fast로 프로세스를 내려 메트릭 없이
-	// 좀비 상태로 살아남는 상황을 막는다.
-	go func() {
-		log.Printf("serving gpuobs metrics on %s (node=%s)", cfg.ListenAddr, cfg.NodeName)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("metrics server error: %v", err)
-		}
-	}()
-
 	// Kubernetes metadata informer (PodMetricsEnabled일 때만 기동).
 	if kr != nil {
 		go kr.Start(ctx)
@@ -186,6 +169,27 @@ func main() {
 		resolver = kr
 	}
 	col := collector.New(nv, cfg, resolver)
+
+	// HTTP 서버는 #281 의 /processes 핸들러가 collector 스냅샷에 묶여 있어 collector 생성 뒤에
+	// 기동한다 (기동 후 mux 등록은 data race). ListenAndServe는 Shutdown 전까지 블록되는 것이
+	// 정상 동작이며, 포트 바인드 실패 등 비정상 종료 시에는 fail-fast로 프로세스를 내려 메트릭
+	// 없이 좀비 상태로 살아남는 상황을 막는다.
+	mux := server.NewMux("gpuobs-agent", reg, ready)
+	// #281 로컬 실행 프로세스 조회. 직전 poll 의 RunningProcesses 스냅샷 재사용이라 NVML 추가
+	// 호출이 없다. correlation-exporter 의 gpu-processes 프록시가 단일 진입점으로 노출한다.
+	mux.HandleFunc("/processes", col.ProcessesHandler())
+
+	srv := &http.Server{
+		Addr:    cfg.ListenAddr,
+		Handler: mux,
+	}
+	go func() {
+		log.Printf("serving gpuobs metrics on %s (node=%s)", cfg.ListenAddr, cfg.NodeName)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("metrics server error: %v", err)
+		}
+	}()
+
 	collectorErrCh := make(chan error, 1)
 	go func() {
 		collectorErrCh <- col.Run(ctx, func() {

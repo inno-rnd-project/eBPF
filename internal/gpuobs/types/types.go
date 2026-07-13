@@ -215,6 +215,30 @@ type GPUProcess struct {
 	Type string
 }
 
+// GPUProcessListing 은 gpuobs agent 로컬 /processes endpoint 의 응답이다. correlation-exporter 의
+// gpu-processes 프록시가 동일 타입으로 디코딩하는 JSON 계약이라 본 패키지 (의존성 없는 leaf) 에 둔다.
+type GPUProcessListing struct {
+	Node string `json:"node"`
+	// CollectedAt 은 스냅샷을 만든 poll 시각 (RFC3339) 이다. per-pod 수집 비활성 등으로 스냅샷이
+	// 아직 없으면 빈 문자열이다.
+	CollectedAt string             `json:"collected_at,omitempty"`
+	Processes   []GPUProcessDetail `json:"processes"`
+}
+
+// GPUProcessDetail 은 실행 프로세스 한 건의 조회 뷰다. Namespace / Pod 는 cgroup 기반 pod 귀속
+// 결과로 host 프로세스나 미동기화 pod 는 비어 있다. SmUtilPercent 는 NVML process utilization 의
+// best-effort 필드라 미지원 GPU (consumer) 에서는 생략된다.
+type GPUProcessDetail struct {
+	PID             uint32  `json:"pid"`
+	GpuUUID         string  `json:"gpu_uuid"`
+	GpuIndex        uint    `json:"gpu_index"`
+	Type            string  `json:"type"`
+	MemoryUsedBytes uint64  `json:"memory_used_bytes"`
+	SmUtilPercent   *uint32 `json:"sm_util_percent,omitempty"`
+	Namespace       string  `json:"namespace,omitempty"`
+	Pod             string  `json:"pod,omitempty"`
+}
+
 // CudaEventKind 는 CUDA uprobe 가 캡처한 이벤트의 종류를 표현한다.
 // BPF 측 enum cuda_event_kind 와 정확히 1:1 매핑되며, 값이 BPF 산출물과 동일해야
 // userspace 의 binary.Read 가 일관되게 해석된다.
