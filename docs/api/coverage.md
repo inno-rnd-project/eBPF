@@ -6,7 +6,7 @@
 
 | 태그 | 도메인 | 엔드포인트 |
 |---|---|---|
-| `meta` | API 상태와 클러스터 헬스 요약 | `/api/v1/health`, `/api/v1/overview` |
+| `meta` | API 상태와 클러스터 헬스 요약, 관측 에이전트 self-health | `/api/v1/health`, `/api/v1/overview`, `/api/v1/agents` |
 | `inventory` | 노드와 파드 인벤토리, 노드 그리드 맵 | `/api/v1/nodes`, `/api/v1/pods`, `/api/v1/node-map` |
 | `network` | 지연 단계 분해, 패킷 drop, pod 간 flow | `/api/v1/latency-breakdown`, `/api/v1/drops`, `/api/v1/flows` |
 | `interference` | 자원 압박 랭킹과 노드 상세, 노드 raw 사용률, 이벤트와 발화 이력, 메모리, 간섭 토폴로지 | `/api/v1/pressure`, `/api/v1/node/{node}`, `/api/v1/node-vitals`, `/api/v1/events`, `/api/v1/incidents`, `/api/v1/memory`, `/api/v1/topology` |
@@ -25,6 +25,7 @@
 | 워크로드별 간섭 Top-N | `noisy-neighbor` (impact), `pressure` (interference) | 커버 |
 | node 와 pod 단위 정보 수집 | `nodes`, `pods` (inventory), `node/{node}` (interference) | 커버 |
 | 노드 raw 사용률 (Vitals) | `node-vitals` (interference). cadvisor / gpuobs 원시 게이지 기반 live pod 평균 CPU·memory %, GPU 사용률·메모리를 노드별 instant 노출. 프론트 폴링으로 실시간 | 커버 |
+| 관측 에이전트 self-health | `agents` (meta). 노드별 netobs/gpuobs 에이전트의 up·BPF attach·NVML 오류율·informer lag 를 알림 규칙 동일 임계로 healthy/degraded 판정. issues 는 `playbooks` 입력 호환 | 커버 |
 | 피어슨 상관계수 스코어링 | `noisy-neighbor`, `cross-node-interference`, `service-impact` (impact) 가 `correlation_*_score` 와 `causal_strength` 노출 | 커버 |
 | 특정 node/pod 의 서비스 영향 분석 | `service-impact`, `impact-graph`, `impact-paths`, `cross-level` (impact) | 커버 |
 | GPU 유휴 원인 (하드웨어 vs 네트워크) | `gpu-idle` (gpu). dominant cause 9종. scope=cluster/node/pod 로 cluster·노드·victim Pod 단위 귀속, node 파라미터로 단일 노드 조회 | 커버 |

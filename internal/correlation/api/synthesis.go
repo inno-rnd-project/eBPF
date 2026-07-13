@@ -89,6 +89,13 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
 	))
+	// #266 노드별 관측 에이전트 self-health. 알림 규칙과 동일 임계로 healthy/degraded 를 판정한다.
+	mux.Handle("/api/v1/agents", apicommon.Chain(
+		http.HandlerFunc(h.GetAgents),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
 	mux.Handle("/api/v1/gpu-idle", apicommon.Chain(
 		http.HandlerFunc(h.GetGpuIdle),
 		apicommon.LoggingMiddleware,

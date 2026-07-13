@@ -3,6 +3,34 @@ info:
   title: netobs unified API
   version: 1.9.7
 paths:
+  /api/v1/agents:
+    get:
+      description: netobs 와 gpuobs 에이전트의 스크레이프 up 여부, BPF program attach 상태와 최근 attach
+        실패, NVML 오류율, informer lag 를 노드 단위로 집계하고 기존 알림 규칙과 동일한 임계로 healthy / degraded
+        를 판정한다. issues 의 alertname 은 playbooks 조회 입력과 호환된다. node 파라미터로 단일 노드를 조회한다.
+      produces:
+      - application/json
+      tags:
+      - meta
+      summary: 노드별 관측 에이전트 self-health
+      parameters:
+      - type: string
+        description: 단일 노드 필터 (DNS-1123 형식, 생략 시 전체)
+        name: node
+        in: query
+      - type: string
+        description: 평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)
+        name: at
+        in: query
+      responses:
+        '200':
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.AgentsResponse'
+        '400':
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/bandwidth:
     get:
       description: pod 단위 RX/TX 대역폭 (bytes/sec) 을 rate(netobs_pod_bytes_total[5m])
@@ -956,6 +984,50 @@ paths:
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
 definitions:
+  internal_correlation_api.AgentHealth:
+    type: object
+    properties:
+      agent:
+        type: string
+      bpf_attach_failures_5m:
+        description: BpfAttachFailures5m 는 최근 5분 attach 실패 누적 (netobs 전용) 이다.
+        type: number
+      bpf_programs_loaded:
+        description: BpfProgramsLoaded / Total 은 netobs 전용. loaded < total 이면 일부 kprobe
+          가 detach 상태다.
+        type: number
+      bpf_programs_total:
+        type: number
+      informer_lag_seconds:
+        description: InformerLagSeconds 는 kube informer 마지막 watch event 이후 경과 초다.
+        type: number
+      issues:
+        type: array
+        items:
+          type: string
+      node:
+        type: string
+      nvml_errors_per_sec:
+        description: NvmlErrorsPerSec 는 NVML 호출 실패율 (gpuobs 전용) 이다.
+        type: number
+      status:
+        description: 'Status 는 healthy 또는 degraded 다. 판정 임계는 기존 알림 규칙과 동일하고, 걸린 규칙의
+
+          alertname 이 Issues 에 담긴다.'
+        type: string
+      up:
+        type: boolean
+  internal_correlation_api.AgentsResponse:
+    type: object
+    properties:
+      agents:
+        type: array
+        items:
+          $ref: '#/definitions/internal_correlation_api.AgentHealth'
+      generated_at:
+        type: string
+      summary:
+        type: string
   internal_correlation_api.Anomaly:
     type: object
     properties:
