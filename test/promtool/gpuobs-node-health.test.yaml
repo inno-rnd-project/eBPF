@@ -16,9 +16,14 @@ tests:
       # n2: cpu throttle 0.1 → cpu health = 0.9
       - series: 'pod:cpu_throttle_score:5m{node="n2",src_namespace="ns2",src_pod="p2"}'
         values: '0.1x20'
-      # n1: memory pressure 0.2 → memory health = 0.8
-      - series: 'pod:memory_pressure_score:5m{node="n1",src_namespace="ns1",src_pod="p1"}'
-        values: '0.2x20'
+      # n1: 노드 실측 메모리 (#274). Available 800 / Total 1000 → 사용률 0.2 → memory health = 0.8.
+      # node_exporter 는 node 라벨이 없어 node_uname_info 의 nodename 조인으로 부여된다.
+      - series: 'node_memory_MemAvailable_bytes{instance="10.0.0.1:9100"}'
+        values: '800x20'
+      - series: 'node_memory_MemTotal_bytes{instance="10.0.0.1:9100"}'
+        values: '1000x20'
+      - series: 'node_uname_info{instance="10.0.0.1:9100",nodename="n1"}'
+        values: '1x20'
       # n1: drop rate 50/s → network health = 1 - 50/100 = 0.5
       - series: 'netobs_drop_events_labeled_total{node="n1",src_namespace="ns1",src_workload="w1",drop_reason="r",drop_category="c"}'
         values: '0+1500x20'
@@ -32,7 +37,7 @@ tests:
             value: 0.4
           - labels: 'node:cpu_health_score:5m{node="n2"}'
             value: 0.9
-      # memory health: n1 0.8 (n2 는 memory pressure 시리즈 없어 산출 안 됨).
+      # memory health: n1 0.8 (노드 실측 기반 #274, n2 는 node_exporter 시리즈 없어 산출 안 됨).
       - expr: node:memory_health_score:5m
         eval_time: 5m
         exp_samples:
