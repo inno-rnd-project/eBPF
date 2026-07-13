@@ -1177,7 +1177,7 @@ spec:
     - name: netobs-gpuobs.cluster-health.recording
       interval: 30s
       rules:
-        # cluster:gpu_health_score:5m (#273 재정의)
+        # node:gpu_health_score:5m (#273 재정의)
         # 초기에는 "유휴 GPU 가 곧 문제" 전제로 사용률 자체를 health 로 썼으나, 유휴의 문제 여부는
         # 이후 gpu-idle 원인 귀속 (cluster/node/pod 3 scope) 이 전담하게 되어 전제가 바뀌었다. 사용률
         # 등식은 놀고 있는 건강한 GPU 를 overview weakest "gpu 0.00 (degraded)" 로 만드는 오도가 있어
@@ -1185,13 +1185,13 @@ spec:
         # (유휴 GPU 의 양성 코드 Not Found / Not Supported 제외, alert 임계 1/s 정규화), 성능성
         # throttle 활성 (GPUObsThrottleActive 와 동일 reason 셋, 정보성 gpu_idle 제외)) 이고
         # health = 1 - unhealth 다. sig 라벨은 or 유니온에서 세 신호가 서로 가려지지 않게 하는
-        # 구분자로 max 가 소거한다. node 판 (node:gpu_health_score:5m) 이 파일상 뒤에 있어 그룹 내
-        # 평가 순서 체이닝 대신 동일 유니온을 전역 max 로 계산해 같은 결과 (worst 노드) 를 얻는다.
-        # GPU 미설치 cluster 에서는 base series 가 비어 score 가 산출되지 않는다.
-        - record: cluster:gpu_health_score:5m
+        # 구분자로 max 가 소거한다. 다른 node health 3종 (#264 블록) 보다 앞에 두는 이유는 아래
+        # cluster 판이 같은 그룹 내 순차 평가로 본 rule 을 지연 없이 참조하기 위함이다. GPU 미설치
+        # 노드에서는 base series 가 비어 score 가 산출되지 않는다.
+        - record: node:gpu_health_score:5m
           expr: |
             1 - clamp_max(
-              max(
+              max by(node) (
                 label_replace(node:gpu_thermal_score:5m, "sig", "thermal", "", "")
                 or label_replace(
                   clamp_max(sum by(node) (rate(gpuobs_nvml_errors_total{error_code!~"Not Supported|Not Found"}[5m])), 1),
@@ -1202,6 +1202,12 @@ spec:
               ),
               1
             )
+
+        # cluster:gpu_health_score:5m (#273 재정의)
+        # 노드 gpu health 의 최소값 (worst 노드). 위 node 판과 같은 그룹이라 순차 평가로 지연 없이
+        # 참조하며, 복잡 유니온 산식의 중복을 피한다.
+        - record: cluster:gpu_health_score:5m
+          expr: min(node:gpu_health_score:5m)
 
         # cluster:cpu_health_score:5m
         # cluster 전체 Pod 의 cpu_throttle_score p95 의 inversion. p95 가 cluster 의 상위 5 % Pod 만
@@ -1260,23 +1266,8 @@ spec:
               1
             )
 
-        # #273 재정의. cluster:gpu_health_score:5m 와 동일 산식의 노드 판이다. 사용률 등식 (유휴 =
-        # degraded) 을 하드웨어 이상 신호 (thermal / 유의미 NVML 오류율 / 성능성 throttle) 기반으로
-        # 교체해 유휴 GPU 가 health 를 깎지 않는다.
-        - record: node:gpu_health_score:5m
-          expr: |
-            1 - clamp_max(
-              max by(node) (
-                label_replace(node:gpu_thermal_score:5m, "sig", "thermal", "", "")
-                or label_replace(
-                  clamp_max(sum by(node) (rate(gpuobs_nvml_errors_total{error_code!~"Not Supported|Not Found"}[5m])), 1),
-                  "sig", "nvml", "", "")
-                or label_replace(
-                  max by(node) (gpuobs_device_throttle_active{reason=~"hw_slowdown|hw_thermal_slowdown|hw_power_brake_slowdown|sw_thermal_slowdown|sw_power_cap"}),
-                  "sig", "throttle", "", "")
-              ),
-              1
-            )
+        # node:gpu_health_score:5m 는 cluster 판이 참조하는 순서 제약으로 cluster-health 블록 상단
+        # (#273) 에 정의되어 있다.
 
     # netobs-gpuobs.alerts 그룹은 운영 임계 초과를 Alertmanager로 전달하는 alert rule을 모은다.
     # severity 라벨로 critical(즉시 대응)과 warning(추세 관찰)을 구분한다. for 절은 false-positive
