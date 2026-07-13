@@ -14,7 +14,7 @@ import (
 )
 
 // agents 는 #266 의 노드별 관측 에이전트 self-health API 다. netobs 와 gpuobs 에이전트의 스크레이프
-// up 여부, BPF attach 상태, NVML 오류율, informer lag 를 노드 단위로 집계하고, 기존 PrometheusRule
+// up 여부, BPF attach 상태, NVML 오류율, informer lag, cuda 심볼 부착 상태(driver 필수·runtime 선택)를 노드 단위로 집계하고, 기존 PrometheusRule
 // 알림 규칙과 동일한 임계로 healthy / degraded 를 판정한다. issues 의 alertname 은 playbooks?cause=
 // 조회 입력과 호환된다. ServiceMonitor relabeling 이 모든 에이전트 메트릭에 node 라벨을 부착하므로
 // instance 매핑 없이 by(node) 로 직접 집계한다.
@@ -39,6 +39,11 @@ type AgentHealth struct {
 	BpfAttachFailures5m *float64 `json:"bpf_attach_failures_5m,omitempty"`
 	// NvmlErrorsPerSec 는 NVML 호출 실패율 (gpuobs 전용) 이다.
 	NvmlErrorsPerSec *float64 `json:"nvml_errors_per_sec,omitempty"`
+	// CudaDriverSymbols / CudaRuntimeSymbols 는 cuda uprobe 심볼 부착 상태 (gpuobs 전용, #279) 다.
+	// driver (cu*) 는 CUDA pod 귀속의 필수 조건이고 runtime (cuda*) 은 선택이라는 규약은
+	// GPUObsCudaSymbolUnavailable alert 와 같다. gpu-status 의 pod_attribution 과 동일 소스다.
+	CudaDriverSymbols  *bool `json:"cuda_driver_symbols,omitempty"`
+	CudaRuntimeSymbols *bool `json:"cuda_runtime_symbols,omitempty"`
 	// InformerLagSeconds 는 kube informer 마지막 watch event 이후 경과 초다.
 	InformerLagSeconds *float64 `json:"informer_lag_seconds,omitempty"`
 	// Status 는 healthy 또는 degraded 다. 판정 임계는 기존 알림 규칙과 동일하고, 걸린 규칙의
@@ -56,7 +61,7 @@ const (
 
 // GetAgents godoc
 // @Summary      노드별 관측 에이전트 self-health
-// @Description  netobs 와 gpuobs 에이전트의 스크레이프 up 여부, BPF program attach 상태와 최근 attach 실패, NVML 오류율, informer lag 를 노드 단위로 집계하고 기존 알림 규칙과 동일한 임계로 healthy / degraded 를 판정한다. issues 의 alertname 은 playbooks 조회 입력과 호환된다. node 파라미터로 단일 노드를 조회한다.
+// @Description  netobs 와 gpuobs 에이전트의 스크레이프 up 여부, BPF program attach 상태와 최근 attach 실패, NVML 오류율, informer lag, cuda 심볼 부착 상태(driver 필수·runtime 선택)를 노드 단위로 집계하고 기존 알림 규칙과 동일한 임계로 healthy / degraded 를 판정한다. issues 의 alertname 은 playbooks 조회 입력과 호환된다. node 파라미터로 단일 노드를 조회한다.
 // @Tags         meta
 // @Produce      json
 // @Param        node  query  string  false  "단일 노드 필터 (DNS-1123 형식, 생략 시 전체)"
@@ -97,6 +102,9 @@ func (h *SynthesisHandler) GetAgents(w http.ResponseWriter, r *http.Request) {
 		"sum by(node) (rate(gpuobs_nvml_errors_total"+sel+"[5m]))",
 		"max by(node) (netobs_informer_sync_lag_seconds"+sel+")",
 		"max by(node) (gpuobs_informer_sync_lag_seconds"+sel+")",
+		// #279 cuda 심볼 부착 상태. symbol 매처는 고정 리터럴이라 안전하다.
+		fmt.Sprintf(`min by(node) (gpuobs_cuda_symbol_available{symbol!~"cuda.*"%s})`, nodeSuffixMatcher(node)),
+		fmt.Sprintf(`min by(node) (gpuobs_cuda_symbol_available{symbol=~"cuda.*"%s})`, nodeSuffixMatcher(node)),
 	)
 
 	// (node, agent) 항목의 골격은 up 시리즈에서 만든다. job 라벨이 agent 종류다.
@@ -133,6 +141,8 @@ func (h *SynthesisHandler) GetAgents(w http.ResponseWriter, r *http.Request) {
 	byNode(res[4], "gpuobs", func(a *AgentHealth, v float64) { a.NvmlErrorsPerSec = &v })
 	byNode(res[5], "netobs", func(a *AgentHealth, v float64) { a.InformerLagSeconds = &v })
 	byNode(res[6], "gpuobs", func(a *AgentHealth, v float64) { a.InformerLagSeconds = &v })
+	byNode(res[7], "gpuobs", func(a *AgentHealth, v float64) { b := v == 1; a.CudaDriverSymbols = &b })
+	byNode(res[8], "gpuobs", func(a *AgentHealth, v float64) { b := v == 1; a.CudaRuntimeSymbols = &b })
 
 	for _, k := range order {
 		a := agents[k]
@@ -177,6 +187,11 @@ func judgeAgentHealth(a *AgentHealth) (string, []string) {
 	}
 	if a.InformerLagSeconds != nil && *a.InformerLagSeconds > agentInformerStaleSeconds {
 		issues = append(issues, "ObsAgentInformerStale")
+	}
+	// driver 심볼 미부착은 CUDA pod 귀속 불가라 degraded 다. runtime (cudart) 미부착은 선택 계측이라
+	// 판정에 넣지 않고 정보 필드로만 노출한다 (alert 규약과 동일).
+	if a.CudaDriverSymbols != nil && !*a.CudaDriverSymbols {
+		issues = append(issues, "GPUObsCudaSymbolUnavailable")
 	}
 	if len(issues) > 0 {
 		return "degraded", issues

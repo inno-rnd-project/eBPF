@@ -13,6 +13,14 @@ definitions:
         type: number
       bpf_programs_total:
         type: number
+      cuda_driver_symbols:
+        description: |-
+          CudaDriverSymbols / CudaRuntimeSymbols 는 cuda uprobe 심볼 부착 상태 (gpuobs 전용, #279) 다.
+          driver (cu*) 는 CUDA pod 귀속의 필수 조건이고 runtime (cuda*) 은 선택이라는 규약은
+          GPUObsCudaSymbolUnavailable alert 와 같다. gpu-status 의 pod_attribution 과 동일 소스다.
+        type: boolean
+      cuda_runtime_symbols:
+        type: boolean
       informer_lag_seconds:
         description: InformerLagSeconds 는 kube informer 마지막 watch event 이후 경과 초다.
         type: number
@@ -401,6 +409,12 @@ definitions:
         type: number
       persistence_mode:
         type: number
+      pod_attribution:
+        allOf:
+        - $ref: '#/definitions/internal_correlation_api.PodAttribution'
+        description: |-
+          PodAttribution 은 CUDA pod 귀속 능력 메타데이터 (#279) 다. pods 가 비었을 때 "실행 중 GPU
+          프로세스 없음" 과 "귀속 자체가 불가능" 을 프론트가 구분하는 근거다. 심볼 신호 부재 시 생략된다.
       pods:
         items:
           $ref: '#/definitions/internal_correlation_api.GpuPod'
@@ -421,6 +435,12 @@ definitions:
           SMActivePercent 는 gpm_utilization_percent 의 sm_occupancy 다. consumer GPU (RTX 등) 는 GPM
           미지원이라 빈 값이고 데이터센터 GPU (A100+) 에서만 채워진다.
         type: number
+      status:
+        description: |-
+          Status 는 device 3단 판정 (#279) 이다. 성능성 throttle 활성이면 degraded, 온도가 slowdown
+          임계의 90% 이상이거나 노드의 유의미 NVML 오류율이 alert 임계 (1/s) 를 넘으면 warning, 그 외
+          healthy 다. #273 의 GPU health 판정 신호를 device 뱃지 입도로 적용한 것이다.
+        type: string
       temperature_celsius:
         type: number
       temperature_thresholds_celsius:
@@ -1000,6 +1020,15 @@ definitions:
       summary:
         type: string
     type: object
+  internal_correlation_api.PodAttribution:
+    properties:
+      available:
+        type: boolean
+      reason:
+        type: string
+      runtime_symbols:
+        type: boolean
+    type: object
   internal_correlation_api.PodInventory:
     properties:
       host_ip:
@@ -1548,8 +1577,9 @@ paths:
   /api/v1/agents:
     get:
       description: netobs 와 gpuobs 에이전트의 스크레이프 up 여부, BPF program attach 상태와 최근 attach
-        실패, NVML 오류율, informer lag 를 노드 단위로 집계하고 기존 알림 규칙과 동일한 임계로 healthy / degraded
-        를 판정한다. issues 의 alertname 은 playbooks 조회 입력과 호환된다. node 파라미터로 단일 노드를 조회한다.
+        실패, NVML 오류율, informer lag, cuda 심볼 부착 상태(driver 필수·runtime 선택)를 노드 단위로 집계하고
+        기존 알림 규칙과 동일한 임계로 healthy / degraded 를 판정한다. issues 의 alertname 은 playbooks
+        조회 입력과 호환된다. node 파라미터로 단일 노드를 조회한다.
       parameters:
       - description: 단일 노드 필터 (DNS-1123 형식, 생략 시 전체)
         in: query
@@ -1887,11 +1917,13 @@ paths:
       - gpu
   /api/v1/gpu-status:
     get:
-      description: node 와 GPU device 단위 사용률, 메모리, 전력, 온도, 활성 throttle reason, 점유 pod
-        에 더해 device 상세(SM active, encoder/decoder 사용률, bar1 메모리, 클럭, 팬, performance
-        state, PCIe 링크, 온도 임계, throttle violation, compute/persistence mode, energy)를
-        한 응답으로 합성한다. gpuobs_device_* 와 gpuobs_pod_* instant query 만 쓰며 수집 공백 신호는 필드가
-        생략된다. SM active(gpm sm_occupancy)는 데이터센터 GPU 에서만 채워진다.
+      description: 'node 와 GPU device 단위 사용률, 메모리, 전력, 온도, 활성 throttle reason, 점유
+        pod 에 더해 device 상세(SM active, encoder/decoder 사용률, bar1 메모리, 클럭, 팬, performance
+        state, PCIe 링크, 온도 임계, throttle violation, compute/persistence mode, energy)와
+        device 상태 판정(status: 성능성 throttle 은 degraded, slowdown 임계 근접 또는 노드 NVML 오류율
+        초과는 warning), CUDA pod 귀속 능력(pod_attribution: driver 심볼 필수·runtime 선택, 불가
+        사유 포함)을 한 응답으로 합성한다. 수집 공백 신호는 필드가 생략되고 SM active(gpm sm_occupancy)는 데이터센터
+        GPU 에서만 채워진다.'
       parameters:
       - description: 단일 노드 필터 (DNS-1123 형식, 생략 시 전체)
         in: query

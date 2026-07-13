@@ -26,7 +26,10 @@ func agentsFakeQuerier() *fakeQuerier {
 		on("netobs_bpf_program_attach_total", sample(2, "node", "worker1")).
 		on("gpuobs_nvml_errors_total", sample(2.5, "node", "gpu")).
 		on("netobs_informer_sync_lag_seconds", sample(10, "node", "gpu"), sample(400, "node", "worker1")).
-		on("gpuobs_informer_sync_lag_seconds", sample(5, "node", "gpu"))
+		on("gpuobs_informer_sync_lag_seconds", sample(5, "node", "gpu")).
+		// #279 cuda 심볼: driver 부착 (min=1), runtime 미부착 (min=0). 두 쿼리는 매처 고유 문자열로 구분.
+		on(`symbol!~"cuda.*"`, sample(1, "node", "gpu")).
+		on(`symbol=~"cuda.*"`, sample(0, "node", "gpu"))
 }
 
 // TestAgents 는 (node, agent) 항목 골격과 알림 규칙 동일 임계 판정 (bpf 미로드, attach 실패,
@@ -49,10 +52,14 @@ func TestAgents(t *testing.T) {
 	for _, a := range resp.Agents {
 		byKey[a.Node+"/"+a.Agent] = a
 	}
-	// gpu/gpuobs: nvml 2.5/s > 1 → degraded GPUObsAgentNvmlErrorsHigh.
+	// gpu/gpuobs: nvml 2.5/s > 1 → degraded GPUObsAgentNvmlErrorsHigh. driver 심볼은 부착이라
+	// GPUObsCudaSymbolUnavailable 은 없어야 하고, runtime 미부착은 정보 필드로만 노출된다 (#279).
 	g := byKey["gpu/gpuobs"]
 	if g.Status != "degraded" || len(g.Issues) != 1 || g.Issues[0] != "GPUObsAgentNvmlErrorsHigh" {
 		t.Errorf("gpu/gpuobs=%+v want GPUObsAgentNvmlErrorsHigh degraded", g)
+	}
+	if g.CudaDriverSymbols == nil || !*g.CudaDriverSymbols || g.CudaRuntimeSymbols == nil || *g.CudaRuntimeSymbols {
+		t.Errorf("cuda symbols=%v/%v want driver true, runtime false", g.CudaDriverSymbols, g.CudaRuntimeSymbols)
 	}
 	// gpu/netobs: 전부 정상 → healthy.
 	if n := byKey["gpu/netobs"]; n.Status != "healthy" || len(n.Issues) != 0 {
