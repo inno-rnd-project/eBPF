@@ -215,7 +215,7 @@
       "id": 2,
       "type": "timeseries",
       "title": "GPU idle cause weight per victim ($src_namespace/$src_pod)",
-      "description": "#101 victim 단위 GPU idle 5 cause 가중치 분포. pod:gpu_idle_cause_weight:5m 5 cause (pcie_saturation 와 cpu_throttle 와 memory_pressure 와 network_pressure 와 host_compute_stall) 를 victim 별 stacked time-series 로 표시한다. 각 cause 는 고정 색상으로 운영자가 secondary 와 tertiary cause 까지 한눈에 비교 가능하다. 시리즈 의 stacked 높이 합이 1.0 에 가까우면 idle 게이팅 활성 시간대 이며 비어 있으면 GPU 가 idle 이 아니거나 cause 합이 0 인 상태다. dimension 4 종 과 cause 5 종 매핑 은 docs/observability/gpu-idle-dominant-cause.md 의 매핑 표 참조.",
+      "description": "#101 victim 단위 GPU idle 6 cause 가중치 분포. pod:gpu_idle_cause_weight:5m 의 6 cause (pcie_saturation, cpu_throttle, memory_pressure, network_pressure, host_compute_stall, cgroup_contention) 를 victim 별 stacked time-series 로 표시한다. 주의: victim 체인은 절대 압박 score 기반이라 #244 의 rise 기반 cluster dominant 와 산정 기반이 다르다. 상시 포화 pod 가 여기 에는 남고 cluster dominant 에는 없는 것은 버그가 아니라 설계다. stacked 높이 합이 1.0 에 가까우면 idle 게이팅 활성 시간대이며 비어 있으면 GPU 가 idle 이 아니거나 cause 합이 0 인 상태다.",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 10,
@@ -722,6 +722,35 @@
           }
         }
       }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Node dominant cause ($node)",
+      "description": "node:gpu_idle_dominant_cause:5m{node=\"$node\"} (#256). 노드 단위 GPU 유휴 dominant cause 로, cluster (rise 기반) 와 victim (절대 기반) 사이의 노드 scope 계층이다. gpu-rca API 의 dominant_cause 와 동일 시리즈이며, cause 라벨별 시리즈로 시간축 상 dominant 전이를 본다.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 63
+      },
+      "datasource": "${datasource}",
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "custom": {
+            "lineInterpolation": "stepBefore"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "node:gpu_idle_dominant_cause:5m{node=\"$node\"}",
+          "legendFormat": "{{cause}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "annotations": {
