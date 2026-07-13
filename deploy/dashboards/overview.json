@@ -2865,10 +2865,7 @@
         "x": 12,
         "y": 35
       },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
+      "datasource": "${datasource}",
       "fieldConfig": {
         "defaults": {
           "min": 0,
@@ -2879,22 +2876,22 @@
       },
       "targets": [
         {
-          "expr": "node:cpu_health_score:5m{node=\"$node\"}",
+          "expr": "node:cpu_health_score:5m{node=~\"$node\"}",
           "legendFormat": "cpu",
           "refId": "A"
         },
         {
-          "expr": "node:gpu_health_score:5m{node=\"$node\"}",
+          "expr": "node:gpu_health_score:5m{node=~\"$node\"}",
           "legendFormat": "gpu",
           "refId": "B"
         },
         {
-          "expr": "node:memory_health_score:5m{node=\"$node\"}",
+          "expr": "node:memory_health_score:5m{node=~\"$node\"}",
           "legendFormat": "memory",
           "refId": "C"
         },
         {
-          "expr": "node:network_health_score:5m{node=\"$node\"}",
+          "expr": "node:network_health_score:5m{node=~\"$node\"}",
           "legendFormat": "network",
           "refId": "D"
         }
@@ -2911,10 +2908,7 @@
         "x": 0,
         "y": 145
       },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
+      "datasource": "${datasource}",
       "fieldConfig": {
         "defaults": {
           "min": 0,

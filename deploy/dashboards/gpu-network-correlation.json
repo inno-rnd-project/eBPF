@@ -734,10 +734,7 @@
         "x": 0,
         "y": 63
       },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
+      "datasource": "${datasource}",
       "fieldConfig": {
         "defaults": {
           "min": 0,
