@@ -13,6 +13,7 @@ resources:
   - daemonset.yaml
   # Network
   - service.yaml
+  - networkpolicy.yaml
   # Monitoring
   - servicemonitor.yaml
   - prometheus-rule.yaml
