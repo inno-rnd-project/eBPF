@@ -29,7 +29,7 @@
 | 피어슨 상관계수 스코어링 | `noisy-neighbor`, `cross-node-interference`, `service-impact` (impact) 가 `correlation_*_score` 와 `causal_strength` 노출 | 커버 |
 | 특정 node/pod 의 서비스 영향 분석 | `service-impact`, `impact-graph`, `impact-paths`, `cross-level` (impact) | 커버 |
 | GPU 유휴 원인 (하드웨어 vs 네트워크) | `gpu-idle` (gpu). dominant cause 9종. scope=cluster/node/pod 로 cluster·노드·victim Pod 단위 귀속, node 파라미터로 단일 노드 조회 | 커버 |
-| 노드 GPU 원인 서사 (RCA 합성) | `gpu-rca` (gpu). 노드 단위 dominant cause·신뢰도·원인 후보 pod 랭킹·한 줄 narrative 를 gpu-idle 과 noisy-neighbor/cross-node 합성으로 노출. `at` 결합 | 커버 |
+| 노드 GPU 원인 서사 (RCA 합성) | `gpu-rca` (gpu). 노드 단위 dominant cause·신뢰도·원인 후보 pod 랭킹·근거 수치 (evidence)·한 줄 narrative 를 gpu-idle 과 noisy-neighbor/cross-node 합성으로 노출. evidence 는 device 사용률·SM active·재전송 rate·최대 RTT 를 narrative 에 융합하고 network 계열 dominant cause 에 인과 체인 문구를 붙임. `gpu` 파라미터로 device 스코프 조회, `at` 결합 | 커버 |
 | Pod 간 네트워크 flow 추적 | `flows` (network), `topology` (interference) | 커버 |
 | GPU 일반 자원 현황 (사용률·메모리·전력·온도·상세) | `gpu-status` (gpu). `gpuobs_device_*` 와 `gpuobs_pod_*` 기반. device 상세 (SM active·클럭·팬·PCIe·performance state·온도 임계·throttle violation·encoder/decoder·bar1·energy) 포함, node 필터 | 커버 |
 | Pod 별 RX/TX 대역폭 | `bandwidth` (network). `netobs_pod_bytes_total` 기반, allow-list 무관 전 pod 커버 | 커버 |
