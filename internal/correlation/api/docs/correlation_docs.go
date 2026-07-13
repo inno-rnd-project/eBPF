@@ -449,6 +449,47 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "/api/v1/gpu-processes": {
+            "get": {
+                "description": "노드의 gpuobs agent 로컬 /processes 스냅샷 (PID, GPU device, compute/graphics 타입, GPU 메모리, cgroup 기반 소유 pod, best-effort SM util) 을 단일 진입점으로 중계한다. agent 주소는 Prometheus up 시리즈의 instance 라벨로 해석하며, agent 미존재 / down / 미응답은 빈 목록과 사유 (available=false, reason) 로 graceful 처리한다. 실시간 스냅샷 경로라 at 시점 재구성은 지원하지 않는다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "gpu"
+                ],
+                "summary": "노드 GPU 실행 프로세스 목록 (agent 프록시)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "대상 노드 (DNS-1123 형식)",
+                        "name": "node",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.GpuProcessesResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/gpu-rca": {
             "get": {
                 "description": "노드 하나의 GPU 유휴 dominant cause 와 cause 별 가중치, 신뢰도, 원인 후보 pod 랭킹, 근거 수치 (evidence), 한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와 가중치는 scope=node gpu-idle 결과를 재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor suspect pod (namespace-aware) 와 cross-node-interference suspect node 를 점수순으로 집계한다. 신뢰도는 top1 과 top2 cause 격차다. evidence 는 device 사용률과 SM active, 노드 재전송 rate 와 최대 RTT 를 instant 로 실어 narrative 에 융합하고, dominant cause 가 network 계열이면 인과 체인 문구를 덧붙인다. gpu 파라미터 (GPU UUID 또는 device index) 로 evidence 의 GPU 수치를 device 로 좁힐 수 있고, 미등록 device 는 해당 수치가 생략된다.",
@@ -2156,6 +2197,37 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "internal_correlation_api.GpuProcessesResponse": {
+            "type": "object",
+            "properties": {
+                "available": {
+                    "description": "Available 은 agent 스냅샷 확보 여부다. false 면 Reason 에 사유가 담기고 processes 는 빈다.",
+                    "type": "boolean"
+                },
+                "collected_at": {
+                    "description": "CollectedAt 은 agent 가 스냅샷을 만든 poll 시각 (RFC3339) 이다.",
+                    "type": "string"
+                },
+                "generated_at": {
+                    "type": "string"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "processes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/netobs_internal_gpuobs_types.GPUProcessDetail"
+                    }
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_correlation_api.GpuStatusResponse": {
             "type": "object",
             "properties": {
@@ -3719,6 +3791,35 @@ const docTemplatecorrelation = `{
                 "SignalGPU",
                 "SignalNone"
             ]
+        },
+        "netobs_internal_gpuobs_types.GPUProcessDetail": {
+            "type": "object",
+            "properties": {
+                "gpu_index": {
+                    "type": "integer"
+                },
+                "gpu_uuid": {
+                    "type": "string"
+                },
+                "memory_used_bytes": {
+                    "type": "integer"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "pid": {
+                    "type": "integer"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "sm_util_percent": {
+                    "type": "integer"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
         }
     },
     "tags": [

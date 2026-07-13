@@ -22,6 +22,9 @@ type SynthesisHandler struct {
 	querier   correlation.InstantQuerier
 	neighbors SnapshotSource
 	crossNode CrossNodeSnapshotSource
+	// agentClient 는 #281 gpu-processes 프록시의 노드 agent 호출용 client 다. 생성자가 5s timeout
+	// 기본값으로 채우고, 테스트는 필드를 직접 교체한다.
+	agentClient *http.Client
 }
 
 // NewSynthesisHandler 는 InstantQuerier 와 noisy-neighbor SnapshotSource, cross-node interference
@@ -29,7 +32,12 @@ type SynthesisHandler struct {
 // 가 데이터 부재 (unknown) 응답을, neighbors 가 nil 이면 events 가 anomaly 만, crossNode 가 nil 이면
 // topology 가 노드 엣지 없이 graceful 하게 응답한다.
 func NewSynthesisHandler(querier correlation.InstantQuerier, neighbors SnapshotSource, crossNode CrossNodeSnapshotSource) *SynthesisHandler {
-	return &SynthesisHandler{querier: querier, neighbors: neighbors, crossNode: crossNode}
+	return &SynthesisHandler{
+		querier:     querier,
+		neighbors:   neighbors,
+		crossNode:   crossNode,
+		agentClient: &http.Client{Timeout: 5 * time.Second},
+	}
 }
 
 // Register 는 합성 API 라우트를 mux 에 등록한다. 기존 correlation API 와 동일하게 Logging / Recover /
@@ -104,6 +112,13 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 	))
 	mux.Handle("/api/v1/gpu-status", apicommon.Chain(
 		http.HandlerFunc(h.GetGpuStatus),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
+	// #281 노드 GPU 실행 프로세스 프록시. gpuobs agent 로컬 스냅샷을 단일 진입점으로 중계한다.
+	mux.Handle("/api/v1/gpu-processes", apicommon.Chain(
+		http.HandlerFunc(h.GetGpuProcesses),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
