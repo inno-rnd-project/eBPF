@@ -11,7 +11,7 @@ resources:
 images:
   - name: gpuobs-agent
     newName: ghcr.io/inno-rnd-project/gpuobs-agent
-    newTag: "2.0.2"
+    newTag: "2.0.3"
 
 patches:
   - path: patch-daemonset.yaml
