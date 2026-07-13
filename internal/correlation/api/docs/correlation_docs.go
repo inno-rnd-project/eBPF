@@ -17,7 +17,7 @@ const docTemplatecorrelation = `{
     "paths": {
         "/api/v1/agents": {
             "get": {
-                "description": "netobs 와 gpuobs 에이전트의 스크레이프 up 여부, BPF program attach 상태와 최근 attach 실패, NVML 오류율, informer lag 를 노드 단위로 집계하고 기존 알림 규칙과 동일한 임계로 healthy / degraded 를 판정한다. issues 의 alertname 은 playbooks 조회 입력과 호환된다. node 파라미터로 단일 노드를 조회한다.",
+                "description": "netobs 와 gpuobs 에이전트의 스크레이프 up 여부, BPF program attach 상태와 최근 attach 실패, NVML 오류율, informer lag, cuda 심볼 부착 상태(driver 필수·runtime 선택)를 노드 단위로 집계하고 기존 알림 규칙과 동일한 임계로 healthy / degraded 를 판정한다. issues 의 alertname 은 playbooks 조회 입력과 호환된다. node 파라미터로 단일 노드를 조회한다.",
                 "produces": [
                     "application/json"
                 ],
@@ -498,7 +498,7 @@ const docTemplatecorrelation = `{
         },
         "/api/v1/gpu-status": {
             "get": {
-                "description": "node 와 GPU device 단위 사용률, 메모리, 전력, 온도, 활성 throttle reason, 점유 pod 에 더해 device 상세(SM active, encoder/decoder 사용률, bar1 메모리, 클럭, 팬, performance state, PCIe 링크, 온도 임계, throttle violation, compute/persistence mode, energy)를 한 응답으로 합성한다. gpuobs_device_* 와 gpuobs_pod_* instant query 만 쓰며 수집 공백 신호는 필드가 생략된다. SM active(gpm sm_occupancy)는 데이터센터 GPU 에서만 채워진다.",
+                "description": "node 와 GPU device 단위 사용률, 메모리, 전력, 온도, 활성 throttle reason, 점유 pod 에 더해 device 상세(SM active, encoder/decoder 사용률, bar1 메모리, 클럭, 팬, performance state, PCIe 링크, 온도 임계, throttle violation, compute/persistence mode, energy)와 device 상태 판정(status: 성능성 throttle 은 degraded, slowdown 임계 근접 또는 노드 NVML 오류율 초과는 warning), CUDA pod 귀속 능력(pod_attribution: driver 심볼 필수·runtime 선택, 불가 사유 포함)을 한 응답으로 합성한다. 수집 공백 신호는 필드가 생략되고 SM active(gpm sm_occupancy)는 데이터센터 GPU 에서만 채워진다.",
                 "produces": [
                     "application/json"
                 ],
@@ -1416,6 +1416,13 @@ const docTemplatecorrelation = `{
                 "bpf_programs_total": {
                     "type": "number"
                 },
+                "cuda_driver_symbols": {
+                    "description": "CudaDriverSymbols / CudaRuntimeSymbols 는 cuda uprobe 심볼 부착 상태 (gpuobs 전용, #279) 다.\ndriver (cu*) 는 CUDA pod 귀속의 필수 조건이고 runtime (cuda*) 은 선택이라는 규약은\nGPUObsCudaSymbolUnavailable alert 와 같다. gpu-status 의 pod_attribution 과 동일 소스다.",
+                    "type": "boolean"
+                },
+                "cuda_runtime_symbols": {
+                    "type": "boolean"
+                },
                 "informer_lag_seconds": {
                     "description": "InformerLagSeconds 는 kube informer 마지막 watch event 이후 경과 초다.",
                     "type": "number"
@@ -1987,6 +1994,14 @@ const docTemplatecorrelation = `{
                 "persistence_mode": {
                     "type": "number"
                 },
+                "pod_attribution": {
+                    "description": "PodAttribution 은 CUDA pod 귀속 능력 메타데이터 (#279) 다. pods 가 비었을 때 \"실행 중 GPU\n프로세스 없음\" 과 \"귀속 자체가 불가능\" 을 프론트가 구분하는 근거다. 심볼 신호 부재 시 생략된다.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/internal_correlation_api.PodAttribution"
+                        }
+                    ]
+                },
                 "pods": {
                     "type": "array",
                     "items": {
@@ -2005,6 +2020,10 @@ const docTemplatecorrelation = `{
                 "sm_active_percent": {
                     "description": "아래는 #267 의 device 상세 확장 필드다. gpuobs 가 수집하나 기존 gpu-status 가 노출하지 않던\n신호로, heatmap 온도 위험도 색칠 (temperature_thresholds_celsius) 과 GPU Detail 페이지\n(클럭, 팬, PCIe, performance state 등) 의 데이터를 채운다. 전부 수집 공백 시 생략되도록\npointer 또는 omitempty map 이다.\n\nSMActivePercent 는 gpm_utilization_percent 의 sm_occupancy 다. consumer GPU (RTX 등) 는 GPM\n미지원이라 빈 값이고 데이터센터 GPU (A100+) 에서만 채워진다.",
                     "type": "number"
+                },
+                "status": {
+                    "description": "Status 는 device 3단 판정 (#279) 이다. 성능성 throttle 활성이면 degraded, 온도가 slowdown\n임계의 90% 이상이거나 노드의 유의미 NVML 오류율이 alert 임계 (1/s) 를 넘으면 warning, 그 외\nhealthy 다. #273 의 GPU health 판정 신호를 device 뱃지 입도로 적용한 것이다.",
+                    "type": "string"
                 },
                 "temperature_celsius": {
                     "type": "number"
@@ -2863,6 +2882,20 @@ const docTemplatecorrelation = `{
                 },
                 "summary": {
                     "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.PodAttribution": {
+            "type": "object",
+            "properties": {
+                "available": {
+                    "type": "boolean"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "runtime_symbols": {
+                    "type": "boolean"
                 }
             }
         },

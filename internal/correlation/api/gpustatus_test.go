@@ -37,7 +37,13 @@ func gpuStatusFakeQuerier() *fakeQuerier {
 			sample(83, "node", "gpu", "gpu_uuid", "u1", "threshold", "slowdown"),
 			sample(90, "node", "gpu", "gpu_uuid", "u1", "threshold", "shutdown")).
 		on("gpuobs_device_throttle_violation_seconds_total",
-			sample(4, "node", "gpu", "gpu_uuid", "u1"))
+			sample(4, "node", "gpu", "gpu_uuid", "u1")).
+		// #279: driver 심볼 부착, runtime 심볼 미부착 (dev 실측 형태).
+		on("gpuobs_cuda_symbol_available",
+			sample(1, "node", "gpu", "symbol", "cuLaunchKernel"),
+			sample(1, "node", "gpu", "symbol", "cuMemcpy"),
+			sample(0, "node", "gpu", "symbol", "cudaLaunchKernel")).
+		on("gpuobs_nvml_errors_total", sample(0, "node", "gpu"))
 }
 
 // TestGpuStatus 는 device 현황 신호 병합과 memory ratio 산출, 활성 throttle reason 수집, pod 점유
@@ -98,6 +104,45 @@ func TestGpuStatus(t *testing.T) {
 	// SM active 는 fixture 에 gpm 시리즈가 없어 (consumer GPU 재현) 생략돼야 한다.
 	if d.SMActivePercent != nil {
 		t.Errorf("sm_active_percent=%v want nil (GPM 미지원 재현)", d.SMActivePercent)
+	}
+	// #279 device 상태: sw_power_cap 은 성능성 throttle 이라 degraded.
+	if d.Status != "degraded" {
+		t.Errorf("status=%q want degraded (sw_power_cap 활성)", d.Status)
+	}
+	// #279 귀속 능력: driver 심볼 부착 + runtime 미부착 → available true, runtime false, 사유 명시.
+	if d.PodAttribution == nil || !d.PodAttribution.Available || d.PodAttribution.RuntimeSymbols {
+		t.Fatalf("pod_attribution=%+v want available/runtime false", d.PodAttribution)
+	}
+	if d.PodAttribution.Reason == "" {
+		t.Errorf("pod_attribution reason 비어 있음 (runtime 미부착 사유 필요)")
+	}
+}
+
+// TestGpuStatus_DeviceStatus 는 #279 의 device 상태 3단과 driver 심볼 미부착 판정을 검증한다.
+func TestGpuStatus_DeviceStatus(t *testing.T) {
+	dev := []string{"node", "gpu", "gpu_uuid", "u1", "gpu_index", "0"}
+	q := (&fakeQuerier{}).
+		on("gpuobs_device_utilization_percent", sample(5, dev...)).
+		on("gpuobs_device_temperature_celsius", sample(86, dev...)).
+		on("gpuobs_device_temperature_threshold_celsius",
+			sample(93, "node", "gpu", "gpu_uuid", "u1", "threshold", "slowdown")).
+		// 정보성 gpu_idle 만 활성 → degraded 아님. 온도 86 >= 0.9*93(83.7) → warning.
+		on("gpuobs_device_throttle_active", sample(1, "node", "gpu", "gpu_uuid", "u1", "reason", "gpu_idle")).
+		// driver 심볼 미부착 → 귀속 불가.
+		on("gpuobs_cuda_symbol_available", sample(0, "node", "gpu", "symbol", "cuLaunchKernel"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetGpuStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-status", nil))
+	var resp GpuStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	d := resp.Devices[0]
+	if d.Status != "warning" {
+		t.Errorf("status=%q want warning (slowdown 임계 90%% 근접, gpu_idle 은 정보성)", d.Status)
+	}
+	if d.PodAttribution == nil || d.PodAttribution.Available {
+		t.Errorf("pod_attribution=%+v want available false (driver 심볼 미부착)", d.PodAttribution)
 	}
 }
 

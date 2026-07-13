@@ -68,7 +68,48 @@ type GpuDevice struct {
 	// ThrottleReasons 는 값이 1 (활성) 인 throttle reason 라벨 목록이다. gpu_idle 같은 정보성 사유도
 	// NVML 이 주는 그대로 노출해 프론트가 필터 여부를 결정하게 한다.
 	ThrottleReasons []string `json:"throttle_reasons"`
-	Pods            []GpuPod `json:"pods"`
+	// Status 는 device 3단 판정 (#279) 이다. 성능성 throttle 활성이면 degraded, 온도가 slowdown
+	// 임계의 90% 이상이거나 노드의 유의미 NVML 오류율이 alert 임계 (1/s) 를 넘으면 warning, 그 외
+	// healthy 다. #273 의 GPU health 판정 신호를 device 뱃지 입도로 적용한 것이다.
+	Status string `json:"status"`
+	// PodAttribution 은 CUDA pod 귀속 능력 메타데이터 (#279) 다. pods 가 비었을 때 "실행 중 GPU
+	// 프로세스 없음" 과 "귀속 자체가 불가능" 을 프론트가 구분하는 근거다. 심볼 신호 부재 시 생략된다.
+	PodAttribution *PodAttribution `json:"pod_attribution,omitempty"`
+	Pods           []GpuPod        `json:"pods"`
+}
+
+// PodAttribution 은 gpuobs_cuda_symbol_available 기반 CUDA 귀속 능력 판정이다. driver 심볼 (cu*)
+// 이 필수이고 runtime 심볼 (cuda*) 은 선택이라는 규약은 GPUObsCudaSymbolUnavailable alert 와 같다.
+type PodAttribution struct {
+	Available      bool   `json:"available"`
+	RuntimeSymbols bool   `json:"runtime_symbols"`
+	Reason         string `json:"reason,omitempty"`
+}
+
+// gpuPerfThrottleReasons 는 성능성 throttle reason 셋이다. GPUObsThrottleActive alert 와 #273 GPU
+// health 판정과 동일한 규약이며 정보성 gpu_idle 은 포함하지 않는다.
+var gpuPerfThrottleReasons = map[string]bool{
+	"hw_slowdown": true, "hw_thermal_slowdown": true, "hw_power_brake_slowdown": true,
+	"sw_thermal_slowdown": true, "sw_power_cap": true,
+}
+
+// gpuDeviceStatus 는 device 3단 판정 (#279) 이다. 성능성 throttle 활성이면 degraded, slowdown 임계
+// 의 90% 이상 온도 또는 노드 유의미 NVML 오류율 초과 (alert 임계 1/s) 면 warning, 그 외 healthy 다.
+func gpuDeviceStatus(d *GpuDevice, nodeNvmlRate float64) string {
+	for _, r := range d.ThrottleReasons {
+		if gpuPerfThrottleReasons[r] {
+			return "degraded"
+		}
+	}
+	if d.TemperatureCelsius != nil {
+		if slowdown, ok := d.TemperatureThresholdsCelsius["slowdown"]; ok && slowdown > 0 && *d.TemperatureCelsius >= 0.9*slowdown {
+			return "warning"
+		}
+	}
+	if nodeNvmlRate > 1 {
+		return "warning"
+	}
+	return "healthy"
 }
 
 // GpuPod 는 한 device 를 점유 중인 pod 의 사용률과 메모리다. gpuobs 가 NVML running process 를
@@ -96,7 +137,7 @@ type gpuPodKey struct {
 
 // GetGpuStatus godoc
 // @Summary      GPU 자원 현황 조회
-// @Description  node 와 GPU device 단위 사용률, 메모리, 전력, 온도, 활성 throttle reason, 점유 pod 에 더해 device 상세(SM active, encoder/decoder 사용률, bar1 메모리, 클럭, 팬, performance state, PCIe 링크, 온도 임계, throttle violation, compute/persistence mode, energy)를 한 응답으로 합성한다. gpuobs_device_* 와 gpuobs_pod_* instant query 만 쓰며 수집 공백 신호는 필드가 생략된다. SM active(gpm sm_occupancy)는 데이터센터 GPU 에서만 채워진다.
+// @Description  node 와 GPU device 단위 사용률, 메모리, 전력, 온도, 활성 throttle reason, 점유 pod 에 더해 device 상세(SM active, encoder/decoder 사용률, bar1 메모리, 클럭, 팬, performance state, PCIe 링크, 온도 임계, throttle violation, compute/persistence mode, energy)와 device 상태 판정(status: 성능성 throttle 은 degraded, slowdown 임계 근접 또는 노드 NVML 오류율 초과는 warning), CUDA pod 귀속 능력(pod_attribution: driver 심볼 필수·runtime 선택, 불가 사유 포함)을 한 응답으로 합성한다. 수집 공백 신호는 필드가 생략되고 SM active(gpm sm_occupancy)는 데이터센터 GPU 에서만 채워진다.
 // @Tags         gpu
 // @Produce      json
 // @Param        node       query  string  false  "단일 노드 필터 (DNS-1123 형식, 생략 시 전체)"
@@ -178,14 +219,16 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 	}
 	bres := h.queryParallel(ctx, bq...)
 
-	// 목록 (throttle 활성 reason) 과 서브라벨 map (clock, temperature threshold), pod 점유는 단일값이
-	// 아니라 별도로 조회한다.
+	// 목록 (throttle 활성 reason) 과 서브라벨 map (clock, temperature threshold), pod 점유, 노드 단위
+	// 능력·오류 신호 (#279) 는 단일값이 아니라 별도로 조회한다.
 	sub := h.queryParallel(ctx,
 		"gpuobs_device_throttle_active"+sel+" == 1",
 		"gpuobs_device_clock_mhz"+sel,
 		"gpuobs_device_temperature_threshold_celsius"+sel,
 		"gpuobs_pod_utilization_percent"+sel,
 		"gpuobs_pod_memory_used_bytes"+sel,
+		"gpuobs_cuda_symbol_available"+sel,
+		fmt.Sprintf(`sum by(node) (rate(gpuobs_nvml_errors_total{error_code!~"Not Supported|Not Found"%s}[5m]))`, nodeSuffixMatcher(node)),
 	)
 
 	devices := map[gpuDeviceKey]*GpuDevice{}
@@ -295,11 +338,59 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 		d.Pods = append(d.Pods, *p)
 	}
 
+	// #279 노드별 능력·오류 신호 집계. cuda 심볼은 (node, symbol) 시리즈라 노드별로 driver (cu*)
+	// 와 runtime (cuda*) 계열의 최솟값을 모으고, NVML 유의미 오류율은 노드 단위 값이다.
+	type symbolState struct{ driverOK, runtimeOK, driverSeen, runtimeSeen bool }
+	symbols := map[string]*symbolState{}
+	for _, sm := range sub[5] {
+		if math.IsNaN(sm.Value) || math.IsInf(sm.Value, 0) {
+			continue
+		}
+		n := sm.Labels["node"]
+		sym := sm.Labels["symbol"]
+		if n == "" || sym == "" {
+			continue
+		}
+		st, ok := symbols[n]
+		if !ok {
+			st = &symbolState{driverOK: true, runtimeOK: true}
+			symbols[n] = st
+		}
+		if strings.HasPrefix(sym, "cuda") {
+			st.runtimeSeen = true
+			if sm.Value != 1 {
+				st.runtimeOK = false
+			}
+		} else {
+			st.driverSeen = true
+			if sm.Value != 1 {
+				st.driverOK = false
+			}
+		}
+	}
+	nvmlRate := map[string]float64{}
+	for _, sm := range sub[6] {
+		if n := sm.Labels["node"]; n != "" && !math.IsNaN(sm.Value) {
+			nvmlRate[n] = sm.Value
+		}
+	}
+
 	for _, k := range order {
 		d := devices[k]
 		if d.MemoryUsedBytes != nil && d.MemoryTotalBytes != nil && *d.MemoryTotalBytes > 0 {
 			ratio := *d.MemoryUsedBytes / *d.MemoryTotalBytes
 			d.MemoryUsedRatio = &ratio
+		}
+		d.Status = gpuDeviceStatus(d, nvmlRate[d.Node])
+		if st, ok := symbols[d.Node]; ok && st.driverSeen {
+			att := &PodAttribution{Available: st.driverOK, RuntimeSymbols: st.runtimeSeen && st.runtimeOK}
+			switch {
+			case !att.Available:
+				att.Reason = "libcuda driver 심볼 uprobe 미부착 (ABI drift 의심) — CUDA pod 귀속 불가"
+			case !att.RuntimeSymbols:
+				att.Reason = "런타임 (cudart) 심볼 미부착 — driver API 계측만 수집"
+			}
+			d.PodAttribution = att
 		}
 		sort.Strings(d.ThrottleReasons)
 		sort.Slice(d.Pods, func(i, j int) bool {
