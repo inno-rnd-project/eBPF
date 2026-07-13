@@ -9,7 +9,7 @@ resources:
 images:
   - name: correlation-exporter
     newName: ghcr.io/inno-rnd-project/correlation-exporter
-    newTag: "1.9.8"
+    newTag: "2.0.0"
 
 patches:
   - path: patch-deployment.yaml

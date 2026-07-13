@@ -1,0 +1,56 @@
+# gpuobs-gpu-health.test.yaml 은 #273 의 GPU health 재정의 검증 promtool unit test 다. 핵심 회귀는
+# "유휴 GPU 가 healthy" 다 (기존 사용률 등식이면 health 0 이던 케이스). n1 은 완전 유휴 (util 5%,
+# 정보성 gpu_idle throttle, 양성 Not Found NVML 오류만) 인데 health 1 이어야 하고, n2 는 성능성
+# thermal throttle 활성이라 health 0, n3 은 유의미 NVML 오류 0.5/s 라 health 0.5 다. cluster 는
+# worst 노드라 0 이다.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  - interval: 30s
+    input_series:
+      # n1: 유휴 GPU. util 5% (idle 게이팅), gpu_idle throttle (정보성), Not Found NVML (양성).
+      - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
+        values: '5x20'
+      - series: 'gpuobs_device_throttle_active{node="n1",gpu_uuid="g1",reason="gpu_idle"}'
+        values: '1x20'
+      - series: 'gpuobs_nvml_errors_total{node="n1",call="ProcessUtilization",error_code="Not Found"}'
+        values: '0+6x20'
+      # n2: 성능성 thermal throttle 활성.
+      - series: 'gpuobs_device_utilization_percent{node="n2",gpu_uuid="g2"}'
+        values: '80x20'
+      - series: 'gpuobs_device_throttle_active{node="n2",gpu_uuid="g2",reason="hw_thermal_slowdown"}'
+        values: '1x20'
+      # n3: 유의미 NVML 오류 0.5/s (30s 당 15 증가).
+      - series: 'gpuobs_device_utilization_percent{node="n3",gpu_uuid="g3"}'
+        values: '50x20'
+      - series: 'gpuobs_nvml_errors_total{node="n3",call="DeviceGetHandle",error_code="Unknown Error"}'
+        values: '0+15x20'
+
+    promql_expr_test:
+      # 핵심 회귀: 유휴 GPU 가 healthy. 기존 산식이면 util 0.05 → health 0.05 였다.
+      - expr: node:gpu_health_score:5m{node="n1"}
+        eval_time: 5m
+        exp_samples:
+          - labels: 'node:gpu_health_score:5m{node="n1"}'
+            value: 1
+      # 성능성 throttle → health 0.
+      - expr: node:gpu_health_score:5m{node="n2"}
+        eval_time: 5m
+        exp_samples:
+          - labels: 'node:gpu_health_score:5m{node="n2"}'
+            value: 0
+      # 유의미 NVML 0.5/s → health 0.5.
+      - expr: node:gpu_health_score:5m{node="n3"}
+        eval_time: 5m
+        exp_samples:
+          - labels: 'node:gpu_health_score:5m{node="n3"}'
+            value: 0.5
+      # cluster 는 worst 노드 (n2 의 throttle) 기준 0.
+      - expr: cluster:gpu_health_score:5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'cluster:gpu_health_score:5m'
+            value: 0
