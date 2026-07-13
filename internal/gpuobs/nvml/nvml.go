@@ -1036,33 +1036,61 @@ func (d *deviceImpl) RunningProcesses() ([]types.GPUProcess, error) {
 		graphics = nil
 	}
 
-	// PID 단위로 dedupe + max memory 채택 — compute / graphics가 같은 GPU 할당을 두 view로 본다.
-	merged := make(map[uint32]uint64, len(compute)+len(graphics))
-	for _, p := range compute {
-		if p.UsedGpuMemory > merged[p.Pid] {
-			merged[p.Pid] = p.UsedGpuMemory
-		}
-	}
-	for _, p := range graphics {
-		if p.UsedGpuMemory > merged[p.Pid] {
-			merged[p.Pid] = p.UsedGpuMemory
-		}
-	}
-
 	// hot-plug 추적: RunningProcesses 의 DeviceIndex 도 currentIdx atomic 으로 매 호출 갱신해
 	// metric 라벨의 gpu_index 가 NVML index 재배치 후에도 일관되게 노출되도록 한다.
-	currentIdx := uint(d.currentIdx.Load())
+	return mergeRunningProcesses(compute, graphics, uint(d.currentIdx.Load())), nil
+}
+
+// mergeRunningProcesses 는 compute / graphics 프로세스 목록을 PID 단위로 dedupe 하고 실행 모드
+// 타입을 판정한다. 같은 PID 가 두 모드에 등장하면 NVML 이 보고하는 사용 메모리는 같은 GPU 할당을
+// 두 view 로 본 값이라 단순 합산은 double-count 가 되므로 max 를 채택하고, 타입은
+// "compute+graphics" 로 적는다. PID 오름차순 정렬로 결정성 확보 — collector 합산 결과는 순서
+// 무관이지만 로그/디버깅/테스트 일관성을 위해.
+func mergeRunningProcesses(compute, graphics []gonvml.ProcessInfo, idx uint) []types.GPUProcess {
+	type entry struct {
+		mem      uint64
+		compute  bool
+		graphics bool
+	}
+	merged := make(map[uint32]*entry, len(compute)+len(graphics))
+	add := func(procs []gonvml.ProcessInfo, isCompute bool) {
+		for _, p := range procs {
+			e, ok := merged[p.Pid]
+			if !ok {
+				e = &entry{}
+				merged[p.Pid] = e
+			}
+			if p.UsedGpuMemory > e.mem {
+				e.mem = p.UsedGpuMemory
+			}
+			if isCompute {
+				e.compute = true
+			} else {
+				e.graphics = true
+			}
+		}
+	}
+	add(compute, true)
+	add(graphics, false)
+
 	result := make([]types.GPUProcess, 0, len(merged))
-	for pid, mem := range merged {
+	for pid, e := range merged {
+		typ := "compute"
+		switch {
+		case e.compute && e.graphics:
+			typ = "compute+graphics"
+		case e.graphics:
+			typ = "graphics"
+		}
 		result = append(result, types.GPUProcess{
-			DeviceIndex:     currentIdx,
+			DeviceIndex:     idx,
 			PID:             pid,
-			MemoryUsedBytes: mem,
+			MemoryUsedBytes: e.mem,
+			Type:            typ,
 		})
 	}
-	// PID 오름차순 정렬로 결정성 확보 — collector 합산 결과는 순서 무관이지만 로그/디버깅/테스트 일관성을 위해.
 	sort.Slice(result, func(i, j int) bool { return result[i].PID < result[j].PID })
-	return result, nil
+	return result
 }
 
 // ProcessUtilization 은 #104 도입의 per-process util sample 수집 진입점이다. NVML

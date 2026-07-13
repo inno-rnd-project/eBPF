@@ -6,6 +6,7 @@ package collector
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"netobs/internal/gpuobs/config"
@@ -44,6 +45,13 @@ type Collector struct {
 	// 를 bind 한 contention.Read 다. recordContention 은 metrics.RecordPodContention 발행 test seam.
 	readContention   func(podUID string) (contention.Stats, bool)
 	recordContention func(node string, samples []metrics.PodContentionSample)
+
+	// procMu 가 지키는 procList / procAt 은 #281 로컬 조회 endpoint 용 직전 poll 프로세스 스냅샷이다.
+	// pollOnce 가 통째 교체하고 ProcessSnapshot 이 읽는다. 교체 후 슬라이스는 불변이라 reader 는
+	// 복사 없이 참조를 돌려받는다.
+	procMu   sync.RWMutex
+	procList []types.GPUProcessDetail
+	procAt   time.Time
 }
 
 // New는 NVML 핸들과 Config, 그리고 선택적 PodResolver를 받아 Collector를 구성한다.
@@ -160,6 +168,9 @@ func (c *Collector) pollOnce() {
 	// 모아 (podReps) device loop 종료 후 Pod 단위로 1회씩 cgroup PSI 를 읽는다.
 	contentionEnabled := perPodEnabled && c.cfg.ContentionEnabled
 	var contentionPods map[string]kube.PodIdentity
+	// #281 로컬 조회 스냅샷. 스윕이 있는 per-pod 경로에서만 채워지며, 빈 결과도 교체해야 종료된
+	// 프로세스가 목록에 남지 않는다.
+	var procDetails []types.GPUProcessDetail
 	if perPodEnabled {
 		aggregated = make(map[podGPUKey]*metrics.PodGPUSample)
 		aggregatedMig = make(map[podMigKey]*metrics.PodMigGPUSample)
@@ -205,6 +216,24 @@ func (c *Collector) pollOnce() {
 		utilByPID := buildProcessUtilMap(utils)
 		for _, p := range procs {
 			id := c.resolver.ResolvePID(p.PID)
+			// #281 스냅샷은 pod 미귀속 (host 프로세스 / 미동기화 Pod) 도 포함한다. 목록의 목적이
+			// "이 GPU 에서 도는 것 전부" 라 귀속 실패를 숨기면 오히려 진단이 어려워진다.
+			detail := types.GPUProcessDetail{
+				PID:             p.PID,
+				GpuUUID:         snap.Device.UUID,
+				GpuIndex:        snap.Device.Index,
+				Type:            p.Type,
+				MemoryUsedBytes: p.MemoryUsedBytes,
+			}
+			if u, ok := utilByPID[p.PID]; ok {
+				u := u
+				detail.SmUtilPercent = &u
+			}
+			if id.IsPod() {
+				detail.Namespace = id.Namespace
+				detail.Pod = id.PodName
+			}
+			procDetails = append(procDetails, detail)
 			if !id.IsPod() {
 				// unresolved / host process / 미동기화 Pod 등은 합산 키 생성도 건너뛴다.
 				continue
@@ -246,6 +275,11 @@ func (c *Collector) pollOnce() {
 	// per-pod 토글이 켜진 경로에서만 RecordPodSnapshot을 호출한다.
 	// 빈 aggregated여도 호출해야 직전 poll에 있던 라벨이 metrics 측 diff cleanup으로 삭제된다.
 	if perPodEnabled {
+		c.procMu.Lock()
+		c.procList = procDetails
+		c.procAt = time.Now()
+		c.procMu.Unlock()
+
 		samples := make([]metrics.PodGPUSample, 0, len(aggregated))
 		for _, v := range aggregated {
 			samples = append(samples, *v)

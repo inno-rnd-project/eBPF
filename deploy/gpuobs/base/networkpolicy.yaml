@@ -1,0 +1,31 @@
+# gpuobs agent 는 #281 의 로컬 /processes endpoint 가 실행 프로세스의 PID 와 소유 pod 를 무인증으로
+# 노출하므로 네트워크 계층에서 접근 출처를 한정한다 (correlation-exporter 의 #217 규약과 동일 접근).
+# 허용 출처는 두 갈래다. Prometheus scrape 의 monitoring 네임스페이스, 그리고 gpu-processes 프록시를
+# 서빙하는 같은 네임스페이스의 correlation-exporter pod. kubelet 의 liveness/readiness httpGet probe 는
+# 로컬 노드 host 발신이라 Cilium 이 정책과 무관하게 허용한다. egress 는 본 이슈 범위 외라 제한하지
+# 않는다 (policyTypes 에 Egress 미포함).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gpuobs-agent
+  labels:
+    app.kubernetes.io/name: gpuobs-agent
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: gpu-observer
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gpuobs-agent
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: correlation-exporter
+      ports:
+        - port: 9820
+          protocol: TCP
