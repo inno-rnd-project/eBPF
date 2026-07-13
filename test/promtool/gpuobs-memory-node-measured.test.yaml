@@ -18,6 +18,10 @@ tests:
         values: '1000x20'
       - series: 'node_uname_info{instance="10.0.0.1:9100",nodename="n1"}'
         values: '1x20'
+      # 동일 instance 를 다른 job 이 이중 scrape 한 중복 uname 시리즈. 사전 집계 (max by) 가 없으면
+      # group_left 조인이 many-to-many 로 평가 실패해 memory pressure 가 전멸하는 회귀를 가드한다.
+      - series: 'node_uname_info{instance="10.0.0.1:9100",nodename="n1",job="dup-scrape"}'
+        values: '1x20'
       # n2 노드 실측: 사용률 0.1 (cluster worst 판정 대조용).
       - series: 'node_memory_MemAvailable_bytes{instance="10.0.0.2:9100"}'
         values: '900x20'

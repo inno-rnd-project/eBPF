@@ -321,12 +321,16 @@ spec:
         # 라벨이 없어 node_uname_info 의 nodename 을 instance 조인으로 부여한다 (value 1 이라 곱해도
         # 값 불변). pod 단위 score (pod:memory_pressure_score) 는 그 pod 의 OOM 근접도로 의미가
         # 유효해 유지하며, 문제였던 것은 pod 지표의 노드 승격이다.
+        # node_uname_info 는 max by(instance, nodename) 로 사전 집계한다. node-exporter 를 여러
+        # scrape job 이 수집하는 구성에서는 job 라벨만 다른 중복 시리즈가 생겨 group_left 조인이
+        # many-to-many 로 평가 실패 (시리즈 전멸) 할 수 있는데, 이는 본 저장소 밖의 monitoring 스택
+        # 설정에 좌우되는 경계라 사전 집계로 방어한다.
         - record: node:memory_pressure_score:5m
           expr: |
             max by(node) (
               label_replace(
                 (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
-                * on(instance) group_left(nodename) node_uname_info,
+                * on(instance) group_left(nodename) max by(instance, nodename) (node_uname_info),
                 "node", "$1", "nodename", "(.+)"
               )
             )
