@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,6 +24,8 @@ import (
 type NodeGpuRcaResponse struct {
 	GeneratedAt string `json:"generated_at"`
 	Node        string `json:"node"`
+	// Gpu 는 device 스코프 조회 시 요청 gpu 파라미터 (GPU UUID 또는 device index) 의 echo 다.
+	Gpu string `json:"gpu,omitempty"`
 	// Idle 은 node:gpu_idle:5m (0-1). 유휴 게이팅 미충족 시 cause 귀속이 비므로 함께 노출한다.
 	Idle          float64 `json:"idle"`
 	DominantCause string  `json:"dominant_cause,omitempty"`
@@ -32,7 +35,50 @@ type NodeGpuRcaResponse struct {
 	Confidence float64          `json:"confidence"`
 	Causes     []GpuCauseWeight `json:"causes"`
 	Suspects   []RcaSuspect     `json:"suspects"`
-	Narrative  string           `json:"narrative"`
+	// Evidence 는 narrative 를 뒷받침하는 근거 수치다.
+	Evidence  RcaEvidence `json:"evidence"`
+	Narrative string      `json:"narrative"`
+}
+
+// RcaEvidence 는 dominant cause 판정을 뒷받침하는 instant 근거 수치다. 수집 공백 시 필드가 생략된다.
+// GPU 수치는 gpu 파라미터가 있으면 그 device 로 좁혀지고, 없으면 노드 device 평균이다.
+type RcaEvidence struct {
+	// GpuUtilizationPercent 는 device 사용률 (0-100) 이다. GPM 미지원 GPU 의 SM active fallback 축.
+	GpuUtilizationPercent *float64 `json:"gpu_utilization_percent,omitempty"`
+	// SMActivePercent 는 gpm sm_occupancy 로, 데이터센터 GPU 에서만 채워진다.
+	SMActivePercent *float64 `json:"sm_active_percent,omitempty"`
+	// RetransPerSec 는 이 노드의 TCP 재전송 rate (5m) 다.
+	RetransPerSec *float64 `json:"retrans_per_sec,omitempty"`
+	// MaxSrttSeconds 는 이 노드 연결들의 최대 smoothed RTT 다. latency-breakdown 과 동일 소스
+	// (netobs_tcp_state_max_srtt_seconds) 로, p99 가 아닌 최대값이라 필드명도 max 로 적는다.
+	MaxSrttSeconds *float64 `json:"max_srtt_seconds,omitempty"`
+}
+
+// gpuRcaNetworkCauses 는 network 계열 dominant cause 다. 재전송이 집합통신을 블로킹해 GPU 연산이
+// 대기하는 인과 체인 문구를 narrative 에 싣는 대상이다.
+var gpuRcaNetworkCauses = map[string]bool{"network_pressure": true, "nccl_collective_stall": true}
+
+// gpuParamPattern 은 gpu 쿼리 파라미터 (NVIDIA GPU/MIG UUID 또는 device index) 의 문자 구성이다.
+// UUID 는 영숫자와 하이픈 (GPU-8f6f... 형태) 이라 parseNodeParam 과 동일하게 exact = 매처와 %q 결합
+// 전제 (PromQL 메타문자 부재) 를 입력 경계에서 보장한다.
+var gpuParamPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,96}$`)
+
+// gpuIndexPattern 은 십진 숫자만의 gpu 값이다. 이 형태는 gpu_index 라벨로 매칭한다.
+var gpuIndexPattern = regexp.MustCompile(`^[0-9]+$`)
+
+// parseGpuParam 은 gpu 파라미터를 검증해 PromQL exact matcher 조각으로 만든다. 십진 숫자만이면
+// gpu_index, 그 외는 gpu_uuid 매처다. 빈 값은 "device 스코프 없음" 이라 빈 문자열을 돌려준다.
+func parseGpuParam(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	if !gpuParamPattern.MatchString(raw) {
+		return "", fmt.Errorf("gpu 는 GPU UUID 또는 device index 형식이어야 합니다: %q", raw)
+	}
+	if gpuIndexPattern.MatchString(raw) {
+		return fmt.Sprintf("gpu_index=%q", raw), nil
+	}
+	return fmt.Sprintf("gpu_uuid=%q", raw), nil
 }
 
 // RcaSuspect 는 이 노드의 GPU 유휴에 기여하는 원인 후보다. noisy-neighbor 는 이 노드 pod 를 victim
@@ -50,10 +96,11 @@ type RcaSuspect struct {
 
 // GetNodeGpuRca godoc
 // @Summary      노드 GPU RCA 합성
-// @Description  노드 하나의 GPU 유휴 dominant cause 와 cause 별 가중치, 신뢰도, 원인 후보 pod 랭킹, 한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와 가중치는 scope=node gpu-idle 결과를 재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor suspect pod (namespace-aware) 와 cross-node-interference suspect node 를 점수순으로 집계한다. 신뢰도는 top1 과 top2 cause 격차다. raw 사용률/온도/전력/시계열은 Grafana 가 직접 읽으므로 싣지 않는다.
+// @Description  노드 하나의 GPU 유휴 dominant cause 와 cause 별 가중치, 신뢰도, 원인 후보 pod 랭킹, 근거 수치 (evidence), 한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와 가중치는 scope=node gpu-idle 결과를 재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor suspect pod (namespace-aware) 와 cross-node-interference suspect node 를 점수순으로 집계한다. 신뢰도는 top1 과 top2 cause 격차다. evidence 는 device 사용률과 SM active, 노드 재전송 rate 와 최대 RTT 를 instant 로 실어 narrative 에 융합하고, dominant cause 가 network 계열이면 인과 체인 문구를 덧붙인다. gpu 파라미터 (GPU UUID 또는 device index) 로 evidence 의 GPU 수치를 device 로 좁힐 수 있고, 미등록 device 는 해당 수치가 생략된다.
 // @Tags         gpu
 // @Produce      json
 // @Param        node   query  string  true   "대상 노드 (DNS-1123 형식)"
+// @Param        gpu    query  string  false  "대상 device (GPU UUID 또는 device index, 생략 시 노드 전체)"
 // @Param        limit  query  int     false  "원인 후보 상위 N (1-50, 기본 10)"
 // @Param        at     query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  NodeGpuRcaResponse
@@ -67,6 +114,12 @@ func (h *SynthesisHandler) GetNodeGpuRca(w http.ResponseWriter, r *http.Request)
 	}
 	if node == "" {
 		apicommon.WriteError(w, http.StatusBadRequest, "missing_node", "node 파라미터가 필요합니다")
+		return
+	}
+	gpu := strings.TrimSpace(r.URL.Query().Get("gpu"))
+	gpuMatcher, err := parseGpuParam(gpu)
+	if err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_gpu", err.Error())
 		return
 	}
 	limit := 10
@@ -87,6 +140,7 @@ func (h *SynthesisHandler) GetNodeGpuRca(w http.ResponseWriter, r *http.Request)
 	resp := NodeGpuRcaResponse{
 		GeneratedAt: evalAt.Format(time.RFC3339),
 		Node:        node,
+		Gpu:         gpu,
 		Causes:      []GpuCauseWeight{},
 		Suspects:    []RcaSuspect{},
 	}
@@ -99,20 +153,32 @@ func (h *SynthesisHandler) GetNodeGpuRca(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
 	defer cancel()
 
-	// node 는 parseNodeParam 검증을 통과한 값이라 exact = 매처와 %q 결합이 안전하다.
+	// node 는 parseNodeParam, gpu 는 parseGpuParam 검증을 통과한 값이라 exact = 매처와 %q 결합이
+	// 안전하다. devSel 은 evidence 의 GPU 수치용 device selector 로, gpu 가 비면 노드 전체다.
 	sel := fmt.Sprintf("{node=%q}", node)
+	devSel := promSelector(nodeMatcher(node), gpuMatcher)
+	gpmSel := promSelector(nodeMatcher(node), gpuMatcher, `gpm="sm_occupancy"`)
 
-	// 쿼리 4종을 상수로 고정해 병렬 실행 (idle / cause weight / dominant / pod-node 매핑). ALERTS 는
-	// node selector 를 붙이지 않아 (alert 라벨 규약이 node 마다 달라) 별도로 조회한다. snapshot
-	// (neighbors / crossNode) 은 in-memory 라 쿼리에 포함되지 않는다.
+	// 쿼리를 상수로 고정해 병렬 실행 (idle / cause weight / dominant / pod-node 매핑 / evidence). ALERTS
+	// 는 node selector 를 붙이지 않아 (alert 라벨 규약이 node 마다 달라) 별도로 조회한다. snapshot
+	// (neighbors / crossNode) 은 in-memory 라 쿼리에 포함되지 않는다. 미등록 device 는 avg 결과가 비어
+	// firstValue 가 nil 을 돌려주고 evidence 필드가 생략된다 (graceful).
 	res := h.queryParallel(ctx,
 		"node:gpu_idle:5m"+sel,
 		"node:gpu_idle_cause_weight:5m"+sel,
 		"node:gpu_idle_dominant_cause:5m"+sel,
 		"kube_pod_info"+sel,
 		`ALERTS{alertstate="firing"}`,
+		"avg(gpuobs_device_utilization_percent"+devSel+")",
+		"avg(gpuobs_device_gpm_utilization_percent"+gpmSel+")",
+		"sum(rate(netobs_retrans_events_labeled_total"+sel+"[5m]))",
+		"max(netobs_tcp_state_max_srtt_seconds"+sel+")",
 	)
 	firing := res[4]
+	resp.Evidence.GpuUtilizationPercent = firstValue(res[5])
+	resp.Evidence.SMActivePercent = firstValue(res[6])
+	resp.Evidence.RetransPerSec = firstValue(res[7])
+	resp.Evidence.MaxSrttSeconds = firstValue(res[8])
 
 	if len(res[0]) > 0 && !math.IsNaN(res[0][0].Value) {
 		resp.Idle = res[0][0].Value
@@ -250,19 +316,62 @@ func (h *SynthesisHandler) rcaSuspects(node string, nodePods map[[2]string]bool,
 	return out
 }
 
-// buildRcaNarrative 는 dominant cause 와 신뢰도, 최우선 의심 후보를 한 줄로 합성한다.
+// buildRcaNarrative 는 dominant cause 와 신뢰도, 최우선 의심 후보, 근거 수치를 한 줄로 합성한다.
+// gpu 파라미터가 있으면 주어를 device 로 좁혀 적고, dominant cause 가 network 계열이면 인과 체인
+// 문구를 덧붙인다.
 func buildRcaNarrative(r NodeGpuRcaResponse) string {
+	subject := "노드 " + r.Node
+	if r.Gpu != "" {
+		subject += " device " + r.Gpu
+	}
+	out := ""
 	if r.DominantCause == "" {
-		return fmt.Sprintf("노드 %s GPU 유휴 원인 귀속 임계(idle>0.5) 미만 (idle %.2f)", r.Node, r.Idle)
+		out = fmt.Sprintf("%s GPU 유휴 원인 귀속 임계(idle>0.5) 미만 (idle %.2f)", subject, r.Idle)
+	} else {
+		out = fmt.Sprintf("%s GPU 유휴 dominant 원인 %s (신뢰도 %.2f, idle %.2f)", subject, r.DominantCause, r.Confidence, r.Idle)
+		if len(r.Suspects) > 0 {
+			s := r.Suspects[0]
+			who := s.Node
+			if s.Pod != "" {
+				who = s.Namespace + "/" + s.Pod
+			}
+			out += fmt.Sprintf(", 최우선 의심 %s (%s, score %.2f)", who, s.Dimension, s.Score)
+		}
 	}
-	base := fmt.Sprintf("노드 %s GPU 유휴 dominant 원인 %s (신뢰도 %.2f, idle %.2f)", r.Node, r.DominantCause, r.Confidence, r.Idle)
-	if len(r.Suspects) == 0 {
-		return base
+	if ev := rcaEvidenceText(r.Evidence); ev != "" {
+		out += ", 근거 " + ev
 	}
-	s := r.Suspects[0]
-	who := s.Node
-	if s.Pod != "" {
-		who = s.Namespace + "/" + s.Pod
+	if gpuRcaNetworkCauses[r.DominantCause] {
+		out += " (인과 체인: 재전송 → 통신 블로킹 → GPU 대기)"
 	}
-	return fmt.Sprintf("%s, 최우선 의심 %s (%s, score %.2f)", base, who, s.Dimension, s.Score)
+	return out
+}
+
+// rcaEvidenceText 는 evidence 수치를 narrative 조각으로 합성한다. GPU 축은 SM active 를 우선하고
+// GPM 미지원 GPU 는 device 사용률로 fallback 한다. GPU 축과 network 축이 함께 있으면 "인데" 로 이어
+// 낮은 연산 점유와 network 수치의 대비를 드러낸다. 전 필드 공백이면 빈 문자열이다.
+func rcaEvidenceText(e RcaEvidence) string {
+	gpuPart := ""
+	switch {
+	case e.SMActivePercent != nil:
+		gpuPart = fmt.Sprintf("SM active %.1f%%", *e.SMActivePercent)
+	case e.GpuUtilizationPercent != nil:
+		gpuPart = fmt.Sprintf("GPU 사용률 %.1f%%", *e.GpuUtilizationPercent)
+	}
+	netSegs := []string{}
+	if e.RetransPerSec != nil {
+		netSegs = append(netSegs, fmt.Sprintf("재전송 %.1f/s", *e.RetransPerSec))
+	}
+	if e.MaxSrttSeconds != nil {
+		netSegs = append(netSegs, fmt.Sprintf("RTT %.0fms", *e.MaxSrttSeconds*1000))
+	}
+	netPart := strings.Join(netSegs, "·")
+	switch {
+	case gpuPart != "" && netPart != "":
+		return gpuPart + "인데 " + netPart
+	case gpuPart != "":
+		return gpuPart
+	default:
+		return netPart
+	}
 }

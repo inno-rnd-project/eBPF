@@ -743,7 +743,15 @@ definitions:
         type: number
       dominant_cause:
         type: string
+      evidence:
+        allOf:
+        - $ref: '#/definitions/internal_correlation_api.RcaEvidence'
+        description: Evidence 는 narrative 를 뒷받침하는 근거 수치다.
       generated_at:
+        type: string
+      gpu:
+        description: Gpu 는 device 스코프 조회 시 요청 gpu 파라미터 (GPU UUID 또는 device index)
+          의 echo 다.
         type: string
       idle:
         description: Idle 은 node:gpu_idle:5m (0-1). 유휴 게이팅 미충족 시 cause 귀속이 비므로 함께
@@ -1122,6 +1130,24 @@ definitions:
         type: string
       window:
         type: string
+    type: object
+  internal_correlation_api.RcaEvidence:
+    properties:
+      gpu_utilization_percent:
+        description: GpuUtilizationPercent 는 device 사용률 (0-100) 이다. GPM 미지원 GPU 의
+          SM active fallback 축.
+        type: number
+      max_srtt_seconds:
+        description: |-
+          MaxSrttSeconds 는 이 노드 연결들의 최대 smoothed RTT 다. latency-breakdown 과 동일 소스
+          (netobs_tcp_state_max_srtt_seconds) 로, p99 가 아닌 최대값이라 필드명도 max 로 적는다.
+        type: number
+      retrans_per_sec:
+        description: RetransPerSec 는 이 노드의 TCP 재전송 rate (5m) 다.
+        type: number
+      sm_active_percent:
+        description: SMActivePercent 는 gpm sm_occupancy 로, 데이터센터 GPU 에서만 채워진다.
+        type: number
     type: object
   internal_correlation_api.RcaSuspect:
     properties:
@@ -1883,15 +1909,22 @@ paths:
   /api/v1/gpu-rca:
     get:
       description: 노드 하나의 GPU 유휴 dominant cause 와 cause 별 가중치, 신뢰도, 원인 후보 pod 랭킹,
-        한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와 가중치는 scope=node gpu-idle 결과를
-        재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor suspect pod (namespace-aware)
+        근거 수치 (evidence), 한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와 가중치는 scope=node
+        gpu-idle 결과를 재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor suspect pod (namespace-aware)
         와 cross-node-interference suspect node 를 점수순으로 집계한다. 신뢰도는 top1 과 top2 cause
-        격차다. raw 사용률/온도/전력/시계열은 Grafana 가 직접 읽으므로 싣지 않는다.
+        격차다. evidence 는 device 사용률과 SM active, 노드 재전송 rate 와 최대 RTT 를 instant 로 실어
+        narrative 에 융합하고, dominant cause 가 network 계열이면 인과 체인 문구를 덧붙인다. gpu 파라미터 (GPU
+        UUID 또는 device index) 로 evidence 의 GPU 수치를 device 로 좁힐 수 있고, 미등록 device 는
+        해당 수치가 생략된다.
       parameters:
       - description: 대상 노드 (DNS-1123 형식)
         in: query
         name: node
         required: true
+        type: string
+      - description: 대상 device (GPU UUID 또는 device index, 생략 시 노드 전체)
+        in: query
+        name: gpu
         type: string
       - description: 원인 후보 상위 N (1-50, 기본 10)
         in: query
