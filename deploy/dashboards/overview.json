@@ -97,7 +97,7 @@
       "id": 1,
       "type": "stat",
       "title": "GPU health",
-      "description": "cluster:gpu_health_score:5m. 1 healthy, 0 worst. GPU 사용률(node:gpu_util_ratio:5m) cluster 평균 기준.",
+      "description": "cluster:gpu_health_score:5m. 1 healthy, 0 worst. #273 재정의: 사용률이 아니라 하드웨어 이상 신호 (thermal score, 유의미 NVML 오류율, 성능성 throttle 활성) 기반이라 유휴 GPU 는 health 를 깎지 않는다. worst 노드 기준 (min(node:gpu_health_score:5m)).",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 6,
@@ -307,7 +307,7 @@
       "id": 4,
       "type": "stat",
       "title": "Memory health",
-      "description": "cluster:memory_health_score:5m. Pod 단위 memory_pressure_score p95 의 inversion.",
+      "description": "cluster:memory_health_score:5m. #274 재정의: pod limit 비율 p95 가 아니라 node_exporter 실측 (1 - MemAvailable/MemTotal) 의 worst 노드 역수다. tight-limit 관측 인프라 pod 가 health 를 지배하지 않는다.",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 6,
@@ -377,7 +377,7 @@
       "id": 150,
       "type": "stat",
       "title": "GPU idle dominant cause",
-      "description": "cluster:gpu_idle_dominant_cause:5m. 5 cause weight 의 최대 cause 1 종을 노출. GPU idle 게이팅 (>0.5) 이 트리거되고 5 cause 합이 양수일 때만 emit 되며, idle 아님 또는 5 cause 모두 0 인 시간대는 N/A 로 표시된다.",
+      "description": "cluster:gpu_idle_dominant_cause:5m. 9 cause weight 의 최대 cause 1 종을 노출. #244 부터 pod 계열 5 cause (cpu_throttle, memory_pressure, network_pressure, cgroup_contention, host_compute_stall) 의 base 는 GPU 유휴 노드 스코프 rise (유휴 시점 상승분) 이고 device 계열 4 cause (pcie_saturation, dcgm_pcie_replay, nccl_collective_stall, thermal) 는 절대 신호다. GPU idle 게이팅 (>0.5) 과 cause 합 노이즈 하한 (>0.05) 을 지나야 emit 되며, 미충족 시간대는 N/A 다.",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 4,
@@ -708,7 +708,7 @@
       "datasource": "${datasource}",
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 35
       },
@@ -2635,8 +2635,8 @@
         {
           "id": 801,
           "type": "timeseries",
-          "title": "GPU idle cause weight (5 cause stacked)",
-          "description": "avg by(cause) (pod:gpu_idle_cause_weight:5m) 의 5 cause (pcie_saturation과 network_pressure과 cpu_throttle과 memory_pressure과 host_compute_stall) weight를 cluster 평균으로 집계해 stacked로 표시한다. victim 단위 raw 메트릭을 cause 차원으로 avg 집계해 stacked 합이 victim 수에 비례해 부풀려지던 문제를 해소한다. 개별 cause weight는 0-1 범위이며 상대 크기로 어느 cause가 dominant인지 한눈에 식별한다. dev cluster의 RTX 3090 환경에서 nccl_collective_stall과 dcgm_pcie_replay 슬롯은 0 weight로 emit된다.",
+          "title": "GPU idle cause weight (victim 단위, 절대 압박 기반)",
+          "description": "avg by(cause) (pod:gpu_idle_cause_weight:5m) 의 victim 단위 6 cause (pcie_saturation, cpu_throttle, memory_pressure, network_pressure, host_compute_stall, cgroup_contention) weight 를 cluster 평균으로 stacked 표시한다. 주의: victim 체인은 절대 압박 score 기반이고 옆의 Dominant cause indicator (cluster) 는 #244 의 rise (유휴 시점 상승분) 기반이라 산정 기반이 다르다. 상시 포화 pod 는 여기에는 나타나되 cluster dominant 에는 나타나지 않을 수 있으며 이는 버그가 아니라 설계다 (#244 비목표로 victim 체인 유지). rise 관점의 pod 단위 drill-down 은 pod:cpu_throttle_score_rise:5m 등 pod:*_score_rise:5m 7종을 Explore 에서 조회한다.",
           "datasource": "${datasource}",
           "gridPos": {
             "h": 8,
@@ -2696,7 +2696,7 @@
           "id": 802,
           "type": "stat",
           "title": "Dominant cause indicator",
-          "description": "cluster:gpu_idle_dominant_cause:5m 의 dominant cause 1종을 노출한다. 5 cause weight 중 최대값 cause가 표시되며 weight 시리즈가 idle 게이팅으로 emit되지 않는 시간대는 N/A다.",
+          "description": "cluster:gpu_idle_dominant_cause:5m 의 dominant cause 1종을 노출한다. 9 cause weight 중 최대값 cause 가 표시되며 pod 계열 5종은 rise 기반 (#244), device 계열 4종은 절대 신호다. weight 시리즈가 idle 게이팅 또는 노이즈 하한 (합 >0.05) 으로 emit 되지 않는 시간대는 N/A 다.",
           "datasource": "${datasource}",
           "gridPos": {
             "h": 8,
@@ -2744,7 +2744,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 146
+        "y": 154
       },
       "panels": [
         {
@@ -2851,6 +2851,106 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "id": 813,
+      "type": "timeseries",
+      "title": "Node health 4차원 ($node)",
+      "description": "node:{cpu,gpu,memory,network}_health_score:5m (#264, #273, #274). 1 healthy, 0 worst. gpu 는 하드웨어 이상 신호 기반 (#273), memory 는 node_exporter 실측 기반 (#274) 이라 유휴 GPU 나 tight-limit pod 가 노드 health 를 깎지 않는다. node/{node} API 의 health 필드와 동일 시리즈다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 35
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "node:cpu_health_score:5m{node=\"$node\"}",
+          "legendFormat": "cpu",
+          "refId": "A"
+        },
+        {
+          "expr": "node:gpu_health_score:5m{node=\"$node\"}",
+          "legendFormat": "gpu",
+          "refId": "B"
+        },
+        {
+          "expr": "node:memory_health_score:5m{node=\"$node\"}",
+          "legendFormat": "memory",
+          "refId": "C"
+        },
+        {
+          "expr": "node:network_health_score:5m{node=\"$node\"}",
+          "legendFormat": "network",
+          "refId": "D"
+        }
+      ]
+    },
+    {
+      "id": 814,
+      "type": "timeseries",
+      "title": "GPU idle cause rise (cluster, dominant 의 산정 base)",
+      "description": "cluster:gpu_idle_{cpu_throttle,memory_pressure,network_pressure,cgroup_contention,host_compute_stall}_rise:5m (#244). pod 계열 cause 의 GPU 유휴 노드 스코프 baseline 대비 상승분으로, 위 Dominant cause indicator 가 실제로 소비하는 base 시리즈다. 상시 포화 신호는 0 에 수렴하고 유휴와 함께 나타난 신규 압박만 남는다. pod 단위 rise drill-down 은 pod:*_score_rise:5m 을 Explore 에서 조회한다.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 145
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "custom": {
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "cluster:gpu_idle_cpu_throttle_rise:5m",
+          "legendFormat": "cpu_throttle",
+          "refId": "A"
+        },
+        {
+          "expr": "cluster:gpu_idle_memory_pressure_rise:5m",
+          "legendFormat": "memory_pressure",
+          "refId": "B"
+        },
+        {
+          "expr": "cluster:gpu_idle_network_pressure_rise:5m",
+          "legendFormat": "network_pressure",
+          "refId": "C"
+        },
+        {
+          "expr": "cluster:gpu_idle_cgroup_contention_rise:5m",
+          "legendFormat": "cgroup_contention",
+          "refId": "D"
+        },
+        {
+          "expr": "cluster:gpu_idle_host_compute_stall_rise:5m",
+          "legendFormat": "host_compute_stall",
+          "refId": "E"
         }
       ]
     }
