@@ -343,6 +343,9 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 	type symbolState struct{ driverOK, runtimeOK, driverSeen, runtimeSeen bool }
 	symbols := map[string]*symbolState{}
 	for _, sm := range sub[5] {
+		if math.IsNaN(sm.Value) || math.IsInf(sm.Value, 0) {
+			continue
+		}
 		n := sm.Labels["node"]
 		sym := sm.Labels["symbol"]
 		if n == "" || sym == "" {
