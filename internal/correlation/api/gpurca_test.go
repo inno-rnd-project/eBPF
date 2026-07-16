@@ -308,19 +308,52 @@ func TestNodeGpuRca_EvidenceFusion(t *testing.T) {
 	}
 }
 
-// TestNodeGpuRca_NoChainForNonNetwork 는 network 계열이 아닌 dominant cause 에 인과 체인 문구가
-// 붙지 않고, GPM 미지원 시 GPU 축이 device 사용률로 fallback 하는지 검증한다.
-func TestNodeGpuRca_NoChainForNonNetwork(t *testing.T) {
-	h := NewSynthesisHandler(gpuRcaQuerier(), nil, nil)
+// TestNodeGpuRca_CauseNarrative 는 #287 의 레지스트리 기반 narrative 를 검증한다. dominant slug 에
+// 한국어 설명이 부연되고, memory 계열 인과 체인이 붙으며, GPM 미지원 시 GPU 축이 device 사용률로
+// fallback 하고, 차원 맞춤 수치가 근거에 융합된다.
+func TestNodeGpuRca_CauseNarrative(t *testing.T) {
+	q := gpuRcaQuerier().
+		on("pod:memory_pressure_score:5m", sample(0.97, "node", "gpu")).
+		on("node:memory_pressure_score:5m", sample(0.58, "node", "gpu"))
+	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetNodeGpuRca(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-rca?node=gpu", nil))
 	var resp NodeGpuRcaResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-	if strings.Contains(resp.Narrative, "인과 체인") {
-		t.Errorf("narrative=%q want 인과 체인 없음 (dominant memory_pressure)", resp.Narrative)
+	if !strings.Contains(resp.Narrative, "memory_pressure(working set 의 memory limit 근접") {
+		t.Errorf("narrative=%q want 설명 부연", resp.Narrative)
+	}
+	if !strings.Contains(resp.Narrative, "인과 체인: 메모리 reclaim/stall") {
+		t.Errorf("narrative=%q want memory 인과 체인", resp.Narrative)
 	}
 	if !strings.Contains(resp.Narrative, "GPU 사용률 2.0%") {
 		t.Errorf("narrative=%q want GPU 사용률 fallback (GPM 미수집)", resp.Narrative)
+	}
+	if !strings.Contains(resp.Narrative, "노드 메모리 사용률 58%") || !strings.Contains(resp.Narrative, "working_set/limit 97%") {
+		t.Errorf("narrative=%q want memory 차원 수치 융합", resp.Narrative)
+	}
+	// 신뢰도 0.5 (0.7-0.2) 는 백중 아님 → 판정 유보 문구 없음.
+	if strings.Contains(resp.Narrative, "판정 유보") {
+		t.Errorf("narrative=%q want 판정 유보 없음 (margin 0.5)", resp.Narrative)
+	}
+}
+
+// TestNodeGpuRca_AmbiguousNarrative 는 top1 과 top2 가 백중 (margin < 0.1) 일 때 판정 유보 문구와
+// top2 cause 가 narrative 에 실리는지 검증한다.
+func TestNodeGpuRca_AmbiguousNarrative(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("node:gpu_idle:5m", sample(0.9, "node", "gpu")).
+		on("node:gpu_idle_cause_weight:5m",
+			sample(0.45, "node", "gpu", "cause", "memory_pressure"),
+			sample(0.40, "node", "gpu", "cause", "cpu_throttle")).
+		on("node:gpu_idle_dominant_cause:5m", sample(1.0, "node", "gpu", "cause", "memory_pressure"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodeGpuRca(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-rca?node=gpu", nil))
+	var resp NodeGpuRcaResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if !strings.Contains(resp.Narrative, "top2 cpu_throttle 와 백중이라 판정 유보") {
+		t.Errorf("narrative=%q want 판정 유보 문구", resp.Narrative)
 	}
 }
 
@@ -361,5 +394,25 @@ func TestNodeGpuRca_NotIdle(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	if resp.DominantCause != "" || resp.Confidence != 0 {
 		t.Errorf("resp=%+v want dominant 없음/confidence 0", resp)
+	}
+	if !strings.Contains(resp.Narrative, "임계(idle>0.5) 미만") {
+		t.Errorf("narrative=%q want 게이팅 미충족 문구", resp.Narrative)
+	}
+}
+
+// TestNodeGpuRca_IdleNoCause 는 유휴 (idle > 0.5) 인데 rise 부재로 cause weight 가 비는 평시 상태
+// (#285 이후) 에 게이팅 미만 문구가 아니라 "귀속할 cause 없음" 문구가 나오는지 검증한다.
+func TestNodeGpuRca_IdleNoCause(t *testing.T) {
+	q := (&fakeQuerier{}).on("node:gpu_idle:5m", sample(1.0, "node", "gpu"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodeGpuRca(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-rca?node=gpu", nil))
+	var resp NodeGpuRcaResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if !strings.Contains(resp.Narrative, "신규 압박 rise 가 없어 귀속할 cause 없음") {
+		t.Errorf("narrative=%q want rise 부재 문구", resp.Narrative)
+	}
+	if strings.Contains(resp.Narrative, "임계(idle>0.5) 미만") {
+		t.Errorf("narrative=%q want 게이팅 미만 문구 없음 (idle 1.0 모순)", resp.Narrative)
 	}
 }

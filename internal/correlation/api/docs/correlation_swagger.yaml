@@ -2009,14 +2009,16 @@ paths:
       - gpu
   /api/v1/gpu-rca:
     get:
-      description: 노드 하나의 GPU 유휴 dominant cause 와 cause 별 가중치, 신뢰도, 원인 후보 pod 랭킹,
-        근거 수치 (evidence), 한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와 가중치는 scope=node
-        gpu-idle 결과를 재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor suspect pod (namespace-aware)
-        와 cross-node-interference suspect node 를 점수순으로 집계한다. 신뢰도는 top1 과 top2 cause
-        격차다. evidence 는 device 사용률과 SM active, 노드 재전송 rate 와 최대 RTT 를 instant 로 실어
-        narrative 에 융합하고, dominant cause 가 network 계열이면 인과 체인 문구를 덧붙인다. gpu 파라미터 (GPU
-        UUID 또는 device index) 로 evidence 의 GPU 수치를 device 로 좁힐 수 있고, 미등록 device 는
-        해당 수치가 생략된다.
+      description: 노드 하나의 GPU 유휴 dominant cause 와 cause 별 가중치 (한국어 설명 포함), 신뢰도, 원인
+        후보 pod 랭킹, 근거 수치 (evidence), 한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와
+        가중치는 scope=node gpu-idle 결과를 재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor
+        suspect pod (namespace-aware) 와 cross-node-interference suspect node 를 점수순으로
+        집계한다. 신뢰도는 top1 과 top2 cause 격차이며 0.1 미만 백중세는 narrative 에 판정 유보로 적는다. evidence
+        는 device 사용률과 SM active, 노드 재전송 rate 와 최대 RTT 에 더해 dominant cause 의 차원 맞춤
+        수치 (memory 는 suspect pod 의 working_set/limit 과 노드 실측 사용률, thermal 은 온도와 slowdown
+        여유, cpu 는 throttle 비율, 점수형 cause 는 노드 score) 를 cause 레지스트리 기반 2차 조회로 실어 narrative
+        에 융합하고, dominant cause 별 인과 체인 문구를 덧붙인다. gpu 파라미터 (GPU UUID 또는 device index)
+        로 evidence 의 GPU 수치를 device 로 좁힐 수 있고, 미등록 device 는 해당 수치가 생략된다.
       parameters:
       - description: 대상 노드 (DNS-1123 형식)
         in: query

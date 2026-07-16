@@ -83,10 +83,6 @@ func (e *RcaEvidence) finalizeEvidence() {
 	}
 }
 
-// gpuRcaNetworkCauses 는 network 계열 dominant cause 다. 재전송이 집합통신을 블로킹해 GPU 연산이
-// 대기하는 인과 체인 문구를 narrative 에 싣는 대상이다.
-var gpuRcaNetworkCauses = map[string]bool{"network_pressure": true, "nccl_collective_stall": true}
-
 // rcaEvidenceBind 는 dominant cause 일 때만 실행하는 차원 맞춤 instant 조회 한 건이다. query 가 빈
 // 문자열을 돌려주면 그 바인딩은 건너뛴다.
 type rcaEvidenceBind struct {
@@ -236,7 +232,7 @@ type RcaSuspect struct {
 
 // GetNodeGpuRca godoc
 // @Summary      노드 GPU RCA 합성
-// @Description  노드 하나의 GPU 유휴 dominant cause 와 cause 별 가중치, 신뢰도, 원인 후보 pod 랭킹, 근거 수치 (evidence), 한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와 가중치는 scope=node gpu-idle 결과를 재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor suspect pod (namespace-aware) 와 cross-node-interference suspect node 를 점수순으로 집계한다. 신뢰도는 top1 과 top2 cause 격차다. evidence 는 device 사용률과 SM active, 노드 재전송 rate 와 최대 RTT 를 instant 로 실어 narrative 에 융합하고, dominant cause 가 network 계열이면 인과 체인 문구를 덧붙인다. gpu 파라미터 (GPU UUID 또는 device index) 로 evidence 의 GPU 수치를 device 로 좁힐 수 있고, 미등록 device 는 해당 수치가 생략된다.
+// @Description  노드 하나의 GPU 유휴 dominant cause 와 cause 별 가중치 (한국어 설명 포함), 신뢰도, 원인 후보 pod 랭킹, 근거 수치 (evidence), 한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와 가중치는 scope=node gpu-idle 결과를 재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor suspect pod (namespace-aware) 와 cross-node-interference suspect node 를 점수순으로 집계한다. 신뢰도는 top1 과 top2 cause 격차이며 0.1 미만 백중세는 narrative 에 판정 유보로 적는다. evidence 는 device 사용률과 SM active, 노드 재전송 rate 와 최대 RTT 에 더해 dominant cause 의 차원 맞춤 수치 (memory 는 suspect pod 의 working_set/limit 과 노드 실측 사용률, thermal 은 온도와 slowdown 여유, cpu 는 throttle 비율, 점수형 cause 는 노드 score) 를 cause 레지스트리 기반 2차 조회로 실어 narrative 에 융합하고, dominant cause 별 인과 체인 문구를 덧붙인다. gpu 파라미터 (GPU UUID 또는 device index) 로 evidence 의 GPU 수치를 device 로 좁힐 수 있고, 미등록 device 는 해당 수치가 생략된다.
 // @Tags         gpu
 // @Produce      json
 // @Param        node   query  string  true   "대상 노드 (DNS-1123 형식)"
@@ -498,33 +494,53 @@ func (h *SynthesisHandler) rcaSuspects(node string, nodePods map[[2]string]bool,
 	return out
 }
 
-// buildRcaNarrative 는 dominant cause 와 신뢰도, 최우선 의심 후보, 근거 수치를 한 줄로 합성한다.
-// gpu 파라미터가 있으면 주어를 device 로 좁혀 적고, dominant cause 가 network 계열이면 인과 체인
-// 문구를 덧붙인다.
+// rcaAmbiguousMargin 은 top1 과 top2 cause 가 백중이라 판정을 유보하는 신뢰도 임계다.
+// GPUIdleDominantCauseAmbiguous alert 의 격차 < 0.1 판정과 동일 축이다.
+const rcaAmbiguousMargin = 0.1
+
+// buildRcaNarrative 는 dominant cause 와 신뢰도, 최우선 의심 후보, 근거 수치를 한 줄로 합성한다
+// (#287 레지스트리 융합). gpu 파라미터가 있으면 주어를 device 로 좁혀 적고, dominant cause 에는
+// 레지스트리의 한국어 설명 부연과 인과 체인 문구를 덧붙인다. top1 과 top2 가 백중 (margin < 0.1)
+// 이면 판정 유보를 함께 적는다.
 func buildRcaNarrative(r NodeGpuRcaResponse) string {
 	subject := "노드 " + r.Node
 	if r.Gpu != "" {
 		subject += " device " + r.Gpu
 	}
-	out := ""
 	if r.DominantCause == "" {
-		out = fmt.Sprintf("%s GPU 유휴 원인 귀속 임계(idle>0.5) 미만 (idle %.2f)", subject, r.Idle)
-	} else {
-		out = fmt.Sprintf("%s GPU 유휴 dominant 원인 %s (신뢰도 %.2f, idle %.2f)", subject, r.DominantCause, r.Confidence, r.Idle)
-		if len(r.Suspects) > 0 {
-			s := r.Suspects[0]
-			who := s.Node
-			if s.Pod != "" {
-				who = s.Namespace + "/" + s.Pod
-			}
-			out += fmt.Sprintf(", 최우선 의심 %s (%s, score %.2f)", who, s.Dimension, s.Score)
+		// dominant 부재는 두 상황이다. 유휴 게이팅 미충족 (idle <= 0.5) 과, 유휴지만 baseline 대비
+		// 신규 압박 rise 가 없어 cause weight 가 비는 정상 상태 (#285 이후 평시 형태).
+		out := fmt.Sprintf("%s GPU 유휴 원인 귀속 임계(idle>0.5) 미만 (idle %.2f)", subject, r.Idle)
+		if r.Idle > 0.5 {
+			out = fmt.Sprintf("%s GPU 유휴 (idle %.2f) 이나 baseline 대비 신규 압박 rise 가 없어 귀속할 cause 없음", subject, r.Idle)
 		}
+		if ev := rcaEvidenceText(r.Evidence); ev != "" {
+			out += ", 근거 " + ev
+		}
+		return out
+	}
+	info := rcaCauseCatalog[r.DominantCause]
+	dominant := r.DominantCause
+	if info.description != "" {
+		dominant += "(" + info.description + ")"
+	}
+	out := fmt.Sprintf("%s GPU 유휴 dominant 원인 %s (신뢰도 %.2f, idle %.2f)", subject, dominant, r.Confidence, r.Idle)
+	if r.Confidence < rcaAmbiguousMargin && len(r.Causes) >= 2 {
+		out += fmt.Sprintf(", top2 %s 와 백중이라 판정 유보", r.Causes[1].Cause)
+	}
+	if len(r.Suspects) > 0 {
+		s := r.Suspects[0]
+		who := s.Node
+		if s.Pod != "" {
+			who = s.Namespace + "/" + s.Pod
+		}
+		out += fmt.Sprintf(", 최우선 의심 %s (%s, score %.2f)", who, s.Dimension, s.Score)
 	}
 	if ev := rcaEvidenceText(r.Evidence); ev != "" {
 		out += ", 근거 " + ev
 	}
-	if gpuRcaNetworkCauses[r.DominantCause] {
-		out += " (인과 체인: 재전송 → 통신 블로킹 → GPU 대기)"
+	if info.chain != "" {
+		out += " (인과 체인: " + info.chain + ")"
 	}
 	return out
 }
@@ -548,12 +564,44 @@ func rcaEvidenceText(e RcaEvidence) string {
 		netSegs = append(netSegs, fmt.Sprintf("RTT %.0fms", *e.MaxSrttSeconds*1000))
 	}
 	netPart := strings.Join(netSegs, "·")
+	base := ""
 	switch {
 	case gpuPart != "" && netPart != "":
-		return gpuPart + "인데 " + netPart
+		base = gpuPart + "인데 " + netPart
 	case gpuPart != "":
-		return gpuPart
+		base = gpuPart
 	default:
-		return netPart
+		base = netPart
+	}
+	// #287 dominant cause 차원 맞춤 수치. 2차 조회로 채워진 필드만 존재하므로 dominant 와 무관한
+	// 조각이 섞이지 않는다.
+	causeSegs := []string{}
+	if e.CpuThrottleRatio != nil {
+		causeSegs = append(causeSegs, fmt.Sprintf("CPU throttle 비율 %.0f%%", *e.CpuThrottleRatio*100))
+	}
+	if e.SuspectMemoryLimitRatio != nil {
+		causeSegs = append(causeSegs, fmt.Sprintf("의심 pod 메모리 working_set/limit %.0f%%", *e.SuspectMemoryLimitRatio*100))
+	}
+	if e.NodeMemoryUsedRatio != nil {
+		causeSegs = append(causeSegs, fmt.Sprintf("노드 메모리 사용률 %.0f%%", *e.NodeMemoryUsedRatio*100))
+	}
+	if e.TemperatureCelsius != nil {
+		seg := fmt.Sprintf("온도 %.0f°C", *e.TemperatureCelsius)
+		if e.SlowdownHeadroomCelsius != nil {
+			seg += fmt.Sprintf("(slowdown 여유 %.0f°C)", *e.SlowdownHeadroomCelsius)
+		}
+		causeSegs = append(causeSegs, seg)
+	}
+	if e.CauseScore != nil {
+		causeSegs = append(causeSegs, fmt.Sprintf("cause score %.2f", *e.CauseScore))
+	}
+	causePart := strings.Join(causeSegs, "·")
+	switch {
+	case base != "" && causePart != "":
+		return base + "·" + causePart
+	case causePart != "":
+		return causePart
+	default:
+		return base
 	}
 }
