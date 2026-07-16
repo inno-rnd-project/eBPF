@@ -307,7 +307,7 @@
       "id": 4,
       "type": "stat",
       "title": "Memory health",
-      "description": "cluster:memory_health_score:5m. #274 재정의: pod limit 비율 p95 가 아니라 node_exporter 실측 (1 - MemAvailable/MemTotal) 의 worst 노드 역수다. tight-limit 관측 인프라 pod 가 health 를 지배하지 않는다.",
+      "description": "cluster:memory_health_score:5m. #274 실측 재정의 + #286 위험 구간 매핑: node_exporter 실측 worst 노드 사용률을 kubelet eviction 근접 의미로 매핑한다 (0.8 이하 1.0, 0.8~0.95 선형 하강, 0.95 이상 0). 정상 상주 사용률은 1.0 으로 읽히고 tight-limit 관측 인프라 pod 가 health 를 지배하지 않는다.",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 6,
