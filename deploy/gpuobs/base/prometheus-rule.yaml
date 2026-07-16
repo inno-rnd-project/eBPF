@@ -1252,20 +1252,28 @@ spec:
               1
             )
 
-        # cluster:memory_health_score:5m (#274 실측 재정의, #286 위험 구간 매핑)
+        # node:memory_health_score:5m (#274 실측 재정의, #286 위험 구간 매핑)
         # 기존 pod score p95 inversion 은 tight-limit 관측 인프라 pod 가 지배해 health 가 영구 ~0.2
-        # 로 고정됐다. 노드 실측 압박 (node:memory_pressure_score, node_exporter 기반, #274) 의
-        # worst 노드를 위험 구간으로 매핑한다. 선형 역수 (1 - usage) 는 정상 상주 사용률 (예: 0.58)
-        # 을 낮은 health 로 읽게 해 의미론이 어긋나므로 (#286), kubelet eviction 근접 의미로 사용률
-        # 0.8 이하는 1.0, 0.8~0.95 는 선형 하강, 0.95 이상은 0 으로 산정한다. pressure 계열은 원시
-        # 사용률 신호로 유지하고 health 층에서만 매핑한다. 참조 rule 이 다른 그룹에 있어 그룹 간
-        # 평가는 최대 1 interval 지연될 수 있으나 기존 rollup 체인들과 동일한 허용 범위다.
-        - record: cluster:memory_health_score:5m
+        # 로 고정됐다. 노드 실측 압박 (node:memory_pressure_score, node_exporter 기반, #274) 을
+        # 위험 구간으로 매핑한다. 선형 역수 (1 - usage) 는 정상 상주 사용률 (예: 0.58) 을 낮은
+        # health 로 읽게 해 의미론이 어긋나므로 (#286), kubelet eviction 근접 의미로 사용률 0.8
+        # 이하는 1.0, 0.8~0.95 는 선형 하강, 0.95 이상은 0 으로 산정한다. pressure 계열은 원시
+        # 사용률 신호로 유지하고 health 층에서만 매핑한다. gpu 판 (#273) 과 동일하게 다른 node
+        # health (#264 블록) 보다 앞의 본 위치에 두는 이유는 아래 cluster 판이 같은 그룹 내 순차
+        # 평가로 본 rule 을 지연 없이 참조하기 위함이다. 참조 rule (pressure) 이 다른 그룹에 있어
+        # 그룹 간 평가는 최대 1 interval 지연될 수 있으나 기존 rollup 체인들과 동일한 허용 범위다.
+        - record: node:memory_health_score:5m
           expr: |
             clamp_max(
-              clamp_min((0.95 - max(node:memory_pressure_score:5m)) / 0.15, 0),
+              clamp_min((0.95 - node:memory_pressure_score:5m) / 0.15, 0),
               1
             )
+
+        # cluster:memory_health_score:5m (#274 실측 재정의, #286 위험 구간 매핑)
+        # 노드 memory health 의 최소값 (worst 노드). gpu 판과 동일하게 같은 그룹 내 순차 평가로 위
+        # node 판을 지연 없이 참조하며, 매핑 산식의 중복을 피한다.
+        - record: cluster:memory_health_score:5m
+          expr: min(node:memory_health_score:5m)
 
         # node:*_health_score:5m 4종 (#264)
         # cluster health 와 동일 산식을 노드 차원으로 이식해 node/{node} 가 노드별 4차원 health 를
@@ -1280,14 +1288,8 @@ spec:
               1
             )
 
-        # #274 실측 재정의, #286 위험 구간 매핑. cluster 판과 동일하게 노드 실측 압박을 위험 구간
-        # (0.8 이하 1.0, 0.8~0.95 선형 하강, 0.95 이상 0) 으로 매핑한다.
-        - record: node:memory_health_score:5m
-          expr: |
-            clamp_max(
-              clamp_min((0.95 - node:memory_pressure_score:5m) / 0.15, 0),
-              1
-            )
+        # node:memory_health_score:5m 는 gpu 판과 동일하게 cluster 판이 참조하는 순서 제약으로
+        # cluster-health 블록 상단 (#286) 에 정의되어 있다.
 
         - record: node:network_health_score:5m
           expr: |
