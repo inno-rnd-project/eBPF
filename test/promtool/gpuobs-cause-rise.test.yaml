@@ -1,8 +1,10 @@
 # gpuobs-cause-rise.test.yaml 은 #244 의 rise 기반 cause weight 정합 검증 promtool unit test 다.
-# 세 케이스를 단정한다. (1) 상시 포화: memory limit 에 상시 근접한 pod (dcgm-exporter 패턴) 는
+# 네 케이스를 단정한다. (1) 상시 포화: memory limit 에 상시 근접한 pod (dcgm-exporter 패턴) 는
 # baseline 과 현재값이 같아 rise 0 이 되어 weight 와 alert 에서 배제된다. (2) 신규 압박 onset:
 # baseline 이 낮다가 상승한 pod 는 rise 가 잡혀 weight 와 alert 가 활성된다. (3) 노드 스코핑:
 # GPU 유휴 노드가 아닌 노드의 onset 은 cluster:gpu_idle_*_rise 와 weight 에 편입되지 않는다.
+# (4) 신생 시리즈 침묵 (#285): baseline 창에 이력이 없는 새 시리즈는 self-baseline fallback 으로
+# rise 0 이 되어 상시 포화로 시작해도 alert 와 weight 에서 배제된다.
 # 부동소수점 잡음 회피를 위해 정확 값 단정은 rise=0 (clamp_min 이 0 을 보장) 과 weight=1 (분자
 # 분모 동일로 잡음 상쇄) 만 두고, onset 크기는 alert firing 으로 단정한다. working_set / limit 은
 # 이진 표현이 정확한 500 / 1000 조합을 쓴다.
@@ -110,5 +112,49 @@ tests:
         exp_samples: []
     alert_rule_test:
       - eval_time: 70m
+        alertname: GPUIdleWithMemoryPressure
+        exp_alerts: []
+
+  # (4) 신생 시리즈 침묵 (#285): 상시 포화 0.95 로 새로 시작한 시리즈 (재배포 직후 agent pod 패턴).
+  # eval 10m 의 baseline 창 (offset 30m, 1h) 에 이력이 없어 과거 fallback 은 rise = 0.95 로 약 30분
+  # 오발화했다. self-baseline fallback 은 rise 0 (clamp_min 이 정확 0 보장) 이라 alert 와 weight 에서
+  # 배제된다. eval 100m 은 baseline 이 성숙한 뒤에도 상시 포화가 케이스 (1) 과 동일하게 rise 0 으로
+  # 남는 것을 단정한다.
+  - interval: 30s
+    input_series:
+      - series: 'container_memory_working_set_bytes{node="n1",namespace="ns1",pod="p1"}'
+        values: '950x220'
+      - series: 'kube_pod_container_resource_limits{namespace="ns1",pod="p1",resource="memory"}'
+        values: '1000x220'
+      - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
+        values: '5x220'
+    promql_expr_test:
+      # 절대 score 는 0.95 로 살아 있다 (시작부터 임박한 포화는 절대값 신호의 몫).
+      - expr: pod:memory_pressure_score:5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'pod:memory_pressure_score:5m{node="n1",namespace="ns1",pod="p1",src_namespace="ns1",src_pod="p1"}'
+            value: 0.95
+      # baseline 부재 구간의 rise 는 self-baseline fallback 으로 정확 0.
+      - expr: pod:memory_pressure_score_rise:5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'pod:memory_pressure_score_rise:5m{node="n1",namespace="ns1",pod="p1",src_namespace="ns1",src_pod="p1"}'
+            value: 0
+      # 신생 시리즈는 cause weight 에도 편입되지 않는다 (sum=0 → 시리즈 부재).
+      - expr: gpu_idle_cause_weight:5m{cause="memory_pressure"}
+        eval_time: 10m
+        exp_samples: []
+      # baseline 성숙 후 (창 10m~70m 에 동일 값 이력) 에도 상시 포화는 rise 0 으로 유지된다.
+      - expr: pod:memory_pressure_score_rise:5m
+        eval_time: 100m
+        exp_samples:
+          - labels: 'pod:memory_pressure_score_rise:5m{node="n1",namespace="ns1",pod="p1",src_namespace="ns1",src_pod="p1"}'
+            value: 0
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GPUIdleWithMemoryPressure
+        exp_alerts: []
+      - eval_time: 100m
         alertname: GPUIdleWithMemoryPressure
         exp_alerts: []

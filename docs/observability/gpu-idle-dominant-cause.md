@@ -152,6 +152,6 @@ cluster 차원 총 20 시리즈 상한. victim 차원 총 약 `20 * V` 시리즈
 - single GPU cluster 전제. multi-GPU 노드의 GPU 별 cause 분리는 본 PR 범위 밖이며 `node:gpu_idle:5m` 의 노드 단위 평균에 흡수된다
 - network cause weighting 은 canonical `pod:network_pressure_score:5m` (throughput 과 retrans 의 element-wise max, #154) 의 rise 를 쓴다. `GPUIdleWithNetworkPressure` alert 는 throughput (임계 0.7) 과 retrans (임계 0.05) 의 스케일이 달라 서브 신호 rise 2종으로 분리 판정을 유지한다
 - RTX 3090 같은 consumer GPU 는 ECC 미지원, throttle reason 일부 미발생 등으로 일부 cause 의 base score 가 항상 0 인 경우가 많다. 본 환경에서는 0 cause 가 weighting 에서 자연 제외된다
-- rise 기반 weight (#244) 는 pod 재시작 직후 약 30분간 baseline 공백 fallback 으로 상시 포화도 rise 로 잡히는 과도기가 있고, 1.5h 이상 지속되는 압박은 baseline 이 따라잡아 weight 가 감쇠한다. 장기 지속 압박은 절대값 기반 `pod:*_score:5m` 과 victim 단위 rule, pressure API 가 계속 노출한다
+- rise 기반 weight (#244) 는 baseline 이 없는 신생 시리즈를 self-baseline fallback 으로 rise 0 처리해 (#285) 90분 이력이 쌓일 때까지 침묵한다. 신생 pod 의 onset 즉시 감지는 포기하는 트레이드오프이며, 시작부터 임박한 포화와 1.5h 이상 지속되어 baseline 이 따라잡은 압박은 절대값 기반 `pod:*_score:5m` 과 victim 단위 rule, pressure API 가 계속 노출한다
 - victim 단위 rule (#101) 은 절대값 base 를 유지하므로 상시 포화 pod 가 victim dominant 에는 남을 수 있다. cluster dominant 와 victim dominant 가 일시적으로 다른 cause 를 가리킬 수 있다
 - LLM 기반 자연어 cause 설명은 본 PR 범위 밖이다. rule-based weighting 까지가 책임이다
