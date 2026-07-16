@@ -8,7 +8,7 @@ resources:
 
 images:
   - name: workload-injector
-    newTag: "2.0.9"
+    newTag: "2.1.0"
 # base 가 Job 매니페스트를 두지 않으므로 dev overlay 도 patch-job 을 두지 않는다. 운영자는
 # test/injector-examples/{cpu,network,gpu}.yaml 을 직접 edit (TARGET_POD / INTENSITY / DURATION) 후
 # kubectl apply -f 로 단일 injection 을 실행한다. dev 의 imagePullPolicy: Never 는 example yaml 의
