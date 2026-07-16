@@ -3,7 +3,9 @@
 # 가 두 PSI 중 더 심한 쪽 (0.6) 을 element-wise max 로 취하는지 (psi_kind 라벨 분리 후 max by 집계) 를 단정
 # 한다. cpu / memory 두 메트릭이 동일 라벨 셋이라 단순 `or` 로는 mem 이 버려지는 회귀를 본 케이스가 가드한다.
 # 나머지 cause 입력이 0 이므로 cgroup_contention 이 유일한 non-zero cause 가 되어 weight=1, victim score 편입
-# 을 확인한다. GPU idle 게이팅은 utilization 5% (<20) 상시로 node:gpu_idle:5m=1 을 만든다.
+# 을 확인한다. GPU idle 게이팅은 utilization 5% (<20) 상시로 node:gpu_idle:5m=1 을 만든다. #285 의
+# self-baseline fallback 이후 신생 시리즈는 rise 0 이라, weight 편입은 PSI 가 90m 부터 onset 하는 입력과
+# baseline 성숙 시점 (eval 100m) 으로 재현한다.
 rule_files:
   - gpuobs.yaml
 
@@ -14,26 +16,26 @@ tests:
     input_series:
       # cgroup PSI: cpu 0.2, memory 0.6, io 0.1 → pod score = max 3종 = 0.6
       - series: 'gpuobs_pod_cpu_pressure_ratio{node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
-        values: '0.2x12'
+        values: '0x180 0.2x40'
       - series: 'gpuobs_pod_memory_pressure_ratio{node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
-        values: '0.6x12'
+        values: '0x180 0.6x40'
       - series: 'gpuobs_pod_io_pressure_ratio{node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
-        values: '0.1x12'
+        values: '0x180 0.1x40'
       # #224 io stall 이 지배하는 pod. io 0.7 이 cpu 0.1 / memory 0.05 를 누르고 score 가 되는지 가드한다.
       - series: 'gpuobs_pod_cpu_pressure_ratio{node="n1",src_namespace="ns2",src_pod="p2",src_pod_uid="u2"}'
-        values: '0.1x12'
+        values: '0x180 0.1x40'
       - series: 'gpuobs_pod_memory_pressure_ratio{node="n1",src_namespace="ns2",src_pod="p2",src_pod_uid="u2"}'
-        values: '0.05x12'
+        values: '0x180 0.05x40'
       - series: 'gpuobs_pod_io_pressure_ratio{node="n1",src_namespace="ns2",src_pod="p2",src_pod_uid="u2"}'
-        values: '0.7x12'
+        values: '0x180 0.7x40'
       # GPU idle gating: utilization 5% (<20) 상시 → node:gpu_idle:5m = 1 > 0.5
       - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
-        values: '5x12'
+        values: '5x220'
 
     promql_expr_test:
       # pod score = max(cpu 0.2, mem 0.6) = 0.6. src_pod_uid / psi_kind 는 max by 로 정리된다.
       - expr: pod:cgroup_contention_score:5m
-        eval_time: 5m
+        eval_time: 100m
         exp_samples:
           - labels: 'pod:cgroup_contention_score:5m{node="n1",src_namespace="ns1",src_pod="p1"}'
             value: 0.6
@@ -41,19 +43,19 @@ tests:
             value: 0.7
       # cluster rollup = cluster max = 0.7 (io 지배 pod p2, max() 가 모든 라벨 제거).
       - expr: cluster:pod_cgroup_contention_score:5m
-        eval_time: 5m
+        eval_time: 100m
         exp_samples:
           - labels: 'cluster:pod_cgroup_contention_score:5m'
             value: 0.7
       # cgroup_contention 이 유일한 non-zero cause 라 weight = score / sum = 0.7 / 0.7 = 1.
       - expr: gpu_idle_cause_weight:5m{cause="cgroup_contention"}
-        eval_time: 5m
+        eval_time: 100m
         exp_samples:
           - labels: 'gpu_idle_cause_weight:5m{cause="cgroup_contention"}'
             value: 1
       # victim (pod-scope) score 도 동일 값으로 편입 (src_* → victim_* alias).
       - expr: pod:gpu_idle_cause_score:5m{cause="cgroup_contention"}
-        eval_time: 5m
+        eval_time: 100m
         exp_samples:
           - labels: 'pod:gpu_idle_cause_score:5m{cause="cgroup_contention",node="n1",victim_namespace="ns1",victim_pod="p1"}'
             value: 0.6
@@ -63,13 +65,13 @@ tests:
       # offset 리스트에 cgroup_contention 이 없으면 + on(cause) 조인이 빈 벡터를 만들어 이 단정이 실패
       # 하므로, offset 누락 회귀를 본 케이스가 가드한다 (weight 1 + offset 9e-6).
       - expr: cluster:gpu_idle_dominant_cause:5m
-        eval_time: 5m
+        eval_time: 100m
         exp_samples:
           - labels: 'cluster:gpu_idle_dominant_cause:5m{cause="cgroup_contention"}'
             value: 1.000009
       # victim 단위 dominant cause 도 동일하게 cgroup_contention 선택 (weight 1 + offset 6e-6).
       - expr: victim:gpu_idle_dominant_cause:5m
-        eval_time: 5m
+        eval_time: 100m
         exp_samples:
           - labels: 'victim:gpu_idle_dominant_cause:5m{cause="cgroup_contention",node="n1",victim_namespace="ns1",victim_pod="p1"}'
             value: 1.000006

@@ -518,19 +518,22 @@ spec:
         - record: cluster:pod_cgroup_contention_score:5m
           expr: max(pod:cgroup_contention_score:5m) or vector(0)
 
-        # pod:*_score_rise:5m (#244)
+        # pod:*_score_rise:5m (#244, fallback 교정 #285)
         # pod 계열 cause score 의 baseline (30m~1h30m 전 평균) 대비 상승분 (0 하한). memory limit 에
         # 상시 근접한 관측 인프라 pod (dcgm-exporter 등) 처럼 GPU 유휴 여부와 무관하게 일정한 신호는
         # baseline 과 현재값이 같아 0 에 수렴하고, GPU 유휴와 함께 나타난 신규 압박만 남는다. baseline
-        # 이 없는 신생 시리즈는 `or (score * 0)` fallback 으로 rise = 현재값이 되어 onset 감지가 즉시
-        # 동작하며, pod 재시작 직후 약 30분간 상시 포화가 rise 로 잡히는 과도기는 알려진 한계다.
-        # 압박이 1.5h 이상 지속되면 baseline 이 따라잡아 rise 가 감쇠하는데, 장기 지속 압박은 절대값
-        # 기반의 pod:*_score:5m 과 victim 단위 rule, pressure API 가 계속 노출한다.
+        # 이 없는 신생 시리즈는 `or score` self-baseline fallback 으로 rise = 0 이 되어 90분 이력이
+        # 쌓일 때까지 침묵한다. 과거 `or (score * 0)` fallback 은 rise = 현재값이라 재배포마다 새로
+        # 뜬 agent pod (상시 working_set/limit 0.66) 가 약 30분씩 alert 를 발화시키고 dominant cause
+        # 를 오귀속시켰다 (#285 실측). 신생 pod 의 onset 즉시 감지는 포기하는 트레이드오프이며, 시작
+        # 부터 임박한 포화는 rise 축이 아닌 절대값 기반 pod:*_score:5m 과 pressure API 의 몫이다.
+        # 압박이 1.5h 이상 지속되면 baseline 이 따라잡아 rise 가 감쇠하는데, 장기 지속 압박도 동일하게
+        # 절대값 기반 신호와 victim 단위 rule 이 계속 노출한다.
         - record: pod:cpu_throttle_score_rise:5m
           expr: |
             clamp_min(
               pod:cpu_throttle_score:5m
-              - (avg_over_time(pod:cpu_throttle_score:5m[1h] offset 30m) or (pod:cpu_throttle_score:5m * 0)),
+              - (avg_over_time(pod:cpu_throttle_score:5m[1h] offset 30m) or pod:cpu_throttle_score:5m),
               0
             )
 
@@ -538,7 +541,7 @@ spec:
           expr: |
             clamp_min(
               pod:memory_pressure_score:5m
-              - (avg_over_time(pod:memory_pressure_score:5m[1h] offset 30m) or (pod:memory_pressure_score:5m * 0)),
+              - (avg_over_time(pod:memory_pressure_score:5m[1h] offset 30m) or pod:memory_pressure_score:5m),
               0
             )
 
@@ -546,7 +549,7 @@ spec:
           expr: |
             clamp_min(
               pod:network_pressure_score:5m
-              - (avg_over_time(pod:network_pressure_score:5m[1h] offset 30m) or (pod:network_pressure_score:5m * 0)),
+              - (avg_over_time(pod:network_pressure_score:5m[1h] offset 30m) or pod:network_pressure_score:5m),
               0
             )
 
@@ -556,7 +559,7 @@ spec:
           expr: |
             clamp_min(
               pod:network_throughput_score:5m
-              - (avg_over_time(pod:network_throughput_score:5m[1h] offset 30m) or (pod:network_throughput_score:5m * 0)),
+              - (avg_over_time(pod:network_throughput_score:5m[1h] offset 30m) or pod:network_throughput_score:5m),
               0
             )
 
@@ -564,7 +567,7 @@ spec:
           expr: |
             clamp_min(
               pod:network_retrans_score:5m
-              - (avg_over_time(pod:network_retrans_score:5m[1h] offset 30m) or (pod:network_retrans_score:5m * 0)),
+              - (avg_over_time(pod:network_retrans_score:5m[1h] offset 30m) or pod:network_retrans_score:5m),
               0
             )
 
@@ -572,7 +575,7 @@ spec:
           expr: |
             clamp_min(
               pod:cgroup_contention_score:5m
-              - (avg_over_time(pod:cgroup_contention_score:5m[1h] offset 30m) or (pod:cgroup_contention_score:5m * 0)),
+              - (avg_over_time(pod:cgroup_contention_score:5m[1h] offset 30m) or pod:cgroup_contention_score:5m),
               0
             )
 
@@ -580,7 +583,7 @@ spec:
           expr: |
             clamp_min(
               pod:host_compute_stall_score:5m
-              - (avg_over_time(pod:host_compute_stall_score:5m[1h] offset 30m) or (pod:host_compute_stall_score:5m * 0)),
+              - (avg_over_time(pod:host_compute_stall_score:5m[1h] offset 30m) or pod:host_compute_stall_score:5m),
               0
             )
 
