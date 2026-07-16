@@ -202,6 +202,78 @@ func TestNodeGpuRca_UnknownGpu(t *testing.T) {
 	}
 }
 
+// TestNodeGpuRca_CauseRegistry 는 #287 의 cause 레지스트리 동작을 검증한다. causes 에 한국어 설명이
+// 채워지고, dominant (memory_pressure) 의 차원 맞춤 evidence 가 최우선 suspect pod 스코프의 2차
+// 조회로 실린다.
+func TestNodeGpuRca_CauseRegistry(t *testing.T) {
+	q := gpuRcaQuerier().
+		on("pod:memory_pressure_score:5m", sample(0.97, "node", "gpu")).
+		on("node:memory_pressure_score:5m", sample(0.58, "node", "gpu"))
+	nb := &fakeNeighbors{data: []correlation.NoisyNeighbor{{
+		Victim:    correlation.PodIdentity{Namespace: "ns1", Pod: "trainer"},
+		Suspect:   correlation.PodIdentity{Namespace: "ns2", Pod: "hog"},
+		Dimension: correlation.DimensionMemory, Score: 0.9,
+	}}}
+	h := NewSynthesisHandler(q, nb, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodeGpuRca(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-rca?node=gpu", nil))
+	var resp NodeGpuRcaResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// causes 의 한국어 설명 (레지스트리 유래).
+	for _, c := range resp.Causes {
+		if c.Description == "" {
+			t.Errorf("cause %s 의 description 이 비어 있음", c.Cause)
+		}
+	}
+	// dominant memory_pressure 의 suspect 스코프 2차 조회.
+	if !q.sawQuery(`src_pod="hog"`) {
+		t.Errorf("suspect 스코프 memory 조회 미실행: %v", q.queries)
+	}
+	if resp.Evidence.SuspectMemoryLimitRatio == nil || *resp.Evidence.SuspectMemoryLimitRatio != 0.97 {
+		t.Errorf("suspect_memory_limit_ratio=%v want 0.97", resp.Evidence.SuspectMemoryLimitRatio)
+	}
+	if resp.Evidence.NodeMemoryUsedRatio == nil || *resp.Evidence.NodeMemoryUsedRatio != 0.58 {
+		t.Errorf("node_memory_used_ratio=%v want 0.58", resp.Evidence.NodeMemoryUsedRatio)
+	}
+}
+
+// TestNodeGpuRca_ThermalEvidence 는 dominant thermal 의 온도와 slowdown 여유 산출을 검증한다.
+func TestNodeGpuRca_ThermalEvidence(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("node:gpu_idle:5m", sample(0.9, "node", "gpu")).
+		on("node:gpu_idle_cause_weight:5m", sample(0.8, "node", "gpu", "cause", "thermal")).
+		on("node:gpu_idle_dominant_cause:5m", sample(1.0, "node", "gpu", "cause", "thermal")).
+		on("gpuobs_device_temperature_celsius", sample(86, "node", "gpu")).
+		on("gpuobs_device_temperature_threshold_celsius", sample(93, "node", "gpu"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodeGpuRca(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-rca?node=gpu", nil))
+	var resp NodeGpuRcaResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Evidence.TemperatureCelsius == nil || *resp.Evidence.TemperatureCelsius != 86 {
+		t.Errorf("temperature=%v want 86", resp.Evidence.TemperatureCelsius)
+	}
+	if resp.Evidence.SlowdownHeadroomCelsius == nil || *resp.Evidence.SlowdownHeadroomCelsius != 7 {
+		t.Errorf("slowdown_headroom=%v want 7 (93-86)", resp.Evidence.SlowdownHeadroomCelsius)
+	}
+}
+
+// TestNodeGpuRca_NoEvidenceWhenNotIdle 은 dominant 부재 (유휴 게이팅 미충족) 시 2차 조회가 실행되지
+// 않는지 검증한다.
+func TestNodeGpuRca_NoEvidenceWhenNotIdle(t *testing.T) {
+	q := (&fakeQuerier{}).on("node:gpu_idle:5m", sample(0.2, "node", "gpu"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodeGpuRca(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-rca?node=gpu", nil))
+	for _, seen := range q.queries {
+		if strings.Contains(seen, "pod:memory_pressure_score:5m") || strings.Contains(seen, "temperature") {
+			t.Errorf("dominant 부재인데 2차 조회 실행됨: %v", q.queries)
+		}
+	}
+}
+
 // TestNodeGpuRca_EvidenceFusion 은 evidence 수치 (SM active 우선, 재전송 rate, 최대 RTT) 가
 // narrative 에 융합되고 network 계열 dominant cause 에 인과 체인 문구가 붙는지 검증한다.
 func TestNodeGpuRca_EvidenceFusion(t *testing.T) {

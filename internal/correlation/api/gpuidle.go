@@ -47,6 +47,9 @@ type GpuIdleAttribution struct {
 type GpuCauseWeight struct {
 	Cause  string  `json:"cause"`
 	Weight float64 `json:"weight"`
+	// Description 은 cause 의 한국어 한 줄 설명이다 (#287 레지스트리). gpu-rca 가 채우며 gpu-idle
+	// 응답에서는 생략된다.
+	Description string `json:"description,omitempty"`
 }
 
 // GpuNodeAttribution 은 scope=node 에서 노드 단위 유휴 원인 귀속이다 (#256 rule, #257 노출). node

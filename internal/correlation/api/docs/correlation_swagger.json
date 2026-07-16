@@ -1958,6 +1958,10 @@
                 "cause": {
                     "type": "string"
                 },
+                "description": {
+                    "description": "Description 은 cause 의 한국어 한 줄 설명이다 (#287 레지스트리). gpu-rca 가 채우며 gpu-idle\n응답에서는 생략된다.",
+                    "type": "string"
+                },
                 "weight": {
                     "type": "number"
                 }
@@ -3125,6 +3129,14 @@
         "internal_correlation_api.RcaEvidence": {
             "type": "object",
             "properties": {
+                "cause_score": {
+                    "description": "CauseScore 는 점수형 cause (pcie_saturation, dcgm_pcie_replay, nccl_collective_stall,\nhost_compute_stall, cgroup_contention) 의 노드 score (0-1) 다.",
+                    "type": "number"
+                },
+                "cpu_throttle_ratio": {
+                    "description": "CpuThrottleRatio 는 dominant 가 cpu_throttle 일 때 이 노드 pod 의 최대 throttle 비율 (0-1) 이다.",
+                    "type": "number"
+                },
                 "gpu_utilization_percent": {
                     "description": "GpuUtilizationPercent 는 device 사용률 (0-100) 이다. GPM 미지원 GPU 의 SM active fallback 축.",
                     "type": "number"
@@ -3133,12 +3145,27 @@
                     "description": "MaxSrttSeconds 는 이 노드 연결들의 최대 smoothed RTT 다. latency-breakdown 과 동일 소스\n(netobs_tcp_state_max_srtt_seconds) 로, p99 가 아닌 최대값이라 필드명도 max 로 적는다.",
                     "type": "number"
                 },
+                "node_memory_used_ratio": {
+                    "description": "NodeMemoryUsedRatio 는 dominant 가 memory_pressure 일 때 노드 실측 메모리 사용률 (0-1) 이다.",
+                    "type": "number"
+                },
                 "retrans_per_sec": {
                     "description": "RetransPerSec 는 이 노드의 TCP 재전송 rate (5m) 다.",
                     "type": "number"
                 },
+                "slowdown_headroom_celsius": {
+                    "type": "number"
+                },
                 "sm_active_percent": {
                     "description": "SMActivePercent 는 gpm sm_occupancy 로, 데이터센터 GPU 에서만 채워진다.",
+                    "type": "number"
+                },
+                "suspect_memory_limit_ratio": {
+                    "description": "SuspectMemoryLimitRatio 는 dominant 가 memory_pressure 일 때 최우선 suspect pod 의\nworking_set/limit 비율 (0-1) 이다. suspect 가 없으면 노드 pod 최대값으로 fallback 한다.",
+                    "type": "number"
+                },
+                "temperature_celsius": {
+                    "description": "TemperatureCelsius 와 SlowdownHeadroomCelsius 는 dominant 가 thermal 일 때 노드 device 최고\n온도와 slowdown 임계까지의 여유다. 여유는 임계와 온도가 모두 수집됐을 때만 산출된다.",
                     "type": "number"
                 }
             }
