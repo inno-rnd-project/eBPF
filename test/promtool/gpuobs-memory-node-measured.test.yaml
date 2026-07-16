@@ -1,8 +1,10 @@
-# gpuobs-memory-node-measured.test.yaml 은 #274 의 노드 실측 memory 재정의 회귀 검증 promtool
-# unit test 다. 핵심 회귀는 "tight-limit pod 가 노드·클러스터 지표를 지배하지 않는다" 다. n1 에
-# working_set/limit 0.95 인 pod (dcgm-exporter 패턴) 가 있어도 노드 실측 사용률이 0.3 이면 노드
-# pressure 는 0.3, health 는 0.7 이어야 한다 (기존 산식이면 pressure 0.95, health ~0.05). pod 단위
-# score 는 그 pod 의 OOM 근접도로 0.95 그대로 유지된다.
+# gpuobs-memory-node-measured.test.yaml 은 #274 의 노드 실측 memory 재정의와 #286 의 위험 구간
+# health 매핑 회귀 검증 promtool unit test 다. 핵심 회귀는 "tight-limit pod 가 노드·클러스터 지표를
+# 지배하지 않는다" 와 "정상 상주 사용률은 health 1.0 으로 읽힌다" 다. n1 에 working_set/limit 0.95
+# 인 pod (dcgm-exporter 패턴) 가 있어도 노드 실측 사용률이 0.3 이면 노드 pressure 는 0.3 이고,
+# health 는 위험 구간 매핑 (0.8 이하 1.0, 0.8~0.95 선형 하강, 0.95 이상 0) 으로 1.0 이어야 한다.
+# pod 단위 score 는 그 pod 의 OOM 근접도로 0.95 그대로 유지된다. 두 번째 케이스는 매핑의 경계값
+# (0.8 / 0.875 / 0.95) 을 단정한다.
 rule_files:
   - gpuobs.yaml
 
@@ -44,21 +46,62 @@ tests:
             value: 0.30000000000000004
           - labels: 'node:memory_pressure_score:5m{node="n2"}'
             value: 0.09999999999999998
-      # 노드 health 는 실측 역수.
+      # 노드 health: 사용률 0.3 은 위험 구간 (0.8) 미만이라 1.0 (#286).
       - expr: node:memory_health_score:5m{node="n1"}
         eval_time: 5m
         exp_samples:
           - labels: 'node:memory_health_score:5m{node="n1"}'
-            value: 0.7
-      # cluster health 는 worst 노드 (n1 0.3) 기준 0.7.
+            value: 1
+      # cluster health 도 worst 노드 (n1 0.3) 가 위험 구간 미만이라 1.0.
       - expr: cluster:memory_health_score:5m
         eval_time: 5m
         exp_samples:
           - labels: 'cluster:memory_health_score:5m'
-            value: 0.7
+            value: 1
       # pod 단위 score 는 OOM 근접도 의미로 0.95 그대로 유지된다 (pressure?scope=pod 랭킹 소스).
       - expr: pod:memory_pressure_score:5m
         eval_time: 5m
         exp_samples:
           - labels: 'pod:memory_pressure_score:5m{node="n1",namespace="mon",pod="dcgm",src_namespace="mon",src_pod="dcgm"}'
             value: 0.95
+
+  # #286 위험 구간 매핑 경계값. b1 사용률 0.8 (구간 시작, health ~1), b2 사용률 0.875 (구간 중앙,
+  # health 0.5), b3 사용률 0.95 (구간 끝, health 0). 기대값은 rule 산식 (0.95 - usage) / 0.15 의
+  # IEEE double 정확 표현이다 (부동소수점 전례: gpuobs-cause-rise 의 0.44999...).
+  - interval: 30s
+    input_series:
+      - series: 'node_memory_MemAvailable_bytes{instance="10.0.0.11:9100"}'
+        values: '200x20'
+      - series: 'node_memory_MemTotal_bytes{instance="10.0.0.11:9100"}'
+        values: '1000x20'
+      - series: 'node_uname_info{instance="10.0.0.11:9100",nodename="b1"}'
+        values: '1x20'
+      - series: 'node_memory_MemAvailable_bytes{instance="10.0.0.12:9100"}'
+        values: '125x20'
+      - series: 'node_memory_MemTotal_bytes{instance="10.0.0.12:9100"}'
+        values: '1000x20'
+      - series: 'node_uname_info{instance="10.0.0.12:9100",nodename="b2"}'
+        values: '1x20'
+      - series: 'node_memory_MemAvailable_bytes{instance="10.0.0.13:9100"}'
+        values: '50x20'
+      - series: 'node_memory_MemTotal_bytes{instance="10.0.0.13:9100"}'
+        values: '1000x20'
+      - series: 'node_uname_info{instance="10.0.0.13:9100",nodename="b3"}'
+        values: '1x20'
+
+    promql_expr_test:
+      - expr: node:memory_health_score:5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'node:memory_health_score:5m{node="b1"}'
+            value: 0.9999999999999994
+          - labels: 'node:memory_health_score:5m{node="b2"}'
+            value: 0.4999999999999997
+          - labels: 'node:memory_health_score:5m{node="b3"}'
+            value: 0
+      # cluster 는 worst 노드 (b3, 사용률 0.95) 기준 0 (min(node) 등가의 max pressure 규약 유지).
+      - expr: cluster:memory_health_score:5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'cluster:memory_health_score:5m'
+            value: 0
