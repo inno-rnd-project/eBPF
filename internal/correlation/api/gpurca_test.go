@@ -260,6 +260,29 @@ func TestNodeGpuRca_ThermalEvidence(t *testing.T) {
 	}
 }
 
+// TestNodeGpuRca_ThermalEvidenceDeviceScope 는 gpu 파라미터가 있으면 thermal evidence 의 device
+// 차원 조회가 그 device 로 좁혀지는지 검증한다 (#280 evidence 계약 정합).
+func TestNodeGpuRca_ThermalEvidenceDeviceScope(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("node:gpu_idle:5m", sample(0.9, "node", "gpu")).
+		on("node:gpu_idle_cause_weight:5m", sample(0.8, "node", "gpu", "cause", "thermal")).
+		on("node:gpu_idle_dominant_cause:5m", sample(1.0, "node", "gpu", "cause", "thermal")).
+		on("gpuobs_device_temperature_celsius", sample(86, "node", "gpu")).
+		on("gpuobs_device_temperature_threshold_celsius", sample(93, "node", "gpu"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodeGpuRca(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-rca?node=gpu&gpu=GPU-abc12", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	if !q.sawQuery(`gpuobs_device_temperature_celsius{node="gpu",gpu_uuid="GPU-abc12"}`) {
+		t.Errorf("thermal 온도 조회에 device 매처 미적용: %v", q.queries)
+	}
+	if !q.sawQuery(`gpuobs_device_temperature_threshold_celsius{node="gpu",gpu_uuid="GPU-abc12",threshold="slowdown"}`) {
+		t.Errorf("thermal 임계 조회에 device 매처 미적용: %v", q.queries)
+	}
+}
+
 // TestNodeGpuRca_NoEvidenceWhenNotIdle 은 dominant 부재 (유휴 게이팅 미충족) 시 2차 조회가 실행되지
 // 않는지 검증한다.
 func TestNodeGpuRca_NoEvidenceWhenNotIdle(t *testing.T) {

@@ -86,7 +86,9 @@ func (e *RcaEvidence) finalizeEvidence() {
 // rcaEvidenceBind 는 dominant cause 일 때만 실행하는 차원 맞춤 instant 조회 한 건이다. query 가 빈
 // 문자열을 돌려주면 그 바인딩은 건너뛴다.
 type rcaEvidenceBind struct {
-	query func(node string, top *RcaSuspect) string
+	// query 는 node 와 device 스코프 matcher (gpu 파라미터 유래, 없으면 빈 문자열), 최우선 suspect
+	// 로 instant 쿼리를 만든다. device 차원이 없는 메트릭은 matcher 를 무시한다.
+	query func(node, gpuMatcher string, top *RcaSuspect) string
 	set   func(e *RcaEvidence, v float64)
 }
 
@@ -102,7 +104,7 @@ type rcaCauseInfo struct {
 // 리터럴이고 node 는 parseNodeParam 검증을 통과한 값이라 %q 결합이 안전하다.
 func nodeScoreBind(metric string) []rcaEvidenceBind {
 	return []rcaEvidenceBind{{
-		query: func(node string, _ *RcaSuspect) string {
+		query: func(node, _ string, _ *RcaSuspect) string {
 			return fmt.Sprintf("max(%s{node=%q})", metric, node)
 		},
 		set: func(e *RcaEvidence, v float64) { e.CauseScore = &v },
@@ -117,7 +119,7 @@ var rcaCauseCatalog = map[string]rcaCauseInfo{
 		description: "host 스레드의 CFS quota throttle 로 GPU 공급 정체",
 		chain:       "CPU throttle → 공급 스레드 지연 → GPU 대기",
 		evidence: []rcaEvidenceBind{{
-			query: func(node string, _ *RcaSuspect) string {
+			query: func(node, _ string, _ *RcaSuspect) string {
 				return fmt.Sprintf("max(pod:cpu_throttle_score:5m{node=%q})", node)
 			},
 			set: func(e *RcaEvidence, v float64) { e.CpuThrottleRatio = &v },
@@ -128,7 +130,7 @@ var rcaCauseCatalog = map[string]rcaCauseInfo{
 		chain:       "메모리 reclaim/stall → 파이프라인 블로킹 → GPU 대기",
 		evidence: []rcaEvidenceBind{
 			{
-				query: func(node string, top *RcaSuspect) string {
+				query: func(node, _ string, top *RcaSuspect) string {
 					if top != nil && top.Pod != "" {
 						return fmt.Sprintf("max(pod:memory_pressure_score:5m{node=%q, src_namespace=%q, src_pod=%q})", node, top.Namespace, top.Pod)
 					}
@@ -137,7 +139,7 @@ var rcaCauseCatalog = map[string]rcaCauseInfo{
 				set: func(e *RcaEvidence, v float64) { e.SuspectMemoryLimitRatio = &v },
 			},
 			{
-				query: func(node string, _ *RcaSuspect) string {
+				query: func(node, _ string, _ *RcaSuspect) string {
 					return fmt.Sprintf("node:memory_pressure_score:5m{node=%q}", node)
 				},
 				set: func(e *RcaEvidence, v float64) { e.NodeMemoryUsedRatio = &v },
@@ -174,14 +176,14 @@ var rcaCauseCatalog = map[string]rcaCauseInfo{
 		chain:       "고온 → 클럭 하향 → 실효 성능 저하",
 		evidence: []rcaEvidenceBind{
 			{
-				query: func(node string, _ *RcaSuspect) string {
-					return fmt.Sprintf("max(gpuobs_device_temperature_celsius{node=%q})", node)
+				query: func(node, gpuMatcher string, _ *RcaSuspect) string {
+					return "max(gpuobs_device_temperature_celsius" + promSelector(nodeMatcher(node), gpuMatcher) + ")"
 				},
 				set: func(e *RcaEvidence, v float64) { e.TemperatureCelsius = &v },
 			},
 			{
-				query: func(node string, _ *RcaSuspect) string {
-					return fmt.Sprintf(`min(gpuobs_device_temperature_threshold_celsius{threshold="slowdown", node=%q})`, node)
+				query: func(node, gpuMatcher string, _ *RcaSuspect) string {
+					return "min(gpuobs_device_temperature_threshold_celsius" + promSelector(nodeMatcher(node), gpuMatcher, `threshold="slowdown"`) + ")"
 				},
 				set: func(e *RcaEvidence, v float64) { e.slowdownThresholdCelsius = &v },
 			},
@@ -356,7 +358,7 @@ func (h *SynthesisHandler) GetNodeGpuRca(w http.ResponseWriter, r *http.Request)
 	for i := range resp.Causes {
 		resp.Causes[i].Description = rcaCauseCatalog[resp.Causes[i].Cause].description
 	}
-	h.fetchCauseEvidence(ctx, node, &resp)
+	h.fetchCauseEvidence(ctx, node, gpuMatcher, &resp)
 
 	resp.Narrative = buildRcaNarrative(resp)
 	apicommon.WriteJSON(w, resp)
@@ -365,7 +367,7 @@ func (h *SynthesisHandler) GetNodeGpuRca(w http.ResponseWriter, r *http.Request)
 // fetchCauseEvidence 는 dominant cause 의 레지스트리 evidence 바인딩을 실행해 차원 맞춤 수치를
 // 채운다. dominant 가 없거나 (유휴 게이팅 미충족) 바인딩이 없는 cause 면 아무것도 하지 않는다.
 // suspect 스코프 바인딩은 최우선 suspect 를 받으며, 실패 (nil) 는 필드 생략으로 graceful 처리한다.
-func (h *SynthesisHandler) fetchCauseEvidence(ctx context.Context, node string, resp *NodeGpuRcaResponse) {
+func (h *SynthesisHandler) fetchCauseEvidence(ctx context.Context, node, gpuMatcher string, resp *NodeGpuRcaResponse) {
 	info, ok := rcaCauseCatalog[resp.DominantCause]
 	if !ok || len(info.evidence) == 0 {
 		return
@@ -377,7 +379,7 @@ func (h *SynthesisHandler) fetchCauseEvidence(ctx context.Context, node string, 
 	queries := make([]string, 0, len(info.evidence))
 	sets := make([]func(*RcaEvidence, float64), 0, len(info.evidence))
 	for _, b := range info.evidence {
-		q := b.query(node, top)
+		q := b.query(node, gpuMatcher, top)
 		if q == "" {
 			continue
 		}
