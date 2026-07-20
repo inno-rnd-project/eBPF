@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# 신규 클러스터 온보딩 템플릿 (#289). 본 디렉토리를 deploy/netobs/overlays/<cluster> 로 복사한 뒤
+# CHANGEME 주석 자리를 클러스터별 값으로 채운다. 절차와 변경값 표는
+# docs/deploy/cluster-onboarding.md 를 따른다. 본 템플릿 자체는 배포 대상이 아니며
+# scripts/deploy-cluster.sh 가 overlay 이름 _template 을 거부한다.
+
+namespace: ebpf-project
+
+resources:
+  - ../../base
+
+# operator 의 serviceMonitorSelector / ruleSelector 가 보는 release 라벨을 base 수정 없이
+# 오버라이드한다. includeSelectors: false 라 selector 에는 주입되지 않고 metadata 라벨만
+# 덮어쓴다 (전 리소스에 붙지만 무해). 타깃 클러스터의 kube-prometheus-stack 류 helm release
+# 이름 (helm ls -n monitoring) 으로 바꾼다.
+labels:
+  - pairs:
+      # CHANGEME: 타깃 클러스터의 operator release 이름
+      release: kube-prometheus-stack
+    includeSelectors: false
+
+# newTag 는 make bump 가 overlays 전체를 일괄 갱신하므로 손대지 않는다.
+images:
+  - name: netobs-agent
+    newName: ghcr.io/inno-rnd-project/netobs-agent
+    newTag: "2.1.6"
+
+patches:
+  - path: patch-daemonset.yaml

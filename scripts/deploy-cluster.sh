@@ -36,6 +36,10 @@ for arg in "$@"; do
   esac
 done
 
+# 쉘 탭 완성이 붙이는 후행 슬래시를 정규화한다. 가드와 디렉토리 검사와 apply 경로가 같은 값을
+# 보게 해 `_template/` 형태의 템플릿 가드 우회를 막는다.
+ENV_NAME="${ENV_NAME%/}"
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -56,6 +60,10 @@ fail() { echo "[deploy-cluster][fail] $*" >&2; exit 1; }
 # preflight
 # ---------------------------------------------------------------------------
 info "preflight: context=$CTX overlay=$ENV_NAME"
+
+# 0) _template 은 복사용 온보딩 템플릿 (#289) 이라 직접 배포를 거부한다.
+[ "$ENV_NAME" != "_template" ] \
+  || fail "_template 은 복사용 템플릿이다. docs/deploy/cluster-onboarding.md 절차대로 클러스터별 overlay 로 복사해 사용하라"
 
 # 1) overlay 디렉토리 실존. 컴포넌트별 overlay 가 없으면 배포 자체가 불가라 가장 먼저 확인한다.
 for comp in "${COMPONENTS[@]}"; do

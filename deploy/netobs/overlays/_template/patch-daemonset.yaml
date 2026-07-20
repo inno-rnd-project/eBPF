@@ -1,0 +1,29 @@
+# 클러스터별 배포 대상 노드와 NIC 튜닝 자리 (#289). prod overlay 와 동일한 opt-in 라벨 스킴을
+# 기본으로 두고, 필요 시 클러스터 정책에 맞게 조정한다.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: netobs-agent
+  namespace: ebpf-project
+spec:
+  template:
+    spec:
+      # 관측 대상 노드는 observability.netobs/enabled=true 라벨로 opt-in 한다. control-plane 은
+      # affinity 로 제외한다.
+      nodeSelector:
+        observability.netobs/enabled: "true"
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+      containers:
+        - name: netobs-agent
+          imagePullPolicy: IfNotPresent
+          env:
+            # CHANGEME: 노드 NIC 이론 용량 (bytes/sec). network throughput score 의 정규화 분모다.
+            # 기본 1.25e9 (10GbE). 25GbE 는 3.125e9, 1GbE 는 1.25e8.
+            - name: NIC_CAPACITY_BYTES_PER_SEC
+              value: "1.25e9"
