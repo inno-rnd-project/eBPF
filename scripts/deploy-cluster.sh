@@ -36,6 +36,10 @@ for arg in "$@"; do
   esac
 done
 
+# 쉘 탭 완성이 붙이는 후행 슬래시를 정규화한다. 가드와 디렉토리 검사와 apply 경로가 같은 값을
+# 보게 해 `_template/` 형태의 템플릿 가드 우회를 막는다.
+ENV_NAME="${ENV_NAME%/}"
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 

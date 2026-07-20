@@ -61,9 +61,10 @@
 6. 배포 후 확인. 스크립트의 자동 검증 (netobs-agent target 과 recording rule 채택) 에 더해 다음을 수동 확인한다.
 
    ```sh
-   # 에이전트 target 이 모두 up 인지
+   # 에이전트 target 이 모두 up 인지. 쿼리는 up{job=~"netobs-agent|gpuobs-agent"} 의 URL 인코딩으로,
+   # 중괄호 등 RFC 비허용 문자를 apiserver 버전과 무관하게 안전히 전달한다.
    kubectl --context <ctx> get --raw \
-     "/api/v1/namespaces/<monitoring-ns>/services/prometheus-operated:9090/proxy/api/v1/query?query=up{job=~\"netobs-agent|gpuobs-agent\"}"
+     "/api/v1/namespaces/<monitoring-ns>/services/prometheus-operated:9090/proxy/api/v1/query?query=up%7Bjob%3D~%22netobs-agent%7Cgpuobs-agent%22%7D"
    # 합성 API 가 응답하는지 (노드 health 와 pressure 가 채워지기까지 recording rule 5m 윈도우 필요)
    kubectl --context <ctx> -n ebpf-project port-forward svc/correlation-exporter 9830:9830 &
    curl -s "http://127.0.0.1:9830/api/v1/overview"
