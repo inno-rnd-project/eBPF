@@ -1,0 +1,10 @@
+# 클러스터별 Prometheus 주소 자리 (#289). ConfigMap patch 는 명시한 키만 덮어쓰므로 나머지 키는
+# base 기본값을 따른다.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rca-summarizer
+  namespace: ebpf-project
+data:
+  # CHANGEME: 타깃 클러스터의 Prometheus in-cluster 주소 (correlation 템플릿과 동일 값).
+  PROMETHEUS_URL: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
