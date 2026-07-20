@@ -70,6 +70,7 @@ BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 # 탐색을 건너뛰므로 매치가 일어나지 않는다. 해당 타깃들은 동일 이름의 실제 파일이
 # 없어 매 호출마다 recipe가 재실행되므로 phony와 동등 동작이다.
 .PHONY: deps generate generate-gpuobs generate-nccl clean tree bump \
+	deploy-cluster \
 	build-all image-build-all image-push-all \
 	test test-integration setup-envtest \
 	check-prometheus-rules check-swagger-drift \
@@ -419,6 +420,15 @@ render-%:
 
 deploy-%:
 	kubectl apply -k $(OVERLAY_PATH_$*)
+
+# deploy-cluster 는 #288 의 멀티클러스터 일괄 배포다. scripts/deploy-cluster.sh 가 preflight
+# (context 연결, Operator CRD, release 라벨 일치, pull secret 과 GPU 노드 라벨 점검) → 의존 순서
+# 배포 → rollout 과 Prometheus 채택 검증까지 수행한다. CONTEXT 미지정 시 현재 context 를 쓴다.
+#   make deploy-cluster ENV=prod CONTEXT=my-cluster
+#   make deploy-cluster ENV=dev WITH_INJECTOR=1
+deploy-cluster:
+	@test -n "$(ENV)" || { echo "ENV=<overlay 이름> 을 지정하라 (예: ENV=prod)"; exit 2; }
+	@scripts/deploy-cluster.sh "$${CONTEXT:-$$(kubectl config current-context)}" "$(ENV)" $(if $(WITH_INJECTOR),--with-injector)
 
 delete-%:
 	kubectl delete -k $(OVERLAY_PATH_$*)
