@@ -492,7 +492,7 @@ const docTemplatecorrelation = `{
         },
         "/api/v1/gpu-rca": {
             "get": {
-                "description": "노드 하나의 GPU 유휴 dominant cause 와 cause 별 가중치, 신뢰도, 원인 후보 pod 랭킹, 근거 수치 (evidence), 한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와 가중치는 scope=node gpu-idle 결과를 재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor suspect pod (namespace-aware) 와 cross-node-interference suspect node 를 점수순으로 집계한다. 신뢰도는 top1 과 top2 cause 격차다. evidence 는 device 사용률과 SM active, 노드 재전송 rate 와 최대 RTT 를 instant 로 실어 narrative 에 융합하고, dominant cause 가 network 계열이면 인과 체인 문구를 덧붙인다. gpu 파라미터 (GPU UUID 또는 device index) 로 evidence 의 GPU 수치를 device 로 좁힐 수 있고, 미등록 device 는 해당 수치가 생략된다.",
+                "description": "노드 하나의 GPU 유휴 dominant cause 와 cause 별 가중치 (한국어 설명 포함), 신뢰도, 원인 후보 pod 랭킹, 근거 수치 (evidence), 한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와 가중치는 scope=node gpu-idle 결과를 재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor suspect pod (namespace-aware) 와 cross-node-interference suspect node 를 점수순으로 집계한다. 신뢰도는 top1 과 top2 cause 격차이며 0.1 미만 백중세는 narrative 에 판정 유보로 적는다. evidence 는 device 사용률과 SM active, 노드 재전송 rate 와 최대 RTT 에 더해 dominant cause 의 차원 맞춤 수치 (memory 는 suspect pod 의 working_set/limit 과 노드 실측 사용률, thermal 은 온도와 slowdown 여유, cpu 는 throttle 비율, 점수형 cause 는 노드 score) 를 cause 레지스트리 기반 2차 조회로 실어 narrative 에 융합하고, dominant cause 별 인과 체인 문구를 덧붙인다. gpu 파라미터 (GPU UUID 또는 device index) 로 evidence 의 GPU 수치를 device 로 좁힐 수 있고, 미등록 device 는 해당 수치가 생략된다.",
                 "produces": [
                     "application/json"
                 ],
@@ -1965,6 +1965,10 @@ const docTemplatecorrelation = `{
                 "cause": {
                     "type": "string"
                 },
+                "description": {
+                    "description": "Description 은 cause 의 한국어 한 줄 설명이다 (#287 레지스트리). gpu-rca 가 채우며 gpu-idle\n응답에서는 생략된다.",
+                    "type": "string"
+                },
                 "weight": {
                     "type": "number"
                 }
@@ -3132,6 +3136,14 @@ const docTemplatecorrelation = `{
         "internal_correlation_api.RcaEvidence": {
             "type": "object",
             "properties": {
+                "cause_score": {
+                    "description": "CauseScore 는 점수형 cause (pcie_saturation, dcgm_pcie_replay, nccl_collective_stall,\nhost_compute_stall, cgroup_contention) 의 노드 score (0-1) 다.",
+                    "type": "number"
+                },
+                "cpu_throttle_ratio": {
+                    "description": "CpuThrottleRatio 는 dominant 가 cpu_throttle 일 때 이 노드 pod 의 최대 throttle 비율 (0-1) 이다.",
+                    "type": "number"
+                },
                 "gpu_utilization_percent": {
                     "description": "GpuUtilizationPercent 는 device 사용률 (0-100) 이다. GPM 미지원 GPU 의 SM active fallback 축.",
                     "type": "number"
@@ -3140,12 +3152,27 @@ const docTemplatecorrelation = `{
                     "description": "MaxSrttSeconds 는 이 노드 연결들의 최대 smoothed RTT 다. latency-breakdown 과 동일 소스\n(netobs_tcp_state_max_srtt_seconds) 로, p99 가 아닌 최대값이라 필드명도 max 로 적는다.",
                     "type": "number"
                 },
+                "node_memory_used_ratio": {
+                    "description": "NodeMemoryUsedRatio 는 dominant 가 memory_pressure 일 때 노드 실측 메모리 사용률 (0-1) 이다.",
+                    "type": "number"
+                },
                 "retrans_per_sec": {
                     "description": "RetransPerSec 는 이 노드의 TCP 재전송 rate (5m) 다.",
                     "type": "number"
                 },
+                "slowdown_headroom_celsius": {
+                    "type": "number"
+                },
                 "sm_active_percent": {
                     "description": "SMActivePercent 는 gpm sm_occupancy 로, 데이터센터 GPU 에서만 채워진다.",
+                    "type": "number"
+                },
+                "suspect_memory_limit_ratio": {
+                    "description": "SuspectMemoryLimitRatio 는 dominant 가 memory_pressure 일 때 최우선 suspect pod 의\nworking_set/limit 비율 (0-1) 이다. suspect 가 없으면 노드 pod 최대값으로 fallback 한다.",
+                    "type": "number"
+                },
+                "temperature_celsius": {
+                    "description": "TemperatureCelsius 와 SlowdownHeadroomCelsius 는 dominant 가 thermal 일 때 노드 device 최고\n온도와 slowdown 임계까지의 여유다. 여유는 임계와 온도가 모두 수집됐을 때만 산출된다.",
                     "type": "number"
                 }
             }

@@ -52,11 +52,149 @@ type RcaEvidence struct {
 	// MaxSrttSeconds 는 이 노드 연결들의 최대 smoothed RTT 다. latency-breakdown 과 동일 소스
 	// (netobs_tcp_state_max_srtt_seconds) 로, p99 가 아닌 최대값이라 필드명도 max 로 적는다.
 	MaxSrttSeconds *float64 `json:"max_srtt_seconds,omitempty"`
+
+	// 아래는 #287 의 dominant cause 차원 맞춤 수치로, dominant 판정 후 2차 instant 조회로 채워져
+	// 해당 cause 일 때만 존재한다.
+
+	// CpuThrottleRatio 는 dominant 가 cpu_throttle 일 때 이 노드 pod 의 최대 throttle 비율 (0-1) 이다.
+	CpuThrottleRatio *float64 `json:"cpu_throttle_ratio,omitempty"`
+	// SuspectMemoryLimitRatio 는 dominant 가 memory_pressure 일 때 최우선 suspect pod 의
+	// working_set/limit 비율 (0-1) 이다. suspect 가 없으면 노드 pod 최대값으로 fallback 한다.
+	SuspectMemoryLimitRatio *float64 `json:"suspect_memory_limit_ratio,omitempty"`
+	// NodeMemoryUsedRatio 는 dominant 가 memory_pressure 일 때 노드 실측 메모리 사용률 (0-1) 이다.
+	NodeMemoryUsedRatio *float64 `json:"node_memory_used_ratio,omitempty"`
+	// TemperatureCelsius 와 SlowdownHeadroomCelsius 는 dominant 가 thermal 일 때 노드 device 최고
+	// 온도와 slowdown 임계까지의 여유다. 여유는 임계와 온도가 모두 수집됐을 때만 산출된다.
+	TemperatureCelsius      *float64 `json:"temperature_celsius,omitempty"`
+	SlowdownHeadroomCelsius *float64 `json:"slowdown_headroom_celsius,omitempty"`
+	// CauseScore 는 점수형 cause (pcie_saturation, dcgm_pcie_replay, nccl_collective_stall,
+	// host_compute_stall, cgroup_contention) 의 노드 score (0-1) 다.
+	CauseScore *float64 `json:"cause_score,omitempty"`
+
+	// slowdownThresholdCelsius 는 여유 산출용 중간값으로 응답에는 싣지 않는다.
+	slowdownThresholdCelsius *float64
 }
 
-// gpuRcaNetworkCauses 는 network 계열 dominant cause 다. 재전송이 집합통신을 블로킹해 GPU 연산이
-// 대기하는 인과 체인 문구를 narrative 에 싣는 대상이다.
-var gpuRcaNetworkCauses = map[string]bool{"network_pressure": true, "nccl_collective_stall": true}
+// finalizeEvidence 는 2차 조회 완료 후 파생 수치를 계산한다.
+func (e *RcaEvidence) finalizeEvidence() {
+	if e.TemperatureCelsius != nil && e.slowdownThresholdCelsius != nil {
+		h := *e.slowdownThresholdCelsius - *e.TemperatureCelsius
+		e.SlowdownHeadroomCelsius = &h
+	}
+}
+
+// rcaEvidenceBind 는 dominant cause 일 때만 실행하는 차원 맞춤 instant 조회 한 건이다. query 가 빈
+// 문자열을 돌려주면 그 바인딩은 건너뛴다.
+type rcaEvidenceBind struct {
+	// query 는 node 와 device 스코프 matcher (gpu 파라미터 유래, 없으면 빈 문자열), 최우선 suspect
+	// 로 instant 쿼리를 만든다. device 차원이 없는 메트릭은 matcher 를 무시한다.
+	query func(node, gpuMatcher string, top *RcaSuspect) string
+	set   func(e *RcaEvidence, v float64)
+}
+
+// rcaCauseInfo 는 cause 한 종의 서사 요소다. description 은 causes[].description 과 narrative 의
+// slug 부연으로, chain 은 dominant 일 때 narrative 에 덧붙는 인과 체인 문구로 쓰인다.
+type rcaCauseInfo struct {
+	description string
+	chain       string
+	evidence    []rcaEvidenceBind
+}
+
+// nodeScoreBind 는 node 스코프 단일 시리즈를 CauseScore 로 싣는 공용 바인딩이다. metric 은 고정
+// 리터럴이고 node 는 parseNodeParam 검증을 통과한 값이라 %q 결합이 안전하다.
+func nodeScoreBind(metric string) []rcaEvidenceBind {
+	return []rcaEvidenceBind{{
+		query: func(node, _ string, _ *RcaSuspect) string {
+			return fmt.Sprintf("max(%s{node=%q})", metric, node)
+		},
+		set: func(e *RcaEvidence, v float64) { e.CauseScore = &v },
+	}}
+}
+
+// rcaCauseCatalog 는 #287 의 cause 레지스트리다. playbookCatalog 와 동일하게 항목 추가 시 본
+// 카탈로그를 갱신한다. cause enum 은 gpu_idle_cause_weight:5m 의 9종과 동일하다. suspect 식별자는
+// noisy-neighbor snapshot (kube informer 유래) 값이라 %q 결합이 안전하다.
+var rcaCauseCatalog = map[string]rcaCauseInfo{
+	"cpu_throttle": {
+		description: "host 스레드의 CFS quota throttle 로 GPU 공급 정체",
+		chain:       "CPU throttle → 공급 스레드 지연 → GPU 대기",
+		evidence: []rcaEvidenceBind{{
+			query: func(node, _ string, _ *RcaSuspect) string {
+				return fmt.Sprintf("max(pod:cpu_throttle_score:5m{node=%q})", node)
+			},
+			set: func(e *RcaEvidence, v float64) { e.CpuThrottleRatio = &v },
+		}},
+	},
+	"memory_pressure": {
+		description: "working set 의 memory limit 근접으로 allocation stall",
+		chain:       "메모리 reclaim/stall → 파이프라인 블로킹 → GPU 대기",
+		evidence: []rcaEvidenceBind{
+			{
+				query: func(node, _ string, top *RcaSuspect) string {
+					if top != nil && top.Pod != "" {
+						return fmt.Sprintf("max(pod:memory_pressure_score:5m{node=%q, src_namespace=%q, src_pod=%q})", node, top.Namespace, top.Pod)
+					}
+					return fmt.Sprintf("max(pod:memory_pressure_score:5m{node=%q})", node)
+				},
+				set: func(e *RcaEvidence, v float64) { e.SuspectMemoryLimitRatio = &v },
+			},
+			{
+				query: func(node, _ string, _ *RcaSuspect) string {
+					return fmt.Sprintf("node:memory_pressure_score:5m{node=%q}", node)
+				},
+				set: func(e *RcaEvidence, v float64) { e.NodeMemoryUsedRatio = &v },
+			},
+		},
+	},
+	"network_pressure": {
+		description: "throughput 포화 또는 재전송 급증으로 데이터 대기",
+		chain:       "재전송 → 통신 블로킹 → GPU 대기",
+		// network 수치는 1차 조회의 재전송 rate 와 최대 RTT 가 담당한다.
+	},
+	"nccl_collective_stall": {
+		description: "collective 연산의 rank 간 동기화 대기",
+		chain:       "재전송 → 통신 블로킹 → GPU 대기",
+		evidence:    nodeScoreBind("node:nccl_collective_stall_score:5m"),
+	},
+	"pcie_saturation": {
+		description: "host 와 GPU 간 PCIe 전송 포화",
+		chain:       "PCIe 복사 정체 → 데이터 공급 지연 → GPU 대기",
+		evidence:    nodeScoreBind("node:gpu_pcie_saturation_score:5m"),
+	},
+	"host_compute_stall": {
+		description: "kernel launch 부족 또는 device memory 포화",
+		chain:       "host 연산 병목 → 커널 공급 부족 → GPU 대기",
+		evidence:    nodeScoreBind("pod:host_compute_stall_score:5m"),
+	},
+	"dcgm_pcie_replay": {
+		description: "PCIe 전송 오류 재시도 증가 (하드웨어 징후)",
+		chain:       "PCIe replay 재시도 → 전송 지연 → GPU 대기",
+		evidence:    nodeScoreBind("node:dcgm_pcie_replay_score:5m"),
+	},
+	"thermal": {
+		description: "온도 임계 도달로 클럭 강제 하향",
+		chain:       "고온 → 클럭 하향 → 실효 성능 저하",
+		evidence: []rcaEvidenceBind{
+			{
+				query: func(node, gpuMatcher string, _ *RcaSuspect) string {
+					return "max(gpuobs_device_temperature_celsius" + promSelector(nodeMatcher(node), gpuMatcher) + ")"
+				},
+				set: func(e *RcaEvidence, v float64) { e.TemperatureCelsius = &v },
+			},
+			{
+				query: func(node, gpuMatcher string, _ *RcaSuspect) string {
+					return "min(gpuobs_device_temperature_threshold_celsius" + promSelector(nodeMatcher(node), gpuMatcher, `threshold="slowdown"`) + ")"
+				},
+				set: func(e *RcaEvidence, v float64) { e.slowdownThresholdCelsius = &v },
+			},
+		},
+	},
+	"cgroup_contention": {
+		description: "이웃 cgroup 과의 CPU 시간 경합 (PSI stall)",
+		chain:       "CPU 경합 stall → 공급 스레드 지연 → GPU 대기",
+		evidence:    nodeScoreBind("pod:cgroup_contention_score:5m"),
+	},
+}
 
 // gpuParamPattern 은 gpu 쿼리 파라미터 (NVIDIA GPU/MIG UUID 또는 device index) 의 문자 구성이다.
 // UUID 는 영숫자와 하이픈 (GPU-8f6f... 형태) 이라 parseNodeParam 과 동일하게 exact = 매처와 %q 결합
@@ -96,7 +234,7 @@ type RcaSuspect struct {
 
 // GetNodeGpuRca godoc
 // @Summary      노드 GPU RCA 합성
-// @Description  노드 하나의 GPU 유휴 dominant cause 와 cause 별 가중치, 신뢰도, 원인 후보 pod 랭킹, 근거 수치 (evidence), 한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와 가중치는 scope=node gpu-idle 결과를 재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor suspect pod (namespace-aware) 와 cross-node-interference suspect node 를 점수순으로 집계한다. 신뢰도는 top1 과 top2 cause 격차다. evidence 는 device 사용률과 SM active, 노드 재전송 rate 와 최대 RTT 를 instant 로 실어 narrative 에 융합하고, dominant cause 가 network 계열이면 인과 체인 문구를 덧붙인다. gpu 파라미터 (GPU UUID 또는 device index) 로 evidence 의 GPU 수치를 device 로 좁힐 수 있고, 미등록 device 는 해당 수치가 생략된다.
+// @Description  노드 하나의 GPU 유휴 dominant cause 와 cause 별 가중치 (한국어 설명 포함), 신뢰도, 원인 후보 pod 랭킹, 근거 수치 (evidence), 한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와 가중치는 scope=node gpu-idle 결과를 재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor suspect pod (namespace-aware) 와 cross-node-interference suspect node 를 점수순으로 집계한다. 신뢰도는 top1 과 top2 cause 격차이며 0.1 미만 백중세는 narrative 에 판정 유보로 적는다. evidence 는 device 사용률과 SM active, 노드 재전송 rate 와 최대 RTT 에 더해 dominant cause 의 차원 맞춤 수치 (memory 는 suspect pod 의 working_set/limit 과 노드 실측 사용률, thermal 은 온도와 slowdown 여유, cpu 는 throttle 비율, 점수형 cause 는 노드 score) 를 cause 레지스트리 기반 2차 조회로 실어 narrative 에 융합하고, dominant cause 별 인과 체인 문구를 덧붙인다. gpu 파라미터 (GPU UUID 또는 device index) 로 evidence 의 GPU 수치를 device 로 좁힐 수 있고, 미등록 device 는 해당 수치가 생략된다.
 // @Tags         gpu
 // @Produce      json
 // @Param        node   query  string  true   "대상 노드 (DNS-1123 형식)"
@@ -214,8 +352,50 @@ func (h *SynthesisHandler) GetNodeGpuRca(w http.ResponseWriter, r *http.Request)
 	}
 
 	resp.Suspects = h.rcaSuspects(node, nodePods, firing, limit)
+
+	// #287 cause 레지스트리. causes 에 한국어 설명을 채우고, dominant cause 의 차원 맞춤 evidence
+	// 를 2차 instant 조회로 싣는다.
+	for i := range resp.Causes {
+		resp.Causes[i].Description = rcaCauseCatalog[resp.Causes[i].Cause].description
+	}
+	h.fetchCauseEvidence(ctx, node, gpuMatcher, &resp)
+
 	resp.Narrative = buildRcaNarrative(resp)
 	apicommon.WriteJSON(w, resp)
+}
+
+// fetchCauseEvidence 는 dominant cause 의 레지스트리 evidence 바인딩을 실행해 차원 맞춤 수치를
+// 채운다. dominant 가 없거나 (유휴 게이팅 미충족) 바인딩이 없는 cause 면 아무것도 하지 않는다.
+// suspect 스코프 바인딩은 최우선 suspect 를 받으며, 실패 (nil) 는 필드 생략으로 graceful 처리한다.
+func (h *SynthesisHandler) fetchCauseEvidence(ctx context.Context, node, gpuMatcher string, resp *NodeGpuRcaResponse) {
+	info, ok := rcaCauseCatalog[resp.DominantCause]
+	if !ok || len(info.evidence) == 0 {
+		return
+	}
+	var top *RcaSuspect
+	if len(resp.Suspects) > 0 {
+		top = &resp.Suspects[0]
+	}
+	queries := make([]string, 0, len(info.evidence))
+	sets := make([]func(*RcaEvidence, float64), 0, len(info.evidence))
+	for _, b := range info.evidence {
+		q := b.query(node, gpuMatcher, top)
+		if q == "" {
+			continue
+		}
+		queries = append(queries, q)
+		sets = append(sets, b.set)
+	}
+	if len(queries) == 0 {
+		return
+	}
+	res := h.queryParallel(ctx, queries...)
+	for i, samples := range res {
+		if v := firstValue(samples); v != nil {
+			sets[i](&resp.Evidence, *v)
+		}
+	}
+	resp.Evidence.finalizeEvidence()
 }
 
 // dominantConfidence 는 top1 과 top2 cause weight 의 격차를 신뢰도로 돌려준다. cause 가 없으면 0,
@@ -316,33 +496,53 @@ func (h *SynthesisHandler) rcaSuspects(node string, nodePods map[[2]string]bool,
 	return out
 }
 
-// buildRcaNarrative 는 dominant cause 와 신뢰도, 최우선 의심 후보, 근거 수치를 한 줄로 합성한다.
-// gpu 파라미터가 있으면 주어를 device 로 좁혀 적고, dominant cause 가 network 계열이면 인과 체인
-// 문구를 덧붙인다.
+// rcaAmbiguousMargin 은 top1 과 top2 cause 가 백중이라 판정을 유보하는 신뢰도 임계다.
+// GPUIdleDominantCauseAmbiguous alert 의 격차 < 0.1 판정과 동일 축이다.
+const rcaAmbiguousMargin = 0.1
+
+// buildRcaNarrative 는 dominant cause 와 신뢰도, 최우선 의심 후보, 근거 수치를 한 줄로 합성한다
+// (#287 레지스트리 융합). gpu 파라미터가 있으면 주어를 device 로 좁혀 적고, dominant cause 에는
+// 레지스트리의 한국어 설명 부연과 인과 체인 문구를 덧붙인다. top1 과 top2 가 백중 (margin < 0.1)
+// 이면 판정 유보를 함께 적는다.
 func buildRcaNarrative(r NodeGpuRcaResponse) string {
 	subject := "노드 " + r.Node
 	if r.Gpu != "" {
 		subject += " device " + r.Gpu
 	}
-	out := ""
 	if r.DominantCause == "" {
-		out = fmt.Sprintf("%s GPU 유휴 원인 귀속 임계(idle>0.5) 미만 (idle %.2f)", subject, r.Idle)
-	} else {
-		out = fmt.Sprintf("%s GPU 유휴 dominant 원인 %s (신뢰도 %.2f, idle %.2f)", subject, r.DominantCause, r.Confidence, r.Idle)
-		if len(r.Suspects) > 0 {
-			s := r.Suspects[0]
-			who := s.Node
-			if s.Pod != "" {
-				who = s.Namespace + "/" + s.Pod
-			}
-			out += fmt.Sprintf(", 최우선 의심 %s (%s, score %.2f)", who, s.Dimension, s.Score)
+		// dominant 부재는 두 상황이다. 유휴 게이팅 미충족 (idle <= 0.5) 과, 유휴지만 baseline 대비
+		// 신규 압박 rise 가 없어 cause weight 가 비는 정상 상태 (#285 이후 평시 형태).
+		out := fmt.Sprintf("%s GPU 유휴 원인 귀속 임계(idle>0.5) 미만 (idle %.2f)", subject, r.Idle)
+		if r.Idle > 0.5 {
+			out = fmt.Sprintf("%s GPU 유휴 (idle %.2f) 이나 baseline 대비 신규 압박 rise 가 없어 귀속할 cause 없음", subject, r.Idle)
 		}
+		if ev := rcaEvidenceText(r.Evidence); ev != "" {
+			out += ", 근거 " + ev
+		}
+		return out
+	}
+	info := rcaCauseCatalog[r.DominantCause]
+	dominant := r.DominantCause
+	if info.description != "" {
+		dominant += "(" + info.description + ")"
+	}
+	out := fmt.Sprintf("%s GPU 유휴 dominant 원인 %s (신뢰도 %.2f, idle %.2f)", subject, dominant, r.Confidence, r.Idle)
+	if r.Confidence < rcaAmbiguousMargin && len(r.Causes) >= 2 {
+		out += fmt.Sprintf(", top2 %s 와 백중이라 판정 유보", r.Causes[1].Cause)
+	}
+	if len(r.Suspects) > 0 {
+		s := r.Suspects[0]
+		who := s.Node
+		if s.Pod != "" {
+			who = s.Namespace + "/" + s.Pod
+		}
+		out += fmt.Sprintf(", 최우선 의심 %s (%s, score %.2f)", who, s.Dimension, s.Score)
 	}
 	if ev := rcaEvidenceText(r.Evidence); ev != "" {
 		out += ", 근거 " + ev
 	}
-	if gpuRcaNetworkCauses[r.DominantCause] {
-		out += " (인과 체인: 재전송 → 통신 블로킹 → GPU 대기)"
+	if info.chain != "" {
+		out += " (인과 체인: " + info.chain + ")"
 	}
 	return out
 }
@@ -366,12 +566,44 @@ func rcaEvidenceText(e RcaEvidence) string {
 		netSegs = append(netSegs, fmt.Sprintf("RTT %.0fms", *e.MaxSrttSeconds*1000))
 	}
 	netPart := strings.Join(netSegs, "·")
+	base := ""
 	switch {
 	case gpuPart != "" && netPart != "":
-		return gpuPart + "인데 " + netPart
+		base = gpuPart + "인데 " + netPart
 	case gpuPart != "":
-		return gpuPart
+		base = gpuPart
 	default:
-		return netPart
+		base = netPart
+	}
+	// #287 dominant cause 차원 맞춤 수치. 2차 조회로 채워진 필드만 존재하므로 dominant 와 무관한
+	// 조각이 섞이지 않는다.
+	causeSegs := []string{}
+	if e.CpuThrottleRatio != nil {
+		causeSegs = append(causeSegs, fmt.Sprintf("CPU throttle 비율 %.0f%%", *e.CpuThrottleRatio*100))
+	}
+	if e.SuspectMemoryLimitRatio != nil {
+		causeSegs = append(causeSegs, fmt.Sprintf("의심 pod 메모리 working_set/limit %.0f%%", *e.SuspectMemoryLimitRatio*100))
+	}
+	if e.NodeMemoryUsedRatio != nil {
+		causeSegs = append(causeSegs, fmt.Sprintf("노드 메모리 사용률 %.0f%%", *e.NodeMemoryUsedRatio*100))
+	}
+	if e.TemperatureCelsius != nil {
+		seg := fmt.Sprintf("온도 %.0f°C", *e.TemperatureCelsius)
+		if e.SlowdownHeadroomCelsius != nil {
+			seg += fmt.Sprintf("(slowdown 여유 %.0f°C)", *e.SlowdownHeadroomCelsius)
+		}
+		causeSegs = append(causeSegs, seg)
+	}
+	if e.CauseScore != nil {
+		causeSegs = append(causeSegs, fmt.Sprintf("cause score %.2f", *e.CauseScore))
+	}
+	causePart := strings.Join(causeSegs, "·")
+	switch {
+	case base != "" && causePart != "":
+		return base + "·" + causePart
+	case causePart != "":
+		return causePart
+	default:
+		return base
 	}
 }
