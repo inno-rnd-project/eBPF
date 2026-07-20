@@ -76,17 +76,26 @@ done
 expected_release="$(kubectl kustomize "deploy/gpuobs/overlays/$ENV_NAME" \
   | awk '/^    release:/ {print $2; exit}')"
 [ -n "$expected_release" ] || fail "렌더 결과에서 release 라벨을 찾지 못했다"
-prom_line="$(KC get prometheus -A \
-  -o jsonpath='{range .items[*]}{.metadata.namespace} {.spec.ruleSelector.matchLabels.release} {.spec.serviceMonitorSelector.matchLabels.release}{"\n"}{end}' \
-  | head -1)"
-[ -n "$prom_line" ] || fail "Prometheus CR 이 없다 (kube-prometheus-stack 류 설치 확인)"
-PROM_NS="$(echo "$prom_line" | awk '{print $1}')"
-rule_release="$(echo "$prom_line" | awk '{print $2}')"
-sm_release="$(echo "$prom_line" | awk '{print $3}')"
-[ "$rule_release" = "$expected_release" ] \
-  || fail "ruleSelector release '$rule_release' 가 overlay release '$expected_release' 와 다르다 (rule 조용 누락)"
-[ "$sm_release" = "$expected_release" ] \
-  || fail "serviceMonitorSelector release '$sm_release' 가 overlay release '$expected_release' 와 다르다 (메트릭 조용 누락)"
+# 첫 Prometheus CR 의 selector 를 필드별로 개별 조회한다. 한 줄 공백 구분 파싱은 빈 필드에서
+# 필드 밀림 (field shifting) 이 나므로 쓰지 않는다. 빈 selector ({}) 는 전체 채택이라 일치 검사
+# 를 생략하고, selector 가 있는데 release 키가 overlay 와 다르면 조용한 누락이라 fail 한다.
+read -r PROM_NS PROM_NAME <<<"$(KC get prometheus -A \
+  -o jsonpath='{.items[0].metadata.namespace} {.items[0].metadata.name}')"
+[ -n "${PROM_NS:-}" ] && [ -n "${PROM_NAME:-}" ] \
+  || fail "Prometheus CR 이 없다 (kube-prometheus-stack 류 설치 확인)"
+check_release() { # <selector 필드명>
+  local sel release
+  sel="$(KC get prometheus -n "$PROM_NS" "$PROM_NAME" -o jsonpath="{.spec.$1}")"
+  if [ -z "$sel" ] || [ "$sel" = "{}" ]; then
+    info "preflight: $1 이 비어 있어 (전체 채택) release 일치 검사를 생략한다"
+    return 0
+  fi
+  release="$(KC get prometheus -n "$PROM_NS" "$PROM_NAME" -o jsonpath="{.spec.$1.matchLabels.release}")"
+  [ "$release" = "$expected_release" ] \
+    || fail "$1 ($sel) 이 overlay release '$expected_release' 와 다르다 (조용한 누락)"
+}
+check_release ruleSelector
+check_release serviceMonitorSelector
 info "preflight: release 라벨 일치 ($expected_release), Prometheus ns=$PROM_NS"
 
 # 5) 점검 전용 (생성하지 않음): GHCR pull secret 과 GPU 노드 라벨. namespace 는 netobs 가
@@ -134,10 +143,10 @@ deadline=$(( $(date +%s) + 90 ))
 while :; do
   targets_ok=0
   rules_ok=0
-  if prom_api "targets?state=active" | grep -q '"job":"netobs-agent"'; then
+  if prom_api "targets?state=active" | grep -qE '"job"[[:space:]]*:[[:space:]]*"netobs-agent"'; then
     targets_ok=1
   fi
-  if prom_api "rules?type=record" | grep -q '"name":"node:memory_pressure_score:5m"'; then
+  if prom_api "rules?type=record" | grep -qE '"name"[[:space:]]*:[[:space:]]*"node:memory_pressure_score:5m"'; then
     rules_ok=1
   fi
   [ "$targets_ok" = 1 ] && [ "$rules_ok" = 1 ] && break
@@ -147,7 +156,7 @@ done
 info "verify: netobs-agent target 과 recording rule 채택 확인"
 
 if [ "$gpu_nodes" != 0 ]; then
-  prom_api "targets?state=active" | grep -q '"job":"gpuobs-agent"' \
+  prom_api "targets?state=active" | grep -qE '"job"[[:space:]]*:[[:space:]]*"gpuobs-agent"' \
     || warn "gpuobs-agent target 이 아직 없다 (scrape 대기 중이거나 ServiceMonitor 문제)"
 fi
 
