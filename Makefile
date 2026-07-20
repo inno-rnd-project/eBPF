@@ -428,7 +428,7 @@ deploy-%:
 #   make deploy-cluster ENV=dev WITH_INJECTOR=1
 deploy-cluster:
 	@test -n "$(ENV)" || { echo "ENV=<overlay 이름> 을 지정하라 (예: ENV=prod)"; exit 2; }
-	@scripts/deploy-cluster.sh "$${CONTEXT:-$$(kubectl config current-context)}" "$(ENV)" $(if $(WITH_INJECTOR),--with-injector)
+	@scripts/deploy-cluster.sh "$${CONTEXT:-$$(kubectl config current-context)}" "$(ENV)" $(if $(filter 1,$(WITH_INJECTOR)),--with-injector)
 
 delete-%:
 	kubectl delete -k $(OVERLAY_PATH_$*)

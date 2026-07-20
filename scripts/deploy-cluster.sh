@@ -66,8 +66,9 @@ done
 # 2) context 연결.
 KC get --raw /readyz >/dev/null 2>&1 || fail "context '$CTX' 로 API server 에 연결할 수 없다"
 
-# 3) Prometheus Operator CRD. 없으면 ServiceMonitor / PrometheusRule apply 자체가 실패한다.
-for crd in servicemonitors.monitoring.coreos.com prometheusrules.monitoring.coreos.com; do
+# 3) Prometheus Operator CRD. servicemonitors / prometheusrules 가 없으면 apply 자체가 실패하고,
+#    prometheuses 가 없으면 아래 selector 대조 조회가 불가하다.
+for crd in servicemonitors.monitoring.coreos.com prometheusrules.monitoring.coreos.com prometheuses.monitoring.coreos.com; do
   KC get crd "$crd" >/dev/null 2>&1 || fail "CRD $crd 부재 (Prometheus Operator 를 먼저 설치하라)"
 done
 
@@ -103,7 +104,8 @@ info "preflight: release 라벨 일치 ($expected_release), Prometheus ns=$PROM_
 if ! KC get secret ghcr-creds -n ebpf-project >/dev/null 2>&1; then
   warn "ebpf-project/ghcr-creds pull secret 이 없다. 이미지 pull 이 실패하면 온보딩 문서대로 생성하라"
 fi
-gpu_nodes="$(KC get nodes -l accelerator=nvidia,observability.netobs/enabled=true -o name 2>/dev/null | wc -l)"
+# BSD wc 는 숫자 앞에 공백을 패딩하므로 tr 로 제거해 문자열 비교를 안정화한다.
+gpu_nodes="$(KC get nodes -l accelerator=nvidia,observability.netobs/enabled=true -o name 2>/dev/null | wc -l | tr -d '[:space:]')"
 if [ "$gpu_nodes" = 0 ]; then
   warn "accelerator=nvidia + observability.netobs/enabled=true 라벨 노드가 없어 gpuobs 가 스케줄되지 않는다"
 fi
