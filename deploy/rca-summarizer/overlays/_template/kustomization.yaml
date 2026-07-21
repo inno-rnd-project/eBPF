@@ -25,7 +25,7 @@ labels:
 images:
   - name: rca-summarizer
     newName: ghcr.io/inno-rnd-project/rca-summarizer
-    newTag: "2.2.0"
+    newTag: "2.2.1"
 
 patches:
   - path: patch-configmap.yaml
