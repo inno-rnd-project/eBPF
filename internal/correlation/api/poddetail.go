@@ -135,7 +135,6 @@ func (h *SynthesisHandler) GetPodDetail(w http.ResponseWriter, r *http.Request) 
 		fmt.Sprintf("sum(rate(container_cpu_usage_seconds_total%s[5m])) / sum(kube_pod_container_resource_limits%s) * 100", kubeSel, limitSel("cpu")),
 		fmt.Sprintf("sum(container_memory_working_set_bytes%s) / sum(kube_pod_container_resource_limits%s) * 100", kubeSel, limitSel("memory")),
 		"sum(container_memory_working_set_bytes"+kubeSel+")",
-		fmt.Sprintf("sum(increase(container_cpu_cfs_throttled_periods_total%s[5m])) / sum(increase(container_cpu_cfs_periods_total%s[5m]))", kubeSel, kubeSel),
 		fmt.Sprintf("sum(increase(container_cpu_cfs_throttled_periods_total%s[5m]))", kubeSel),
 		fmt.Sprintf("sum(increase(container_cpu_cfs_periods_total%s[5m]))", kubeSel),
 		"sum(kube_pod_container_resource_limits"+limitSel("cpu")+")",
@@ -170,15 +169,20 @@ func (h *SynthesisHandler) GetPodDetail(w http.ResponseWriter, r *http.Request) 
 	resp.Vitals.CPUPercent = firstValue(res[4])
 	resp.Vitals.MemoryPercent = firstValue(res[5])
 	resp.Vitals.MemoryWorkingSetBytes = firstValue(res[6])
-	resp.Cpu.ThrottledRatio = firstValue(res[7])
-	resp.Cpu.ThrottledPeriods5m = firstValue(res[8])
-	resp.Cpu.TotalPeriods5m = firstValue(res[9])
-	resp.Cpu.LimitCores = firstValue(res[10])
-	resp.Cpu.QuotaMicroseconds = firstValue(res[11])
-	resp.Cpu.PeriodMicroseconds = firstValue(res[12])
-	resp.Network.RetransPerSec = firstValue(res[13])
-	resp.Network.DropPerSec = firstValue(res[14])
-	resp.Network.MaxSrttSeconds = firstValue(res[15])
+	resp.Cpu.ThrottledPeriods5m = firstValue(res[7])
+	resp.Cpu.TotalPeriods5m = firstValue(res[8])
+	// throttled 비율은 이미 조회한 두 카운터에서 파생 계산한다 (nodevitals 의 GPUMemoryPercent
+	// 관용구). 분모 0 (5분간 period 없음) 이면 생략된다.
+	if resp.Cpu.ThrottledPeriods5m != nil && resp.Cpu.TotalPeriods5m != nil && *resp.Cpu.TotalPeriods5m > 0 {
+		ratio := *resp.Cpu.ThrottledPeriods5m / *resp.Cpu.TotalPeriods5m
+		resp.Cpu.ThrottledRatio = &ratio
+	}
+	resp.Cpu.LimitCores = firstValue(res[9])
+	resp.Cpu.QuotaMicroseconds = firstValue(res[10])
+	resp.Cpu.PeriodMicroseconds = firstValue(res[11])
+	resp.Network.RetransPerSec = firstValue(res[12])
+	resp.Network.DropPerSec = firstValue(res[13])
+	resp.Network.MaxSrttSeconds = firstValue(res[14])
 
 	resp.Summary = buildPodDetailSummary(resp)
 	apicommon.WriteJSON(w, resp)

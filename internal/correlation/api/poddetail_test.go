@@ -20,7 +20,6 @@ func podDetailQuerier() *fakeQuerier {
 		on("container_cpu_usage_seconds_total", sample(42.5)).
 		on(`) / sum(kube_pod_container_resource_limits{namespace="ml", pod="train-a", resource="memory"})`, sample(75)).
 		on("sum(container_memory_working_set_bytes", sample(4e9)).
-		on(") / sum(increase(container_cpu_cfs_periods_total", sample(0.12)).
 		on("sum(increase(container_cpu_cfs_throttled_periods_total", sample(36)).
 		on("sum(increase(container_cpu_cfs_periods_total", sample(300)).
 		on(`resource="cpu"})`, sample(2)).
@@ -54,8 +53,9 @@ func TestPodDetail(t *testing.T) {
 	if _, ok := resp.Health["network"]; ok {
 		t.Errorf("health network=%v want 생략 (score 미산출)", resp.Health)
 	}
+	// ratio 는 36/300 의 파생 계산이다.
 	if resp.Cpu.ThrottledRatio == nil || *resp.Cpu.ThrottledRatio != 0.12 {
-		t.Errorf("throttled_ratio=%v want 0.12", resp.Cpu.ThrottledRatio)
+		t.Errorf("throttled_ratio=%v want 0.12 (36/300)", resp.Cpu.ThrottledRatio)
 	}
 	if resp.Cpu.ThrottledPeriods5m == nil || *resp.Cpu.ThrottledPeriods5m != 36 || resp.Cpu.TotalPeriods5m == nil || *resp.Cpu.TotalPeriods5m != 300 {
 		t.Errorf("periods=%+v want 36/300", resp.Cpu)
