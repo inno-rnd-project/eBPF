@@ -57,8 +57,9 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 	))
 	// /api/v1/node/{node} 는 경로 끝 segment 가 node 라 prefix 매칭 후 핸들러에서 파싱한다. 기존
 	// 라우트와 동일하게 CORSMiddleware 가 OPTIONS preflight 를 처리하도록 method 패턴은 쓰지 않는다.
+	// #308 의 {node}/resources 하위 경로는 세그먼트 수 기반 디스패처로 분기한다.
 	mux.Handle("/api/v1/node/", apicommon.Chain(
-		http.HandlerFunc(h.GetNode),
+		http.HandlerFunc(h.nodeSubroute),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,

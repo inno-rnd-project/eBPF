@@ -1,7 +1,7 @@
 swagger: '2.0'
 info:
   title: netobs unified API
-  version: 2.2.8
+  version: 2.3.0
 paths:
   /api/v1/agents:
     get:
@@ -701,6 +701,37 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_correlation_api.NodeResponse'
+        '400':
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+  /api/v1/node/{node}/resources:
+    get:
+      description: 노드의 리소스 종류별 (cpu 와 memory 와 pods 와 gpu) capacity 와 allocatable,
+        노드 내 pod 의 requests/limits 합산, 현재 usage (cpu 는 5분 rate cores, memory 는 working
+        set bytes, pods 는 현재 pod 수) 와 활용률 (usage/allocatable, gpu 는 device 사용률 평균
+        0-1) 을 한 응답으로 합성한다. 단위는 kube-state 원단위 (cpu core, memory byte, pods 와 gpu
+        개수) 를 따르고 결측 리소스는 엔트리가 생략된다.
+      produces:
+      - application/json
+      tags:
+      - interference
+      summary: 노드 리소스 현황
+      parameters:
+      - type: string
+        description: 노드 이름 (DNS-1123 형식)
+        name: node
+        in: path
+        required: true
+      - type: string
+        description: 평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)
+        name: at
+        in: query
+      responses:
+        '200':
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_correlation_api.NodeResourcesResponse'
         '400':
           description: Bad Request
           schema:
@@ -2002,6 +2033,40 @@ definitions:
         type: string
       pressure:
         type: number
+  internal_correlation_api.NodeResourceDetail:
+    type: object
+    properties:
+      allocatable:
+        type: number
+      capacity:
+        type: number
+      limits:
+        type: number
+      requests:
+        type: number
+      usage:
+        type: number
+      utilization_ratio:
+        type: number
+  internal_correlation_api.NodeResourcesResponse:
+    type: object
+    properties:
+      generated_at:
+        type: string
+      node:
+        type: string
+      resources:
+        description: 'Resources 는 리소스 종류 (cpu / memory / pods / gpu) 별 현황이다. kube-state
+          의 resource
+
+          라벨을 매핑하며 (nvidia_com_gpu 는 gpu 키), 결측 리소스 (GPU 없는 노드 등) 는 엔트리가
+
+          생략된다.'
+        type: object
+        additionalProperties:
+          $ref: '#/definitions/internal_correlation_api.NodeResourceDetail'
+      summary:
+        type: string
   internal_correlation_api.NodeResponse:
     type: object
     properties:
