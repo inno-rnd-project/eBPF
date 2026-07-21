@@ -307,7 +307,7 @@
       "id": 4,
       "type": "stat",
       "title": "Memory health",
-      "description": "cluster:memory_health_score:5m. #274 실측 재정의 + #286 위험 구간 매핑: node_exporter 실측 worst 노드 사용률을 kubelet eviction 근접 의미로 매핑한다 (0.8 이하 1.0, 0.8~0.95 선형 하강, 0.95 이상 0). 정상 상주 사용률은 1.0 으로 읽히고 tight-limit 관측 인프라 pod 가 health 를 지배하지 않는다.",
+      "description": "cluster:memory_health_score:5m. #274 실측 재정의 + #286 위험 구간 매핑: node_exporter 실측 worst 노드 사용률을 kubelet eviction 근접 의미로 매핑한다. node 사용률 0.80 이하는 전부 1.0 인 불감대라 정상 상주 사용률에서는 항상 1.0 으로 읽히고, 0.80~0.95 구간에서만 1 에서 0 으로 하강한다 (#310). node 스코프 신호라 pod 스코프 pressure 패널과 스코프가 다르며, tight-limit pod 가 health 를 지배하지 않는다.",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 6,
@@ -529,7 +529,7 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "Node cpu_throttle_score (Pod 별)",
+      "title": "Pod cpu_throttle_score (limit 대비, $node)",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 7,
@@ -566,12 +566,13 @@
           "url": "/d/correlation-overview?var-victim_pod=${src_pod:regex}&${__url_time_range}",
           "targetBlank": true
         }
-      ]
+      ],
+      "description": "pod:cpu_throttle_score:5m (pod 스코프). 각 pod 의 CFS throttle 비율로, pod 자신의 cpu limit 대비 신호다 (#310). 1.0 근접은 해당 pod 의 CPU 공급 정체를 뜻하며 노드 CPU 여유와는 무관하다. 노드 스코프 health 스탯과 스코프가 달라 함께 봐도 모순이 아니다."
     },
     {
       "id": 7,
       "type": "timeseries",
-      "title": "Node memory_pressure_score (Pod 별)",
+      "title": "Pod memory_pressure_score (limit 대비, $node)",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 7,
@@ -608,7 +609,8 @@
           "url": "/d/correlation-overview?var-victim_pod=${src_pod:regex}&${__url_time_range}",
           "targetBlank": true
         }
-      ]
+      ],
+      "description": "pod:memory_pressure_score:5m (pod 스코프). working set 을 pod 자신의 memory limit 으로 나눈 값이다 (#310). 1.0 근접은 해당 pod 의 OOMKill 위험을 뜻하며 노드 메모리 여유와는 무관하다. 노드 스코프 Memory health 가 1.0 이어도 tight-limit pod 는 여기서 높게 나타난다 (dcgm-exporter 등 관측 인프라 pod 의 상시 패턴)."
     },
     {
       "id": 8,
@@ -2858,7 +2860,7 @@
       "id": 813,
       "type": "timeseries",
       "title": "Node health 4차원 ($node)",
-      "description": "node:{cpu,gpu,memory,network}_health_score:5m (#264, #273, #274). 1 healthy, 0 worst. gpu 는 하드웨어 이상 신호 기반 (#273), memory 는 node_exporter 실측 기반 (#274) 이라 유휴 GPU 나 tight-limit pod 가 노드 health 를 깎지 않는다. node/{node} API 의 health 필드와 동일 시리즈다.",
+      "description": "node:{cpu,gpu,memory,network}_health_score:5m (#264, #273, #274). 1 healthy, 0 worst. gpu 는 하드웨어 이상 신호 기반 (#273), memory 는 node_exporter 실측의 위험 구간 매핑 (#274, #286: 사용률 0.80 이하는 전부 1.0 불감대, 0.80~0.95 에서만 하강) 이라 유휴 GPU 나 tight-limit pod 가 노드 health 를 깎지 않는다. node/{node} API 의 health 필드와 동일 시리즈다.",
       "gridPos": {
         "h": 8,
         "w": 12,
