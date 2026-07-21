@@ -104,3 +104,11 @@ dashboard 의 모든 timeline 패널에 `ALERTS{alertstate="firing"}` 가 annota
 - **node variable 이 비어 있음**: `node:gpu_util_p95:5m` recording rule 이 산출하지 않는 환경. 대안으로 variable query 를 `label_values(up{job=~".*agent.*"}, node)` 으로 임시 교체 가능
 - **pod variable 이 비어 있음**: 선택한 node 에 `netobs_pod_stage_latency_labeled_seconds_count` 메트릭이 없음. POD_METRICS_ENABLED 환경 변수가 false 면 발생
 - **annotation 이 표시 안 됨**: cluster 에 firing alert 가 없을 때 정상. `kubectl exec` 로 prometheus 에 직접 query 하면 빈 결과 확인 가능
+
+## 패널 제목 스코프 표기 규칙
+
+pod 스코프 신호와 node 스코프 신호가 한 화면에 공존하므로 (예: node 스코프 memory health 가 1.0 인데 pod 스코프 memory_pressure 상위 pod 가 동시에 표시), 스코프 오독을 막기 위해 패널 표기는 다음 규칙을 따른다 (#310).
+
+- pod 스코프 신호 (`pod:*_score:5m` 등) 의 제목에 `Node` 접두를 쓰지 않는다. `Pod <신호명> (<분모>, $node)` 형태로 스코프와 분모를 제목에 드러내고, 노드 필터 변수 (`$node`) 는 스코프가 아니라 필터임을 제목 괄호로 표시한다
+- 신호의 분모 (pod limit 대비인지 노드 실측인지) 와 "1.0 근접이 무엇을 뜻하는지" 를 description 에 명시한다. 노드 여유와 무관한 pod limit 대비 신호는 그 무관함을 함께 적는다
+- 불감대나 clamp 같은 비선형 매핑이 있는 신호 (memory health 의 위험 구간 매핑 등) 는 매핑 구간을 description 에 명시해 "왜 항상 1.0 인가" 류의 오독을 막는다
