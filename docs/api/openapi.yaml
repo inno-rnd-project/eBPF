@@ -1,7 +1,7 @@
 swagger: '2.0'
 info:
   title: netobs unified API
-  version: 2.2.5
+  version: 2.2.6
 paths:
   /api/v1/agents:
     get:
@@ -390,7 +390,9 @@ paths:
         state, PCIe 링크, 온도 임계, throttle violation, compute/persistence mode, energy)와
         device 상태 판정(status: 성능성 throttle 은 degraded, slowdown 임계 근접 또는 노드 NVML 오류율
         초과는 warning), CUDA pod 귀속 능력(pod_attribution: driver 심볼 필수·runtime 선택, 불가
-        사유 포함)을 한 응답으로 합성한다. 수집 공백 신호는 필드가 생략되고 SM active(gpm sm_occupancy)는 데이터센터
+        사유 포함), device idle 판정(idle: node:gpu_idle:5m rule 과 동일한 사용률 20% 미만 임계의 instant
+        적용)과 노드별 dominant cause 요약(dominant_causes: node → cause 와 한국어 설명, gpu-rca
+        와 동일 카탈로그)을 한 응답으로 합성한다. 수집 공백 신호는 필드가 생략되고 SM active(gpm sm_occupancy)는 데이터센터
         GPU 에서만 채워진다.'
       produces:
       - application/json
@@ -1435,6 +1437,12 @@ definitions:
         type: string
       gpu_uuid:
         type: string
+      idle:
+        description: 'Idle 은 사용률이 node:gpu_idle:5m rule 과 동일한 임계 (20% 미만) 인지의 instant
+          판정이다
+
+          (#304). rule 은 5분 윈도우 비율이고 본 필드는 현재 값 판정이라 순간 부하에서는 어긋날 수 있다.'
+        type: boolean
       memory_total_bytes:
         type: number
       memory_used_bytes:
@@ -1562,6 +1570,13 @@ definitions:
         type: string
       node:
         type: string
+  internal_correlation_api.GpuNodeDominantCause:
+    type: object
+    properties:
+      cause:
+        type: string
+      description:
+        type: string
   internal_correlation_api.GpuNodeIdle:
     type: object
     properties:
@@ -1611,6 +1626,18 @@ definitions:
         type: array
         items:
           $ref: '#/definitions/internal_correlation_api.GpuDevice'
+      dominant_causes:
+        description: 'DominantCauses 는 노드별 GPU 유휴 dominant cause 요약이다 (#304, node
+          → cause). 디바이스
+
+          그리드가 gpu-idle/gpu-rca 를 join 하지 않고 카드 라벨을 그릴 수 있게 한다. 원인 신호가 노드
+
+          스코프라 같은 노드의 디바이스들은 동일 cause 를 공유하며, 유휴 게이팅 미충족 노드는 시리즈
+
+          부재로 생략된다. 서사 (narrative) 는 gpu-rca 담당을 유지한다.'
+        type: object
+        additionalProperties:
+          $ref: '#/definitions/internal_correlation_api.GpuNodeDominantCause'
       generated_at:
         type: string
       summary:

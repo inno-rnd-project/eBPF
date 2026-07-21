@@ -20,7 +20,19 @@ import (
 type GpuStatusResponse struct {
 	GeneratedAt string      `json:"generated_at"`
 	Devices     []GpuDevice `json:"devices"`
-	Summary     string      `json:"summary"`
+	// DominantCauses 는 노드별 GPU 유휴 dominant cause 요약이다 (#304, node → cause). 디바이스
+	// 그리드가 gpu-idle/gpu-rca 를 join 하지 않고 카드 라벨을 그릴 수 있게 한다. 원인 신호가 노드
+	// 스코프라 같은 노드의 디바이스들은 동일 cause 를 공유하며, 유휴 게이팅 미충족 노드는 시리즈
+	// 부재로 생략된다. 서사 (narrative) 는 gpu-rca 담당을 유지한다.
+	DominantCauses map[string]GpuNodeDominantCause `json:"dominant_causes,omitempty"`
+	Summary        string                          `json:"summary"`
+}
+
+// GpuNodeDominantCause 는 노드 dominant cause 의 라벨용 요약이다. description 은 gpu-rca 와 동일한
+// cause 카탈로그 (rcaCauseCatalog) 에서 온다.
+type GpuNodeDominantCause struct {
+	Cause       string `json:"cause"`
+	Description string `json:"description,omitempty"`
 }
 
 // GpuDevice 는 한 GPU device 의 현황이다. 주 소스인 사용률 외 신호는 수집 공백 시 필드가 생략될 수
@@ -72,6 +84,9 @@ type GpuDevice struct {
 	// 임계의 90% 이상이거나 노드의 유의미 NVML 오류율이 alert 임계 (1/s) 를 넘으면 warning, 그 외
 	// healthy 다. #273 의 GPU health 판정 신호를 device 뱃지 입도로 적용한 것이다.
 	Status string `json:"status"`
+	// Idle 은 사용률이 node:gpu_idle:5m rule 과 동일한 임계 (20% 미만) 인지의 instant 판정이다
+	// (#304). rule 은 5분 윈도우 비율이고 본 필드는 현재 값 판정이라 순간 부하에서는 어긋날 수 있다.
+	Idle bool `json:"idle"`
 	// PodAttribution 은 CUDA pod 귀속 능력 메타데이터 (#279) 다. pods 가 비었을 때 "실행 중 GPU
 	// 프로세스 없음" 과 "귀속 자체가 불가능" 을 프론트가 구분하는 근거다. 심볼 신호 부재 시 생략된다.
 	PodAttribution *PodAttribution `json:"pod_attribution,omitempty"`
@@ -92,6 +107,10 @@ var gpuPerfThrottleReasons = map[string]bool{
 	"hw_slowdown": true, "hw_thermal_slowdown": true, "hw_power_brake_slowdown": true,
 	"sw_thermal_slowdown": true, "sw_power_cap": true,
 }
+
+// gpuIdleUtilizationThreshold 는 device idle 판정 임계 (%) 다. node:gpu_idle:5m rule 의 `< 20`
+// bool 비교와 동일 값이며 rule 이 바뀌면 함께 갱신한다.
+const gpuIdleUtilizationThreshold = 20
 
 // gpuDeviceStatus 는 device 3단 판정 (#279) 이다. 성능성 throttle 활성이면 degraded, slowdown 임계
 // 의 90% 이상 온도 또는 노드 유의미 NVML 오류율 초과 (alert 임계 1/s) 면 warning, 그 외 healthy 다.
@@ -137,7 +156,7 @@ type gpuPodKey struct {
 
 // GetGpuStatus godoc
 // @Summary      GPU 자원 현황 조회
-// @Description  node 와 GPU device 단위 사용률, 메모리, 전력, 온도, 활성 throttle reason, 점유 pod 에 더해 device 상세(SM active, encoder/decoder 사용률, bar1 메모리, 클럭, 팬, performance state, PCIe 링크, 온도 임계, throttle violation, compute/persistence mode, energy)와 device 상태 판정(status: 성능성 throttle 은 degraded, slowdown 임계 근접 또는 노드 NVML 오류율 초과는 warning), CUDA pod 귀속 능력(pod_attribution: driver 심볼 필수·runtime 선택, 불가 사유 포함)을 한 응답으로 합성한다. 수집 공백 신호는 필드가 생략되고 SM active(gpm sm_occupancy)는 데이터센터 GPU 에서만 채워진다.
+// @Description  node 와 GPU device 단위 사용률, 메모리, 전력, 온도, 활성 throttle reason, 점유 pod 에 더해 device 상세(SM active, encoder/decoder 사용률, bar1 메모리, 클럭, 팬, performance state, PCIe 링크, 온도 임계, throttle violation, compute/persistence mode, energy)와 device 상태 판정(status: 성능성 throttle 은 degraded, slowdown 임계 근접 또는 노드 NVML 오류율 초과는 warning), CUDA pod 귀속 능력(pod_attribution: driver 심볼 필수·runtime 선택, 불가 사유 포함), device idle 판정(idle: node:gpu_idle:5m rule 과 동일한 사용률 20% 미만 임계의 instant 적용)과 노드별 dominant cause 요약(dominant_causes: node → cause 와 한국어 설명, gpu-rca 와 동일 카탈로그)을 한 응답으로 합성한다. 수집 공백 신호는 필드가 생략되고 SM active(gpm sm_occupancy)는 데이터센터 GPU 에서만 채워진다.
 // @Tags         gpu
 // @Produce      json
 // @Param        node       query  string  false  "단일 노드 필터 (DNS-1123 형식, 생략 시 전체)"
@@ -229,6 +248,8 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 		"gpuobs_pod_memory_used_bytes"+sel,
 		"gpuobs_cuda_symbol_available"+sel,
 		fmt.Sprintf(`sum by(node) (rate(gpuobs_nvml_errors_total{error_code!~"Not Supported|Not Found"%s}[5m]))`, nodeSuffixMatcher(node)),
+		// #304 노드 dominant cause. tie-break 포함 rule 이라 gpu-rca 와 동일 판정 소스다.
+		"node:gpu_idle_dominant_cause:5m"+sel,
 	)
 
 	devices := map[gpuDeviceKey]*GpuDevice{}
@@ -375,6 +396,18 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// #304 노드별 dominant cause 요약. description 은 gpu-rca 와 동일한 카탈로그에서 온다.
+	for _, sm := range sub[7] {
+		n, c := sm.Labels["node"], sm.Labels["cause"]
+		if n == "" || c == "" {
+			continue
+		}
+		if resp.DominantCauses == nil {
+			resp.DominantCauses = map[string]GpuNodeDominantCause{}
+		}
+		resp.DominantCauses[n] = GpuNodeDominantCause{Cause: c, Description: rcaCauseCatalog[c].description}
+	}
+
 	for _, k := range order {
 		d := devices[k]
 		if d.MemoryUsedBytes != nil && d.MemoryTotalBytes != nil && *d.MemoryTotalBytes > 0 {
@@ -382,6 +415,7 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 			d.MemoryUsedRatio = &ratio
 		}
 		d.Status = gpuDeviceStatus(d, nvmlRate[d.Node])
+		d.Idle = d.UtilizationPercent < gpuIdleUtilizationThreshold
 		if st, ok := symbols[d.Node]; ok && st.driverSeen {
 			att := &PodAttribution{Available: st.driverOK, RuntimeSymbols: st.runtimeSeen && st.runtimeOK}
 			switch {
