@@ -9,7 +9,19 @@
 - 커널: 기능별 하한이 다르므로 [kernel-matrix.md](kernel-matrix.md) 를 따른다. 실질 하한은 event 수집 (BPF ringbuf) 의 5.8 이고 CUDA/NCCL uprobe 는 6.6 이 필요하며, `/sys/kernel/btf/vmlinux` 노출 (`CONFIG_DEBUG_INFO_BTF=y`) 이 전제다
 - NVIDIA runtime: GPU 노드에 NVIDIA driver 와 container toolkit (GPU Operator 또는 수동 설치) 이 있어야 gpuobs-agent 가 NVML 을 질의한다
 - Prometheus Operator: kube-prometheus-stack 류가 설치되어 `servicemonitors` 와 `prometheusrules` 와 `prometheuses` CRD 가 존재해야 한다
+- 외부 exporter 메트릭: recording rule 과 correlation-exporter 가 아래 [외부 exporter 메트릭 의존](#외부-exporter-메트릭-의존) 표의 메트릭에 의존한다. 배포 스크립트 preflight 가 대표 메트릭의 존재를 점검해 부재 시 영향 범위를 경고한다 (배포는 진행)
 - 로컬 도구: `kubectl` (kustomize 내장) 과 대상 클러스터 kube context
+
+## 외부 exporter 메트릭 의존
+
+kube-state-metrics 와 cadvisor 와 node_exporter 는 kube-prometheus-stack 번들이라 대부분의 클러스터에 존재하지만, dcgm-exporter 는 별도 설치라 없는 클러스터에서는 해당 신호가 조용히 비활성된다.
+
+| 메트릭 (대표) | 공급 exporter | 부재 시 영향 |
+|---|---|---|
+| `kube_pod_container_resource_limits`, `kube_pod_info` | kube-state-metrics (번들) | pod 단위 memory/cpu pressure score 계열 rule 이 빈 결과가 되고 gpu-rca 의 노드 pod 매칭이 비활성 |
+| `container_cpu_cfs_*`, `container_memory_*`, `container_network_*`, `container_cpu_usage_seconds_total` | cadvisor (kubelet 내장, 번들 scrape) | cpu throttle 과 memory pressure 와 network 시계열 rule, node-vitals 프록시가 빈 결과 |
+| `node_memory_MemAvailable_bytes`, `node_memory_MemTotal_bytes`, `node_uname_info` | node_exporter (번들) | 노드 실측 memory pressure 와 health (#274) 산출 불가. `node_uname_info` 는 node 라벨 조인이라 단독 부재로도 동일 영향 |
+| `DCGM_FI_DEV_PCIE_REPLAY_COUNTER` | dcgm-exporter (별도 설치) | `node:dcgm_pcie_replay_score:5m` 이 비고 `GPUIdleWithDCGMPCIeReplay` alert 와 dcgm_pcie_replay cause 가 조용히 비활성 |
 
 ## 클러스터별 변경값
 
