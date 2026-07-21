@@ -43,7 +43,7 @@ A100 또는 H100 같은 데이터센터 GPU 환경에서 DCGM 통합은 dcgm-exp
 A100 또는 H100 같은 데이터센터 GPU의 multi-rank distributed training (PyTorch DDP와 Megatron 등) 환경에서 NCCL 통합은 libnccl.so uprobe 방식으로 활성한다. `internal/gpuobs/nccl/nccl_real.go`의 production `Profiler`가 cilium/ebpf의 uprobe_multi link와 ringbuf reader에 의존하므로 build tag `nccl`로 빌드한 이미지에서만 컴파일된다.
 
 - `make image-push-all`이 아니라 build tag `nccl`을 넣은 별도 이미지 빌드가 필요하다. `go build -tags nccl`과 bpf2go 산출물의 `//go:build ... && nccl` 태그가 정합해 collective uprobe BPF object가 이미지에 포함된다
-- DaemonSet에 host의 `libnccl.so.2`를 hostPath로 마운트한다. 기본 경로는 `/host/usr/lib/x86_64-linux-gnu/libnccl.so.2`이며 다르면 `GPUOBS_NCCL_LIB_PATH` env (또는 `-nccl-lib-path` flag) 로 override한다
+- DaemonSet의 `/host/usr` (필요 시 `/host/run/nvidia`) 마운트로 host의 `libnccl.so.2`에 접근한다. 경로 미지정 시 배포판별 후보 (Debian multiarch, RHEL lib64, GPU Operator driver 컨테이너) 를 순회해 첫 실존 경로에 attach하며 (#296), 특수 경로는 `GPUOBS_NCCL_LIB_PATH` env (또는 `-nccl-lib-path` flag) 로 고정한다
 - gpuobs-agent에 `GPUOBS_NCCL_ENABLED=true` env (또는 `-nccl-profiler` flag) 를 설정해 `nccl.NewProduction` wire-up을 활성. attach에는 `CAP_BPF`와 `CAP_PERFMON`와 `CAP_SYS_PTRACE`와 kernel 6.6+ (uprobe_multi link) 가 필요하다
 - collective 심볼 중 하나라도 attach되면 `gpuobs_nccl_profiler_available` self-health gauge가 1로 전환하고 event 소비 goroutine이 `gpuobs_nccl_collective_duration_seconds{operation}` histogram에 collective wall-clock을 기록한다
 - recording rule `cluster:nccl_collective_stall_score:5m`가 histogram `_sum`의 rate를 node 단위로 합산 후 cluster max로 정규화해 base score를 산출하고 `gpu_idle_cause_weight:5m{cause="nccl_collective_stall"}` weight가 0보다 큰 값으로 활성

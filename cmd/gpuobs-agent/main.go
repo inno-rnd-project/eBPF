@@ -68,14 +68,23 @@ func main() {
 	// nil을 돌려줘도 Available이 false라 graceful degradation으로 0이 emit된다. attach 실패는
 	// agent 기동을 막지 않고 noop으로 폴백한다.
 	ncclProfiler := nccl.NewNoop()
+	// #296 경로 자동 해석. env/flag 미지정이면 배포판별 후보를 순회하고, 전부 없으면 순회 목록을
+	// 남기고 noop 으로 남는다 (기존 graceful degrade 유지).
+	ncclLibPath := ""
 	if cfg.NcclEnabled {
-		p := nccl.NewProduction(cfg.NcclLibPath, cfg.NodeName)
+		ncclLibPath = config.ResolveLibPath(cfg.NcclLibPath, config.NcclLibCandidates())
+		if ncclLibPath == "" {
+			log.Printf("warn: libnccl.so.2 를 후보 경로에서 찾지 못해 nccl profiler 를 비활성한다 (순회: %v); GPUOBS_NCCL_LIB_PATH 로 고정하라", config.NcclLibCandidates())
+		}
+	}
+	if cfg.NcclEnabled && ncclLibPath != "" {
+		p := nccl.NewProduction(ncclLibPath, cfg.NodeName)
 		if err := p.Attach(); err != nil {
 			log.Printf("warn: nccl profiler attach failed: %v; falling back to noop", err)
 			_ = p.Close()
 		} else if p.Available() {
 			ncclProfiler = p
-			log.Printf("nccl: production profiler attached (libnccl=%s)", cfg.NcclLibPath)
+			log.Printf("nccl: production profiler attached (libnccl=%s)", ncclLibPath)
 			go func() {
 				// Events 채널은 Close 시 닫혀 본 range가 정상 종료한다. duration_ns를 초로 변환해
 				// gpuobs_nccl_collective_duration_seconds histogram에 누적한다.
@@ -206,13 +215,20 @@ func main() {
 	// 폭증 / 메모리 누수를 유발한다. 이를 막기 위해 cuda reader 자체를 시작하지 않고 warn 로깅 + ready 처리만 한다.
 	var cudaErrCh chan error
 	if cfg.CudaUprobeEnabled {
+		// #296 경로 자동 해석. env/flag 미지정이면 배포판별 후보를 순회하고, 전부 없으면 순회
+		// 목록을 남기고 reader 를 띄우지 않는다 (기존 libcuda 부재와 동일한 graceful 비활성).
+		libcudaPath := config.ResolveLibPath(cfg.CudaUprobeLibcudaPath, config.LibcudaCandidates())
 		if nv == nil {
 			log.Printf("warn: cuda uprobe enabled but NVML is unavailable; cuda reader skipped to avoid stale-series accumulation")
 			// 기능이 켜져 있어도 NVML 의존성이 없으면 cuda goroutine 을 띄우지 않는다.
 			// readyz 가 cuda 조건에서 영원히 막히지 않도록 ready 상태로 전환한다.
 			cudaReady.Store(true)
+		} else if libcudaPath == "" {
+			log.Printf("warn: libcuda.so.1 을 후보 경로에서 찾지 못해 cuda uprobe 를 비활성한다 (순회: %v); GPUOBS_CUDA_LIBCUDA_PATH 로 고정하라", config.LibcudaCandidates())
+			cudaReady.Store(true)
 		} else {
-			cudaReader := cuda.New(cfg.CudaUprobeLibcudaPath, cfg.CudaUprobeLibcudartPath, cfg.NodeName, nv, resolver, cfg.CudaUprobeDeviceMapRefresh)
+			log.Printf("cuda: libcuda resolved (%s)", libcudaPath)
+			cudaReader := cuda.New(libcudaPath, cfg.CudaUprobeLibcudartPath, cfg.NodeName, nv, resolver, cfg.CudaUprobeDeviceMapRefresh)
 			cudaErrCh = make(chan error, 1)
 			go func() {
 				err := cudaReader.Run(ctx, func() {

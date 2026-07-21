@@ -78,8 +78,15 @@ spec:
             # cuda uprobe 는 host 의 libcuda.so.1 ELF 를 OpenExecutable 로 직접 파싱해야 하며, 이때
             # 컨테이너에 주입된 libcuda 가 아닌 host 의 inode 를 봐야 같은 inode 의 mmap 을 가진 모든
             # 프로세스에서 uprobe 가 fire 한다. read-only hostPath 로 host inode 를 명시 노출한다.
-            - name: host-libcuda
-              mountPath: /host/usr/lib/x86_64-linux-gnu
+            # #296 배포판 종속 제거: multiarch 하위 디렉터리 대신 /usr 전체를 올려 Debian
+            # (/usr/lib/x86_64-linux-gnu) 과 RHEL (/usr/lib64) 를 모두 커버한다. 컨테이너 내 최종
+            # 경로는 기존과 동일 (/host/usr/lib/x86_64-linux-gnu/...) 하다.
+            - name: host-usr
+              mountPath: /host/usr
+              readOnly: true
+            # #296 GPU Operator driver 컨테이너 환경은 driver 가 /run/nvidia/driver 하위에 주입된다.
+            - name: host-nvidia-run
+              mountPath: /host/run/nvidia
               readOnly: true
             # #198 pod cgroup 경합 (PSI) 수집 은 host 의 cgroup2 계층 을 읽어야 한다. 컨테이너 자신 의
             # /sys/fs/cgroup 은 cgroup namespace 로 격리 돼 kubepods.slice 등 타 Pod 경로 가 보이지 않으
@@ -108,10 +115,17 @@ spec:
             limits:
               memory: 256Mi
       volumes:
-        - name: host-libcuda
+        # #296 host 라이브러리 트리. /usr 는 전 배포판 실존이라 type: Directory 로 mount 실패가 없다.
+        - name: host-usr
           hostPath:
-            path: /usr/lib/x86_64-linux-gnu
+            path: /usr
             type: Directory
+        # GPU Operator 미사용 노드에는 /run/nvidia 가 없으므로 DirectoryOrCreate 로 mount 실패를
+        # 막는다. /run 은 tmpfs 라 빈 디렉터리 생성이 host 에 잔존하지 않는다 (재부팅 소멸).
+        - name: host-nvidia-run
+          hostPath:
+            path: /run/nvidia
+            type: DirectoryOrCreate
         - name: host-cgroup
           hostPath:
             path: /sys/fs/cgroup

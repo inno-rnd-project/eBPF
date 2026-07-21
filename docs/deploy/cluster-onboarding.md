@@ -23,6 +23,7 @@
 | `NIC_CAPACITY_BYTES_PER_SEC` | netobs 의 `patch-daemonset.yaml` | `1.25e9` (10GbE) | network throughput score 정규화 분모. 25GbE 는 `3.125e9` |
 | `GPU_POLL_INTERVAL` | gpuobs 의 `patch-daemonset.yaml` | `5s` | NVML 폴링 주기. GPU 수가 많은 노드는 늘린다 |
 | gpuobs `nodeSelector` | gpuobs 의 `patch-daemonset.yaml` | `accelerator: nvidia` + opt-in 라벨 | gpuobs 를 GPU 노드로 한정하는 스케줄 라벨. GPU 노드 라벨 스킴이 다른 클러스터 (예: `nvidia.com/gpu.present`) 는 이 값을 맞춘다. non-GPU 노드 상주는 NVML init 실패 후 비활성 pod 만 남는 낭비다. GPU 노드의 `nvidia.com/gpu` taint 는 base toleration 이 허용한다 (#295) |
+| CUDA/NCCL 라이브러리 경로 | gpuobs 의 `patch-daemonset.yaml` (env) | (empty = 자동 순회) | 미지정 시 Debian multiarch 와 RHEL lib64 와 GPU Operator driver 컨테이너 후보를 순회해 첫 실존 경로에 attach 한다 (#296). 후보 밖 특수 경로만 `GPUOBS_CUDA_LIBCUDA_PATH` 와 `GPUOBS_NCCL_LIB_PATH` 로 고정한다 |
 | 이미지 `newTag` | 각 `kustomization.yaml` | 현재 `VERSION` | `make bump` 이 overlays 전체를 자동 갱신하므로 손대지 않는다 |
 
 ## 절차

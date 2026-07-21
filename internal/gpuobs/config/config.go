@@ -38,8 +38,9 @@ type Config struct {
 	// CudaUprobeEnabled 는 cuda uprobe 모듈 (libcuda.so 심볼 attach + ringbuf reader) 의 활성 여부다.
 	// 기본값은 true. 운영 환경에서 PodMetricsEnabled=false 로 카디널리티를 막는 경우에는 본 토글도 함께 false 로 두는 것을 권장한다 (README 참고).
 	CudaUprobeEnabled bool
-	// CudaUprobeLibcudaPath 는 host 의 libcuda.so.1 절대경로다.
-	// DaemonSet hostPath 마운트 후 컨테이너에서 보이는 경로 (예: /host/usr/lib/x86_64-linux-gnu/libcuda.so.1).
+	// CudaUprobeLibcudaPath 는 host 의 libcuda.so.1 절대경로다 (DaemonSet hostPath 마운트 후
+	// 컨테이너에서 보이는 경로). 빈 값 (기본) 이면 LibcudaCandidates 를 순회해 첫 실존 경로에
+	// attach 한다 (#296, 배포판별 경로 차이 흡수). GPUOBS_CUDA_LIBCUDA_PATH env 로 고정할 수 있다.
 	CudaUprobeLibcudaPath string
 	// CudaUprobeDeviceMapRefresh 는 cuda 패키지가 NVML RunningProcesses 로 PID→GPU 매핑을 재구축하는 주기다.
 	// 0 이하 값은 검증에서 거부된다. 매 사이클마다 RetainCudaSeries 도 함께 수행된다.
@@ -84,8 +85,8 @@ type Config struct {
 
 	// NcclLibPath는 #134의 host libnccl.so.2 절대경로다. NcclEnabled=true이고 build tag nccl로
 	// 빌드한 이미지일 때 nccl.NewProduction이 본 경로를 OpenExecutable해 collective 심볼에 uprobe를
-	// attach한다. DaemonSet의 hostPath 마운트 결과 경로 (예: /host/usr/lib/x86_64-linux-gnu/
-	// libnccl.so.2) 이며 GPUOBS_NCCL_LIB_PATH env로 override한다.
+	// attach한다. 빈 값 (기본) 이면 NcclLibCandidates 순회로 첫 실존 경로를 쓴다 (#296).
+	// GPUOBS_NCCL_LIB_PATH env로 고정할 수 있다.
 	NcclLibPath string
 }
 
@@ -128,7 +129,7 @@ func Parse() (Config, error) {
 		CgroupRoot:                 getenvDefault("GPUOBS_CGROUP_ROOT", "/host/sys/fs/cgroup"),
 		MetadataRefresh:            metadataRefresh,
 		CudaUprobeEnabled:          getenvBool("GPUOBS_CUDA_UPROBE_ENABLED", true),
-		CudaUprobeLibcudaPath:      getenvDefault("GPUOBS_CUDA_LIBCUDA_PATH", "/host/usr/lib/x86_64-linux-gnu/libcuda.so.1"),
+		CudaUprobeLibcudaPath:      getenvDefault("GPUOBS_CUDA_LIBCUDA_PATH", ""),
 		CudaUprobeLibcudartPath:    getenvDefault("GPUOBS_CUDA_LIBCUDART_PATH", ""),
 		CudaUprobeDeviceMapRefresh: cudaDeviceMapRefresh,
 		CudaLaunchBaselinePerSec:   cudaLaunchBaseline,
@@ -136,7 +137,7 @@ func Parse() (Config, error) {
 		DcgmEnabled:                getenvBool("GPUOBS_DCGM_ENABLED", false),
 		DcgmExporterURL:            getenvDefault("GPUOBS_DCGM_EXPORTER_URL", "http://dcgm-exporter.gpu-operator.svc:9400/metrics"),
 		NcclEnabled:                getenvBool("GPUOBS_NCCL_ENABLED", false),
-		NcclLibPath:                getenvDefault("GPUOBS_NCCL_LIB_PATH", "/host/usr/lib/x86_64-linux-gnu/libnccl.so.2"),
+		NcclLibPath:                getenvDefault("GPUOBS_NCCL_LIB_PATH", ""),
 	}
 
 	fs := flag.NewFlagSet("gpuobs-agent", flag.ContinueOnError)
@@ -147,14 +148,14 @@ func Parse() (Config, error) {
 	fs.BoolVar(&cfg.PodMetricsEnabled, "pod-metrics", cfg.PodMetricsEnabled, "emit per-pod gpuobs_pod_* metrics; disable on large clusters to cap Prometheus cardinality")
 	fs.DurationVar(&cfg.MetadataRefresh, "metadata-refresh", cfg.MetadataRefresh, "Kubernetes metadata informer resync interval")
 	fs.BoolVar(&cfg.CudaUprobeEnabled, "cuda-uprobe", cfg.CudaUprobeEnabled, "enable libcuda.so uprobe module emitting gpuobs_cuda_* counters; requires CAP_BPF/CAP_PERFMON/CAP_SYS_PTRACE and a libcuda hostPath mount")
-	fs.StringVar(&cfg.CudaUprobeLibcudaPath, "cuda-libcuda-path", cfg.CudaUprobeLibcudaPath, "absolute path to host libcuda.so.1 reachable from inside the container")
+	fs.StringVar(&cfg.CudaUprobeLibcudaPath, "cuda-libcuda-path", cfg.CudaUprobeLibcudaPath, "absolute path to host libcuda.so.1 reachable from inside the container; empty (default) probes the distro candidate paths")
 	fs.StringVar(&cfg.CudaUprobeLibcudartPath, "cuda-libcudart-path", cfg.CudaUprobeLibcudartPath, "absolute path to host libcudart.so reachable from inside the container; empty disables cudart attach")
 	fs.DurationVar(&cfg.CudaUprobeDeviceMapRefresh, "cuda-devicemap-refresh", cfg.CudaUprobeDeviceMapRefresh, "interval between NVML RunningProcesses sweeps that rebuild the PID→GPU map and clean up stale cuda series")
 	fs.Float64Var(&cfg.CudaLaunchBaselinePerSec, "cuda-launch-baseline", cfg.CudaLaunchBaselinePerSec, "expected CUDA kernel launch rate (Hz) used as denominator of pod:host_compute_stall_score:5m correlation rule (default 10)")
 	fs.BoolVar(&cfg.DcgmEnabled, "dcgm", cfg.DcgmEnabled, "#123/#133: opt-in NVIDIA DCGM integration; default false keeps the noop source on RTX 3090 so gpuobs_dcgm_available emits 0. When true, the dcgm-exporter HTTP source fetches -dcgm-exporter-url")
 	fs.StringVar(&cfg.DcgmExporterURL, "dcgm-exporter-url", cfg.DcgmExporterURL, "#133: dcgm-exporter /metrics endpoint URL fetched by the production DCGM source when -dcgm is enabled")
 	fs.BoolVar(&cfg.NcclEnabled, "nccl-profiler", cfg.NcclEnabled, "#123/#134: opt-in NCCL collective profiler; default false keeps the noop profiler on RTX 3090 so gpuobs_nccl_profiler_available emits 0. When true on an image built with the nccl build tag, the production profiler uprobe-attaches the libnccl.so collective symbols at -nccl-lib-path")
-	fs.StringVar(&cfg.NcclLibPath, "nccl-lib-path", cfg.NcclLibPath, "#134: absolute path to host libnccl.so.2 reachable from inside the container, uprobe-attached by the production NCCL profiler when -nccl-profiler is enabled on an nccl-tagged image")
+	fs.StringVar(&cfg.NcclLibPath, "nccl-lib-path", cfg.NcclLibPath, "#134: absolute path to host libnccl.so.2 reachable from inside the container, uprobe-attached by the production NCCL profiler when -nccl-profiler is enabled on an nccl-tagged image; empty (default) probes the distro candidate paths")
 	// -pod-util-allow-namespaces 의 default 를 "unset" sentinel 로 둬, 빈 문자열 명시 (`-pod-util-allow-namespaces=`)
 	// 로도 env 값을 덮어 "전체 namespace 발행" 으로 되돌릴 수 있게 한다. 단순 default="" 패턴 으로는 빈 값과
 	// 미지정 을 구분 못 해 env override 가 불가능 하다.
@@ -193,9 +194,6 @@ func Parse() (Config, error) {
 	}
 
 	if cfg.CudaUprobeEnabled {
-		if strings.TrimSpace(cfg.CudaUprobeLibcudaPath) == "" {
-			return Config{}, fmt.Errorf("invalid -cuda-libcuda-path: must not be empty when cuda uprobe is enabled")
-		}
 		if cfg.CudaUprobeDeviceMapRefresh <= 0 {
 			return Config{}, fmt.Errorf("invalid -cuda-devicemap-refresh: must be > 0")
 		}
@@ -282,4 +280,42 @@ func getenvDuration(key string, def time.Duration) (time.Duration, error) {
 		return def, fmt.Errorf("invalid duration for %s: %q", key, v)
 	}
 	return d, nil
+}
+
+// libCandidates 는 배포판과 GPU Operator 구성별 host 라이브러리 후보 경로다 (#296). DaemonSet 이
+// host /usr 를 /host/usr 로, /run/nvidia 를 /host/run/nvidia 로 마운트하는 전제와 짝이다. 순서는
+// Debian 계열 multiarch, RHEL 계열 lib64, GPU Operator driver 컨테이너 주입 경로 순이다.
+func libCandidates(name string) []string {
+	return []string{
+		"/host/usr/lib/x86_64-linux-gnu/" + name,
+		"/host/usr/lib64/" + name,
+		// 일부 패키징 (RHEL 계열 RPM, Debian 계열 변형) 은 nvidia 하위 디렉터리에 둔다.
+		"/host/usr/lib64/nvidia/" + name,
+		"/host/usr/lib/nvidia/" + name,
+		"/host/run/nvidia/driver/usr/lib/x86_64-linux-gnu/" + name,
+		"/host/run/nvidia/driver/usr/lib64/" + name,
+	}
+}
+
+// LibcudaCandidates 는 libcuda.so.1 의 후보 경로다.
+func LibcudaCandidates() []string { return libCandidates("libcuda.so.1") }
+
+// NcclLibCandidates 는 libnccl.so.2 의 후보 경로다.
+func NcclLibCandidates() []string { return libCandidates("libnccl.so.2") }
+
+// ResolveLibPath 는 라이브러리 경로를 확정한다. explicit (env/flag 지정값) 이 있으면 그대로 쓰고,
+// 비어 있으면 후보를 순회해 첫 실존 경로를 돌려준다 (contention 의 podCgroupDir 후보 stat 패턴).
+// 전부 없으면 빈 문자열이며 호출부가 순회 목록 로그와 graceful 비활성을 담당한다.
+func ResolveLibPath(explicit string, candidates []string) string {
+	// env/flag 입력의 우발적 공백을 정리해 반환한다. 공백 낀 값이 검사만 통과하고 attach 에서
+	// 깨지는 비일관을 막는다.
+	if trimmed := strings.TrimSpace(explicit); trimmed != "" {
+		return trimmed
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	return ""
 }
