@@ -63,6 +63,13 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.CORSMiddleware,
 	))
+	// #307 pod 단위 종합 상세. {namespace}/{pod} 두 segment 를 prefix 매칭 후 핸들러에서 파싱한다.
+	mux.Handle("/api/v1/pod/", apicommon.Chain(
+		http.HandlerFunc(h.GetPodDetail),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+		apicommon.CORSMiddleware,
+	))
 	mux.Handle("/api/v1/events", apicommon.Chain(
 		http.HandlerFunc(h.GetEvents),
 		apicommon.LoggingMiddleware,
