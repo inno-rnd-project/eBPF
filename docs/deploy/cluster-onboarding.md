@@ -22,6 +22,7 @@
 | `RECONCILE_INTERVAL` | correlation 의 `patch-configmap.yaml` | `5m` | correlation 분석 cadence. series 수가 많은 대형 클러스터는 늘려 fetch 부하를 줄인다 |
 | `NIC_CAPACITY_BYTES_PER_SEC` | netobs 의 `patch-daemonset.yaml` | `1.25e9` (10GbE) | network throughput score 정규화 분모. 25GbE 는 `3.125e9` |
 | `GPU_POLL_INTERVAL` | gpuobs 의 `patch-daemonset.yaml` | `5s` | NVML 폴링 주기. GPU 수가 많은 노드는 늘린다 |
+| gpuobs `nodeSelector` | gpuobs 의 `patch-daemonset.yaml` | `accelerator: nvidia` + opt-in 라벨 | gpuobs 를 GPU 노드로 한정하는 스케줄 라벨. GPU 노드 라벨 스킴이 다른 클러스터 (예: `nvidia.com/gpu.present`) 는 이 값을 맞춘다. non-GPU 노드 상주는 NVML init 실패 후 비활성 pod 만 남는 낭비다. GPU 노드의 `nvidia.com/gpu` taint 는 base toleration 이 허용한다 (#295) |
 | 이미지 `newTag` | 각 `kustomization.yaml` | 현재 `VERSION` | `make bump` 이 overlays 전체를 자동 갱신하므로 손대지 않는다 |
 
 ## 절차
