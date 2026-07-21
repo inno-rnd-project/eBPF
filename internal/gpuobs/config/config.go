@@ -289,6 +289,9 @@ func libCandidates(name string) []string {
 	return []string{
 		"/host/usr/lib/x86_64-linux-gnu/" + name,
 		"/host/usr/lib64/" + name,
+		// 일부 패키징 (RHEL 계열 RPM, Debian 계열 변형) 은 nvidia 하위 디렉터리에 둔다.
+		"/host/usr/lib64/nvidia/" + name,
+		"/host/usr/lib/nvidia/" + name,
 		"/host/run/nvidia/driver/usr/lib/x86_64-linux-gnu/" + name,
 		"/host/run/nvidia/driver/usr/lib64/" + name,
 	}
@@ -304,8 +307,10 @@ func NcclLibCandidates() []string { return libCandidates("libnccl.so.2") }
 // 비어 있으면 후보를 순회해 첫 실존 경로를 돌려준다 (contention 의 podCgroupDir 후보 stat 패턴).
 // 전부 없으면 빈 문자열이며 호출부가 순회 목록 로그와 graceful 비활성을 담당한다.
 func ResolveLibPath(explicit string, candidates []string) string {
-	if strings.TrimSpace(explicit) != "" {
-		return explicit
+	// env/flag 입력의 우발적 공백을 정리해 반환한다. 공백 낀 값이 검사만 통과하고 attach 에서
+	// 깨지는 비일관을 막는다.
+	if trimmed := strings.TrimSpace(explicit); trimmed != "" {
+		return trimmed
 	}
 	for _, c := range candidates {
 		if _, err := os.Stat(c); err == nil {

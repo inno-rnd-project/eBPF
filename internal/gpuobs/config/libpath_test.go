@@ -21,6 +21,10 @@ func TestResolveLibPath(t *testing.T) {
 	if got := ResolveLibPath("/etc/명시", []string{hit}); got != "/etc/명시" {
 		t.Errorf("explicit=%q want /etc/명시", got)
 	}
+	// 명시값의 우발적 공백은 정리해 반환한다.
+	if got := ResolveLibPath("  /etc/명시  ", []string{hit}); got != "/etc/명시" {
+		t.Errorf("trimmed explicit=%q want /etc/명시", got)
+	}
 	// 첫 실존 후보 채택 (앞선 미실존 후보는 건너뜀).
 	if got := ResolveLibPath("", []string{miss1, hit, miss2}); got != hit {
 		t.Errorf("resolved=%q want %q", got, hit)
@@ -37,6 +41,8 @@ func TestLibCandidates(t *testing.T) {
 	want := []string{
 		"/host/usr/lib/x86_64-linux-gnu/libcuda.so.1",
 		"/host/usr/lib64/libcuda.so.1",
+		"/host/usr/lib64/nvidia/libcuda.so.1",
+		"/host/usr/lib/nvidia/libcuda.so.1",
 		"/host/run/nvidia/driver/usr/lib/x86_64-linux-gnu/libcuda.so.1",
 		"/host/run/nvidia/driver/usr/lib64/libcuda.so.1",
 	}
