@@ -221,10 +221,13 @@ func TestNodeGpuRca_CauseRegistry(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	// causes 의 한국어 설명 (레지스트리 유래).
+	// causes 의 한국어 설명과 인과 체인 (레지스트리 유래, #303 구조 노출).
 	for _, c := range resp.Causes {
 		if c.Description == "" {
 			t.Errorf("cause %s 의 description 이 비어 있음", c.Cause)
+		}
+		if c.Chain == "" {
+			t.Errorf("cause %s 의 chain 이 비어 있음", c.Cause)
 		}
 	}
 	// dominant memory_pressure 의 suspect 스코프 2차 조회.
@@ -358,6 +361,29 @@ func TestNodeGpuRca_CauseNarrative(t *testing.T) {
 	// 신뢰도 0.5 (0.7-0.2) 는 백중 아님 → 판정 유보 문구 없음.
 	if strings.Contains(resp.Narrative, "판정 유보") {
 		t.Errorf("narrative=%q want 판정 유보 없음 (margin 0.5)", resp.Narrative)
+	}
+}
+
+// TestNodeGpuRca_NcclChain 은 #303 의 nccl_collective_stall chain 정정을 검증한다. network_pressure
+// 와 문구가 달라야 하고 (collective 동기화 대기 축), causes[].chain 으로 구조 노출된다.
+func TestNodeGpuRca_NcclChain(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("node:gpu_idle:5m", sample(0.9, "node", "gpu")).
+		on("node:gpu_idle_cause_weight:5m", sample(0.8, "node", "gpu", "cause", "nccl_collective_stall")).
+		on("node:gpu_idle_dominant_cause:5m", sample(1.0, "node", "gpu", "cause", "nccl_collective_stall"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodeGpuRca(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-rca?node=gpu", nil))
+	var resp NodeGpuRcaResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := "collective 동기화 대기 → rank 정체 → GPU 대기"
+	if len(resp.Causes) != 1 || resp.Causes[0].Chain != want {
+		t.Errorf("causes=%+v want chain %q", resp.Causes, want)
+	}
+	if !strings.Contains(resp.Narrative, want) {
+		t.Errorf("narrative=%q want 정정된 nccl chain", resp.Narrative)
 	}
 }
 

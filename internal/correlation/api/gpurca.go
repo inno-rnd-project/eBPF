@@ -153,7 +153,7 @@ var rcaCauseCatalog = map[string]rcaCauseInfo{
 	},
 	"nccl_collective_stall": {
 		description: "collective 연산의 rank 간 동기화 대기",
-		chain:       "재전송 → 통신 블로킹 → GPU 대기",
+		chain:       "collective 동기화 대기 → rank 정체 → GPU 대기",
 		evidence:    nodeScoreBind("node:nccl_collective_stall_score:5m"),
 	},
 	"pcie_saturation": {
@@ -356,7 +356,9 @@ func (h *SynthesisHandler) GetNodeGpuRca(w http.ResponseWriter, r *http.Request)
 	// #287 cause 레지스트리. causes 에 한국어 설명을 채우고, dominant cause 의 차원 맞춤 evidence
 	// 를 2차 instant 조회로 싣는다.
 	for i := range resp.Causes {
-		resp.Causes[i].Description = rcaCauseCatalog[resp.Causes[i].Cause].description
+		info := rcaCauseCatalog[resp.Causes[i].Cause]
+		resp.Causes[i].Description = info.description
+		resp.Causes[i].Chain = info.chain
 	}
 	h.fetchCauseEvidence(ctx, node, gpuMatcher, &resp)
 

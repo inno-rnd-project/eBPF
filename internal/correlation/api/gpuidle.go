@@ -50,6 +50,9 @@ type GpuCauseWeight struct {
 	// Description 은 cause 의 한국어 한 줄 설명이다 (#287 레지스트리). gpu-rca 가 채우며 gpu-idle
 	// 응답에서는 생략된다.
 	Description string `json:"description,omitempty"`
+	// Chain 은 cause 의 단계형 인과 체인 문구다 (#303). 프론트가 narrative 파싱 없이 구조 필드로
+	// 렌더할 수 있게 gpu-rca 가 채우며, gpu-idle 응답에서는 Description 과 동일하게 생략된다.
+	Chain string `json:"chain,omitempty"`
 }
 
 // GpuNodeAttribution 은 scope=node 에서 노드 단위 유휴 원인 귀속이다 (#256 rule, #257 노출). node
