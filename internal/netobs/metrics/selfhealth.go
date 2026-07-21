@@ -41,6 +41,15 @@ var (
 		[]string{"map"},
 	)
 
+	// cgroup2Available 은 #297 의 시작 시 statfs 검증 결과다. cgroup v1/hybrid 노드에서 역매핑
+	// 스캐너가 조용히 빈 테이블로 degrade 하던 것을 운영자가 식별할 수 있게 한다.
+	cgroup2Available = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "netobs_cgroup2_available",
+			Help: "1 if the host cgroup root is a cgroup2 filesystem (statfs magic checked once at startup), 0 otherwise. When 0 the cgroup-id reverse-mapping scanner (#228) is disabled and UDP-only pod attribution falls back to ringbuf hint learning only.",
+		},
+	)
+
 	// informerSyncLagSeconds 는 kube.Resolver 의 마지막 watch event 수신 후 경과 시간이다. 첫
 	// 이벤트 수신 전 (agent startup 직후) 윈도우에서는 agent 기동 시각으로부터의 경과 시간으로
 	// fallback 해 startup 단계에서도 의미 있는 신호를 노출한다. API server 단절이나 RBAC 실수로
@@ -102,6 +111,17 @@ func AddBpfRingbufDrops(delta uint64) {
 // max_entries 로 정규화한 [0, 1] 값을 전달한다.
 func SetBpfMapUtilization(mapName string, ratio float64) {
 	bpfMapUtilizationRatio.WithLabelValues(mapName).Set(ratio)
+}
+
+// SetCgroup2Available 은 host cgroup root 의 cgroup2 여부를 1/0 으로 노출한다 (#297). cgroup id
+// 역매핑 스캐너는 "cgroup id == 디렉터리 inode" 동일성 (cgroup2 전제) 에 의존하므로, 0 이면 UDP
+// 전용 pod 의 cgroup 귀속이 힌트 캐시에 한정되는 degrade 상태다.
+func SetCgroup2Available(ok bool) {
+	v := 0.0
+	if ok {
+		v = 1
+	}
+	cgroup2Available.Set(v)
 }
 
 // SetInformerSyncLag 는 informer watch event 수신 lag 을 초 단위로 emit 한다. 호출 측이 last

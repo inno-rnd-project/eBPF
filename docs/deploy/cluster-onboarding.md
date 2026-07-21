@@ -6,7 +6,7 @@
 
 배포 전에 타깃 클러스터가 다음을 갖춰야 한다. 스크립트 preflight 가 일부를 점검하지만 생성하지는 않는다.
 
-- 커널 BTF: 관측 대상 노드의 커널이 `/sys/kernel/btf/vmlinux` 를 노출해야 netobs-agent 의 eBPF 로드가 가능하다 (커널 5.4+ 에서 `CONFIG_DEBUG_INFO_BTF=y`)
+- 커널: 기능별 하한이 다르므로 [kernel-matrix.md](kernel-matrix.md) 를 따른다. 실질 하한은 event 수집 (BPF ringbuf) 의 5.8 이고 CUDA/NCCL uprobe 는 6.6 이 필요하며, `/sys/kernel/btf/vmlinux` 노출 (`CONFIG_DEBUG_INFO_BTF=y`) 이 전제다
 - NVIDIA runtime: GPU 노드에 NVIDIA driver 와 container toolkit (GPU Operator 또는 수동 설치) 이 있어야 gpuobs-agent 가 NVML 을 질의한다
 - Prometheus Operator: kube-prometheus-stack 류가 설치되어 `servicemonitors` 와 `prometheusrules` 와 `prometheuses` CRD 가 존재해야 한다
 - 로컬 도구: `kubectl` (kustomize 내장) 과 대상 클러스터 kube context
