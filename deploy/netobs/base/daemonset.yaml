@@ -20,6 +20,13 @@ spec:
     spec:
       serviceAccountName: netobs-agent
       hostPID: true
+      # GPU 클러스터는 GPU 노드에 nvidia.com/gpu taint 를 두는 구성이 일반적이다 (#295). netobs 는
+      # 전 노드 관측이 목적이라 해당 taint 를 key 기준으로 허용해 GPU 노드 관측 공백을 막는다.
+      # effect 와 value 를 생략해 GPU Operator 구성별 변형을 모두 수용하며, GPU 외 커스텀 taint
+      # (전용 노드풀 등) 는 클러스터별 overlay 의 몫이다.
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
       containers:
         - name: netobs-agent
           image: netobs-agent

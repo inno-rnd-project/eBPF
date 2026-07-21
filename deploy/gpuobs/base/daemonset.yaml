@@ -23,6 +23,12 @@ spec:
       # PID → Pod UID 귀속을 수행하려면 컨테이너가 호스트 PID 네임스페이스를 공유해야 한다.
       # privileged는 여전히 false로 두며, hostPID만 노출해 cgroup 정보 read-only 접근만 허용한다.
       hostPID: true
+      # GPU 노드의 nvidia.com/gpu taint 허용 (#295). gpuobs 의 관측 대상이 바로 그 노드들이라
+      # toleration 이 없으면 GPU 관측이 통째로 빠진다. effect 와 value 를 생략해 GPU Operator
+      # 구성별 변형을 모두 수용한다. GPU 노드 한정 스케줄은 overlay 의 nodeSelector 가 담당한다.
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
       containers:
         - name: gpuobs-agent
           image: gpuobs-agent
