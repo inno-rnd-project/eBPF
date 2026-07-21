@@ -285,6 +285,7 @@ func Register(reg prometheus.Registerer) {
 		bpfRingbufDropsTotal,
 		bpfMapUtilizationRatio,
 		informerSyncLagSeconds,
+		cgroup2Available,
 		dropStackTotal,
 		dropStackResolverCacheHits,
 		dropStackResolverCacheMisses,
