@@ -76,7 +76,7 @@ netobs-agent 자체의 Prometheus scrape 와 Kubernetes informer 트래픽 은 �
 
 ## kernel 호환성 요건
 
-- 최소 kernel: 5.0+ (BTF CO-RE 지원 + `tcp_v6_rcv`/`udp_sendmsg` 안정 심볼)
+- 최소 kernel: 5.8+ (event 전달이 BPF ringbuf 라 `BPF_MAP_TYPE_RINGBUF` 도입 커널이 하한. BTF CO-RE 와 `tcp_v6_rcv`/`udp_sendmsg` 안정 심볼 전제 포함, 기능별 하한은 docs/deploy/kernel-matrix.md 참조)
 - 검증 cluster kernel: gpu 노드 `6.8.0-60-generic`, 그 외 `6.2.0-33-generic`
 - 호환성 검사: `kubectl debug node/<name> --image=alpine:3.18 -ti -- chroot /host grep -E ' (tcp_v6_rcv|udp_sendmsg|udpv6_sendmsg)$' /proc/kallsyms` 로 신규 6 심볼 존재 확인. 없으면 해당 kprobe attach 가 fail 하고 `netobs_bpf_program_loaded{symbol="..."} == 0` 로 표시
 
