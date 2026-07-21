@@ -120,11 +120,17 @@ check_metric() { # <대표 메트릭> <부재 시 영향>
     warn "의존 메트릭 $1 부재: $2"
   fi
 }
-check_metric kube_pod_info "kube-state-metrics 미탑재로 pressure score 계열 rule 과 gpu-rca 매칭이 비활성된다"
-check_metric container_cpu_usage_seconds_total "cadvisor 메트릭 부재로 cpu/memory/network 시계열 rule 과 node-vitals 가 빈 결과가 된다"
-check_metric node_memory_MemAvailable_bytes "node_exporter 부재로 노드 실측 memory pressure/health 산출이 불가하다"
-check_metric node_uname_info "node 라벨 조인 불가로 노드 실측 memory pressure/health 산출이 불가하다"
-check_metric DCGM_FI_DEV_PCIE_REPLAY_COUNTER "dcgm-exporter (별도 설치) 부재로 PCIe replay score 와 GPUIdleWithDCGMPCIeReplay alert 가 비활성된다"
+# 연결 자체가 안 되면 (Prometheus pod 미준비 등) 개별 점검이 전부 "부재" 로 오진되므로, 1 회
+# 선확인 후 실패 시 단일 경고로 건너뛴다.
+if prom_api "query?query=1" >/dev/null 2>&1; then
+  check_metric kube_pod_info "kube-state-metrics 미탑재로 pressure score 계열 rule 과 gpu-rca 매칭이 비활성된다"
+  check_metric container_cpu_usage_seconds_total "cadvisor 메트릭 부재로 cpu/memory/network 시계열 rule 과 node-vitals 가 빈 결과가 된다"
+  check_metric node_memory_MemAvailable_bytes "node_exporter 부재로 노드 실측 memory pressure/health 산출이 불가하다"
+  check_metric node_uname_info "node 라벨 조인 불가로 노드 실측 memory pressure/health 산출이 불가하다"
+  check_metric DCGM_FI_DEV_PCIE_REPLAY_COUNTER "dcgm-exporter (별도 설치) 부재로 PCIe replay score 와 GPUIdleWithDCGMPCIeReplay alert 가 비활성된다"
+else
+  warn "Prometheus API 연결 실패로 의존 메트릭 점검을 건너뛴다. Prometheus pod 준비 상태를 확인하라"
+fi
 
 # 6) 점검 전용 (생성하지 않음): GHCR pull secret 과 GPU 노드 라벨. namespace 는 netobs 가
 #    생성하므로 최초 배포에서는 secret 부재가 정상 경고다.
