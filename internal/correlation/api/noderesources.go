@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -101,15 +102,19 @@ func (h *SynthesisHandler) GetNodeResources(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
 	defer cancel()
 
-	// node 는 parseNodeParam 검증을 통과한 값이라 %q 결합이 안전하다.
+	// node 는 parseNodeParam 검증을 통과한 값이라 %q 결합이 안전하다. usage 의 cadvisor 합산은
+	// pod-level cgroup 행 (container="", pod!="") 으로 한정한다. 이 클러스터는 pod-level 만
+	// 노출되어 무필터와 동일하지만, container-level 과 root cgroup 을 함께 노출하는 표준 구성
+	// 에서는 무필터 sum 이 중복 합산으로 부풀려진다 (#308 리뷰 반영, 멀티클러스터 이식성).
 	sel := fmt.Sprintf("{node=%q}", node)
+	podLevelSel := promSelector(nodeMatcher(node), `container=""`, `pod!=""`)
 	res := h.queryParallel(ctx,
 		"kube_node_status_capacity"+sel,
 		"kube_node_status_allocatable"+sel,
 		"sum by(resource) (kube_pod_container_resource_requests"+sel+")",
 		"sum by(resource) (kube_pod_container_resource_limits"+sel+")",
-		fmt.Sprintf("sum(rate(container_cpu_usage_seconds_total%s[5m]))", sel),
-		"sum(container_memory_working_set_bytes"+sel+")",
+		fmt.Sprintf("sum(rate(container_cpu_usage_seconds_total%s[5m]))", podLevelSel),
+		"sum(container_memory_working_set_bytes"+podLevelSel+")",
 		"count(kube_pod_info"+sel+")",
 		"avg(gpuobs_device_utilization_percent"+sel+")",
 	)
@@ -118,14 +123,12 @@ func (h *SynthesisHandler) GetNodeResources(w http.ResponseWriter, r *http.Reque
 	fill := func(samples []correlation.InstantSample, set func(d *NodeResourceDetail, v float64)) {
 		for _, sm := range samples {
 			key, ok := nodeResourceKeys[sm.Labels["resource"]]
-			if !ok {
+			if !ok || math.IsNaN(sm.Value) || math.IsInf(sm.Value, 0) {
 				continue
 			}
-			if v := firstValue([]correlation.InstantSample{sm}); v != nil {
-				d := resp.Resources[key]
-				set(&d, *v)
-				resp.Resources[key] = d
-			}
+			d := resp.Resources[key]
+			set(&d, sm.Value)
+			resp.Resources[key] = d
 		}
 	}
 	fill(res[0], func(d *NodeResourceDetail, v float64) { d.Capacity = &v })
