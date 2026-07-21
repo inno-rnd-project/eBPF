@@ -1166,6 +1166,54 @@
                 }
             }
         },
+        "/api/v1/pod/{namespace}/{pod}": {
+            "get": {
+                "description": "단일 pod 의 기본 정보 (uid 와 node 와 pod_ip 와 owner) 와 차원별 health 3종 (pod 단위 pressure score 의 1 - score 환산), vitals (limit 대비 CPU 와 memory 사용률과 working set), cgroup CPU throttle 상세 (throttled 비율과 5분 throttled/total periods 와 limit cores, cadvisor 가 노출하는 클러스터에서는 quota 와 period), 네트워크 종합 (pod 입도 재전송과 drop rate, 최대 smoothed RTT) 을 한 응답으로 합성한다. RTT 는 분위수가 아닌 최대값이라 필드명이 max_srtt_seconds 다. 미관측 pod 는 필드 생략과 summary 사유로 graceful 처리한다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "interference"
+                ],
+                "summary": "pod 단위 종합 상세",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "pod 네임스페이스 (DNS-1123 형식)",
+                        "name": "namespace",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "pod 이름 (DNS-1123 형식)",
+                        "name": "pod",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)",
+                        "name": "at",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.PodDetailResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/pods": {
             "get": {
                 "description": "파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by), priority, phase, qos, 관측 커버리지(observed)를 kube-state-metrics 기반으로 돌려준다. observed 는 netobs 의 eBPF 시리즈가 존재하는지로, false 면 관측 no-data pod 다. ?namespace 로 필터한다. 다른 API의 src_namespace/src_pod/pod_uid와 동일 키로 매핑한다.",
@@ -3012,6 +3060,80 @@
                 }
             }
         },
+        "internal_correlation_api.PodCpuDetail": {
+            "type": "object",
+            "properties": {
+                "limit_cores": {
+                    "type": "number"
+                },
+                "period_microseconds": {
+                    "type": "number"
+                },
+                "quota_microseconds": {
+                    "type": "number"
+                },
+                "throttled_periods_5m": {
+                    "type": "number"
+                },
+                "throttled_ratio": {
+                    "description": "ThrottledRatio 는 최근 5분 CFS period 중 throttle 된 비율 (0-1) 이다.",
+                    "type": "number"
+                },
+                "total_periods_5m": {
+                    "type": "number"
+                }
+            }
+        },
+        "internal_correlation_api.PodDetailResponse": {
+            "type": "object",
+            "properties": {
+                "cpu": {
+                    "$ref": "#/definitions/internal_correlation_api.PodCpuDetail"
+                },
+                "created_by_kind": {
+                    "type": "string"
+                },
+                "created_by_name": {
+                    "type": "string"
+                },
+                "generated_at": {
+                    "type": "string"
+                },
+                "health": {
+                    "description": "Health 는 차원별 health (0-1, 1 이 healthy) 다. pod 단위 pressure score rule 의 1 - score\n환산이며, score 미산출 차원은 엔트리가 생략된다.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "number",
+                        "format": "float64"
+                    }
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "network": {
+                    "$ref": "#/definitions/internal_correlation_api.PodNetworkDetail"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "pod_ip": {
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "uid": {
+                    "description": "기본 정보는 kube_pod_info 라벨에서 온다. pod 미관측 시 생략된다.",
+                    "type": "string"
+                },
+                "vitals": {
+                    "$ref": "#/definitions/internal_correlation_api.PodVitals"
+                }
+            }
+        },
         "internal_correlation_api.PodInventory": {
             "type": "object",
             "properties": {
@@ -3088,6 +3210,34 @@
                     "type": "number"
                 },
                 "working_set_bytes": {
+                    "type": "number"
+                }
+            }
+        },
+        "internal_correlation_api.PodNetworkDetail": {
+            "type": "object",
+            "properties": {
+                "drop_per_sec": {
+                    "type": "number"
+                },
+                "max_srtt_seconds": {
+                    "type": "number"
+                },
+                "retrans_per_sec": {
+                    "type": "number"
+                }
+            }
+        },
+        "internal_correlation_api.PodVitals": {
+            "type": "object",
+            "properties": {
+                "cpu_percent": {
+                    "type": "number"
+                },
+                "memory_percent": {
+                    "type": "number"
+                },
+                "memory_working_set_bytes": {
                     "type": "number"
                 }
             }

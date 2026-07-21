@@ -9,7 +9,7 @@
 | `meta` | API 상태와 클러스터 헬스 요약, 관측 에이전트 self-health | `/api/v1/health`, `/api/v1/overview`, `/api/v1/agents` |
 | `inventory` | 노드와 파드 인벤토리, 노드 그리드 맵 | `/api/v1/nodes`, `/api/v1/pods`, `/api/v1/node-map` |
 | `network` | 지연 단계 분해, 패킷 drop, pod 간 flow | `/api/v1/latency-breakdown`, `/api/v1/drops`, `/api/v1/flows` |
-| `interference` | 자원 압박 랭킹과 노드 상세, 노드 raw 사용률, 이벤트와 발화 이력, 메모리, 간섭 토폴로지 | `/api/v1/pressure`, `/api/v1/node/{node}`, `/api/v1/node-vitals`, `/api/v1/events`, `/api/v1/incidents`, `/api/v1/memory`, `/api/v1/topology` |
+| `interference` | 자원 압박 랭킹과 노드·pod 상세, 노드 raw 사용률, 이벤트와 발화 이력, 메모리, 간섭 토폴로지 | `/api/v1/pressure`, `/api/v1/node/{node}`, `/api/v1/pod/{namespace}/{pod}`, `/api/v1/node-vitals`, `/api/v1/events`, `/api/v1/incidents`, `/api/v1/memory`, `/api/v1/topology` |
 | `impact` | 간섭 상관 top-N 과 영향 전파 그래프 | `/api/v1/noisy-neighbor`, `/api/v1/cross-node-interference`, `/api/v1/service-impact`, `/api/v1/cross-level`, `/api/v1/impact-graph`, `/api/v1/impact-paths` |
 | `gpu` | GPU 유휴 원인 분석 | `/api/v1/gpu-idle` |
 | `trends` | 진단 신호 시계열 추이 | `/api/v1/trends` |
@@ -24,6 +24,7 @@
 | 패킷 drop 지점·원인·시점 특정 | `drops` (network). reason 과 category 와 `drop_stage`, node/pod 귀속, 5-tuple last_seen, kernel stack | 커버 |
 | 워크로드별 간섭 Top-N | `noisy-neighbor` (impact), `pressure` (interference) | 커버 |
 | node 와 pod 단위 정보 수집 | `nodes`, `pods` (inventory), `node/{node}` (interference) | 커버 |
+| pod 단위 종합 상세 (health·vitals·cgroup CPU·네트워크) | `pod/{namespace}/{pod}` (interference). 기본 정보 (uid·node·owner) 와 pod score 환산 health 3종, limit 대비 사용률, CFS throttle 상세 (throttled 비율·periods·limit cores, cadvisor 노출 시 quota·period), pod 입도 재전송·drop rate 와 `max_srtt_seconds` (분위수 아님을 필드명으로 명시). `at` 결합 | 커버 |
 | 노드 raw 사용률 (Vitals) | `node-vitals` (interference). cadvisor / gpuobs 원시 게이지 기반 live pod 평균 CPU·memory %, GPU 사용률·메모리를 노드별 instant 노출. 프론트 폴링으로 실시간 | 커버 |
 | 관측 에이전트 self-health | `agents` (meta). 노드별 netobs/gpuobs 에이전트의 up·BPF attach·NVML 오류율·informer lag 를 알림 규칙 동일 임계로 healthy/degraded 판정. issues 는 `playbooks` 입력 호환 | 커버 |
 | 피어슨 상관계수 스코어링 | `noisy-neighbor`, `cross-node-interference`, `service-impact` (impact) 가 `correlation_*_score` 와 `causal_strength` 노출 | 커버 |
