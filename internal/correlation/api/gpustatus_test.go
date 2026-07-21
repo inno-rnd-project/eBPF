@@ -43,7 +43,9 @@ func gpuStatusFakeQuerier() *fakeQuerier {
 			sample(1, "node", "gpu", "symbol", "cuLaunchKernel"),
 			sample(1, "node", "gpu", "symbol", "cuMemcpy"),
 			sample(0, "node", "gpu", "symbol", "cudaLaunchKernel")).
-		on("gpuobs_nvml_errors_total", sample(0, "node", "gpu"))
+		on("gpuobs_nvml_errors_total", sample(0, "node", "gpu")).
+		// #304 노드 dominant cause (유휴 게이팅 충족 노드만 시리즈 존재).
+		on("node:gpu_idle_dominant_cause:5m", sample(1.000005, "node", "gpu", "cause", "memory_pressure"))
 }
 
 // TestGpuStatus 는 device 현황 신호 병합과 memory ratio 산출, 활성 throttle reason 수집, pod 점유
@@ -109,6 +111,15 @@ func TestGpuStatus(t *testing.T) {
 	if d.Status != "degraded" {
 		t.Errorf("status=%q want degraded (sw_power_cap 활성)", d.Status)
 	}
+	// #304 idle 판정: 사용률 42 는 임계 20 이상이라 idle false.
+	if d.Idle {
+		t.Errorf("idle=%v want false (사용률 42)", d.Idle)
+	}
+	// #304 노드 dominant cause 요약: cause 와 카탈로그 description.
+	dc, ok := resp.DominantCauses["gpu"]
+	if !ok || dc.Cause != "memory_pressure" || dc.Description == "" {
+		t.Errorf("dominant_causes=%+v want gpu → memory_pressure + 설명", resp.DominantCauses)
+	}
 	// #279 귀속 능력: driver 심볼 부착 + runtime 미부착 → available true, runtime false, 사유 명시.
 	if d.PodAttribution == nil || !d.PodAttribution.Available || d.PodAttribution.RuntimeSymbols {
 		t.Fatalf("pod_attribution=%+v want available/runtime false", d.PodAttribution)
@@ -138,6 +149,13 @@ func TestGpuStatus_DeviceStatus(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	d := resp.Devices[0]
+	// #304 사용률 5 는 임계 20 미만이라 idle true. dominant cause 시리즈 미등록 노드는 맵 생략.
+	if !d.Idle {
+		t.Errorf("idle=%v want true (사용률 5)", d.Idle)
+	}
+	if resp.DominantCauses != nil {
+		t.Errorf("dominant_causes=%+v want 생략 (시리즈 부재)", resp.DominantCauses)
+	}
 	if d.Status != "warning" {
 		t.Errorf("status=%q want warning (slowdown 임계 90%% 근접, gpu_idle 은 정보성)", d.Status)
 	}

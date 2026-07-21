@@ -31,7 +31,7 @@
 | GPU 유휴 원인 (하드웨어 vs 네트워크) | `gpu-idle` (gpu). dominant cause 9종. scope=cluster/node/pod 로 cluster·노드·victim Pod 단위 귀속, node 파라미터로 단일 노드 조회 | 커버 |
 | 노드 GPU 원인 서사 (RCA 합성) | `gpu-rca` (gpu). 노드 단위 dominant cause·신뢰도·원인 후보 pod 랭킹·근거 수치 (evidence)·한 줄 narrative 를 gpu-idle 과 noisy-neighbor/cross-node 합성으로 노출. cause 9종 레지스트리가 한국어 설명과 cause 별 인과 체인 문구, 차원 맞춤 evidence (memory 는 suspect pod working_set/limit 과 노드 실측 사용률, thermal 은 온도와 slowdown 여유 등) 를 narrative 에 융합하고, top1 과 top2 백중세 (margin 0.1 미만) 는 판정 유보로 적음. `gpu` 파라미터로 device 스코프 조회, `at` 결합 | 커버 |
 | Pod 간 네트워크 flow 추적 | `flows` (network), `topology` (interference) | 커버 |
-| GPU 일반 자원 현황 (사용률·메모리·전력·온도·상세) | `gpu-status` (gpu). `gpuobs_device_*` 와 `gpuobs_pod_*` 기반. device 상세 (SM active·클럭·팬·PCIe·performance state·온도 임계·throttle violation·encoder/decoder·bar1·energy) 포함, node 필터 | 커버 |
+| GPU 일반 자원 현황 (사용률·메모리·전력·온도·상세) | `gpu-status` (gpu). `gpuobs_device_*` 와 `gpuobs_pod_*` 기반. device 상세 (SM active·클럭·팬·PCIe·performance state·온도 임계·throttle violation·encoder/decoder·bar1·energy) 와 device `idle` 판정 (rule 동일 임계 20% instant 적용), 노드별 `dominant_causes` 요약 (gpu-rca 동일 카탈로그의 cause 와 한국어 설명) 포함, node 필터 | 커버 |
 | GPU 실행 프로세스 목록 (PID·소유 pod·타입) | `gpu-processes` (gpu). gpuobs agent 로컬 `/processes` 스냅샷 프록시. PID 와 compute/graphics 타입, GPU 메모리, cgroup 기반 소유 pod, best-effort SM util. agent 주소는 `up` instance 라벨로 해석하고 미응답은 사유와 함께 graceful | 커버 |
 | Pod 별 RX/TX 대역폭 | `bandwidth` (network). `netobs_pod_bytes_total` 기반, allow-list 무관 전 pod 커버 | 커버 |
 | 자원 사용량·지연 시계열 추이 | `trends` (trends). 간섭 4종 + 자원·지연 7종 시그널 | 커버 |
