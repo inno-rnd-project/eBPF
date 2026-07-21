@@ -375,7 +375,9 @@ func TestNodeGpuRca_NcclChain(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.GetNodeGpuRca(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-rca?node=gpu", nil))
 	var resp NodeGpuRcaResponse
-	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	want := "collective 동기화 대기 → rank 정체 → GPU 대기"
 	if len(resp.Causes) != 1 || resp.Causes[0].Chain != want {
 		t.Errorf("causes=%+v want chain %q", resp.Causes, want)
