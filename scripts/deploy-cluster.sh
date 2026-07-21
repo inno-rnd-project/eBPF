@@ -107,7 +107,32 @@ check_release ruleSelector
 check_release serviceMonitorSelector
 info "preflight: release 라벨 일치 ($expected_release), Prometheus ns=$PROM_NS"
 
-# 5) 점검 전용 (생성하지 않음): GHCR pull secret 과 GPU 노드 라벨. namespace 는 netobs 가
+# Prometheus HTTP API 를 apiserver 서비스 프록시로 조회한다. preflight 의 의존 메트릭 점검과
+# 배포 후 verify 가 함께 쓴다.
+prom_api() { KC get --raw "/api/v1/namespaces/$PROM_NS/services/prometheus-operated:9090/proxy/api/v1/$1"; }
+
+# 5) 외부 exporter 메트릭 의존 점검 (#298, 경고만 하고 배포는 진행). recording rule 과
+#    correlation-exporter 가 의존하는 대표 메트릭의 존재를 확인한다. 부재 시 해당 rule/alert 가
+#    조용히 빈 결과로 비활성되므로 영향 범위를 경고한다. 표는 docs/deploy/cluster-onboarding.md
+#    의 "외부 exporter 메트릭 의존" 절 참조. count() 결과가 비면 (result 에 value 없음) 부재다.
+check_metric() { # <대표 메트릭> <부재 시 영향>
+  if ! prom_api "query?query=count($1)" | grep -q '"value"'; then
+    warn "의존 메트릭 $1 부재: $2"
+  fi
+}
+# 연결 자체가 안 되면 (Prometheus pod 미준비 등) 개별 점검이 전부 "부재" 로 오진되므로, 1 회
+# 선확인 후 실패 시 단일 경고로 건너뛴다.
+if prom_api "query?query=1" >/dev/null 2>&1; then
+  check_metric kube_pod_info "kube-state-metrics 미탑재로 pressure score 계열 rule 과 gpu-rca 매칭이 비활성된다"
+  check_metric container_cpu_usage_seconds_total "cadvisor 메트릭 부재로 cpu/memory/network 시계열 rule 과 node-vitals 가 빈 결과가 된다"
+  check_metric node_memory_MemAvailable_bytes "node_exporter 부재로 노드 실측 memory pressure/health 산출이 불가하다"
+  check_metric node_uname_info "node 라벨 조인 불가로 노드 실측 memory pressure/health 산출이 불가하다"
+  check_metric DCGM_FI_DEV_PCIE_REPLAY_COUNTER "dcgm-exporter (별도 설치) 부재로 PCIe replay score 와 GPUIdleWithDCGMPCIeReplay alert 가 비활성된다"
+else
+  warn "Prometheus API 연결 실패로 의존 메트릭 점검을 건너뛴다. Prometheus pod 준비 상태를 확인하라"
+fi
+
+# 6) 점검 전용 (생성하지 않음): GHCR pull secret 과 GPU 노드 라벨. namespace 는 netobs 가
 #    생성하므로 최초 배포에서는 secret 부재가 정상 경고다.
 if ! KC get secret ghcr-creds -n ebpf-project >/dev/null 2>&1; then
   warn "ebpf-project/ghcr-creds pull secret 이 없다. 이미지 pull 이 실패하면 온보딩 문서대로 생성하라"
@@ -146,8 +171,8 @@ if [ "$WITH_INJECTOR" = 1 ]; then
   rollout deployment/workload-injector-controller
 fi
 
-# Prometheus 채택. ServiceMonitor 반영은 scrape interval 을 타므로 90s 까지 폴링한다.
-prom_api() { KC get --raw "/api/v1/namespaces/$PROM_NS/services/prometheus-operated:9090/proxy/api/v1/$1"; }
+# Prometheus 채택. ServiceMonitor 반영은 scrape interval 을 타므로 90s 까지 폴링한다. prom_api 는
+# preflight 의 의존 메트릭 점검과 공용이다.
 info "verify: Prometheus target/rule 채택 대기 (최대 90s)"
 deadline=$(( $(date +%s) + 90 ))
 while :; do
