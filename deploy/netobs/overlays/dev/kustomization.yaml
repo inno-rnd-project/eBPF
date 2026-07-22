@@ -6,8 +6,12 @@ namespace: ebpf-project
 resources:
   - ../../base
 
+# #312 다중 노드 확장에 맞춘 이미지 소스. 로컬 빌드 이미지는 빌드 호스트 (gpu 노드) 에만 존재해
+# Never 정책이 워커에서 ErrImageNeverPull 로 깨지므로, dev 도 ghcr 를 소스로 쓴다. 워크플로가
+# bump 직후 image-push-all 을 항상 수행하므로 로컬 즉시성 손실은 없다.
 images:
   - name: netobs-agent
+    newName: ghcr.io/inno-rnd-project/netobs-agent
     newTag: "2.3.1"
 
 patches:

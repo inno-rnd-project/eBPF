@@ -13,4 +13,4 @@ spec:
         observability.netobs/canary: "true"
       containers:
         - name: netobs-agent
-          imagePullPolicy: Never
+          imagePullPolicy: IfNotPresent
