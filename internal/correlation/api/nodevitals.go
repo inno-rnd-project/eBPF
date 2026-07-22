@@ -72,13 +72,16 @@ func (h *SynthesisHandler) GetNodeVitals(w http.ResponseWriter, r *http.Request)
 
 	// node 는 parseNodeParam 검증을 통과한 값이라 %q 결합이 안전하다. CPU 와 memory 는 노드 내
 	// pod 합산 사용량을 노드 allocatable 로 나눈 점유율이다 (#313, limit 분모의 커버리지 공백 제거).
+	// allocatable 분모는 max 로 집계한다. kube-state-metrics 롤링 중 동일 노드 시리즈가 중복되면
+	// sum 은 분모를 2배로 만들어 사용률이 반토막 나는데, 중복 값은 동일하므로 max 가 정확하다
+	// (uname 이중 scrape 방어와 동일 축).
 	// 분자 합산은 pod-level cgroup 행 (container="", pod!="") 으로 한정해 container-level 과 root
 	// cgroup 을 함께 노출하는 표준 cadvisor 구성의 중복 합산을 막는다 (node-resources 와 동일 규약).
 	// GPU 는 device 사용률 노드 평균, GPU 메모리는 노드 device used/total 합이다.
 	podLevelSel := promSelector(nodeMatcher(node), `container=""`, `pod!=""`)
 	res := h.queryParallel(ctx,
-		fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total%s[5m])) / sum(kube_node_status_allocatable{node=%q, resource="cpu"}) * 100`, podLevelSel, node),
-		fmt.Sprintf(`sum(container_memory_working_set_bytes%s) / sum(kube_node_status_allocatable{node=%q, resource="memory"}) * 100`, podLevelSel, node),
+		fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total%s[5m])) / max(kube_node_status_allocatable{node=%q, resource="cpu"}) * 100`, podLevelSel, node),
+		fmt.Sprintf(`sum(container_memory_working_set_bytes%s) / max(kube_node_status_allocatable{node=%q, resource="memory"}) * 100`, podLevelSel, node),
 		fmt.Sprintf(`avg by(node) (gpuobs_device_utilization_percent{node=%q})`, node),
 		fmt.Sprintf(`sum by(node) (gpuobs_device_memory_used_bytes{node=%q})`, node),
 		fmt.Sprintf(`sum by(node) (gpuobs_device_memory_total_bytes{node=%q})`, node),

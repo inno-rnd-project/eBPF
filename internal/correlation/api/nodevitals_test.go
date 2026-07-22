@@ -66,6 +66,11 @@ func TestNodeVitals_ControlPlane(t *testing.T) {
 	if resp.MemoryPercent == nil || *resp.MemoryPercent != 28.0 {
 		t.Errorf("memory_percent=%v want 28.0", resp.MemoryPercent)
 	}
+	// allocatable 분모는 max 집계여야 한다. KSM 롤링 중 동일 노드 시리즈 중복 시 sum 은 분모를
+	// 2배로 만들어 사용률이 반토막 난다 (fake 는 PromQL 미평가라 쿼리 형태로 회귀를 막는다).
+	if !q.sawQuery("max(kube_node_status_allocatable") {
+		t.Errorf("allocatable 분모가 max 집계가 아님: %v", q.queries)
+	}
 }
 
 // TestNodeVitals_MissingNode 는 node 파라미터 누락 시 400 을 검증한다.
