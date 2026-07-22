@@ -47,8 +47,10 @@ spec:
               _ = conv(x)
     resources:
       limits:
+        ephemeral-storage: 1Gi
         nvidia.com/gpu: 1
         memory: 4Gi
       requests:
+        ephemeral-storage: 100Mi
         cpu: 200m
         memory: 1Gi

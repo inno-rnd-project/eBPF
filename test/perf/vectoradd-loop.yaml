@@ -30,8 +30,10 @@ spec:
       done
     resources:
       limits:
+        ephemeral-storage: 1Gi
         nvidia.com/gpu: 1
         memory: 256Mi
       requests:
+        ephemeral-storage: 100Mi
         cpu: 50m
         memory: 64Mi

@@ -57,8 +57,10 @@ spec:
           time.sleep(0.01)
     resources:
       limits:
+        ephemeral-storage: 1Gi
         nvidia.com/gpu: 1
         memory: 4Gi
       requests:
+        ephemeral-storage: 100Mi
         cpu: 100m
         memory: 512Mi

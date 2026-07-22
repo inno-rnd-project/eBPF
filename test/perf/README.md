@@ -35,3 +35,11 @@ overhead 를 정량 측정하기 위한 표준 워크로드 매니페스트를 �
   노드가 단일 GPU 라 본 디렉토리의 매니페스트로는 다루지 않는다.
 - 측정 중에는 동일 노드에 다른 cuda 컨테이너를 동시 기동하지 않는다 (라벨 카디널리티가
   불필요하게 늘어나 PromQL 집계가 어려워진다).
+
+## 워크로드 lifecycle (#319)
+
+본 디렉토리의 워크로드는 전부 일회성 검증용이며 클러스터 상주를 금지한다. 과거 correlation-stress 와 observability-test 워크로드가 검증 후 정리되지 않고 수십 일 상주하다 ephemeral-storage 고갈 시점에 Evicted 잔재를 남긴 전례가 있다.
+
+- 검증이 끝나면 즉시 `kubectl delete -f <매니페스트>` 로 정리한다. Job 은 완료돼도 pod 잔재가 kube-state-metrics 집계 (overview 의 terminated) 에 남으므로 Job 리소스째 삭제한다
+- 별도 네임스페이스에 워크로드를 임시 생성한 경우 (correlation-stress 류) 워크로드와 Service 까지 함께 삭제한다
+- 매니페스트에는 ephemeral-storage requests/limits (공통 100Mi/1Gi) 를 명시한다. 새 매니페스트 추가 시 동일 규약을 따른다
