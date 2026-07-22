@@ -1048,6 +1048,8 @@ definitions:
         type: integer
       no_data:
         type: integer
+      terminated:
+        type: integer
       total:
         type: integer
     type: object
@@ -2415,10 +2417,11 @@ paths:
       - interference
   /api/v1/node-map:
     get:
-      description: 노드별 pod 목록에 3단 상태 (live/warning/down) 와 관측 no-data, 해당 pod 를 가리키는
-        firing alertname 을 내장해 돌려준다. pod down 은 phase Failed/Unknown, warning 은 Pending
-        또는 firing alert 매칭이며, issues 의 alertname 은 rca 와 playbooks 조회 입력과 호환된다. node
-        파라미터로 단일 노드를 조회하고 미등록 노드는 404 다. at 파라미터로 사건 시점의 그리드를 재구성할 수 있다.
+      description: '노드별 pod 목록에 4단 상태 (live/warning/down/completed) 와 관측 no-data,
+        해당 pod 를 가리키는 firing alertname 을 내장해 돌려준다. pod down 은 phase Failed/Unknown,
+        warning 은 Pending 또는 firing alert 매칭, completed 는 phase Succeeded (정상 종료라
+        telemetry 부재가 정상, #314) 이며, issues 의 alertname 은 rca 와 playbooks 조회 입력과 호환된다.
+        node 파라미터로 단일 노드를 조회하고 미등록 노드는 404 다. at 파라미터로 사건 시점의 그리드를 재구성할 수 있다.'
       parameters:
       - description: 단일 노드 조회 (미등록 노드는 404)
         in: query
@@ -2701,8 +2704,9 @@ paths:
     get:
       description: 파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by),
         priority, phase, qos, 관측 커버리지(observed)를 kube-state-metrics 기반으로 돌려준다. observed
-        는 netobs 의 eBPF 시리즈가 존재하는지로, false 면 관측 no-data pod 다. ?namespace 로 필터한다.
-        다른 API의 src_namespace/src_pod/pod_uid와 동일 키로 매핑한다.
+        는 netobs 의 eBPF 시리즈가 존재하는지로, false 면 관측 no-data pod 다. 종료 pod (phase Succeeded/Failed)
+        는 telemetry 부재가 정상이라 observed=false 가 결함이 아니다 (#314). ?namespace 로 필터한다. 다른
+        API의 src_namespace/src_pod/pod_uid와 동일 키로 매핑한다.
       parameters:
       - description: namespace 필터 (생략 시 전체)
         in: query

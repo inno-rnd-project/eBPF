@@ -25,11 +25,13 @@ func nodeMapFakeQuerier() *fakeQuerier {
 		on("kube_pod_info",
 			sample(1, "namespace", "ns1", "pod", "trainer", "uid", "u1", "node", "gpu"),
 			sample(1, "namespace", "ns1", "pod", "crashed", "uid", "u2", "node", "gpu"),
-			sample(1, "namespace", "ns2", "pod", "web", "uid", "u3", "node", "worker1")).
+			sample(1, "namespace", "ns2", "pod", "web", "uid", "u3", "node", "worker1"),
+			sample(1, "namespace", "ns1", "pod", "job-done", "uid", "u4", "node", "gpu")).
 		on("kube_pod_status_phase",
 			sample(1, "uid", "u1", "phase", "Running"),
 			sample(1, "uid", "u2", "phase", "Failed"),
-			sample(1, "uid", "u3", "phase", "Running")).
+			sample(1, "uid", "u3", "phase", "Running"),
+			sample(1, "uid", "u4", "phase", "Succeeded")).
 		on("netobs_pod_bytes_total", sample(3, "src_namespace", "ns1", "src_pod", "trainer"))
 }
 
@@ -47,17 +49,21 @@ func TestNodeMap(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(resp.Nodes) != 2 || resp.Nodes[0].Name != "gpu" {
-		t.Fatalf("nodes=%+v want gpu (pod 2) 선두", resp.Nodes)
+		t.Fatalf("nodes=%+v want gpu (pod 3) 선두", resp.Nodes)
 	}
 	gpu := resp.Nodes[0]
-	if !gpu.GPU || gpu.GPUDevices != 2 || gpu.Status != "warning" || gpu.PodCount != 2 {
-		t.Errorf("gpu 노드=%+v want gpu/devices2/warning/pod2", gpu)
+	if !gpu.GPU || gpu.GPUDevices != 2 || gpu.Status != "warning" || gpu.PodCount != 3 {
+		t.Errorf("gpu 노드=%+v want gpu/devices2/warning/pod3", gpu)
 	}
-	// pod 정렬은 namespace·pod 사전순: crashed 가 trainer 앞.
+	// pod 정렬은 namespace·pod 사전순: crashed, job-done, trainer.
 	if gpu.Pods[0].Pod != "crashed" || gpu.Pods[0].Status != "down" {
 		t.Errorf("pods[0]=%+v want crashed down (phase Failed)", gpu.Pods[0])
 	}
-	trainer := gpu.Pods[1]
+	// #314 정상 종료 Job pod 는 completed 로 분리된다 (telemetry 부재가 정상이라 live 오독 방지).
+	if gpu.Pods[1].Pod != "job-done" || gpu.Pods[1].Status != "completed" {
+		t.Errorf("pods[1]=%+v want job-done completed (phase Succeeded)", gpu.Pods[1])
+	}
+	trainer := gpu.Pods[2]
 	if trainer.Status != "warning" || trainer.NoData {
 		t.Errorf("trainer=%+v want warning (alert 매칭) + 관측 중", trainer)
 	}
