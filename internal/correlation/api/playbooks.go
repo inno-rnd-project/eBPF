@@ -279,8 +279,8 @@ var playbookCatalog = []playbookEntry{
 	},
 	{
 		cause: "thermal", kind: "gpu_idle_cause",
-		aliases: []string{"GPUIdleWithThermal", "GPUObsThermalThrottleSustained"},
-		title:   "열 스로틀로 인한 GPU 성능 저하",
+		aliases:     []string{"GPUIdleWithThermal", "GPUObsThermalThrottleSustained"},
+		title:       "열 스로틀로 인한 GPU 성능 저하",
 		description: "GPU 온도가 스로틀 임계에 도달해 클럭이 강제로 내려간 상태다. 사용률이 높아 보여도 실효 성능이 떨어지며, 지속되면 유휴 구간이 늘어난다.",
 		checks: []playbookCheckEntry{
 			{description: "GPU 현황에서 온도와 스로틀 사유, 전력 확인", api: "/api/v1/gpu-status", atCapable: true},
@@ -312,7 +312,7 @@ var playbookCatalog = []playbookEntry{
 	// ---- drop_stage 10종 ----
 	{
 		cause: "ingress_tc", kind: "drop_stage",
-		title: "TC ingress 단계 drop",
+		title:       "TC ingress 단계 drop",
 		description: "수신 경로의 TC (traffic control) ingress hook 에서 패킷이 버려지는 상태다. CNI 의 필터 체인이나 정책 프로그램이 개입하는 지점이다.",
 		checks: []playbookCheckEntry{
 			{description: "해당 stage 의 drop reason 과 category, 귀속 pod, kernel stack 확인", api: "/api/v1/drops", atCapable: true},
@@ -326,7 +326,7 @@ var playbookCatalog = []playbookEntry{
 	},
 	{
 		cause: "egress_tc", kind: "drop_stage",
-		title: "TC egress 단계 drop",
+		title:       "TC egress 단계 drop",
 		description: "송신 경로의 TC egress hook 에서 패킷이 버려지는 상태다. egress 정책이나 대역폭 제한 프로그램이 개입하는 지점이다.",
 		checks: []playbookCheckEntry{
 			{description: "해당 stage 의 drop reason 과 귀속 pod 확인", api: "/api/v1/drops", atCapable: true},
@@ -339,7 +339,7 @@ var playbookCatalog = []playbookEntry{
 	},
 	{
 		cause: "egress_qdisc", kind: "drop_stage",
-		title: "송신 큐 (qdisc) 포화 drop",
+		title:       "송신 큐 (qdisc) 포화 drop",
 		description: "송신 qdisc 큐가 가득 차 패킷이 버려지는 상태다. 송신량이 링크 또는 큐 용량을 초과하는 국면에서 나타나며 버스트 트래픽이 흔한 원인이다.",
 		checks: []playbookCheckEntry{
 			{description: "drop 시점과 rate, 귀속 pod 확인", api: "/api/v1/drops", atCapable: true},
@@ -354,7 +354,7 @@ var playbookCatalog = []playbookEntry{
 	},
 	{
 		cause: "recv_reorder", kind: "drop_stage",
-		title: "수신 재조립 (OFO) 단계 drop",
+		title:       "수신 재조립 (OFO) 단계 drop",
 		description: "TCP out-of-order 큐가 한계에 달해 순서 어긋난 세그먼트가 버려지는 상태다. 경로상 재정렬이나 앞선 구간의 drop 이 유발한다.",
 		checks: []playbookCheckEntry{
 			{description: "동반된 다른 stage 의 drop (원인 구간) 확인", api: "/api/v1/drops", atCapable: true},
@@ -367,7 +367,7 @@ var playbookCatalog = []playbookEntry{
 	},
 	{
 		cause: "recv_tcp", kind: "drop_stage",
-		title: "TCP 수신 처리 단계 drop",
+		title:       "TCP 수신 처리 단계 drop",
 		description: "TCP 수신 처리 (윈도, 시퀀스 검증, 버퍼) 에서 세그먼트가 버려지는 상태다. 수신 버퍼 고갈이나 비정상 세그먼트가 원인이다.",
 		checks: []playbookCheckEntry{
 			{description: "drop reason 세부 (버퍼/윈도/시퀀스) 와 귀속 pod 확인", api: "/api/v1/drops", atCapable: true},
@@ -380,7 +380,7 @@ var playbookCatalog = []playbookEntry{
 	},
 	{
 		cause: "socket", kind: "drop_stage",
-		title: "소켓 수용 한계 drop",
+		title:       "소켓 수용 한계 drop",
 		description: "소켓 수신 버퍼 초과나 accept queue overflow 로 패킷이 버려지는 상태다. 애플리케이션이 연결 또는 데이터를 제때 수용하지 못하는 신호다.",
 		checks: []playbookCheckEntry{
 			{description: "drop reason (버퍼/listen overflow) 과 귀속 pod 확인", api: "/api/v1/drops", atCapable: true},
@@ -394,7 +394,7 @@ var playbookCatalog = []playbookEntry{
 	},
 	{
 		cause: "routing", kind: "drop_stage",
-		title: "라우팅 단계 drop",
+		title:       "라우팅 단계 drop",
 		description: "목적지 경로 부재나 라우팅 실패로 패킷이 버려지는 상태다. CNI 라우트 테이블 불일치나 삭제된 endpoint 로의 잔류 트래픽이 흔한 원인이다.",
 		checks: []playbookCheckEntry{
 			{description: "drop 대상 flow 의 목적지 (사라진 pod IP 여부) 확인", api: "/api/v1/drops", atCapable: true},
@@ -407,7 +407,7 @@ var playbookCatalog = []playbookEntry{
 	},
 	{
 		cause: "ingress_early", kind: "drop_stage",
-		title: "수신 초기 단계 drop",
+		title:       "수신 초기 단계 drop",
 		description: "프로토콜 처리 이전의 이른 수신 단계 (드라이버-스택 경계) 에서 패킷이 버려지는 상태다. 수신 부하 폭주나 비정상 프레임이 원인일 수 있다.",
 		checks: []playbookCheckEntry{
 			{description: "drop rate 추이와 노드 귀속 확인", api: "/api/v1/drops", atCapable: true},
@@ -420,7 +420,7 @@ var playbookCatalog = []playbookEntry{
 	},
 	{
 		cause: "protocol", kind: "drop_stage",
-		title: "프로토콜 검증 단계 drop",
+		title:       "프로토콜 검증 단계 drop",
 		description: "프로토콜 계층의 검증 실패 (비정상 헤더, 지원하지 않는 프로토콜, checksum 오류 등) 로 패킷이 버려지는 상태다.",
 		checks: []playbookCheckEntry{
 			{description: "drop reason 과 category (checksum/protocol) 확인", api: "/api/v1/drops", atCapable: true},
@@ -432,7 +432,7 @@ var playbookCatalog = []playbookEntry{
 	},
 	{
 		cause: "unknown", kind: "drop_stage",
-		title: "미분류 단계 drop",
+		title:       "미분류 단계 drop",
 		description: "drop reason 이 알려진 stage 분류에 매칭되지 않은 상태다. 신규 커널 reason 이거나 reason 자체가 NOT_SPECIFIED 인 경우다.",
 		checks: []playbookCheckEntry{
 			{description: "raw drop reason 과 kernel stack 으로 실제 drop 지점 확인", api: "/api/v1/drops", atCapable: true},
@@ -446,7 +446,7 @@ var playbookCatalog = []playbookEntry{
 	// ---- dimension 4종 ----
 	{
 		cause: "cpu", kind: "dimension",
-		title: "CPU 차원 이상 이벤트",
+		title:       "CPU 차원 이상 이벤트",
 		description: "CPU throttle 이나 노드 CPU 압박이 임계를 넘은 이벤트다. GPU 워크로드가 있으면 GPU 유휴로 전이될 수 있다.",
 		checks: []playbookCheckEntry{
 			{description: "cpu 차원 pod 압박 랭킹에서 원인 pod 식별", api: "/api/v1/pressure?dimension=cpu&scope=pod", atCapable: true},
@@ -460,7 +460,7 @@ var playbookCatalog = []playbookEntry{
 	},
 	{
 		cause: "gpu", kind: "dimension",
-		title: "GPU 차원 이상 이벤트",
+		title:       "GPU 차원 이상 이벤트",
 		description: "GPU 사용률 이상이나 유휴 원인 신호가 임계를 넘은 이벤트다. 원인 식별은 gpu-idle 의 cause 가중치가 진입점이다.",
 		checks: []playbookCheckEntry{
 			{description: "gpu-idle 원인 가중치에서 dominant cause 식별", api: "/api/v1/gpu-idle", atCapable: true},
@@ -473,7 +473,7 @@ var playbookCatalog = []playbookEntry{
 	},
 	{
 		cause: "memory", kind: "dimension",
-		title: "메모리 차원 이상 이벤트",
+		title:       "메모리 차원 이상 이벤트",
 		description: "working set 의 limit 근접이나 psi 압박이 임계를 넘은 이벤트다. 방치 시 OOMKill 로 이어질 수 있다.",
 		checks: []playbookCheckEntry{
 			{description: "메모리 병목 합성 뷰에서 원인 pod 와 psi 확인", api: "/api/v1/memory", atCapable: true},
@@ -486,7 +486,7 @@ var playbookCatalog = []playbookEntry{
 	},
 	{
 		cause: "network", kind: "dimension",
-		title: "네트워크 차원 이상 이벤트",
+		title:       "네트워크 차원 이상 이벤트",
 		description: "drop rate 나 throughput 압박, 재전송이 임계를 넘은 이벤트다. drop 은 stage 별 안내가, 지연은 단계 분해가 진입점이다.",
 		checks: []playbookCheckEntry{
 			{description: "drop 발생 여부와 stage 확인 (있으면 해당 drop_stage 안내로)", api: "/api/v1/drops", atCapable: true},
@@ -502,7 +502,7 @@ var playbookCatalog = []playbookEntry{
 	// ---- alert 3종 (cause 로 흡수되지 않는 독립 alertname) ----
 	{
 		cause: "CorrelationStrongNoisyNeighbor", kind: "alert",
-		title: "강한 noisy neighbor 상관 감지",
+		title:       "강한 noisy neighbor 상관 감지",
 		description: "victim pod 의 성능 저하와 suspect pod 의 자원 사용 간 피어슨 상관이 임계를 넘어 지속되는 상태다. 동일 노드 자원 경합의 정량 신호다.",
 		checks: []playbookCheckEntry{
 			{description: "victim-suspect 쌍과 차원별 상관 점수 확인", api: "/api/v1/noisy-neighbor"},
@@ -517,7 +517,7 @@ var playbookCatalog = []playbookEntry{
 	},
 	{
 		cause: "NetObsDropBurst", kind: "alert",
-		title: "특정 flow 의 drop burst",
+		title:       "특정 flow 의 drop burst",
 		description: "단일 5-tuple flow 에서 drop 이 1분 이상 지속 폭주하는 상태다. 특정 통신 쌍에 국한된 문제라 flow 의 양 끝과 stage 식별이 우선이다.",
 		checks: []playbookCheckEntry{
 			{description: "burst flow 의 stage 와 reason, kernel stack 확인", api: "/api/v1/drops", atCapable: true},
@@ -531,7 +531,7 @@ var playbookCatalog = []playbookEntry{
 	},
 	{
 		cause: "GPUObsCudaStreamWaitHigh", kind: "alert",
-		title: "CUDA stream 대기 비중 과다",
+		title:       "CUDA stream 대기 비중 과다",
 		description: "CUDA stream 의 동기화 대기가 실행 시간 대비 과도한 상태다. GPU 는 점유되어 보이나 실제로는 대기가 지배해 실효 처리량이 낮다.",
 		checks: []playbookCheckEntry{
 			{description: "GPU 현황에서 사용률과 kernel launch 추이 확인", api: "/api/v1/gpu-status", atCapable: true},

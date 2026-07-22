@@ -40,15 +40,15 @@ type NodeMapNode struct {
 // 정상, #314), live 는 Running 이다. NoData 는 pods API 의 observed
 // 반전과 동일 판정이다.
 type NodeMapPod struct {
-	Namespace string   `json:"namespace"`
-	Pod       string   `json:"pod"`
-	Status    string   `json:"status"`
-	NoData    bool     `json:"no_data,omitempty"`
+	Namespace string `json:"namespace"`
+	Pod       string `json:"pod"`
+	Status    string `json:"status"`
+	NoData    bool   `json:"no_data,omitempty"`
 	// NoDataReason 은 NoData 일 때의 미관측 사유 분류다 (#320, pods API 의 unobserved_reason 과
 	// 동일 enum·생략 조건). host_network 는 cgroup 힌트 학습 시 live 로 전환될 수 있는 시점 의존
 	// 분류다. 종료/Unknown phase 는 사유가 생략된다.
-	NoDataReason string `json:"no_data_reason,omitempty"`
-	Issues    []string `json:"issues,omitempty"`
+	NoDataReason string   `json:"no_data_reason,omitempty"`
+	Issues       []string `json:"issues,omitempty"`
 }
 
 // GetNodeMap godoc

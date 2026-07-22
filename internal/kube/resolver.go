@@ -495,6 +495,15 @@ func nodeKey(n *corev1.Node) string {
 }
 
 func podIPs(p corev1.Pod) []string {
+	// hostNetwork pod 의 PodIP 는 node IP 와 같아 IP 인덱스에 넣으면 같은 노드의 hostNetwork pod
+	// 들이 한 IP 를 서로 덮어써 모든 host-network 트래픽이 마지막 upsert 승자 pod 로 오귀속된다
+	// (#321). IP 인덱스에서 제외해 node IP 가 항상 Node 로 분류되게 하고, pod 귀속은 enricher 의
+	// cgroup 역매핑 폴백 (#228) 이 결정적으로 수행한다. podByUID 인덱스에는 그대로 남아 스캐너
+	// (PodsOnNode) 와 gpuobs (ResolvePID) 경로는 영향이 없다.
+	if p.Spec.HostNetwork {
+		return nil
+	}
+
 	seen := make(map[string]struct{}, 1+len(p.Status.PodIPs))
 	out := make([]string, 0, 1+len(p.Status.PodIPs))
 
@@ -570,6 +579,7 @@ func podIdentity(p corev1.Pod) PodIdentity {
 		WorkloadKind:  kind,
 		Workload:      workload,
 		PodIP:         p.Status.PodIP,
+		HostNetwork:   p.Spec.HostNetwork,
 	}
 }
 

@@ -106,11 +106,11 @@ func TestIPVersion(t *testing.T) {
 		family uint8
 		want   string
 	}{
-		{2, "4"},   // NETOBS_AF_INET
-		{10, "6"},  // NETOBS_AF_INET6
-		{0, ""},    // unset
-		{1, ""},    // AF_UNIX
-		{17, ""},   // AF_PACKET 등 추적 대상 외
+		{2, "4"},  // NETOBS_AF_INET
+		{10, "6"}, // NETOBS_AF_INET6
+		{0, ""},   // unset
+		{1, ""},   // AF_UNIX
+		{17, ""},  // AF_PACKET 등 추적 대상 외
 	}
 	for _, tc := range cases {
 		got := IPVersion(tc.family)

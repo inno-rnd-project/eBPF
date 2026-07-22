@@ -402,9 +402,9 @@ func TestDeviceSet_UUIDMismatchRaceClosesDevAndSkips(t *testing.T) {
 	// 갓 Open 한 dev 에 대해 infoUUID 를 미리 주입할 수 있도록 별도 hook 가 필요하지만, 본 테스트는
 	// 원리적 검증을 위해 별도 fake (fakeRaceNVML) 를 사용한다.
 	nv2 := &fakeRaceNVML{
-		realUUID:  "GPU-A",
+		realUUID:     "GPU-A",
 		fakeInfoUUID: "GPU-X",
-		parent:    nv,
+		parent:       nv,
 	}
 	set = NewDeviceSet(nv2)
 	if err := set.Sync(); err != nil {
@@ -428,9 +428,9 @@ type fakeRaceNVML struct {
 	parent       *fakeDeviceSetNVML
 }
 
-func (f *fakeRaceNVML) DeviceCount() (uint, error)            { return 1, nil }
-func (f *fakeRaceNVML) DeviceUUID(i uint) (string, error)     { return f.realUUID, nil }
-func (f *fakeRaceNVML) Shutdown() error                       { return nil }
+func (f *fakeRaceNVML) DeviceCount() (uint, error)        { return 1, nil }
+func (f *fakeRaceNVML) DeviceUUID(i uint) (string, error) { return f.realUUID, nil }
+func (f *fakeRaceNVML) Shutdown() error                   { return nil }
 func (f *fakeRaceNVML) Device(i uint) (Device, error) {
 	return &fakeRaceDevice{uuid: f.fakeInfoUUID, parent: f}, nil
 }

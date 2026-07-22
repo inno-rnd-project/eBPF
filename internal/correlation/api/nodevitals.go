@@ -24,15 +24,15 @@ import (
 // NodeVitalsResponse 는 GET /api/v1/node-vitals 의 typed 응답이다. 각 사용률은 수집 공백 시 생략되도록
 // pointer 로 둔다 (NaN 은 JSON 직렬화 불가라 omitempty pointer 규약).
 type NodeVitalsResponse struct {
-	GeneratedAt        string   `json:"generated_at"`
-	Node               string   `json:"node"`
-	CPUPercent         *float64 `json:"cpu_percent,omitempty"`
-	MemoryPercent      *float64 `json:"memory_percent,omitempty"`
-	GPUPercent         *float64 `json:"gpu_percent,omitempty"`
-	GPUMemoryUsedBytes *float64 `json:"gpu_memory_used_bytes,omitempty"`
+	GeneratedAt         string   `json:"generated_at"`
+	Node                string   `json:"node"`
+	CPUPercent          *float64 `json:"cpu_percent,omitempty"`
+	MemoryPercent       *float64 `json:"memory_percent,omitempty"`
+	GPUPercent          *float64 `json:"gpu_percent,omitempty"`
+	GPUMemoryUsedBytes  *float64 `json:"gpu_memory_used_bytes,omitempty"`
 	GPUMemoryTotalBytes *float64 `json:"gpu_memory_total_bytes,omitempty"`
-	GPUMemoryPercent   *float64 `json:"gpu_memory_percent,omitempty"`
-	Summary            string   `json:"summary"`
+	GPUMemoryPercent    *float64 `json:"gpu_memory_percent,omitempty"`
+	Summary             string   `json:"summary"`
 }
 
 // GetNodeVitals godoc

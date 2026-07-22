@@ -3,6 +3,9 @@ package kube
 import (
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // newSeededResolver는 informer 없이 IP 인덱스만 직접 채운 Resolver를 만든다.
@@ -267,5 +270,65 @@ func TestNewResolver_NoConfigStillReturnsResolver(t *testing.T) {
 	}
 	if r.HasSynced() {
 		t.Error("HasSynced should be false on a never-started resolver")
+	}
+}
+
+// TestOnUpsertPod_HostNetworkExcludedFromIPIndex 는 hostNetwork pod 의 IP (= node IP) 가 podByIP
+// 인덱스에 들어가지 않는 것을 검증한다 (#321). 인덱스에 들어가면 같은 노드의 hostNetwork pod 들이
+// 한 IP 를 서로 덮어써 node IP 트래픽 전체가 임의의 승자 pod 로 오귀속되고, enricher 의 cgroup
+// 역매핑 폴백 (#228) 이 우회된다. node IP 는 항상 Node 로 분류되어야 폴백이 결정적으로 동작한다.
+func TestOnUpsertPod_HostNetworkExcludedFromIPIndex(t *testing.T) {
+	r := newSeededResolver()
+	r.nodeByIP["192.168.1.10"] = "node-a"
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{UID: "uid-hn", Namespace: "kube-system", Name: "node-exporter-x"},
+		Spec:       corev1.PodSpec{HostNetwork: true, NodeName: "node-a"},
+		Status:     corev1.PodStatus{PodIP: "192.168.1.10"},
+	}
+	r.onUpsertPod(pod)
+
+	got := r.ResolveIP("192.168.1.10")
+	if !got.IsNode() {
+		t.Fatalf("hostNetwork pod upsert 후 node IP 가 Node 로 분류되지 않음: class=%q pod=%q", got.IdentityClass, got.PodName)
+	}
+
+	// podByUID 인덱스에는 남아야 cgroup 스캐너 (PodsOnNode) 와 gpuobs (ResolvePID) 경로가 유지된다.
+	id, ok := r.podByUID["uid-hn"]
+	if !ok {
+		t.Fatal("hostNetwork pod 가 podByUID 인덱스에서 빠짐 (cgroup 스캐너 경로 훼손)")
+	}
+	if !id.HostNetwork {
+		t.Errorf("podIdentity.HostNetwork=false, want true")
+	}
+
+	// 삭제 시에도 node 매핑이 훼손되지 않아야 한다.
+	r.onDeletePod(pod)
+	if _, ok := r.podByUID["uid-hn"]; ok {
+		t.Error("onDeletePod 후에도 podByUID 에 entry 잔존")
+	}
+	if got := r.ResolveIP("192.168.1.10"); !got.IsNode() {
+		t.Errorf("onDeletePod 후 node IP 분류가 깨짐: class=%q", got.IdentityClass)
+	}
+}
+
+// TestOnUpsertPod_RegularPodStillIndexed 는 hostNetwork 제외 가드가 일반 pod 의 IP 인덱싱을
+// 건드리지 않는지 회귀 가드한다.
+func TestOnUpsertPod_RegularPodStillIndexed(t *testing.T) {
+	r := newSeededResolver()
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{UID: "uid-reg", Namespace: "default", Name: "app-1"},
+		Spec:       corev1.PodSpec{NodeName: "node-a"},
+		Status:     corev1.PodStatus{PodIP: "10.0.0.7"},
+	}
+	r.onUpsertPod(pod)
+
+	got := r.ResolveIP("10.0.0.7")
+	if !got.IsPod() || got.PodName != "app-1" {
+		t.Fatalf("일반 pod IP 해석 실패: %+v", got)
+	}
+	if got.HostNetwork {
+		t.Error("일반 pod 의 HostNetwork=true")
 	}
 }
