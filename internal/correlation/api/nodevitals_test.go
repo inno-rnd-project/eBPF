@@ -46,6 +46,33 @@ func TestNodeVitals(t *testing.T) {
 	}
 }
 
+// TestNodeVitals_ControlPlane 은 limit 없는 pod 만 있는 노드 (control-plane) 에서도 allocatable
+// 분모로 값이 산출되는지 검증한다 (#313 회귀). limit 시리즈가 전혀 없어도 사용량과 allocatable 만
+// 으로 계산된다.
+func TestNodeVitals_ControlPlane(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("container_cpu_usage_seconds_total", sample(12.5, "node", "master")).
+		on("container_memory_working_set_bytes", sample(28.0, "node", "master"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodeVitals(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node-vitals?node=master", nil))
+	var resp NodeVitalsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.CPUPercent == nil || *resp.CPUPercent != 12.5 {
+		t.Errorf("cpu_percent=%v want 12.5 (limit 없이 산출)", resp.CPUPercent)
+	}
+	if resp.MemoryPercent == nil || *resp.MemoryPercent != 28.0 {
+		t.Errorf("memory_percent=%v want 28.0", resp.MemoryPercent)
+	}
+	// allocatable 분모는 max 집계여야 한다. KSM 롤링 중 동일 노드 시리즈 중복 시 sum 은 분모를
+	// 2배로 만들어 사용률이 반토막 난다 (fake 는 PromQL 미평가라 쿼리 형태로 회귀를 막는다).
+	if !q.sawQuery("max(kube_node_status_allocatable") {
+		t.Errorf("allocatable 분모가 max 집계가 아님: %v", q.queries)
+	}
+}
+
 // TestNodeVitals_MissingNode 는 node 파라미터 누락 시 400 을 검증한다.
 func TestNodeVitals_MissingNode(t *testing.T) {
 	h := NewSynthesisHandler(nodeVitalsQuerier(), nil, nil)
