@@ -3033,13 +3033,13 @@ const docTemplatecorrelation = `{
         "internal_correlation_api.OverviewPods": {
             "type": "object",
             "properties": {
-                "completed": {
-                    "type": "integer"
-                },
                 "live": {
                     "type": "integer"
                 },
                 "no_data": {
+                    "type": "integer"
+                },
+                "terminated": {
                     "type": "integer"
                 },
                 "total": {

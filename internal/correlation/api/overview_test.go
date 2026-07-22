@@ -46,9 +46,10 @@ func overviewFakeQuerier() *fakeQuerier {
 
 // TestOverview 는 카드 5장 (노드 3단, pod 커버리지, issues dedup, GPU fleet, weakest) 의 합성 판정을
 // 검증한다.
-// TestOverview_CompletedPodsExcluded 는 #314 의 종료 pod 집계를 검증한다. Succeeded 와 Failed 는
-// completed 로 세고 no_data 분모에서 제외되며, 실행 중 미관측 pod 만 no_data 로 남는다.
-func TestOverview_CompletedPodsExcluded(t *testing.T) {
+// TestOverview_TerminatedPodsExcluded 는 #314 의 종료 pod 집계를 검증한다. Succeeded 와 Failed 는
+// terminated 로 세고 no_data 분모에서 제외되며, 실행 중 미관측 pod 만 no_data 로 남는다. node-map
+// 의 completed (Succeeded 한정) 와 달리 상위 집합이라 terminated 로 명명한다.
+func TestOverview_TerminatedPodsExcluded(t *testing.T) {
 	q := (&fakeQuerier{}).
 		on("kube_pod_info",
 			sample(1, "namespace", "ns1", "pod", "running-observed", "node", "n1"),
@@ -68,8 +69,8 @@ func TestOverview_CompletedPodsExcluded(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.Pods.Total != 4 || resp.Pods.Live != 1 || resp.Pods.Completed != 2 || resp.Pods.NoData != 1 {
-		t.Errorf("pods=%+v want total 4 / live 1 / completed 2 / no_data 1", resp.Pods)
+	if resp.Pods.Total != 4 || resp.Pods.Live != 1 || resp.Pods.Terminated != 2 || resp.Pods.NoData != 1 {
+		t.Errorf("pods=%+v want total 4 / live 1 / terminated 2 / no_data 1", resp.Pods)
 	}
 }
 

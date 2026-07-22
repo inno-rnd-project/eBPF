@@ -38,13 +38,15 @@ type OverviewNodes struct {
 }
 
 // OverviewPods 는 pod 관측 커버리지 집계다. live 는 netobs eBPF 시리즈가 존재하는 pod (pods API 의
-// observed 와 동일 판정) 이고, completed 는 종료 pod (phase Succeeded/Failed, #314) 로 telemetry
-// 부재가 정상이라 no_data 분모에서 제외된다. no_data 는 실행 중 pod 기준의 나머지다.
+// observed 와 동일 판정) 이고, terminated 는 종료 pod (phase Succeeded/Failed, #314) 로 telemetry
+// 부재가 정상이라 no_data 분모에서 제외된다. no_data 는 실행 중 pod 기준의 나머지다. node-map 의
+// completed 상태는 Succeeded 만 가리키므로 (Failed 는 down), 상위 집합인 본 집계는 terminated 로
+// 명명해 의미 충돌을 피한다.
 type OverviewPods struct {
-	Total     int `json:"total"`
-	Live      int `json:"live"`
-	NoData    int `json:"no_data"`
-	Completed int `json:"completed"`
+	Total      int `json:"total"`
+	Live       int `json:"live"`
+	NoData     int `json:"no_data"`
+	Terminated int `json:"terminated"`
 }
 
 // OverviewIssues 는 firing alert 의 alertname 단위 집계다. 동일 alert 가 라벨만 다르게 다건 발화해도
@@ -153,7 +155,7 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// pod 관측 커버리지. pods API 의 observed 와 동일하게 netobs 시리즈 존재로 판정한다. #314
-	// 종료 pod (Succeeded/Failed) 는 telemetry 부재가 정상이라 completed 로 따로 세고 no-data
+	// 종료 pod (Succeeded/Failed) 는 telemetry 부재가 정상이라 terminated 로 따로 세고 no-data
 	// 분모에서 제외한다.
 	observed := map[[2]string]bool{}
 	for _, sm := range res[5] {
@@ -173,12 +175,12 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 		key := [2]string{sm.Labels["namespace"], sm.Labels["pod"]}
 		switch {
 		case terminal[key]:
-			resp.Pods.Completed++
+			resp.Pods.Terminated++
 		case observed[key]:
 			resp.Pods.Live++
 		}
 	}
-	resp.Pods.NoData = resp.Pods.Total - resp.Pods.Completed - resp.Pods.Live
+	resp.Pods.NoData = resp.Pods.Total - resp.Pods.Terminated - resp.Pods.Live
 
 	// issues: firing alert 의 alertname 단위 dedup 집계. severity 는 alert 규칙 정의라 동일
 	// alertname 내에서 균일하다.
@@ -235,5 +237,5 @@ func buildOverviewSummary(r OverviewResponse) string {
 	}
 	return fmt.Sprintf("노드 %d (정상 %d, 경고 %d, down %d), pod %d (관측 %d, no-data %d, 종료 %d), 이슈 %d (critical %d), 가장 약한 신호 %s",
 		r.Nodes.Total, r.Nodes.Healthy, r.Nodes.Warning, r.Nodes.Down,
-		r.Pods.Total, r.Pods.Live, r.Pods.NoData, r.Pods.Completed, r.Issues.Total, r.Issues.Critical, weak)
+		r.Pods.Total, r.Pods.Live, r.Pods.NoData, r.Pods.Terminated, r.Issues.Total, r.Issues.Critical, weak)
 }
