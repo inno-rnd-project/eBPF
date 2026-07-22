@@ -32,7 +32,9 @@ func nodeMapFakeQuerier() *fakeQuerier {
 			sample(1, "uid", "u2", "phase", "Failed"),
 			sample(1, "uid", "u3", "phase", "Running"),
 			sample(1, "uid", "u4", "phase", "Succeeded")).
-		on("netobs_pod_bytes_total", sample(3, "src_namespace", "ns1", "src_pod", "trainer"))
+		on("netobs_pod_bytes_total", sample(3, "src_namespace", "ns1", "src_pod", "trainer")).
+		// #320 사유 판별: gpu 노드만 netobs agent 배치.
+		on("netobs_bpf_program_loaded", sample(26, "node", "gpu"))
 }
 
 // TestNodeMap 은 노드 그리드 합성 (pod 수 내림차순 정렬, GPU 뱃지, 노드/pod 3단 상태, alert 매칭
@@ -60,8 +62,9 @@ func TestNodeMap(t *testing.T) {
 		t.Errorf("pods[0]=%+v want crashed down (phase Failed)", gpu.Pods[0])
 	}
 	// #314 정상 종료 Job pod 는 completed 로 분리된다 (telemetry 부재가 정상이라 live 오독 방지).
-	if gpu.Pods[1].Pod != "job-done" || gpu.Pods[1].Status != "completed" {
-		t.Errorf("pods[1]=%+v want job-done completed (phase Succeeded)", gpu.Pods[1])
+	// #320 종료 pod 는 no-data 사유가 생략된다.
+	if gpu.Pods[1].Pod != "job-done" || gpu.Pods[1].Status != "completed" || gpu.Pods[1].NoDataReason != "" {
+		t.Errorf("pods[1]=%+v want job-done completed (사유 생략)", gpu.Pods[1])
 	}
 	trainer := gpu.Pods[2]
 	if trainer.Status != "warning" || trainer.NoData {
@@ -74,6 +77,10 @@ func TestNodeMap(t *testing.T) {
 	worker := resp.Nodes[1]
 	if worker.Status != "healthy" || len(worker.Roles) != 1 || worker.Pods[0].Status != "live" || !worker.Pods[0].NoData {
 		t.Errorf("worker=%+v want healthy/roles1/live/no-data", worker)
+	}
+	// #320 worker1 은 agent 미배치라 no-data 사유가 agent_absent 다.
+	if worker.Pods[0].NoDataReason != "agent_absent" {
+		t.Errorf("worker no_data_reason=%q want agent_absent", worker.Pods[0].NoDataReason)
 	}
 }
 

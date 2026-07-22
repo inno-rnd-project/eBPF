@@ -44,12 +44,15 @@ type NodeMapPod struct {
 	Pod       string   `json:"pod"`
 	Status    string   `json:"status"`
 	NoData    bool     `json:"no_data,omitempty"`
+	// NoDataReason 은 NoData 일 때의 미관측 사유 분류다 (#320, pods API 의 unobserved_reason 과
+	// 동일 enum). 종료 pod 는 사유가 생략된다.
+	NoDataReason string `json:"no_data_reason,omitempty"`
 	Issues    []string `json:"issues,omitempty"`
 }
 
 // GetNodeMap godoc
 // @Summary      노드 그리드 (노드별 pod 상태 맵)
-// @Description  노드별 pod 목록에 4단 상태 (live/warning/down/completed) 와 관측 no-data, 해당 pod 를 가리키는 firing alertname 을 내장해 돌려준다. pod down 은 phase Failed/Unknown, warning 은 Pending 또는 firing alert 매칭, completed 는 phase Succeeded (정상 종료라 telemetry 부재가 정상, #314) 이며, issues 의 alertname 은 rca 와 playbooks 조회 입력과 호환된다. node 파라미터로 단일 노드를 조회하고 미등록 노드는 404 다. at 파라미터로 사건 시점의 그리드를 재구성할 수 있다.
+// @Description  노드별 pod 목록에 4단 상태 (live/warning/down/completed) 와 관측 no-data, 해당 pod 를 가리키는 firing alertname 을 내장해 돌려준다. pod down 은 phase Failed/Unknown, warning 은 Pending 또는 firing alert 매칭, completed 는 phase Succeeded (정상 종료라 telemetry 부재가 정상, #314) 이며, issues 의 alertname 은 rca 와 playbooks 조회 입력과 호환된다. no-data 뱃지에는 미관측 사유 (no_data_reason: agent_absent 는 노드에 netobs 미배치, host_network 는 IP 귀속 불가, no_data 는 시리즈 부재, #320) 가 붙는다. node 파라미터로 단일 노드를 조회하고 미등록 노드는 404 다. at 파라미터로 사건 시점의 그리드를 재구성할 수 있다.
 // @Tags         inventory
 // @Produce      json
 // @Param        node  query  string  false  "단일 노드 조회 (미등록 노드는 404)"
@@ -81,6 +84,8 @@ func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 		"kube_pod_info",
 		"kube_pod_status_phase",
 		"count by(src_namespace, src_pod) (netobs_pod_bytes_total)",
+		// #320 미관측 사유 판별용 netobs agent 배치 노드 집합.
+		"count by(node) (netobs_bpf_program_loaded)",
 	)
 
 	// 노드 골격. overview 와 동일 소스에서 ready / roles / GPU capacity / 압박을 모은다.
@@ -132,6 +137,12 @@ func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 			phase[sm.Labels["uid"]] = sm.Labels["phase"]
 		}
 	}
+	agentNodes := map[string]bool{}
+	for _, sm := range res[9] {
+		if nn := sm.Labels["node"]; nn != "" {
+			agentNodes[nn] = true
+		}
+	}
 	observed := map[[2]string]bool{}
 	for _, sm := range res[8] {
 		observed[[2]string{sm.Labels["src_namespace"], sm.Labels["src_pod"]}] = true
@@ -153,6 +164,10 @@ func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 			Issues:    podIssues(firing, ns, pod),
 		}
 		p.Status = podStatus(phase[sm.Labels["uid"]], len(p.Issues) > 0)
+		// #320 미관측 사유. 종료 pod (completed/down) 는 telemetry 부재가 정상이라 생략한다.
+		if p.NoData && !podTerminated(phase[sm.Labels["uid"]]) && phase[sm.Labels["uid"]] != "Unknown" {
+			p.NoDataReason = unobservedReason(node, sm.Labels["pod_ip"], sm.Labels["host_ip"], agentNodes)
+		}
 		n.Pods = append(n.Pods, p)
 	}
 
