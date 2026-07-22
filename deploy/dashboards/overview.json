@@ -455,7 +455,7 @@
       "id": 5,
       "type": "timeseries",
       "title": "4 카테고리 health score 시계열 (alert annotation 포함)",
-      "description": "cluster 단위 health score 의 1 시간 추세. alert firing 시점은 annotation 으로 표시.",
+      "description": "cluster 단위 health score 의 1 시간 추세. alert firing 시점은 annotation 으로 표시. 각 차원 산식은 위 스탯 패널 참조 (memory 는 위험 구간 매핑이라 사용률 0.80 이하에서 1.0 직선이 정상이다).",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 8,
@@ -529,7 +529,7 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "Pod cpu_throttle_score (limit 대비, $node)",
+      "title": "Pod cpu_throttle_score (CFS throttle, $node)",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 7,
@@ -567,7 +567,7 @@
           "targetBlank": true
         }
       ],
-      "description": "pod:cpu_throttle_score:5m (pod 스코프). 각 pod 의 CFS throttle 비율로, pod 자신의 cpu limit 대비 신호다 (#310). 1.0 근접은 해당 pod 의 CPU 공급 정체를 뜻하며 노드 CPU 여유와는 무관하다. 노드 스코프 health 스탯과 스코프가 달라 함께 봐도 모순이 아니다."
+      "description": "pod:cpu_throttle_score:5m (pod 스코프). 각 pod 의 CFS throttled/total periods 비율로, cpu limit 의 quota 에 걸려 throttle 된 기간의 빈도다 (#310, 사용량/limit 비율이 아님). 1.0 근접은 해당 pod 의 CPU 공급 정체를 뜻하며 노드 CPU 여유와는 무관하다. 노드 스코프 health 스탯과 스코프가 달라 함께 봐도 모순이 아니다."
     },
     {
       "id": 7,
