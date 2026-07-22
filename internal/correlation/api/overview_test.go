@@ -46,6 +46,33 @@ func overviewFakeQuerier() *fakeQuerier {
 
 // TestOverview 는 카드 5장 (노드 3단, pod 커버리지, issues dedup, GPU fleet, weakest) 의 합성 판정을
 // 검증한다.
+// TestOverview_CompletedPodsExcluded 는 #314 의 종료 pod 집계를 검증한다. Succeeded 와 Failed 는
+// completed 로 세고 no_data 분모에서 제외되며, 실행 중 미관측 pod 만 no_data 로 남는다.
+func TestOverview_CompletedPodsExcluded(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("kube_pod_info",
+			sample(1, "namespace", "ns1", "pod", "running-observed", "node", "n1"),
+			sample(1, "namespace", "ns1", "pod", "running-silent", "node", "n1"),
+			sample(1, "namespace", "ns1", "pod", "job-ok", "node", "n1"),
+			sample(1, "namespace", "ns1", "pod", "job-fail", "node", "n1")).
+		on("netobs_pod_bytes_total", sample(3, "src_namespace", "ns1", "src_pod", "running-observed")).
+		on("kube_pod_status_phase",
+			sample(1, "namespace", "ns1", "pod", "running-observed", "phase", "Running"),
+			sample(1, "namespace", "ns1", "pod", "running-silent", "phase", "Running"),
+			sample(1, "namespace", "ns1", "pod", "job-ok", "phase", "Succeeded"),
+			sample(1, "namespace", "ns1", "pod", "job-fail", "phase", "Failed"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetOverview(rec, httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil))
+	var resp OverviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Pods.Total != 4 || resp.Pods.Live != 1 || resp.Pods.Completed != 2 || resp.Pods.NoData != 1 {
+		t.Errorf("pods=%+v want total 4 / live 1 / completed 2 / no_data 1", resp.Pods)
+	}
+}
+
 func TestOverview(t *testing.T) {
 	h := NewSynthesisHandler(overviewFakeQuerier(), nil, nil)
 	rec := httptest.NewRecorder()

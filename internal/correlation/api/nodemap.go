@@ -36,7 +36,8 @@ type NodeMapNode struct {
 }
 
 // NodeMapPod 는 노드 칸 안의 한 pod 뱃지다. down 은 phase Failed/Unknown, warning 은 Pending 또는
-// 이 pod 를 가리키는 firing alert 존재, live 는 Running/Succeeded 다. NoData 는 pods API 의 observed
+// 이 pod 를 가리키는 firing alert 존재, completed 는 phase Succeeded (정상 종료라 telemetry 부재가
+// 정상, #314), live 는 Running 이다. NoData 는 pods API 의 observed
 // 반전과 동일 판정이다.
 type NodeMapPod struct {
 	Namespace string   `json:"namespace"`
@@ -48,7 +49,7 @@ type NodeMapPod struct {
 
 // GetNodeMap godoc
 // @Summary      노드 그리드 (노드별 pod 상태 맵)
-// @Description  노드별 pod 목록에 3단 상태 (live/warning/down) 와 관측 no-data, 해당 pod 를 가리키는 firing alertname 을 내장해 돌려준다. pod down 은 phase Failed/Unknown, warning 은 Pending 또는 firing alert 매칭이며, issues 의 alertname 은 rca 와 playbooks 조회 입력과 호환된다. node 파라미터로 단일 노드를 조회하고 미등록 노드는 404 다. at 파라미터로 사건 시점의 그리드를 재구성할 수 있다.
+// @Description  노드별 pod 목록에 4단 상태 (live/warning/down/completed) 와 관측 no-data, 해당 pod 를 가리키는 firing alertname 을 내장해 돌려준다. pod down 은 phase Failed/Unknown, warning 은 Pending 또는 firing alert 매칭, completed 는 phase Succeeded (정상 종료라 telemetry 부재가 정상, #314) 이며, issues 의 alertname 은 rca 와 playbooks 조회 입력과 호환된다. node 파라미터로 단일 노드를 조회하고 미등록 노드는 404 다. at 파라미터로 사건 시점의 그리드를 재구성할 수 있다.
 // @Tags         inventory
 // @Produce      json
 // @Param        node  query  string  false  "단일 노드 조회 (미등록 노드는 404)"
@@ -189,13 +190,16 @@ func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 	apicommon.WriteJSON(w, resp)
 }
 
-// podStatus 는 pod 3단 판정이다. phase 가 미상 (enrich 실패) 이면 alert 만으로 판정한다.
+// podStatus 는 pod 4단 판정이다 (#314 completed 추가). phase 가 미상 (enrich 실패) 이면 alert
+// 만으로 판정한다. Succeeded 는 stale alert 가 남아 있어도 completed 가 우선한다 (정상 종료).
 func podStatus(phase string, hasIssue bool) string {
 	switch phase {
 	case "Failed", "Unknown":
 		return "down"
 	case "Pending":
 		return "warning"
+	case "Succeeded":
+		return "completed"
 	}
 	if hasIssue {
 		return "warning"
@@ -225,14 +229,17 @@ func podIssues(firing []correlation.InstantSample, namespace, pod string) []stri
 
 // buildNodeMapSummary 는 그리드 규모와 경고 pod 수를 한 줄로 적는다.
 func buildNodeMapSummary(r NodeMapResponse) string {
-	pods, warned := 0, 0
+	pods, warned, completed := 0, 0, 0
 	for _, n := range r.Nodes {
 		pods += n.PodCount
 		for _, p := range n.Pods {
-			if p.Status != "live" {
+			switch p.Status {
+			case "warning", "down":
 				warned++
+			case "completed":
+				completed++
 			}
 		}
 	}
-	return fmt.Sprintf("노드 %d, pod %d (경고·down %d)", len(r.Nodes), pods, warned)
+	return fmt.Sprintf("노드 %d, pod %d (경고·down %d, 종료 %d)", len(r.Nodes), pods, warned, completed)
 }
