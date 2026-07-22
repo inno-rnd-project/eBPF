@@ -22,13 +22,16 @@ func TestPods_UnobservedReason(t *testing.T) {
 			// worker: 관측 성공 → 사유 생략.
 			sample(1, "namespace", "app", "pod", "seen", "uid", "u4", "node", "worker", "pod_ip", "172.16.0.6", "host_ip", "10.0.0.2"),
 			// worker: 종료 pod → 사유 생략 (#314 규약).
-			sample(1, "namespace", "app", "pod", "done", "uid", "u5", "node", "worker", "pod_ip", "172.16.0.7", "host_ip", "10.0.0.2")).
+			sample(1, "namespace", "app", "pod", "done", "uid", "u5", "node", "worker", "pod_ip", "172.16.0.7", "host_ip", "10.0.0.2"),
+			// worker: Unknown phase (노드 유실) → 상태 미상이라 사유 생략 (node-map 과 공용 조건).
+			sample(1, "namespace", "app", "pod", "lost", "uid", "u6", "node", "worker", "pod_ip", "172.16.0.8", "host_ip", "10.0.0.2")).
 		on("kube_pod_status_phase",
 			sample(1, "uid", "u1", "phase", "Running"),
 			sample(1, "uid", "u2", "phase", "Running"),
 			sample(1, "uid", "u3", "phase", "Running"),
 			sample(1, "uid", "u4", "phase", "Running"),
-			sample(1, "uid", "u5", "phase", "Succeeded")).
+			sample(1, "uid", "u5", "phase", "Succeeded"),
+			sample(1, "uid", "u6", "phase", "Unknown")).
 		on("netobs_pod_bytes_total", sample(3, "src_namespace", "app", "src_pod", "seen")).
 		on("netobs_bpf_program_loaded", sample(26, "node", "worker"))
 	h := NewSynthesisHandler(q, nil, nil)
@@ -38,7 +41,7 @@ func TestPods_UnobservedReason(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	want := map[string]string{"apiserver": "agent_absent", "cilium-x": "host_network", "silent": "no_data", "seen": "", "done": ""}
+	want := map[string]string{"apiserver": "agent_absent", "cilium-x": "host_network", "silent": "no_data", "seen": "", "done": "", "lost": ""}
 	for _, p := range resp.Pods {
 		if w, ok := want[p.Pod]; ok && p.UnobservedReason != w {
 			t.Errorf("%s reason=%q want %q", p.Pod, p.UnobservedReason, w)

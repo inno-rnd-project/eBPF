@@ -59,8 +59,9 @@ type PodInventory struct {
 	// 시리즈가 이 pod 에 존재하면 true, 없으면 no-data 로 판정한다.
 	Observed bool `json:"observed"`
 	// UnobservedReason 은 미관측 사유 분류다 (#320). agent_absent (노드에 netobs 미배치), host_network
-	// (pod IP 가 host IP 와 같아 IP 귀속 불가), no_data (관측 가능한데 시리즈 부재) 로 구분한다.
-	// observed=true 또는 종료 pod (telemetry 부재가 정상, #314) 는 생략된다.
+	// (pod IP 가 host IP 와 같아 IP 귀속이 성립하지 않음), no_data (관측 가능한데 시리즈 부재) 로
+	// 구분한다. host_network 는 확정이 아닌 시점 의존 분류로, cgroup 힌트 (#228) 가 TCP 트래픽에서
+	// 학습되면 observed=true (live) 로 전환될 수 있다. observed=true 와 종료/Unknown phase 는 생략된다.
 	UnobservedReason string `json:"unobserved_reason,omitempty"`
 }
 
@@ -78,9 +79,17 @@ func unobservedReason(node, podIP, hostIP string, agentNodes map[string]bool) st
 	}
 }
 
-// podTerminated 는 종료 phase (telemetry 부재가 정상인 상태, #314) 판정이다.
+// podTerminated 는 종료 phase (telemetry 부재가 정상인 상태, #314) 판정이다. overview 의
+// terminated 집계와 의미를 공유하므로 Unknown 을 포함하지 않는다.
 func podTerminated(phase string) bool {
 	return phase == "Succeeded" || phase == "Failed"
+}
+
+// unobservedReasonExempt 는 미관측 사유 판정을 생략하는 phase 다. 종료는 telemetry 부재가
+// 정상이고 (#314), Unknown 은 노드 유실 등으로 pod 상태 자체가 미상이라 사유 분류가 무의미하다.
+// pods API 와 node-map 이 같은 조건을 공유한다 (#320).
+func unobservedReasonExempt(phase string) bool {
+	return podTerminated(phase) || phase == "Unknown"
 }
 
 // NodesResponse 는 GET /api/v1/nodes 의 typed 응답이다.
@@ -212,7 +221,7 @@ func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
 
 // GetPods godoc
 // @Summary      파드 인벤토리
-// @Description  파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by), priority, phase, qos, 관측 커버리지(observed)를 kube-state-metrics 기반으로 돌려준다. observed 는 netobs 의 eBPF 시리즈가 존재하는지로, false 면 unobserved_reason 이 미관측 사유를 분류한다 (#320): agent_absent 는 노드에 netobs 미배치, host_network 는 pod IP 가 host IP 와 같아 IP 귀속 불가, no_data 는 관측 가능한데 시리즈 부재다. 종료 pod (phase Succeeded/Failed) 는 telemetry 부재가 정상이라 observed=false 에 사유가 생략된다 (#314). ?namespace 로 필터한다. 다른 API의 src_namespace/src_pod/pod_uid와 동일 키로 매핑한다.
+// @Description  파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by), priority, phase, qos, 관측 커버리지(observed)를 kube-state-metrics 기반으로 돌려준다. observed 는 netobs 의 eBPF 시리즈가 존재하는지로, false 면 unobserved_reason 이 미관측 사유를 분류한다 (#320): agent_absent 는 노드에 netobs 미배치, host_network 는 pod IP 가 host IP 와 같아 IP 귀속이 성립하지 않는 상태로 cgroup 힌트가 학습되면 live 로 전환될 수 있는 시점 의존 분류다. no_data 는 관측 가능한데 시리즈 부재다. 종료 pod (phase Succeeded/Failed) 는 telemetry 부재가 정상이라 observed=false 에 사유가 생략된다 (#314). ?namespace 로 필터한다. 다른 API의 src_namespace/src_pod/pod_uid와 동일 키로 매핑한다.
 // @Tags         inventory
 // @Produce      json
 // @Param        namespace  query  string  false  "namespace 필터 (생략 시 전체)"
@@ -293,8 +302,8 @@ func (h *SynthesisHandler) GetPods(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, p := range pods {
 		p.Observed = observed[[2]string{p.Namespace, p.Pod}]
-		// #320 미관측 사유. 관측 성공과 종료 pod (사유가 terminated 그 자체) 는 생략한다.
-		if !p.Observed && !podTerminated(p.Phase) {
+		// #320 미관측 사유. 관측 성공과 사유 판정이 무의미한 phase (종료 / Unknown) 는 생략한다.
+		if !p.Observed && !unobservedReasonExempt(p.Phase) {
 			p.UnobservedReason = unobservedReason(p.Node, p.PodIP, p.HostIP, agentNodes)
 		}
 	}
