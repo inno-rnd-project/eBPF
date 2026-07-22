@@ -6,8 +6,10 @@ metadata:
 spec:
   template:
     spec:
+      # netobs 는 전 노드 네트워크 관측이 목적이라 GPU 라벨을 요구하지 않는다 (#312). gpuobs 의
+      # selector 를 복사하면서 accelerator 가 섞여 워커 관측이 빠지던 결함의 수정으로, canary 라벨
+      # 단독 opt-in 이다.
       nodeSelector:
-        accelerator: nvidia
         observability.netobs/canary: "true"
       containers:
         - name: netobs-agent
