@@ -58,6 +58,8 @@ kube-state-metrics 와 cadvisor 와 node_exporter 는 kube-prometheus-stack 번�
    kubectl --context <ctx> label nodes <gpu-node...> accelerator=nvidia
    ```
 
+   dev overlay 를 쓰는 클러스터는 netobs 가 `observability.netobs/canary=true` 라벨 단독 opt-in 이라 (#312) 관측 대상 워커 전부에 canary 라벨을 부여한다. GPU 라벨은 gpuobs 전용이며 netobs 스케줄에 요구되지 않는다.
+
 4. GHCR pull secret 을 생성한다. namespace 는 netobs base 가 생성하지만 secret 을 먼저 두려면 namespace 를 선생성한다.
 
    ```sh
