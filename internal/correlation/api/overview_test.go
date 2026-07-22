@@ -34,6 +34,8 @@ func overviewFakeQuerier() *fakeQuerier {
 			sample(1, "namespace", "ns1", "pod", "trainer", "node", "gpu"),
 			sample(1, "namespace", "ns1", "pod", "idle", "node", "worker1"),
 			sample(1, "namespace", "ns2", "pod", "web", "node", "worker2")).
+		on("netobs_bpf_program_loaded",
+			sample(26, "node", "gpu"), sample(26, "node", "worker1"), sample(26, "node", "worker2")).
 		on("netobs_pod_bytes_total", sample(3, "src_namespace", "ns1", "src_pod", "trainer")).
 		on("kube_node_status_capacity",
 			sample(2, "node", "gpu", "resource", "nvidia_com_gpu", "instance", "ksm-a"),
@@ -61,7 +63,8 @@ func TestOverview_TerminatedPodsExcluded(t *testing.T) {
 			sample(1, "namespace", "ns1", "pod", "running-observed", "phase", "Running"),
 			sample(1, "namespace", "ns1", "pod", "running-silent", "phase", "Running"),
 			sample(1, "namespace", "ns1", "pod", "job-ok", "phase", "Succeeded"),
-			sample(1, "namespace", "ns1", "pod", "job-fail", "phase", "Failed"))
+			sample(1, "namespace", "ns1", "pod", "job-fail", "phase", "Failed")).
+		on("netobs_bpf_program_loaded", sample(26, "node", "n1"))
 	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
 	h.GetOverview(rec, httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil))

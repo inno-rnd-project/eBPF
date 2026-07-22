@@ -10,7 +10,7 @@ import (
 	"netobs/internal/correlation"
 )
 
-// overview 는 #249 의 랜딩 대시보드 요약 카드 API 다. 노드 3단 상태와 pod 관측 커버리지, firing
+// overview 는 #249 의 랜딩 대시보드 요약 카드 API 다. 노드 3단 상태와 pod 관측 커버리지 (구조적 미관측 unobservable 분리, #320), firing
 // alert severity 집계, GPU fleet, weakest signal 을 한 응답으로 합성해 랜딩 진입 시 프론트가 5~6개
 // 엔드포인트를 join 하던 것을 대체한다. 판정은 전부 기존 규약 (alert 라벨 매칭 #248, 압박 임계,
 // synthDimensions) 의 재사용이다.
@@ -39,14 +39,16 @@ type OverviewNodes struct {
 
 // OverviewPods 는 pod 관측 커버리지 집계다. live 는 netobs eBPF 시리즈가 존재하는 pod (pods API 의
 // observed 와 동일 판정) 이고, terminated 는 종료 pod (phase Succeeded/Failed, #314) 로 telemetry
-// 부재가 정상이라 no_data 분모에서 제외된다. no_data 는 실행 중 pod 기준의 나머지다. node-map 의
-// completed 상태는 Succeeded 만 가리키므로 (Failed 는 down), 상위 집합인 본 집계는 terminated 로
-// 명명해 의미 충돌을 피한다.
+// 부재가 정상이라 no_data 분모에서 제외된다. unobservable 은 구조적 미관측 (#320, agent 미배치
+// 또는 hostNetwork 로 IP 귀속 불가) 으로 관측 결함이 아니라 역시 분모에서 제외되며, no_data 는
+// 실행 중이고 관측 가능한 pod 기준의 나머지다. node-map 의 completed 상태는 Succeeded 만
+// 가리키므로 (Failed 는 down), 상위 집합인 본 집계는 terminated 로 명명해 의미 충돌을 피한다.
 type OverviewPods struct {
-	Total      int `json:"total"`
-	Live       int `json:"live"`
-	NoData     int `json:"no_data"`
-	Terminated int `json:"terminated"`
+	Total        int `json:"total"`
+	Live         int `json:"live"`
+	NoData       int `json:"no_data"`
+	Unobservable int `json:"unobservable"`
+	Terminated   int `json:"terminated"`
 }
 
 // OverviewIssues 는 firing alert 의 alertname 단위 집계다. 동일 alert 가 라벨만 다르게 다건 발화해도
@@ -112,6 +114,9 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 	// #314 종료 pod 구분용 phase. 기존 인덱스를 흔들지 않게 맨 뒤에 붙이고 == 1 로 활성 phase 만 받는다.
 	phaseIdx := len(queries)
 	queries = append(queries, "kube_pod_status_phase == 1")
+	// #320 미관측 사유 판별용 netobs agent 배치 노드 집합.
+	agentIdx := len(queries)
+	queries = append(queries, "count by(node) (netobs_bpf_program_loaded)")
 	res := h.queryParallel(evalCtx, queries...)
 
 	// 노드 3단 상태. ready / firing alert / 압박을 노드별로 모은 뒤 nodeStatus 로 판정한다.
@@ -167,6 +172,12 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 			terminal[[2]string{sm.Labels["namespace"], sm.Labels["pod"]}] = true
 		}
 	}
+	agentNodes := map[string]bool{}
+	for _, sm := range res[agentIdx] {
+		if n := sm.Labels["node"]; n != "" {
+			agentNodes[n] = true
+		}
+	}
 	for _, sm := range res[4] {
 		if sm.Labels["pod"] == "" {
 			continue
@@ -178,9 +189,12 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 			resp.Pods.Terminated++
 		case observed[key]:
 			resp.Pods.Live++
+		case unobservedReason(sm.Labels["node"], sm.Labels["pod_ip"], sm.Labels["host_ip"], agentNodes) != "no_data":
+			// #320 구조적 미관측 (agent 미배치 / hostNetwork) 은 관측 결함이 아니라 분리한다.
+			resp.Pods.Unobservable++
 		}
 	}
-	resp.Pods.NoData = resp.Pods.Total - resp.Pods.Terminated - resp.Pods.Live
+	resp.Pods.NoData = resp.Pods.Total - resp.Pods.Terminated - resp.Pods.Live - resp.Pods.Unobservable
 
 	// issues: firing alert 의 alertname 단위 dedup 집계. severity 는 alert 규칙 정의라 동일
 	// alertname 내에서 균일하다.
@@ -235,7 +249,7 @@ func buildOverviewSummary(r OverviewResponse) string {
 	if r.Weakest != nil {
 		weak = fmt.Sprintf("%s (health %.2f)", r.Weakest.Dimension, r.Weakest.Health)
 	}
-	return fmt.Sprintf("노드 %d (정상 %d, 경고 %d, down %d), pod %d (관측 %d, no-data %d, 종료 %d), 이슈 %d (critical %d), 가장 약한 신호 %s",
+	return fmt.Sprintf("노드 %d (정상 %d, 경고 %d, down %d), pod %d (관측 %d, no-data %d, 구조 미관측 %d, 종료 %d), 이슈 %d (critical %d), 가장 약한 신호 %s",
 		r.Nodes.Total, r.Nodes.Healthy, r.Nodes.Warning, r.Nodes.Down,
-		r.Pods.Total, r.Pods.Live, r.Pods.NoData, r.Pods.Terminated, r.Issues.Total, r.Issues.Critical, weak)
+		r.Pods.Total, r.Pods.Live, r.Pods.NoData, r.Pods.Unobservable, r.Pods.Terminated, r.Issues.Total, r.Issues.Critical, weak)
 }

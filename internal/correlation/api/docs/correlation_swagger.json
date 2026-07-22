@@ -864,7 +864,7 @@
         },
         "/api/v1/node-map": {
             "get": {
-                "description": "노드별 pod 목록에 4단 상태 (live/warning/down/completed) 와 관측 no-data, 해당 pod 를 가리키는 firing alertname 을 내장해 돌려준다. pod down 은 phase Failed/Unknown, warning 은 Pending 또는 firing alert 매칭, completed 는 phase Succeeded (정상 종료라 telemetry 부재가 정상, #314) 이며, issues 의 alertname 은 rca 와 playbooks 조회 입력과 호환된다. node 파라미터로 단일 노드를 조회하고 미등록 노드는 404 다. at 파라미터로 사건 시점의 그리드를 재구성할 수 있다.",
+                "description": "노드별 pod 목록에 4단 상태 (live/warning/down/completed) 와 관측 no-data, 해당 pod 를 가리키는 firing alertname 을 내장해 돌려준다. pod down 은 phase Failed/Unknown, warning 은 Pending 또는 firing alert 매칭, completed 는 phase Succeeded (정상 종료라 telemetry 부재가 정상, #314) 이며, issues 의 alertname 은 rca 와 playbooks 조회 입력과 호환된다. no-data 뱃지에는 미관측 사유 (no_data_reason: agent_absent 는 노드에 netobs 미배치, host_network 는 IP 귀속 불가 (cgroup 힌트 학습 시 live 전환 가능), no_data 는 시리즈 부재, #320) 가 붙는다. node 파라미터로 단일 노드를 조회하고 미등록 노드는 404 다. at 파라미터로 사건 시점의 그리드를 재구성할 수 있다.",
                 "produces": [
                     "application/json"
                 ],
@@ -1257,7 +1257,7 @@
         },
         "/api/v1/pods": {
             "get": {
-                "description": "파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by), priority, phase, qos, 관측 커버리지(observed)를 kube-state-metrics 기반으로 돌려준다. observed 는 netobs 의 eBPF 시리즈가 존재하는지로, false 면 관측 no-data pod 다. 종료 pod (phase Succeeded/Failed) 는 telemetry 부재가 정상이라 observed=false 가 결함이 아니다 (#314). ?namespace 로 필터한다. 다른 API의 src_namespace/src_pod/pod_uid와 동일 키로 매핑한다.",
+                "description": "파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by), priority, phase, qos, 관측 커버리지(observed)를 kube-state-metrics 기반으로 돌려준다. observed 는 netobs 의 eBPF 시리즈가 존재하는지로, false 면 unobserved_reason 이 미관측 사유를 분류한다 (#320): agent_absent 는 노드에 netobs 미배치, host_network 는 pod IP 가 host IP 와 같아 IP 귀속이 성립하지 않는 상태로 cgroup 힌트가 학습되면 live 로 전환될 수 있는 시점 의존 분류다. no_data 는 관측 가능한데 시리즈 부재다. 종료 pod (phase Succeeded/Failed) 는 telemetry 부재가 정상이라 observed=false 에 사유가 생략된다 (#314). ?namespace 로 필터한다. 다른 API의 src_namespace/src_pod/pod_uid와 동일 키로 매핑한다.",
                 "produces": [
                     "application/json"
                 ],
@@ -2787,6 +2787,10 @@
                 "no_data": {
                     "type": "boolean"
                 },
+                "no_data_reason": {
+                    "description": "NoDataReason 은 NoData 일 때의 미관측 사유 분류다 (#320, pods API 의 unobserved_reason 과\n동일 enum·생략 조건). host_network 는 cgroup 힌트 학습 시 live 로 전환될 수 있는 시점 의존\n분류다. 종료/Unknown phase 는 사유가 생략된다.",
+                    "type": "string"
+                },
                 "pod": {
                     "type": "string"
                 },
@@ -3037,6 +3041,9 @@
                 },
                 "total": {
                     "type": "integer"
+                },
+                "unobservable": {
+                    "type": "integer"
                 }
             }
         },
@@ -3254,6 +3261,10 @@
                     "type": "string"
                 },
                 "uid": {
+                    "type": "string"
+                },
+                "unobserved_reason": {
+                    "description": "UnobservedReason 은 미관측 사유 분류다 (#320). agent_absent (노드에 netobs 미배치), host_network\n(pod IP 가 host IP 와 같아 IP 귀속이 성립하지 않음), no_data (관측 가능한데 시리즈 부재) 로\n구분한다. host_network 는 확정이 아닌 시점 의존 분류로, cgroup 힌트 (#228) 가 TCP 트래픽에서\n학습되면 observed=true (live) 로 전환될 수 있다. observed=true 와 종료/Unknown phase 는 생략된다.",
                     "type": "string"
                 },
                 "workload_kind": {
