@@ -47,8 +47,10 @@ spec:
               # synchronize 를 매 step 호출하지 않아 GPU stream 큐가 풀로 채워지고 launch rate 가 최대화된다
     resources:
       limits:
+        ephemeral-storage: 1Gi
         nvidia.com/gpu: 1
         memory: 4Gi
       requests:
+        ephemeral-storage: 100Mi
         cpu: 200m
         memory: 1Gi

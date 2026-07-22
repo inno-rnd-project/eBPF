@@ -18,6 +18,15 @@ spec:
     - name: iperf3
       image: networkstatic/iperf3:latest
       imagePullPolicy: IfNotPresent
+      # #319 디스크 고갈 국면의 eviction 연쇄 방지. 테스트 워크로드 공통 ephemeral 상한.
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+          ephemeral-storage: 100Mi
+        limits:
+          memory: 256Mi
+          ephemeral-storage: 1Gi
       command: ["iperf3", "-s", "-p", "5201"]
       ports:
         - containerPort: 5201
@@ -52,6 +61,15 @@ spec:
     - name: iperf3
       image: networkstatic/iperf3:latest
       imagePullPolicy: IfNotPresent
+      # #319 디스크 고갈 국면의 eviction 연쇄 방지. 테스트 워크로드 공통 ephemeral 상한.
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+          ephemeral-storage: 100Mi
+        limits:
+          memory: 256Mi
+          ephemeral-storage: 1Gi
       # 16 parallel streams 로 sustained 트래픽 발생. 60s 동안 흐른 뒤 자연 종료. -P 16 으로 multi-CPU
       # 동시 sendmsg / recvmsg path 가 inc_flow_bytes / inc_pod_bytes 의 race window 를 자극.
       command:

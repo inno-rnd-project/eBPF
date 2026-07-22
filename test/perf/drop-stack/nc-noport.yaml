@@ -37,7 +37,9 @@ spec:
               done
           resources:
             requests:
+              ephemeral-storage: 100Mi
               cpu: 50m
               memory: 64Mi
             limits:
+              ephemeral-storage: 1Gi
               memory: 128Mi
