@@ -6,8 +6,12 @@ namespace: ebpf-project
 resources:
   - ../../base
 
+# #312 후속: 로컬 빌드 이미지는 빌드 호스트에만 존재해 Never 정책이 워커 스케줄 (drain,
+# eviction, 롤링) 시 ErrImageNeverPull 로 깨지므로 dev 도 ghcr 를 소스로 쓴다. netobs dev 와
+# 동일 규약이며, 워크플로가 bump 직후 image-push-all 을 항상 수행한다.
 images:
   - name: rca-summarizer
+    newName: ghcr.io/inno-rnd-project/rca-summarizer
     newTag: "2.3.1"
 
 patches:
