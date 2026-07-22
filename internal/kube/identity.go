@@ -30,6 +30,9 @@ type PodIdentity struct {
 	WorkloadKind  string
 	Workload      string
 	PodIP         string
+	// HostNetwork 는 hostNetwork pod 여부다 (#321). 이 pod 의 트래픽은 전용 veth 가 아닌 노드
+	// 공유 host 인터페이스를 지나므로 enricher 가 ifindex 힌트 학습 대상에서 제외한다.
+	HostNetwork bool
 }
 
 // Known은 PodIdentity가 미해결 상태가 아닌지 반환한다.
