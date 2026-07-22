@@ -562,9 +562,9 @@ type NodeResponse struct {
 	Pressure    map[string]float64 `json:"pressure"`
 	// Health 는 차원별 health score (0-1, #264) 다. node:*_health_score:5m 룰 기반이며 cluster
 	// health 와 동일 산식의 노드 차원 판이라 GPU 와 비GPU 노드가 같은 해석을 공유한다.
-	Health map[string]float64 `json:"health"`
-	Overall *float64          `json:"overall"`
-	Status  string            `json:"status"`
+	Health  map[string]float64 `json:"health"`
+	Overall *float64           `json:"overall"`
+	Status  string             `json:"status"`
 	// Confidence 는 dominant 차원 판정 신뢰도 (0-1, #264) 다. 압박 top1 과 top2 차원의 격차로,
 	// gpu-rca 의 신뢰도와 동일 축이라 한 차원이 지배적일수록 1 에 가깝다.
 	Confidence        float64           `json:"confidence"`

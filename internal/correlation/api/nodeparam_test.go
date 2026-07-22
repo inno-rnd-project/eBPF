@@ -17,13 +17,13 @@ func TestParseNodeParam(t *testing.T) {
 		}
 	}
 	invalid := []string{
-		`gpu"} or up{`, // PromQL injection 시도
-		"UPPER",        // 대문자
-		"node;drop",    // 세미콜론
-		"a/b",          // 슬래시
-		"-lead",        // 하이픈 시작
-		"trail-",       // 하이픈 끝
-		"a b",          // 공백
+		`gpu"} or up{`,           // PromQL injection 시도
+		"UPPER",                  // 대문자
+		"node;drop",              // 세미콜론
+		"a/b",                    // 슬래시
+		"-lead",                  // 하이픈 시작
+		"trail-",                 // 하이픈 끝
+		"a b",                    // 공백
 		strings.Repeat("a", 254), // 길이 초과
 	}
 	for _, v := range invalid {

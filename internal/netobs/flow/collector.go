@@ -58,13 +58,13 @@ func directionLabel(v uint8) string {
 // FlowGuard 의 allow-list 가 비어 있으면 iterate 자체 를 skip 한다. dstClassifier 는 dst 측 라벨 (dst_
 // namespace, dst_pod_uid) 의 master switch 와 allow-list 정책 을 그대로 차용 한다.
 type Collector struct {
-	bpfMap         atomic.Pointer[cebpf.Map]
-	cgroup         CgroupResolver
-	ip             IPResolver
-	guard          *metrics.FlowGuard
-	dstClassifier  *metadata.DstLabelClassifier
-	node           string
-	enabled        bool
+	bpfMap        atomic.Pointer[cebpf.Map]
+	cgroup        CgroupResolver
+	ip            IPResolver
+	guard         *metrics.FlowGuard
+	dstClassifier *metadata.DstLabelClassifier
+	node          string
+	enabled       bool
 
 	bytesDesc *prometheus.Desc
 

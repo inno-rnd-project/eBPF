@@ -39,7 +39,9 @@ func TestNodeFilter_ExactMatcher(t *testing.T) {
 		},
 		{
 			"latency-breakdown", "/api/v1/latency-breakdown?scope=node&node=gpu",
-			func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetLatencyBreakdown(rec, req) },
+			func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) {
+				h.GetLatencyBreakdown(rec, req)
+			},
 			`node="gpu"`,
 		},
 	}
@@ -75,7 +77,9 @@ func TestNodeFilter_InvalidNode(t *testing.T) {
 		{"gpu-status", "/api/v1/gpu-status?node=" + bad, func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetGpuStatus(rec, req) }},
 		{"drops", "/api/v1/drops?node=" + bad, func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetDrops(rec, req) }},
 		{"bandwidth", "/api/v1/bandwidth?node=" + bad, func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetBandwidth(rec, req) }},
-		{"latency-breakdown", "/api/v1/latency-breakdown?node=" + bad, func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetLatencyBreakdown(rec, req) }},
+		{"latency-breakdown", "/api/v1/latency-breakdown?node=" + bad, func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) {
+			h.GetLatencyBreakdown(rec, req)
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

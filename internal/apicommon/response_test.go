@@ -42,10 +42,10 @@ func TestWriteError(t *testing.T) {
 
 func TestParsePagination(t *testing.T) {
 	tests := []struct {
-		name        string
-		query       string
-		wantLimit   int
-		wantOffset  int
+		name       string
+		query      string
+		wantLimit  int
+		wantOffset int
 	}{
 		{"empty", "", PaginationDefaultLimit, 0},
 		{"normal", "limit=50&offset=10", 50, 10},

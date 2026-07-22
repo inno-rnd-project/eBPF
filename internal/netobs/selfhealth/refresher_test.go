@@ -13,11 +13,11 @@ func (f *fakeDropSource) Total() uint64 { return f.v }
 
 // fakeSizer 는 mapSizer 의 in-memory 구현이다.
 type fakeSizer struct {
-	name           string
-	entries        uint64
-	max            uint64
-	err            error
-	calls          int
+	name    string
+	entries uint64
+	max     uint64
+	err     error
+	calls   int
 }
 
 func (s *fakeSizer) Name() string       { return s.name }

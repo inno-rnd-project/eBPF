@@ -109,7 +109,9 @@ type toggleFakeNVML struct {
 	devices []toggleFakeDevice
 }
 
-func newToggleFakeNVML(devs []toggleFakeDevice) *toggleFakeNVML { return &toggleFakeNVML{devices: devs} }
+func newToggleFakeNVML(devs []toggleFakeDevice) *toggleFakeNVML {
+	return &toggleFakeNVML{devices: devs}
+}
 
 func (f *toggleFakeNVML) DeviceCount() (uint, error) { return uint(len(f.devices)), nil }
 func (f *toggleFakeNVML) Device(idx uint) (nvml.Device, error) {

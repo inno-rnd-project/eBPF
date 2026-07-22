@@ -172,12 +172,12 @@ func (d *fakeDevice) ProcessUtilization() ([]types.GPUProcessUtil, error) {
 	d.mu.Unlock()
 	return utils, nil
 }
-func (d *fakeDevice) MigMode() (types.MigMode, error)                           { return types.MigModeUnsupported, nil }
-func (d *fakeDevice) MaxMigDeviceCount() (int, error)                           { return 0, nil }
-func (d *fakeDevice) MigDevice(int) (nvml.Device, error)                        { return nil, nil }
-func (d *fakeDevice) IsMigDevice() (bool, error)                                { return false, nil }
-func (d *fakeDevice) GpuInstanceId() (uint32, error)                            { return 0, nil }
-func (d *fakeDevice) ComputeInstanceId() (uint32, error)                        { return 0, nil }
+func (d *fakeDevice) MigMode() (types.MigMode, error)    { return types.MigModeUnsupported, nil }
+func (d *fakeDevice) MaxMigDeviceCount() (int, error)    { return 0, nil }
+func (d *fakeDevice) MigDevice(int) (nvml.Device, error) { return nil, nil }
+func (d *fakeDevice) IsMigDevice() (bool, error)         { return false, nil }
+func (d *fakeDevice) GpuInstanceId() (uint32, error)     { return 0, nil }
+func (d *fakeDevice) ComputeInstanceId() (uint32, error) { return 0, nil }
 
 func (d *fakeDevice) closeCallCount() int {
 	d.mu.Lock()
@@ -946,10 +946,10 @@ type migFakeNVML struct {
 	parent *migFakeDevice
 }
 
-func (n *migFakeNVML) DeviceCount() (uint, error)            { return 1, nil }
-func (n *migFakeNVML) Device(_ uint) (nvml.Device, error)    { return n.parent, nil }
-func (n *migFakeNVML) DeviceUUID(_ uint) (string, error)     { return n.parent.info.UUID, nil }
-func (n *migFakeNVML) Shutdown() error                       { return nil }
+func (n *migFakeNVML) DeviceCount() (uint, error)         { return 1, nil }
+func (n *migFakeNVML) Device(_ uint) (nvml.Device, error) { return n.parent, nil }
+func (n *migFakeNVML) DeviceUUID(_ uint) (string, error)  { return n.parent.info.UUID, nil }
+func (n *migFakeNVML) Shutdown() error                    { return nil }
 
 // TestPollOnce_CollectsPodContention 는 #198 cgroup 경합 수집이 Pod 당 대표 PID 1회만 읽고 (다중 GPU
 // 프로세스 중복 read 회피) PSI 비율을 RecordPodContention 으로 전달하는지 검증한다.

@@ -15,10 +15,10 @@ import (
 // 안에서 통과시켜 각 분기가 정확한 라벨을 산출하는지 검증한다.
 //
 // 분기:
-//   1. cache hit: podMap 에 이미 적재된 PID → ResolvePID 호출 없이 visDev hit
-//   2. cache miss: podMap 미적재 PID → ResolvePID 호출 후 visDev hit
-//   3. visDev hit: BPF device_ord != UNKNOWN + visDev 매핑 있음 → ordinal-to-UUID 변환
-//   4. devmap fallback: device_ord == UNKNOWN 또는 visDev miss → devmap.lookup 으로 폴백
+//  1. cache hit: podMap 에 이미 적재된 PID → ResolvePID 호출 없이 visDev hit
+//  2. cache miss: podMap 미적재 PID → ResolvePID 호출 후 visDev hit
+//  3. visDev hit: BPF device_ord != UNKNOWN + visDev 매핑 있음 → ordinal-to-UUID 변환
+//  4. devmap fallback: device_ord == UNKNOWN 또는 visDev miss → devmap.lookup 으로 폴백
 func TestT3_DispatchHotPathBranches(t *testing.T) {
 	resetCudaMetrics(t)
 
