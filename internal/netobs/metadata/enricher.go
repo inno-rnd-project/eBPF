@@ -239,7 +239,10 @@ func (e *Enricher) rememberCgroupHint(cgroupID uint64, id kube.PodIdentity, now 
 }
 
 func (e *Enricher) rememberIfindexHint(ifindex uint32, id kube.PodIdentity, now time.Time) {
-	if ifindex == 0 || !id.IsPod() {
+	// hostNetwork pod 의 이벤트에 실리는 ifindex 는 전용 veth 가 아니라 노드 전체가 공유하는 host
+	// 인터페이스라, 힌트로 학습하면 kubelet 등 host 프로세스 트래픽까지 이 pod 로 오귀속된다 (#321).
+	// cgroup 힌트는 pod 고유 식별이라 그대로 학습한다.
+	if ifindex == 0 || !id.IsPod() || id.HostNetwork {
 		return
 	}
 

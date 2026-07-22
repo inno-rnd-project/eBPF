@@ -89,3 +89,75 @@ func TestApplyRuntimeHints_EgressRoutesToSrc(t *testing.T) {
 		t.Errorf("egress event 의 dst 가 Pod 로 잘못 덮여써짐: %+v", dst)
 	}
 }
+
+// TestRememberRuntimeHints_HostNetworkSkipsIfindexHint 는 hostNetwork pod 의 이벤트가 공유 host
+// 인터페이스 ifindex 를 힌트로 학습하지 않는 것을 검증한다 (#321). 학습되면 kubelet 등 host
+// 프로세스 트래픽이 ifindex 힌트를 타고 이 pod 로 오귀속된다. pod 고유 식별인 cgroup 힌트는
+// 그대로 학습되어야 한다.
+func TestRememberRuntimeHints_HostNetworkSkipsIfindexHint(t *testing.T) {
+	e := &Enricher{
+		runtimeByCgroup:   make(map[uint64]runtimeCacheEntry),
+		runtimeByIfindex:  make(map[uint32]runtimeCacheEntry),
+		runtimeTTL:        time.Minute,
+		runtimeSweepEvery: time.Minute,
+	}
+
+	hn := kube.PodIdentity{
+		IdentityClass: kube.IdentityClassPod,
+		Namespace:     "kube-system",
+		PodName:       "node-exporter-x",
+		PodUID:        "u-hn",
+		HostNetwork:   true,
+	}
+	now := time.Now()
+
+	// egress: hostNetwork pod 의 send path 는 물리 NIC 의 __dev_queue_xmit 을 지난다.
+	e.rememberRuntimeHints(types.Event{Stage: types.StageToDevQ, CgroupID: 0xaa, Ifindex: 2}, hn, kube.PodIdentity{}, now)
+	if _, ok := e.runtimeByCgroup[0xaa]; !ok {
+		t.Error("hostNetwork pod 의 cgroup 힌트가 학습되지 않음 (pod 고유 식별이라 학습되어야 함)")
+	}
+	if _, ok := e.runtimeByIfindex[2]; ok {
+		t.Error("hostNetwork pod 의 물리 NIC ifindex 가 힌트로 학습됨 (host 트래픽 오귀속 위험)")
+	}
+
+	// ingress: 수신 pod (dst) 의 skb_iif 도 동일하게 차단되어야 한다.
+	e.rememberRuntimeHints(types.Event{Stage: types.StageRcvDemux, CgroupID: 0xbb, SkbIif: 2}, kube.PodIdentity{}, hn, now)
+	if _, ok := e.runtimeByIfindex[2]; ok {
+		t.Error("hostNetwork pod 의 skb_iif 가 힌트로 학습됨")
+	}
+}
+
+// TestApplyRuntimeHints_NodeSrcReattributedViaScanner 는 #321 의 수용 기준이다. node IP 로 분류된
+// src 가 cgroup 역매핑 테이블 (#228 스캐너) 로 pod 에 재귀속되고, kubepods 밖 cgroup (kubelet 등
+// host 프로세스) 은 테이블 미스로 기존 host 분류를 유지한다.
+func TestApplyRuntimeHints_NodeSrcReattributedViaScanner(t *testing.T) {
+	e := &Enricher{
+		runtimeByCgroup:   make(map[uint64]runtimeCacheEntry),
+		runtimeByIfindex:  make(map[uint32]runtimeCacheEntry),
+		runtimeTTL:        time.Minute,
+		runtimeSweepEvery: time.Minute,
+	}
+	sc := NewCgroupScanner(nil, "node-a", "/nonexistent")
+	table := map[uint64]kube.PodIdentity{
+		0xc1: {IdentityClass: kube.IdentityClassPod, Namespace: "kube-system", PodName: "cilium-x", PodUID: "u-c", NodeName: "node-a", HostNetwork: true},
+	}
+	sc.table.Store(&table)
+	e.SetCgroupScanner(sc)
+
+	nodeSrc := kube.PodIdentity{IdentityClass: kube.IdentityClassNode, NodeName: "node-a", PodIP: "192.168.1.10"}
+	now := time.Now()
+
+	src, _ := e.applyRuntimeHints(types.Event{Stage: types.StageSendmsgRet, CgroupID: 0xc1}, "192.168.1.10", "10.0.0.9", nodeSrc, kube.PodIdentity{}, now)
+	if !src.IsPod() || src.PodName != "cilium-x" {
+		t.Fatalf("node 분류 src 가 스캐너 폴백으로 재귀속되지 않음: %+v", src)
+	}
+	if src.PodIP != "192.168.1.10" {
+		t.Errorf("재귀속된 src 의 관측 IP 미보강: %q", src.PodIP)
+	}
+
+	// kubepods 밖 host 프로세스: 테이블 미스로 host 분류 유지.
+	src, _ = e.applyRuntimeHints(types.Event{Stage: types.StageSendmsgRet, CgroupID: 0xdd}, "192.168.1.10", "10.0.0.9", nodeSrc, kube.PodIdentity{}, now)
+	if !src.IsNode() {
+		t.Errorf("host 프로세스 (테이블 미스) 의 src 가 host 분류를 유지하지 않음: %+v", src)
+	}
+}
