@@ -993,7 +993,7 @@ const docTemplatecorrelation = `{
         },
         "/api/v1/node/{node}/pods": {
             "get": {
-                "description": "노드에 스케줄된 pod 별로 신원 (namespace 와 pod 와 uid) 과 CPU (limit 대비 percent 와 절대량 cores), memory (limit 대비 percent 와 working set bytes), network bytes rate (netobs pod bytes 의 5분 rate 합산) 와 상태를 한 응답으로 돌려준다. percent 는 limit 분모라 limit 없는 pod 는 생략되고 절대량 필드로 표현된다 (#328 과 동일 규약). severity 는 pod pressure score 3종 최대의 환산 (low/elevated/high) 이고, 종료 pod 와 미관측 사유 (unobserved_reason) 는 pods API 의 규약 (#314, #320) 을 그대로 쓴다. 정렬은 namespace 와 pod 사전순으로 결정적이며 이상 우선 정렬은 severity 를 근거로 표시 계층이 수행한다. at 파라미터로 사건 시점을 재구성할 수 있다.",
+                "description": "노드에 스케줄된 pod 별로 신원 (namespace 와 pod 와 uid) 과 CPU (limit 대비 percent 와 절대량 cores), memory (limit 대비 percent 와 working set bytes), network bytes rate (netobs pod bytes 의 5분 rate 합산) 와 상태를 한 응답으로 돌려준다. percent 는 limit 분모라 limit 없는 pod 는 생략되고 절대량 필드로 표현된다 (#328 과 동일 규약). severity 는 pod pressure score 3종 최대의 환산 (low/elevated/high) 이고, 종료 pod 와 미관측 사유 (unobserved_reason) 는 pods API 의 규약 (#314, #320) 을 그대로 쓴다. 관측 판정 소스는 rate 결과 존재라 (pods API 는 시리즈 존재) 카운터 샘플이 부족한 신규 pod 의 짧은 창에서는 여기서만 일시적으로 사유가 붙을 수 있고 1분 내 자연 수렴한다. 정렬은 namespace 와 pod 사전순으로 결정적이며 이상 우선 정렬은 severity 를 근거로 표시 계층이 수행한다. at 파라미터로 사건 시점을 재구성할 수 있다.",
                 "produces": [
                     "application/json"
                 ],
