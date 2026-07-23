@@ -991,6 +991,47 @@ const docTemplatecorrelation = `{
                 }
             }
         },
+        "/api/v1/node/{node}/pods": {
+            "get": {
+                "description": "노드에 스케줄된 pod 별로 신원 (namespace 와 pod 와 uid) 과 CPU (limit 대비 percent 와 절대량 cores), memory (limit 대비 percent 와 working set bytes), network bytes rate (netobs pod bytes 의 5분 rate 합산) 와 상태를 한 응답으로 돌려준다. percent 는 limit 분모라 limit 없는 pod 는 생략되고 절대량 필드로 표현된다 (#328 과 동일 규약). severity 는 pod pressure score 3종 최대의 환산 (low/elevated/high) 이고, 종료 pod 와 미관측 사유 (unobserved_reason) 는 pods API 의 규약 (#314, #320) 을 그대로 쓴다. 관측 판정 소스는 rate 결과 존재라 (pods API 는 시리즈 존재) 카운터 샘플이 부족한 신규 pod 의 짧은 창에서는 여기서만 일시적으로 사유가 붙을 수 있고 1분 내 자연 수렴한다. 정렬은 namespace 와 pod 사전순으로 결정적이며 이상 우선 정렬은 severity 를 근거로 표시 계층이 수행한다. at 파라미터로 사건 시점을 재구성할 수 있다.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "interference"
+                ],
+                "summary": "노드 하위 pod별 자원 사용량 목록",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "노드 이름 (DNS-1123 형식)",
+                        "name": "node",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)",
+                        "name": "at",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_correlation_api.NodePodsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/node/{node}/resources": {
             "get": {
                 "description": "노드의 리소스 종류별 (cpu 와 memory 와 pods 와 gpu) capacity 와 allocatable, 노드 내 pod 의 requests/limits 합산, 현재 usage (cpu 는 5분 rate cores, memory 는 working set bytes, pods 는 현재 pod 수) 와 활용률 (usage/allocatable, gpu 는 device 사용률 평균 0-1) 을 한 응답으로 합성한다. 단위는 kube-state 원단위 (cpu core, memory byte, pods 와 gpu 개수) 를 따르고 결측 리소스는 엔트리가 생략된다.",
@@ -2834,6 +2875,64 @@ const docTemplatecorrelation = `{
                 },
                 "pressure": {
                     "type": "number"
+                }
+            }
+        },
+        "internal_correlation_api.NodePodUsage": {
+            "type": "object",
+            "properties": {
+                "cpu_percent": {
+                    "type": "number"
+                },
+                "cpu_usage_cores": {
+                    "type": "number"
+                },
+                "memory_percent": {
+                    "type": "number"
+                },
+                "memory_working_set_bytes": {
+                    "type": "number"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "network_bytes_per_sec": {
+                    "type": "number"
+                },
+                "phase": {
+                    "type": "string"
+                },
+                "pod": {
+                    "type": "string"
+                },
+                "severity": {
+                    "type": "string"
+                },
+                "uid": {
+                    "type": "string"
+                },
+                "unobserved_reason": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_correlation_api.NodePodsResponse": {
+            "type": "object",
+            "properties": {
+                "generated_at": {
+                    "type": "string"
+                },
+                "node": {
+                    "type": "string"
+                },
+                "pods": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_correlation_api.NodePodUsage"
+                    }
+                },
+                "summary": {
+                    "type": "string"
                 }
             }
         },
