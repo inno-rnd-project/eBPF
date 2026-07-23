@@ -570,6 +570,12 @@ func nodeIPs(n corev1.Node) []string {
 func podIdentity(p corev1.Pod) PodIdentity {
 	kind, workload := ownerInfo(p)
 
+	// static pod 의 cgroup 디렉터리는 mirror pod UID 가 아닌 config hash 로 만들어진다 (#341).
+	cgroupUID := string(p.UID)
+	if h := p.Annotations["kubernetes.io/config.hash"]; h != "" {
+		cgroupUID = h
+	}
+
 	return PodIdentity{
 		IdentityClass: IdentityClassPod,
 		Namespace:     p.Namespace,
@@ -580,6 +586,7 @@ func podIdentity(p corev1.Pod) PodIdentity {
 		Workload:      workload,
 		PodIP:         p.Status.PodIP,
 		HostNetwork:   p.Spec.HostNetwork,
+		CgroupUID:     cgroupUID,
 	}
 }
 

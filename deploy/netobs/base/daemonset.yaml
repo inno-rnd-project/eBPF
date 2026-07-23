@@ -24,8 +24,14 @@ spec:
       # 전 노드 관측이 목적이라 해당 taint 를 key 기준으로 허용해 GPU 노드 관측 공백을 막는다.
       # effect 와 value 를 생략해 GPU Operator 구성별 변형을 모두 수용하며, GPU 외 커스텀 taint
       # (전용 노드풀 등) 는 클러스터별 overlay 의 몫이다.
+      # control-plane taint 는 스케줄 허용만 한다 (#341). 실제 배치는 overlay 의 opt-in 라벨
+      # (nodeSelector) 이 결정하므로 라벨을 붙이지 않는 클러스터는 현행 그대로 제외된다. apiserver
+      # 와 etcd 통신은 클러스터 장애의 근원이라 관측 가치가 높고, master 의 hostNetwork pod 귀속은
+      # cgroup 역매핑 (#321) 이 담당한다.
       tolerations:
         - key: nvidia.com/gpu
+          operator: Exists
+        - key: node-role.kubernetes.io/control-plane
           operator: Exists
       containers:
         - name: netobs-agent

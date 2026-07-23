@@ -33,6 +33,10 @@ type PodIdentity struct {
 	// HostNetwork 는 hostNetwork pod 여부다 (#321). 이 pod 의 트래픽은 전용 veth 가 아닌 노드
 	// 공유 host 인터페이스를 지나므로 enricher 가 ifindex 힌트 학습 대상에서 제외한다.
 	HostNetwork bool
+	// CgroupUID 는 host cgroup 계층의 pod 디렉터리 명에 쓰이는 UID 다 (#341). static pod (etcd 와
+	// kube-apiserver 등) 는 kubelet 이 API 의 mirror pod UID 가 아닌 config hash 를 cgroup 경로에
+	// 쓰므로 kubernetes.io/config.hash annotation 값을 담는다. 일반 pod 는 PodUID 와 같다.
+	CgroupUID string
 }
 
 // Known은 PodIdentity가 미해결 상태가 아닌지 반환한다.

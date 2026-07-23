@@ -57,7 +57,13 @@ func (c *CgroupScanner) scan() {
 	pods := c.kr.PodsOnNode(c.node)
 	next := make(map[uint64]kube.PodIdentity, len(pods)*3)
 	for _, id := range pods {
-		for _, ino := range kube.PodCgroupInodes(id.PodUID, c.root) {
+		// static pod 는 cgroup 디렉터리 명이 mirror pod UID 가 아닌 config hash 라 CgroupUID 를
+		// 우선한다 (#341). 직접 시딩된 identity (테스트 등) 는 PodUID 로 폴백한다.
+		uid := id.CgroupUID
+		if uid == "" {
+			uid = id.PodUID
+		}
+		for _, ino := range kube.PodCgroupInodes(uid, c.root) {
 			next[ino] = id
 		}
 	}

@@ -78,3 +78,26 @@ func TestCgroupScanner_NilResolver(t *testing.T) {
 		t.Errorf("빈 스캐너인데 Lookup ok=true")
 	}
 }
+
+// TestCgroupScanner_StaticPodConfigHash 는 static pod 의 cgroup 귀속을 검증한다 (#341). kubelet 은
+// static pod 의 cgroup 디렉터리를 mirror pod UID 가 아닌 config hash 로 만들므로, 스캐너가
+// CgroupUID (config.hash annotation 유래) 를 우선해 inode 를 찾아야 etcd 와 kube-apiserver 귀속이
+// 성립한다.
+func TestCgroupScanner_StaticPodConfigHash(t *testing.T) {
+	root := t.TempDir()
+	hash := "b79b63867b08f914e18ce4cb04a1b819"
+	slice := filepath.Join(root, "kubepods.slice", "kubepods-burstable.slice",
+		"kubepods-burstable-pod"+hash+".slice")
+	if err := os.MkdirAll(slice, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// mirror pod UID 로는 디렉터리가 없고 config hash 로만 존재한다.
+	if got := kube.PodCgroupInodes("d06f5d6c-02ec-4d10-b32b-bb267e4b6b4c", root); len(got) != 0 {
+		t.Fatalf("mirror UID 로 inode 발견: %v (픽스처 오류)", got)
+	}
+	inodes := kube.PodCgroupInodes(hash, root)
+	if len(inodes) != 1 || inodes[0] != dirIno(t, slice) {
+		t.Fatalf("config hash inode=%v want 슬라이스 1개", inodes)
+	}
+}
