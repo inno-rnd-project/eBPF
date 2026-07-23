@@ -747,7 +747,9 @@ func composeNodeStatus(pressureGrade string, usage []float64, health map[string]
 // memory 의 node pressure 는 node_exporter 실측 사용률 (0~1) 이라 일반 임계 (0.4/0.7) 로는 정상
 // 상주 사용률이 경고로 과민 판정되어 node-map (블렌딩 pressure 기준 healthy) 과 모순됐다. health
 // 의 위험 구간 매핑 (0.80 이하 불감대, #286) 과 usage 축 임계 (#325) 의 설계와 정합하도록 memory
-// 만 usage 임계 (0.85/0.95) 로 환산한다. memory 재척도로 dominant (최대값) 차원의 등급이 최악
+// 만 usage 임계 (0.85/0.95) 로 환산한다. cpu (throttle) 와 network (drop/retrans) 와 gpu
+// (host_compute_stall) 는 문제 신호 기반 score 라 일반 임계가 타당하며, 실측 사용률인 memory 만
+// 재척도 대상이다. memory 재척도로 dominant (최대값) 차원의 등급이 최악
 // 등급과 어긋날 수 있어 dominant 한 차원이 아니라 전 차원을 등급화해 worst 를 취한다.
 func nodePressureGrade(pressure map[string]float64) string {
 	grade := ""
