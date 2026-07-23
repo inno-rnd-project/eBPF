@@ -76,6 +76,17 @@ func TestPodDetail(t *testing.T) {
 	if resp.Vitals.CPUUsageCores == nil || *resp.Vitals.CPUUsageCores != 42.5 {
 		t.Errorf("cpu_usage_cores=%v want 42.5", resp.Vitals.CPUUsageCores)
 	}
+	// cadvisor 계열 sum 은 pod-level 행 가드 (container="") 를 붙여 표준 cadvisor 구성의 두 계층
+	// 중복 합산을 막고, spec 계열 (quota) 은 pod-level 행이 없는 구성 대비로 가드 없이 조회한다.
+	q := podDetailQuerier()
+	h = NewSynthesisHandler(q, nil, nil)
+	h.GetPodDetail(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/pod/ml/train-a", nil))
+	if !q.sawQuery(`container_memory_working_set_bytes{namespace="ml", pod="train-a", container=""}`) {
+		t.Error(`cadvisor sum 쿼리에 container="" 가드 부재 (계층 중복 합산 위험)`)
+	}
+	if !q.sawQuery(`container_spec_cpu_quota{namespace="ml", pod="train-a"}`) {
+		t.Error("spec 계열 (max) 은 가드 없이 조회되어야 함 (pod-level 행 부재 구성 대비)")
+	}
 	if !strings.Contains(resp.Summary, "ml/train-a") || !strings.Contains(resp.Summary, "throttle 12%") {
 		t.Errorf("summary=%q want 종합 요약", resp.Summary)
 	}

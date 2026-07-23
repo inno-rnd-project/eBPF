@@ -126,6 +126,11 @@ func (h *SynthesisHandler) GetPodDetail(w http.ResponseWriter, r *http.Request) 
 	// src_namespace/src_pod, kube/cadvisor 계열은 namespace/pod 라벨 규약을 쓴다.
 	srcSel := fmt.Sprintf(`{src_namespace=%q, src_pod=%q}`, ns, pod)
 	kubeSel := fmt.Sprintf(`{namespace=%q, pod=%q}`, ns, pod)
+	// cadvisorSel 은 cadvisor 계열 sum 쿼리 전용이다. 표준 cadvisor 구성은 pod-level (container="")
+	// 행과 container-level 행을 병존 노출해 무필터 sum 이 두 계층을 중복 합산하므로 pod-level 행으로
+	// 한정한다 (node-vitals / node-resources 와 동일 규약). spec 계열 (quota / period) 은 pod-level
+	// 행이 없는 구성에서 가드가 필드를 지우는 회귀가 되고 max 라 중복에 안전해 kubeSel 을 유지한다.
+	cadvisorSel := fmt.Sprintf(`{namespace=%q, pod=%q, container=""}`, ns, pod)
 	limitSel := func(resource string) string {
 		return fmt.Sprintf(`{namespace=%q, pod=%q, resource=%q}`, ns, pod, resource)
 	}
@@ -135,11 +140,11 @@ func (h *SynthesisHandler) GetPodDetail(w http.ResponseWriter, r *http.Request) 
 		"pod:cpu_throttle_score:5m"+srcSel,
 		"pod:memory_pressure_score:5m"+srcSel,
 		"pod:network_pressure_score:5m"+srcSel,
-		fmt.Sprintf("sum(rate(container_cpu_usage_seconds_total%s[5m])) / sum(kube_pod_container_resource_limits%s) * 100", kubeSel, limitSel("cpu")),
-		fmt.Sprintf("sum(container_memory_working_set_bytes%s) / sum(kube_pod_container_resource_limits%s) * 100", kubeSel, limitSel("memory")),
-		"sum(container_memory_working_set_bytes"+kubeSel+")",
-		fmt.Sprintf("sum(increase(container_cpu_cfs_throttled_periods_total%s[5m]))", kubeSel),
-		fmt.Sprintf("sum(increase(container_cpu_cfs_periods_total%s[5m]))", kubeSel),
+		fmt.Sprintf("sum(rate(container_cpu_usage_seconds_total%s[5m])) / sum(kube_pod_container_resource_limits%s) * 100", cadvisorSel, limitSel("cpu")),
+		fmt.Sprintf("sum(container_memory_working_set_bytes%s) / sum(kube_pod_container_resource_limits%s) * 100", cadvisorSel, limitSel("memory")),
+		"sum(container_memory_working_set_bytes"+cadvisorSel+")",
+		fmt.Sprintf("sum(increase(container_cpu_cfs_throttled_periods_total%s[5m]))", cadvisorSel),
+		fmt.Sprintf("sum(increase(container_cpu_cfs_periods_total%s[5m]))", cadvisorSel),
 		"sum(kube_pod_container_resource_limits"+limitSel("cpu")+")",
 		"max(container_spec_cpu_quota"+kubeSel+")",
 		"max(container_spec_cpu_period"+kubeSel+")",
@@ -147,7 +152,7 @@ func (h *SynthesisHandler) GetPodDetail(w http.ResponseWriter, r *http.Request) 
 		fmt.Sprintf(`sum(rate(netobs_pod_stage_events_labeled_total{stage="drop", src_namespace=%q, src_pod=%q}[5m]))`, ns, pod),
 		"max(netobs_tcp_state_max_srtt_seconds"+kubeSel+")",
 		// #328 CPU 절대 사용량 (cores). limit 분모 percent 와 달리 limit 유무와 무관하게 산출된다.
-		fmt.Sprintf("sum(rate(container_cpu_usage_seconds_total%s[5m]))", kubeSel),
+		fmt.Sprintf("sum(rate(container_cpu_usage_seconds_total%s[5m]))", cadvisorSel),
 	)
 
 	if len(res[0]) > 0 {
