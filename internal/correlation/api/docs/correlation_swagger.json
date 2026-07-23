@@ -1209,7 +1209,7 @@
         },
         "/api/v1/pod/{namespace}/{pod}": {
             "get": {
-                "description": "단일 pod 의 기본 정보 (uid 와 node 와 pod_ip 와 owner) 와 차원별 health 3종 (pod 단위 pressure score 의 1 - score 환산), vitals (limit 대비 CPU 와 memory 사용률과 working set), cgroup CPU throttle 상세 (throttled 비율과 5분 throttled/total periods 와 limit cores, cadvisor 가 노출하는 클러스터에서는 quota 와 period), 네트워크 종합 (pod 입도 재전송과 drop rate, 최대 smoothed RTT) 을 한 응답으로 합성한다. RTT 는 분위수가 아닌 최대값이라 필드명이 max_srtt_seconds 다. 미관측 pod 는 필드 생략과 summary 사유로 graceful 처리한다.",
+                "description": "단일 pod 의 기본 정보 (uid 와 node 와 pod_ip 와 owner) 와 차원별 health 3종 (pod 단위 pressure score 의 1 - score 환산), vitals (limit 대비 CPU 와 memory 사용률과 working set, CPU 절대 사용량), cgroup CPU throttle 상세 (throttled 비율과 5분 throttled/total periods 와 limit cores, cadvisor 가 노출하는 클러스터에서는 quota 와 period), 네트워크 종합 (pod 입도 재전송과 drop rate, 최대 smoothed RTT) 을 한 응답으로 합성한다. cpu_percent 는 limit 대비 비율이고 cpu_usage_cores 는 5분 rate 의 절대량 (cores) 이라 limit 없는 pod 는 cores 만 존재한다 (#328, memory 의 working set 절대값과 대칭). RTT 는 분위수가 아닌 최대값이라 필드명이 max_srtt_seconds 다. 미관측 pod 는 필드 생략과 summary 사유로 graceful 처리한다.",
                 "produces": [
                     "application/json"
                 ],
@@ -3344,6 +3344,9 @@
             "type": "object",
             "properties": {
                 "cpu_percent": {
+                    "type": "number"
+                },
+                "cpu_usage_cores": {
                     "type": "number"
                 },
                 "memory_percent": {

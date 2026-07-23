@@ -37,9 +37,12 @@ type PodDetailResponse struct {
 }
 
 // PodVitals 는 사용률 스냅샷이다. CPU 와 memory 퍼센트는 limit 대비 비율이라 limit 미설정 pod 는
-// 생략된다.
+// 생략된다. CPUUsageCores 는 5분 rate 의 CPU 절대 사용량 (cores) 으로 limit 유무와 무관하게
+// 산출되어 (#328), limit 없는 pod (CNI 와 kube-proxy 등) 도 memory 의 working set 절대값과 대칭으로
+// CPU 수치를 갖는다.
 type PodVitals struct {
 	CPUPercent            *float64 `json:"cpu_percent,omitempty"`
+	CPUUsageCores         *float64 `json:"cpu_usage_cores,omitempty"`
 	MemoryPercent         *float64 `json:"memory_percent,omitempty"`
 	MemoryWorkingSetBytes *float64 `json:"memory_working_set_bytes,omitempty"`
 }
@@ -84,7 +87,7 @@ func parseNamespacePodPath(rest string) (string, string, error) {
 
 // GetPodDetail godoc
 // @Summary      pod 단위 종합 상세
-// @Description  단일 pod 의 기본 정보 (uid 와 node 와 pod_ip 와 owner) 와 차원별 health 3종 (pod 단위 pressure score 의 1 - score 환산), vitals (limit 대비 CPU 와 memory 사용률과 working set), cgroup CPU throttle 상세 (throttled 비율과 5분 throttled/total periods 와 limit cores, cadvisor 가 노출하는 클러스터에서는 quota 와 period), 네트워크 종합 (pod 입도 재전송과 drop rate, 최대 smoothed RTT) 을 한 응답으로 합성한다. RTT 는 분위수가 아닌 최대값이라 필드명이 max_srtt_seconds 다. 미관측 pod 는 필드 생략과 summary 사유로 graceful 처리한다.
+// @Description  단일 pod 의 기본 정보 (uid 와 node 와 pod_ip 와 owner) 와 차원별 health 3종 (pod 단위 pressure score 의 1 - score 환산), vitals (limit 대비 CPU 와 memory 사용률과 working set, CPU 절대 사용량), cgroup CPU throttle 상세 (throttled 비율과 5분 throttled/total periods 와 limit cores, cadvisor 가 노출하는 클러스터에서는 quota 와 period), 네트워크 종합 (pod 입도 재전송과 drop rate, 최대 smoothed RTT) 을 한 응답으로 합성한다. cpu_percent 는 limit 대비 비율이고 cpu_usage_cores 는 5분 rate 의 절대량 (cores) 이라 limit 없는 pod 는 cores 만 존재한다 (#328, memory 의 working set 절대값과 대칭). RTT 는 분위수가 아닌 최대값이라 필드명이 max_srtt_seconds 다. 미관측 pod 는 필드 생략과 summary 사유로 graceful 처리한다.
 // @Tags         interference
 // @Produce      json
 // @Param        namespace  path   string  true   "pod 네임스페이스 (DNS-1123 형식)"
@@ -143,6 +146,8 @@ func (h *SynthesisHandler) GetPodDetail(w http.ResponseWriter, r *http.Request) 
 		fmt.Sprintf(`sum(rate(netobs_pod_stage_events_labeled_total{stage="retrans", src_namespace=%q, src_pod=%q}[5m]))`, ns, pod),
 		fmt.Sprintf(`sum(rate(netobs_pod_stage_events_labeled_total{stage="drop", src_namespace=%q, src_pod=%q}[5m]))`, ns, pod),
 		"max(netobs_tcp_state_max_srtt_seconds"+kubeSel+")",
+		// #328 CPU 절대 사용량 (cores). limit 분모 percent 와 달리 limit 유무와 무관하게 산출된다.
+		fmt.Sprintf("sum(rate(container_cpu_usage_seconds_total%s[5m]))", kubeSel),
 	)
 
 	if len(res[0]) > 0 {
@@ -183,6 +188,7 @@ func (h *SynthesisHandler) GetPodDetail(w http.ResponseWriter, r *http.Request) 
 	resp.Network.RetransPerSec = firstValue(res[12])
 	resp.Network.DropPerSec = firstValue(res[13])
 	resp.Network.MaxSrttSeconds = firstValue(res[14])
+	resp.Vitals.CPUUsageCores = firstValue(res[15])
 
 	resp.Summary = buildPodDetailSummary(resp)
 	apicommon.WriteJSON(w, resp)
