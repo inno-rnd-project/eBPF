@@ -96,9 +96,10 @@ func TestOverview(t *testing.T) {
 	if resp.Pods != (OverviewPods{Total: 3, Live: 1, NoData: 2}) {
 		t.Errorf("pods=%+v want total3/live1/nodata2", resp.Pods)
 	}
-	// issues: alertname 단위 dedup 으로 2건 (warning 1 + critical 1).
-	if resp.Issues != (OverviewIssues{Total: 2, Critical: 1, Warning: 1}) {
-		t.Errorf("issues=%+v want total2/critical1/warning1", resp.Issues)
+	// issues: alertname 단위 dedup 으로 2건 (warning 1 + critical 1). 두 alert 모두 pod 계열
+	// 라벨 (pod / src_pod) 이 있어 scope 는 pod 2건이다 (#326).
+	if resp.Issues != (OverviewIssues{Total: 2, Critical: 1, Warning: 1, PodScope: 2}) {
+		t.Errorf("issues=%+v want total2/critical1/warning1/pod2", resp.Issues)
 	}
 	if resp.GPU != (OverviewGPU{Nodes: 1, Devices: 2}) {
 		t.Errorf("gpu=%+v want nodes1/devices2", resp.GPU)
@@ -148,5 +149,32 @@ func TestOverview_NilQuerier(t *testing.T) {
 	}
 	if resp.Nodes.Total != 0 || resp.Weakest != nil {
 		t.Errorf("resp=%+v want 빈 집계", resp)
+	}
+}
+
+// TestOverview_IssueScopeAndWatchdog 는 #326 의 issues 집계 계약을 검증한다. Watchdog heartbeat 는
+// severity 무관하게 집계 전체에서 제외되고, scope 는 pod 계열 라벨이 있으면 pod, 없이 node 만
+// 있으면 node, 둘 다 없으면 (cluster z-score 계열) cluster 로 단일 분류되어 total 에 additive 하다.
+// 동일 alertname 의 시리즈 간 라벨이 다르면 가장 구체적인 scope 를 채택한다.
+func TestOverview_IssueScopeAndWatchdog(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("ALERTS",
+			sample(1, "alertname", "Watchdog", "severity", "none"),
+			sample(1, "alertname", "GPUUtilSpikeDetected", "severity", "warning"),
+			sample(1, "alertname", "GPUObsThrottleActive", "severity", "critical", "node", "gpu"),
+			sample(1, "alertname", "NetObsDropBurst", "severity", "critical", "node", "gpu", "victim_pod", "trainer"),
+			// 동일 alertname 이 node 만 있는 시리즈와 pod 시리즈로 나뉘어도 pod 로 단일 분류된다.
+			sample(1, "alertname", "NetObsDropBurst", "severity", "critical", "node", "gpu"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetOverview(rec, httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp OverviewResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	want := OverviewIssues{Total: 3, Critical: 2, Warning: 1, PodScope: 1, NodeScope: 1, ClusterScope: 1}
+	if resp.Issues != want {
+		t.Errorf("issues=%+v want %+v (Watchdog 제외, scope 단일 분류)", resp.Issues, want)
 	}
 }
