@@ -951,7 +951,7 @@
         },
         "/api/v1/node/{node}": {
             "get": {
-                "description": "노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다.",
+                "description": "노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 dominant pressure 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(warn 고정)의 worst-of 합성(#324)이며, status_basis 가 결정 신호(pressure/health/alert)를 담는다. 등급 어휘 ok/warn/degraded 는 overview 와 node-map 의 healthy/warning 과 같은 입력 신호(pressure, firing alert)를 공유하고, down(ready 기반) 판정은 node-map 소관이다.",
                 "produces": [
                     "application/json"
                 ],
@@ -2909,6 +2909,10 @@
                     }
                 },
                 "status": {
+                    "type": "string"
+                },
+                "status_basis": {
+                    "description": "StatusBasis 는 status 등급을 결정한 신호다 (#324, pressure / health / alert). 등급 동률이면\npressure, health, alert 순으로 귀속하며 status 가 unknown (신호 전부 부재) 이면 생략된다.",
                     "type": "string"
                 },
                 "summary": {
