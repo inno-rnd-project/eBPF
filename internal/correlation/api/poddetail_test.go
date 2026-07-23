@@ -72,6 +72,21 @@ func TestPodDetail(t *testing.T) {
 	if resp.Network.MaxSrttSeconds == nil || *resp.Network.MaxSrttSeconds != 0.25 {
 		t.Errorf("max_srtt=%v want 0.25", resp.Network.MaxSrttSeconds)
 	}
+	// #328 CPU 절대 사용량. 픽스처의 contains 매칭상 percent 와 같은 rule (42.5) 을 공유한다.
+	if resp.Vitals.CPUUsageCores == nil || *resp.Vitals.CPUUsageCores != 42.5 {
+		t.Errorf("cpu_usage_cores=%v want 42.5", resp.Vitals.CPUUsageCores)
+	}
+	// cadvisor 계열 sum 은 pod-level 행 가드 (container="") 를 붙여 표준 cadvisor 구성의 두 계층
+	// 중복 합산을 막고, spec 계열 (quota) 은 pod-level 행이 없는 구성 대비로 가드 없이 조회한다.
+	q := podDetailQuerier()
+	h = NewSynthesisHandler(q, nil, nil)
+	h.GetPodDetail(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/pod/ml/train-a", nil))
+	if !q.sawQuery(`container_memory_working_set_bytes{namespace="ml", pod="train-a", container=""}`) {
+		t.Error(`cadvisor sum 쿼리에 container="" 가드 부재 (계층 중복 합산 위험)`)
+	}
+	if !q.sawQuery(`container_spec_cpu_quota{namespace="ml", pod="train-a"}`) {
+		t.Error("spec 계열 (max) 은 가드 없이 조회되어야 함 (pod-level 행 부재 구성 대비)")
+	}
 	if !strings.Contains(resp.Summary, "ml/train-a") || !strings.Contains(resp.Summary, "throttle 12%") {
 		t.Errorf("summary=%q want 종합 요약", resp.Summary)
 	}
@@ -121,5 +136,41 @@ func TestPodDetail_NilQuerier(t *testing.T) {
 	h.GetPodDetail(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pod/ns/p", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200", rec.Code)
+	}
+}
+
+// TestPodDetail_NoLimitCpuCores 는 #328 의 limit 없는 pod (CNI 와 kube-proxy 등) 케이스를 검증한다.
+// limit 분모의 cpu_percent 와 memory_percent 는 생략되고 CPU 절대 사용량 (cores) 은 limit 유무와
+// 무관하게 산출된다. 나눗셈 합성 쿼리 규약대로 percent 의 고유 나눗셈 조각을 빈 결과로 먼저 등록해
+// 단독 cores 쿼리와 구분한다.
+func TestPodDetail_NoLimitCpuCores(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("kube_pod_info", sample(1,
+			"namespace", "kube-system", "pod", "kube-proxy-x", "uid", "u-9", "node", "worker1")).
+		on(`) / sum(kube_pod_container_resource_limits{namespace="kube-system", pod="kube-proxy-x", resource="cpu"})`).
+		on(`) / sum(kube_pod_container_resource_limits{namespace="kube-system", pod="kube-proxy-x", resource="memory"})`).
+		on("container_cpu_usage_seconds_total", sample(0.042)).
+		on("sum(container_memory_working_set_bytes", sample(6.5e7))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetPodDetail(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pod/kube-system/kube-proxy-x", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp PodDetailResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Vitals.CPUPercent != nil || resp.Vitals.MemoryPercent != nil {
+		t.Errorf("percent=%+v want 생략 (limit 미설정)", resp.Vitals)
+	}
+	if resp.Vitals.CPUUsageCores == nil || *resp.Vitals.CPUUsageCores != 0.042 {
+		t.Errorf("cpu_usage_cores=%v want 0.042 (limit 무관 산출)", resp.Vitals.CPUUsageCores)
+	}
+	if resp.Vitals.MemoryWorkingSetBytes == nil || *resp.Vitals.MemoryWorkingSetBytes != 6.5e7 {
+		t.Errorf("working_set=%v want 6.5e7 (절대값 대칭)", resp.Vitals.MemoryWorkingSetBytes)
+	}
+	if resp.Cpu.LimitCores != nil {
+		t.Errorf("limit_cores=%v want 생략", resp.Cpu.LimitCores)
 	}
 }
