@@ -76,3 +76,36 @@ func TestOverview_UnobservablePodsExcluded(t *testing.T) {
 		t.Errorf("pods=%+v want total 4 / live 1 / unobservable 2 / no_data 1", resp.Pods)
 	}
 }
+
+// TestPods_NoTrafficReason 은 #342 의 no_traffic 세분화를 검증한다. agent 가 배치된 노드에서
+// netns 무소켓이 증명된 pod (netobs_pod_no_sockets 시리즈 존재) 는 no_data 대신 no_traffic 으로
+// 분류되고, 무소켓 증명이 없는 침묵 pod 는 기존 no_data 를 유지한다. agent 미배치 노드는 소켓
+// 시리즈가 있어도 agent_absent 가 우선한다.
+func TestPods_NoTrafficReason(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("kube_pod_info",
+			sample(1, "namespace", "nvdp", "pod", "device-plugin", "uid", "u-1", "node", "worker", "pod_ip", "10.0.0.1", "host_ip", "192.168.1.2"),
+			sample(1, "namespace", "app", "pod", "silent", "uid", "u-2", "node", "worker", "pod_ip", "10.0.0.2", "host_ip", "192.168.1.2"),
+			sample(1, "namespace", "app", "pod", "orphan", "uid", "u-3", "node", "master", "pod_ip", "10.0.0.3", "host_ip", "192.168.1.1")).
+		on("kube_pod_status_phase",
+			sample(1, "uid", "u-1", "phase", "Running"),
+			sample(1, "uid", "u-2", "phase", "Running"),
+			sample(1, "uid", "u-3", "phase", "Running")).
+		on("netobs_pod_no_sockets",
+			sample(1, "src_namespace", "nvdp", "src_pod", "device-plugin"),
+			sample(1, "src_namespace", "app", "src_pod", "orphan")).
+		on("netobs_bpf_program_loaded", sample(26, "node", "worker"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetPods(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pods", nil))
+	var resp PodsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := map[string]string{"device-plugin": "no_traffic", "silent": "no_data", "orphan": "agent_absent"}
+	for _, p := range resp.Pods {
+		if w, ok := want[p.Pod]; ok && p.UnobservedReason != w {
+			t.Errorf("%s reason=%q want %q", p.Pod, p.UnobservedReason, w)
+		}
+	}
+}
