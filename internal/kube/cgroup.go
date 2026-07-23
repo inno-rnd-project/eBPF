@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -65,8 +66,34 @@ func extractPodUID(lines []string) string {
 // inode 번호와 같고, BPF 의 bpf_get_current_cgroup_id 는 컨테이너 scope 의 id 를 주므로 자식까지
 // 포함해야 매핑이 성립한다.
 func PodCgroupInodes(podUID, root string) []uint64 {
-	if podUID == "" {
+	dir, ok := podCgroupDir(podUID, root)
+	if !ok {
 		return nil
+	}
+	out := []uint64{}
+	if ino, ok := dirInode(dir); ok {
+		out = append(out, ino)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	for _, ent := range entries {
+		if !ent.IsDir() {
+			continue
+		}
+		if ino, ok := dirInode(filepath.Join(dir, ent.Name())); ok {
+			out = append(out, ino)
+		}
+	}
+	return out
+}
+
+// podCgroupDir 는 Pod UID 로 host cgroup2 계층의 Pod-level 디렉터리를 찾는다. systemd / cgroupfs
+// 드라이버 × QoS class 후보를 순회해 첫 실존 경로를 돌려준다.
+func podCgroupDir(podUID, root string) (string, bool) {
+	if podUID == "" {
+		return "", false
 	}
 	us := strings.ReplaceAll(podUID, "-", "_")
 	candidates := []string{
@@ -79,26 +106,50 @@ func PodCgroupInodes(podUID, root string) []uint64 {
 		filepath.Join(root, "kubepods", "besteffort", "pod"+podUID),
 		filepath.Join(root, "kubepods", "pod"+podUID),
 	}
-	out := []uint64{}
 	for _, dir := range candidates {
-		ino, ok := dirInode(dir)
-		if !ok {
+		if _, err := os.Stat(dir); err == nil {
+			return dir, true
+		}
+	}
+	return "", false
+}
+
+// PodCgroupPIDs 는 Pod cgroup 디렉터리와 1단계 자식 (컨테이너 scope) 의 cgroup.procs 에서 최대
+// limit 개 PID 를 모은다 (#342). cgroup v2 는 프로세스가 leaf cgroup 에만 속하므로 자식 scope 를
+// 함께 읽어야 한다. Pod 의 컨테이너들은 netns 를 공유하므로 소켓 존재 판별에는 아무 PID 하나면
+// 충분하다. 디렉터리 부재 (종료 pod) 나 읽기 실패는 빈 슬라이스로 graceful 처리한다.
+func PodCgroupPIDs(podUID, root string, limit int) []int {
+	dir, ok := podCgroupDir(podUID, root)
+	if !ok || limit <= 0 {
+		return nil
+	}
+	files := []string{filepath.Join(dir, "cgroup.procs")}
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, ent := range entries {
+			if ent.IsDir() {
+				files = append(files, filepath.Join(dir, ent.Name(), "cgroup.procs"))
+			}
+		}
+	}
+	out := []int{}
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
 			continue
 		}
-		out = append(out, ino)
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			break
-		}
-		for _, ent := range entries {
-			if !ent.IsDir() {
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			if line == "" {
 				continue
 			}
-			if ino, ok := dirInode(filepath.Join(dir, ent.Name())); ok {
-				out = append(out, ino)
+			pid, err := strconv.Atoi(line)
+			if err != nil {
+				continue
+			}
+			out = append(out, pid)
+			if len(out) >= limit {
+				return out
 			}
 		}
-		break
 	}
 	return out
 }
