@@ -228,20 +228,66 @@ func TestSynthesis_GetNode_WorstOfHealthAndAlert(t *testing.T) {
 	}
 }
 
-// TestSynthesis_GetNode_AlertOnlyWarn 은 pressure 와 health 가 정상이어도 firing alert 만으로 warn
-// (basis=alert) 이 되는지 검증한다. alert 는 severity 세분화 없이 warn 고정 (nodeStatus 규약) 이다.
-func TestSynthesis_GetNode_AlertOnlyWarn(t *testing.T) {
-	q := (&fakeQuerier{}).
-		on("node:cpu_pressure_score", sample(0.1, "node", "worker1")).
-		on("node:cpu_health_score", sample(0.95, "node", "worker1")).
-		on("ALERTS", sample(1, "alertname", "NetObsRetransSpike", "severity", "critical", "node", "worker1"))
-	h := NewSynthesisHandler(q, nil, nil)
-	rec := httptest.NewRecorder()
-	h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/worker1", nil))
-	var resp NodeResponse
-	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-	if resp.Status != "warn" || resp.StatusBasis != "alert" {
-		t.Errorf("status=%q basis=%q want warn/alert (critical 이어도 warn 고정)", resp.Status, resp.StatusBasis)
+// TestSynthesis_GetNode_AlertSeverityGrades 는 pressure 와 health 가 정상일 때 firing alert 의
+// severity 가 등급을 가르는지 검증한다 (#325). critical 은 degraded, 그 외 severity 는 warn 이다.
+func TestSynthesis_GetNode_AlertSeverityGrades(t *testing.T) {
+	cases := []struct {
+		name       string
+		severity   string
+		wantStatus string
+	}{
+		{"critical-degraded", "critical", "degraded"},
+		{"warning-warn", "warning", "warn"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := (&fakeQuerier{}).
+				on("node:cpu_pressure_score", sample(0.1, "node", "worker1")).
+				on("node:cpu_health_score", sample(0.95, "node", "worker1")).
+				on("ALERTS", sample(1, "alertname", "NetObsRetransSpike", "severity", tc.severity, "node", "worker1"))
+			h := NewSynthesisHandler(q, nil, nil)
+			rec := httptest.NewRecorder()
+			h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/worker1", nil))
+			var resp NodeResponse
+			_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+			if resp.Status != tc.wantStatus || resp.StatusBasis != "alert" {
+				t.Errorf("status=%q basis=%q want %s/alert", resp.Status, resp.StatusBasis, tc.wantStatus)
+			}
+		})
+	}
+}
+
+// TestSynthesis_GetNode_UsageSaturation 은 limit 없는 pod 의 CPU 포화처럼 CFS throttle 기반
+// pressure 에 잡히지 않는 사용량 포화가 status 에 반영되는지 검증한다 (#325). 점유율 0.95 이상은
+// degraded, 0.85 구간은 warn 이며 결정 신호는 usage 다.
+func TestSynthesis_GetNode_UsageSaturation(t *testing.T) {
+	cases := []struct {
+		name       string
+		cpuFrac    float64
+		wantStatus string
+	}{
+		{"cpu-saturated-degraded", 0.96, "degraded"},
+		{"cpu-high-warn", 0.87, "warn"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := (&fakeQuerier{}).
+				on("node:cpu_pressure_score", sample(0.1, "node", "worker1")).
+				on("node:cpu_health_score", sample(0.95, "node", "worker1")).
+				on("container_cpu_usage_seconds_total", sample(tc.cpuFrac, "node", "worker1")).
+				on("container_memory_working_set_bytes", sample(0.4, "node", "worker1"))
+			h := NewSynthesisHandler(q, nil, nil)
+			rec := httptest.NewRecorder()
+			h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/worker1", nil))
+			var resp NodeResponse
+			_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+			if resp.Status != tc.wantStatus || resp.StatusBasis != "usage" {
+				t.Errorf("status=%q basis=%q want %s/usage (cpu 점유율 %.2f)", resp.Status, resp.StatusBasis, tc.wantStatus, tc.cpuFrac)
+			}
+			if !q.sawQuery("kube_node_status_allocatable") {
+				t.Error("allocatable 분모 산식 (#313 재사용) 으로 조회하지 않음")
+			}
+		})
 	}
 }
 
