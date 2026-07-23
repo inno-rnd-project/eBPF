@@ -48,7 +48,8 @@ var nodeResourceKeys = map[string]string{
 }
 
 // nodeSubroute 는 /api/v1/node/ prefix 하위 경로를 세그먼트 수로 분기한다. {node} 는 노드 상세
-// (GetNode), {node}/resources 는 리소스 현황 (#308) 이다.
+// (GetNode), {node}/resources 는 리소스 현황 (#308), {node}/pods 는 pod 별 자원 사용량 목록
+// (#330) 이다.
 func (h *SynthesisHandler) nodeSubroute(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/node/"), "/"), "/")
 	switch {
@@ -56,8 +57,10 @@ func (h *SynthesisHandler) nodeSubroute(w http.ResponseWriter, r *http.Request) 
 		h.GetNode(w, r)
 	case len(parts) == 2 && parts[1] == "resources":
 		h.GetNodeResources(w, r)
+	case len(parts) == 2 && parts[1] == "pods":
+		h.GetNodePods(w, r)
 	default:
-		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node_path", "경로는 /api/v1/node/{node} 또는 /api/v1/node/{node}/resources 형식이어야 합니다")
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node_path", "경로는 /api/v1/node/{node} 와 /api/v1/node/{node}/resources 와 /api/v1/node/{node}/pods 형식이어야 합니다")
 	}
 }
 
