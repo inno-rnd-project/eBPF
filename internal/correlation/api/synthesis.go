@@ -565,6 +565,9 @@ type NodeResponse struct {
 	Health  map[string]float64 `json:"health"`
 	Overall *float64           `json:"overall"`
 	Status  string             `json:"status"`
+	// StatusBasis 는 status 등급을 결정한 신호다 (#324, pressure / health / alert). 등급 동률이면
+	// pressure, health, alert 순으로 귀속하며 status 가 unknown (신호 전부 부재) 이면 생략된다.
+	StatusBasis string `json:"status_basis,omitempty"`
 	// Confidence 는 dominant 차원 판정 신뢰도 (0-1, #264) 다. 압박 top1 과 top2 차원의 격차로,
 	// gpu-rca 의 신뢰도와 동일 축이라 한 차원이 지배적일수록 1 에 가깝다.
 	Confidence        float64           `json:"confidence"`
@@ -582,7 +585,7 @@ type NodePodPressure struct {
 
 // GetNode godoc
 // @Summary      노드 1대 전체 압박 상황
-// @Description  노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다.
+// @Description  노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 dominant pressure 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(warn 고정)의 worst-of 합성(#324)이며, status_basis 가 결정 신호(pressure/health/alert)를 담는다. 등급 어휘 ok/warn/degraded 는 overview 와 node-map 의 healthy/warning 과 같은 입력 신호(pressure, firing alert)를 공유하고, down(ready 기반) 판정은 node-map 소관이다.
 // @Tags         interference
 // @Produce      json
 // @Param        node  path  string  true  "노드 이름"
@@ -641,12 +644,19 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.DominantDimension = domDim
 
-		// status 는 가장 압박이 큰 차원 (dominant) 기준으로 판정한다. overall (node:pressure_score) 은
-		// 차원을 블렌딩해 단일 차원 hotspot 을 희석하므로 정보 필드로만 노출하고 status 에는 쓰지 않는다
-		// (예: 한 노드의 memory 가 0.97 이어도 overall 0.24 면 ok 로 가려지는 것을 막는다).
-		if domDim != "" {
-			resp.Status = pressureStatusLabel(domVal)
+		// #324 이 노드를 가리키는 firing alert. overview / node-map 의 alertedNodes 와 동일하게
+		// ALERTS 의 node 라벨로 매칭한다.
+		alertFiring := false
+		if s, err := h.querier.Query(ctx, fmt.Sprintf(`ALERTS{alertstate="firing",node=%q}`, node)); err == nil && len(s) > 0 {
+			alertFiring = true
 		}
+
+		// status 는 dominant pressure 등급, 차원별 health 최솟값 등급, firing alert 의 worst-of
+		// 합성이다 (#324). dominant pressure 만으로는 pressure 계열 밖의 이상 (예: GPU throttle
+		// alert firing + health 0.0) 이 가려져 node-map 의 warning 판정과 모순된다. overall
+		// (node:pressure_score) 은 차원을 블렌딩해 단일 차원 hotspot 을 희석하므로 정보 필드로만
+		// 노출하고 status 에는 쓰지 않는다 (예: memory 0.97 이어도 overall 0.24 면 ok 로 가려짐).
+		resp.Status, resp.StatusBasis = composeNodeStatus(domDim, domVal, resp.Health, alertFiring)
 
 		sort.Slice(resp.TopPods, func(i, j int) bool {
 			if resp.TopPods[i].Pressure != resp.TopPods[j].Pressure {
@@ -661,6 +671,51 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 
 	resp.Summary = buildNodeSummary(resp)
 	apicommon.WriteJSON(w, resp)
+}
+
+// nodeStatusRank 는 node 상세 status 어휘 (ok/warn/degraded/unknown) 의 심각도 순위다. worst-of
+// 합성 (#324) 의 등급 비교에 쓴다.
+func nodeStatusRank(s string) int {
+	switch s {
+	case "degraded":
+		return 3
+	case "warn":
+		return 2
+	case "ok":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// composeNodeStatus 는 #324 의 worst-of 합성이다. dominant pressure 등급, 차원별 health 최솟값
+// 등급 (HealthStatus 매핑 재사용), 이 노드를 가리키는 firing alert 셋 중 가장 나쁜 등급을 채택하고
+// 결정 신호를 basis 로 돌려준다. alert 는 nodeStatus (overview / node-map) 의 warning 규약을 따라
+// severity 세분화 없이 warn 고정이다. 등급 동률이면 pressure, health, alert 순으로 귀속하며, 세
+// 신호가 전부 부재면 unknown 과 빈 basis 를 돌려준다.
+func composeNodeStatus(domDim string, domVal float64, health map[string]float64, alertFiring bool) (string, string) {
+	status, basis := "unknown", ""
+	consider := func(s, b string) {
+		if nodeStatusRank(s) > nodeStatusRank(status) {
+			status, basis = s, b
+		}
+	}
+	if domDim != "" {
+		consider(pressureStatusLabel(domVal), "pressure")
+	}
+	if len(health) > 0 {
+		minHealth := math.Inf(1)
+		for _, v := range health {
+			if v < minHealth {
+				minHealth = v
+			}
+		}
+		consider(correlation.HealthStatus(minHealth), "health")
+	}
+	if alertFiring {
+		consider("warn", "alert")
+	}
+	return status, basis
 }
 
 // pressureConfidence 는 dominant 차원 판정 신뢰도 (#264) 다. 차원 pressure 를 내림차순으로 봤을 때
@@ -689,11 +744,18 @@ func pressureConfidence(pressure map[string]float64) float64 {
 }
 
 // buildNodeSummary 는 dominant 차원과 status, 신뢰도, 주 압박 pod 를 한 줄 narrative 로 요약한다.
+// status 가 pressure 밖 신호 (health / alert) 로 결정됐으면 그 근거를 함께 적는다 (#324).
 func buildNodeSummary(r NodeResponse) string {
 	if r.DominantDimension == "" {
+		if r.StatusBasis != "" {
+			return fmt.Sprintf("%s 의 압박 데이터가 없습니다. status 는 %s 기준 %s.", r.Node, r.StatusBasis, r.Status)
+		}
 		return fmt.Sprintf("%s 의 압박 데이터가 없습니다.", r.Node)
 	}
 	seg := fmt.Sprintf("%s는 %s가 dominant(%.2f, %s, 신뢰도 %.2f)", r.Node, r.DominantDimension, r.Pressure[r.DominantDimension], r.Status, r.Confidence)
+	if r.StatusBasis != "" && r.StatusBasis != "pressure" {
+		seg += fmt.Sprintf(". status 는 %s 기준", r.StatusBasis)
+	}
 	if len(r.TopPods) > 0 {
 		seg += fmt.Sprintf(". 주 압박 pod %s", r.TopPods[0].Pod)
 	}

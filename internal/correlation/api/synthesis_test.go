@@ -194,6 +194,68 @@ func TestSynthesis_GetNode(t *testing.T) {
 	if resp.Confidence < 0.559 || resp.Confidence > 0.561 {
 		t.Errorf("confidence=%v want ~0.56 (0.78-0.22)", resp.Confidence)
 	}
+	// #324 등급 동률 (pressure 0.78 → degraded, health 0.3 → degraded) 이면 pressure 로 귀속된다.
+	if resp.StatusBasis != "pressure" {
+		t.Errorf("status_basis=%q want pressure (동률 우선순위)", resp.StatusBasis)
+	}
+}
+
+// TestSynthesis_GetNode_WorstOfHealthAndAlert 는 #324 의 gpu 노드 실측 사례 재현이다. dominant
+// pressure 가 낮아도 (ok) health.gpu 0.0 과 firing alert 가 있으면 worst-of 합성으로 status 가
+// degraded (basis=health) 가 되어, node-map 의 warning 판정과 모순되지 않는다.
+func TestSynthesis_GetNode_WorstOfHealthAndAlert(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("node:cpu_pressure_score", sample(0.12, "node", "gpu")).
+		on("node:gpu_health_score", sample(0.0, "node", "gpu")).
+		on("node:cpu_health_score", sample(0.9, "node", "gpu")).
+		on("ALERTS", sample(1, "alertname", "GPUObsThrottleActive", "severity", "critical", "node", "gpu"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/gpu", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp NodeResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Status != "degraded" || resp.StatusBasis != "health" {
+		t.Errorf("status=%q basis=%q want degraded/health (health.gpu 0.0 이 결정)", resp.Status, resp.StatusBasis)
+	}
+	if !q.sawQuery(`ALERTS{alertstate="firing",node="gpu"}`) {
+		t.Error("ALERTS 를 node 라벨로 조회하지 않음 (overview 의 alertedNodes 매칭 규약)")
+	}
+	if !strings.Contains(resp.Summary, "health") {
+		t.Errorf("summary 에 status 결정 근거 미표기: %q", resp.Summary)
+	}
+}
+
+// TestSynthesis_GetNode_AlertOnlyWarn 은 pressure 와 health 가 정상이어도 firing alert 만으로 warn
+// (basis=alert) 이 되는지 검증한다. alert 는 severity 세분화 없이 warn 고정 (nodeStatus 규약) 이다.
+func TestSynthesis_GetNode_AlertOnlyWarn(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("node:cpu_pressure_score", sample(0.1, "node", "worker1")).
+		on("node:cpu_health_score", sample(0.95, "node", "worker1")).
+		on("ALERTS", sample(1, "alertname", "NetObsRetransSpike", "severity", "critical", "node", "worker1"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/worker1", nil))
+	var resp NodeResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Status != "warn" || resp.StatusBasis != "alert" {
+		t.Errorf("status=%q basis=%q want warn/alert (critical 이어도 warn 고정)", resp.Status, resp.StatusBasis)
+	}
+}
+
+// TestSynthesis_GetNode_NoSignalsUnknown 은 세 신호가 전부 부재일 때 unknown 과 빈 basis 를
+// 유지하는지 검증한다.
+func TestSynthesis_GetNode_NoSignalsUnknown(t *testing.T) {
+	h := NewSynthesisHandler(&fakeQuerier{}, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/ghost", nil))
+	var resp NodeResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Status != "unknown" || resp.StatusBasis != "" {
+		t.Errorf("status=%q basis=%q want unknown/빈 값", resp.Status, resp.StatusBasis)
+	}
 }
 
 // fakeNeighbors 는 SnapshotSource 테스트 더블이다.
