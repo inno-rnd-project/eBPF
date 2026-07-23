@@ -50,10 +50,17 @@ type IncidentsResponse struct {
 // 상태를 재구성할 수 있다. 조회 range 시작 이전부터 발화 중이던 에피소드는 StartsAt 이 range 시작
 // 으로 절단되며 truncated=true 로 표시한다.
 type Incident struct {
-	Alertname string            `json:"alertname"`
-	Severity  string            `json:"severity,omitempty"`
-	Component string            `json:"component,omitempty"`
-	Status    string            `json:"status"`
+	Alertname string `json:"alertname"`
+	Severity  string `json:"severity,omitempty"`
+	Component string `json:"component,omitempty"`
+	Status    string `json:"status"`
+	// Scope 는 overview issues 와 동일 분류 (#326, #332) 로 pod / node / cluster 다. Node 와
+	// Namespace 와 Pod 는 귀속 entity 라 프론트가 이슈에서 해당 화면으로 라우팅하는 입력이 되며,
+	// cluster scope 는 라우팅 대상이 없어 전역 알림 목록에서 표시하는 것이 프론트 계약이다.
+	Scope     string            `json:"scope,omitempty"`
+	Node      string            `json:"node,omitempty"`
+	Namespace string            `json:"namespace,omitempty"`
+	Pod       string            `json:"pod,omitempty"`
 	StartsAt  string            `json:"starts_at"`
 	EndsAt    string            `json:"ends_at,omitempty"`
 	Truncated bool              `json:"truncated,omitempty"`
@@ -88,6 +95,26 @@ func alertTargetsNode(labels map[string]string, node string) bool {
 	return labels["node"] == node
 }
 
+// heartbeatAlert 는 상시 발화가 정상 상태라 활성 이슈가 아닌 heartbeat alert 판정이다 (#332).
+// overview 의 issues 집계와 incidents 목록이 본 필터를 공유해 카드와 목록의 모수가 일치한다.
+func heartbeatAlert(alertname string) bool {
+	return alertname == "Watchdog"
+}
+
+// alertEntity 는 alert 라벨에서 귀속 entity (node 와 namespace 와 pod) 를 뽑는다 (#332). pod 계열
+// 우선순위는 alertTargetsPod 의 규약 쌍 (pod/namespace, src_pod/src_namespace,
+// victim_pod/victim_namespace) 순서를 따르며, 프론트가 이슈에서 해당 노드·pod 화면으로 라우팅하는
+// 입력이 된다.
+func alertEntity(labels map[string]string) (node, namespace, pod string) {
+	node = labels["node"]
+	for _, pair := range [][2]string{{"pod", "namespace"}, {"src_pod", "src_namespace"}, {"victim_pod", "victim_namespace"}} {
+		if labels[pair[0]] != "" {
+			return node, labels[pair[1]], labels[pair[0]]
+		}
+	}
+	return node, "", ""
+}
+
 // incidentDropLabels 는 응답 라벨에서 제외할 라벨이다. 식별에 무의미한 scrape 계열과 이미 전용
 // 필드로 승격된 라벨을 걸러 응답을 좁힌다.
 var incidentDropLabels = map[string]bool{
@@ -97,7 +124,7 @@ var incidentDropLabels = map[string]bool{
 
 // GetIncidents godoc
 // @Summary      alert 발화 이력
-// @Description  Prometheus 의 ALERTS 시계열을 range 합성해 기간 내 alert 발화 이력을 돌려준다. 동일 alert 의 재발화는 샘플 간극으로 별개 에피소드로 분리되고, range 끝까지 발화 중이면 status=firing, 중간에 끊겼으면 status=resolved 와 종료 시각이 채워진다. starts_at 은 synthesis API 의 at 파라미터에 그대로 넣어 발화 시점 상태를 재구성하는 진입점이다.
+// @Description  Prometheus 의 ALERTS 시계열을 range 합성해 기간 내 alert 발화 이력을 돌려준다. 동일 alert 의 재발화는 샘플 간극으로 별개 에피소드로 분리되고, range 끝까지 발화 중이면 status=firing, 중간에 끊겼으면 status=resolved 와 종료 시각이 채워진다. starts_at 은 synthesis API 의 at 파라미터에 그대로 넣어 발화 시점 상태를 재구성하는 진입점이다. 상시 발화 heartbeat (Watchdog) 는 overview issues 와 공용 필터로 제외되어 발화 중 목록의 alertname dedup 수가 카드 total 과 일치한다 (#332). 각 항목의 scope (pod/node/cluster, overview 와 동일 분류) 와 귀속 entity (node 와 namespace 와 pod) 는 프론트가 이슈에서 해당 화면으로 라우팅하는 입력이며, cluster scope 는 라우팅 대상이 없어 전역 알림 목록에서 표시한다.
 // @Tags         interference
 // @Produce      json
 // @Param        range  query  string  false  "조회 기간 (예: 1h, 6h, 최대 24h, 기본 1h)"
@@ -149,6 +176,11 @@ func (h *IncidentsHandler) GetIncidents(w http.ResponseWriter, r *http.Request) 
 			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", "Prometheus range 쿼리 실행 실패: "+err.Error())
 			return
 		}
+		// #332 heartbeat 제외. overview issues 집계와 같은 필터를 공유해 카드 total 과 목록의
+		// 모수가 일치한다. node / pod 필터보다 앞서 전체 목록 기준으로 적용한다.
+		series = filterIncidentSeries(series, func(labels map[string]string) bool {
+			return !heartbeatAlert(labels["alertname"])
+		})
 		// #248 node / pod 필터. 에피소드 분해 전 시리즈 단계에서 걸러 limit 이 필터 후 집합에
 		// 적용되게 한다.
 		if node := strings.TrimSpace(q.Get("node")); node != "" {
@@ -183,10 +215,15 @@ func buildIncidents(series []correlation.LabeledSeries, start, end time.Time, st
 		epStart := time.UnixMilli(samples[0].TimestampMs)
 		prev := epStart
 		flush := func(last time.Time) {
+			node, namespace, pod := alertEntity(labels)
 			inc := Incident{
 				Alertname: labels["alertname"],
 				Severity:  labels["severity"],
 				Component: labels["component"],
+				Scope:     alertScope(labels),
+				Node:      node,
+				Namespace: namespace,
+				Pod:       pod,
 				StartsAt:  epStart.UTC().Format(time.RFC3339),
 				Labels:    filterIncidentLabels(labels),
 			}

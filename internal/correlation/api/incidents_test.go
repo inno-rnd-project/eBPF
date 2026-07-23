@@ -208,3 +208,54 @@ func TestIncidents_NilFetcher(t *testing.T) {
 		t.Errorf("incidents=%d want 0", len(resp.Incidents))
 	}
 }
+
+// TestIncidents_HeartbeatExcludedAndEntityRouting 은 #332 의 발견 가능성 계약을 검증한다. 상시
+// 발화 heartbeat (Watchdog) 는 overview 와 공용 필터로 목록에서 제외되어 발화 중 alertname dedup
+// 수가 카드 total 과 일치하고, 각 항목에는 scope (overview 와 동일 분류) 와 귀속 entity (node 와
+// namespace 와 pod) 가 채워져 프론트 라우팅 입력이 된다.
+func TestIncidents_HeartbeatExcludedAndEntityRouting(t *testing.T) {
+	now := time.Now()
+	m := func(t time.Time) int64 { return t.UnixMilli() }
+	mk := func(labels map[string]string) correlation.LabeledSeries {
+		return correlation.LabeledSeries{Series: correlation.TimeSeries{Labels: labels, Samples: []correlation.Sample{
+			{TimestampMs: m(now.Add(-6 * time.Minute)), Value: 1},
+			{TimestampMs: m(now.Add(-1 * time.Minute)), Value: 1},
+		}}}
+	}
+	f := &fakeFetcher{series: []correlation.LabeledSeries{
+		mk(map[string]string{"alertname": "Watchdog", "severity": "none"}),
+		mk(map[string]string{"alertname": "NetObsDropBurst", "severity": "critical", "node": "gpu", "src_namespace": "ml", "src_pod": "trainer"}),
+		mk(map[string]string{"alertname": "GPUObsThrottleActive", "severity": "critical", "node": "gpu"}),
+		mk(map[string]string{"alertname": "GPUUtilAnomalyDetected", "severity": "warning"}),
+	}}
+	h := NewIncidentsHandler(f)
+	rec := httptest.NewRecorder()
+	h.GetIncidents(rec, httptest.NewRequest(http.MethodGet, "/api/v1/incidents?step=5m", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp IncidentsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// Watchdog 제외로 3건 (전부 firing). 카드 total 과 같은 모수다.
+	if len(resp.Incidents) != 3 {
+		t.Fatalf("incidents=%d want 3 (Watchdog 제외): %+v", len(resp.Incidents), resp.Incidents)
+	}
+	byName := map[string]Incident{}
+	for _, inc := range resp.Incidents {
+		if inc.Alertname == "Watchdog" {
+			t.Fatal("Watchdog 이 목록에 잔존 (공용 heartbeat 필터 미적용)")
+		}
+		byName[inc.Alertname] = inc
+	}
+	if inc := byName["NetObsDropBurst"]; inc.Scope != "pod" || inc.Node != "gpu" || inc.Namespace != "ml" || inc.Pod != "trainer" {
+		t.Errorf("pod scope entity=%+v want pod/gpu/ml/trainer", inc)
+	}
+	if inc := byName["GPUObsThrottleActive"]; inc.Scope != "node" || inc.Node != "gpu" || inc.Pod != "" {
+		t.Errorf("node scope entity=%+v want node/gpu", inc)
+	}
+	if inc := byName["GPUUtilAnomalyDetected"]; inc.Scope != "cluster" || inc.Node != "" || inc.Pod != "" {
+		t.Errorf("cluster scope entity=%+v want cluster/빈 entity", inc)
+	}
+}
