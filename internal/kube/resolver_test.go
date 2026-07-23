@@ -332,3 +332,28 @@ func TestOnUpsertPod_RegularPodStillIndexed(t *testing.T) {
 		t.Error("일반 pod 의 HostNetwork=true")
 	}
 }
+
+// TestPodIdentity_StaticPodCgroupUID 는 static pod 의 CgroupUID 가 config.hash annotation 을
+// 우선하고 (#341, kubelet 이 cgroup 경로에 mirror pod UID 대신 hash 를 씀), 일반 pod 는 PodUID 와
+// 같은지 검증한다.
+func TestPodIdentity_StaticPodCgroupUID(t *testing.T) {
+	static := podIdentity(corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			UID: "d06f5d6c-02ec-4d10-b32b-bb267e4b6b4c", Namespace: "kube-system", Name: "etcd-master",
+			Annotations: map[string]string{"kubernetes.io/config.hash": "b79b63867b08f914e18ce4cb04a1b819"},
+		},
+	})
+	if static.CgroupUID != "b79b63867b08f914e18ce4cb04a1b819" {
+		t.Errorf("static CgroupUID=%q want config.hash", static.CgroupUID)
+	}
+	if static.PodUID != "d06f5d6c-02ec-4d10-b32b-bb267e4b6b4c" {
+		t.Errorf("PodUID=%q want mirror pod UID 유지", static.PodUID)
+	}
+
+	regular := podIdentity(corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{UID: "uid-r", Namespace: "default", Name: "app"},
+	})
+	if regular.CgroupUID != "uid-r" {
+		t.Errorf("regular CgroupUID=%q want PodUID 와 동일", regular.CgroupUID)
+	}
+}
