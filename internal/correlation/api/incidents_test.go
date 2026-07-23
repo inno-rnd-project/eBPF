@@ -72,9 +72,13 @@ func TestIncidents(t *testing.T) {
 	if resp.Incidents[2].Status != "resolved" {
 		t.Errorf("incidents[2]=%+v want 최초 에피소드 resolved", resp.Incidents[2])
 	}
-	// 라벨 필터: 전용 필드 승격분과 scrape 계열 제외, node 는 유지.
-	if resp.Incidents[0].Labels["node"] != "gpu" {
-		t.Errorf("labels=%v want node 유지", resp.Incidents[0].Labels)
+	// 라벨 필터: 전용 필드 승격분 (node 포함, #332) 과 scrape 계열은 labels 에서 제외되고 승격
+	// 필드로만 노출된다.
+	if resp.Incidents[0].Node != "gpu" {
+		t.Errorf("incidents[0]=%+v want Node=gpu (승격 필드)", resp.Incidents[0])
+	}
+	if _, ok := resp.Incidents[0].Labels["node"]; ok {
+		t.Errorf("labels=%v want node 제외 (승격분 이중 노출 방지)", resp.Incidents[0].Labels)
 	}
 	if _, ok := resp.Incidents[0].Labels["job"]; ok {
 		t.Errorf("labels=%v want job 제외", resp.Incidents[0].Labels)
@@ -132,8 +136,8 @@ func TestIncidents_StableTieOrder(t *testing.T) {
 		t.Fatalf("incidents=%d want 3", len(resp.Incidents))
 	}
 	for i, want := range []string{"a", "b", "c"} {
-		if resp.Incidents[i].Labels["node"] != want {
-			t.Errorf("incidents[%d].node=%q want %q (입력 순서 보존)", i, resp.Incidents[i].Labels["node"], want)
+		if resp.Incidents[i].Node != want {
+			t.Errorf("incidents[%d].node=%q want %q (입력 순서 보존)", i, resp.Incidents[i].Node, want)
 		}
 	}
 }
@@ -251,6 +255,11 @@ func TestIncidents_HeartbeatExcludedAndEntityRouting(t *testing.T) {
 	}
 	if inc := byName["NetObsDropBurst"]; inc.Scope != "pod" || inc.Node != "gpu" || inc.Namespace != "ml" || inc.Pod != "trainer" {
 		t.Errorf("pod scope entity=%+v want pod/gpu/ml/trainer", inc)
+	}
+	// 승격분 (node/namespace/pod) 은 labels 에서 제외되지만 src 계열 원본은 규약 쌍 출처 보존을
+	// 위해 남는다.
+	if inc := byName["NetObsDropBurst"]; inc.Labels["src_pod"] != "trainer" {
+		t.Errorf("labels=%v want src_pod 원본 잔존", inc.Labels)
 	}
 	if inc := byName["GPUObsThrottleActive"]; inc.Scope != "node" || inc.Node != "gpu" || inc.Pod != "" {
 		t.Errorf("node scope entity=%+v want node/gpu", inc)

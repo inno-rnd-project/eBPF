@@ -120,6 +120,9 @@ func alertEntity(labels map[string]string) (node, namespace, pod string) {
 var incidentDropLabels = map[string]bool{
 	"__name__": true, "alertstate": true, "alertname": true, "severity": true, "component": true,
 	"container": true, "endpoint": true, "instance": true, "job": true, "service": true,
+	// #332 승격분 (scope / entity). src_pod 와 victim_pod 계열 원본 라벨은 어느 규약 쌍에서
+	// 귀속됐는지를 보존하기 위해 남긴다 (승격 필드는 정규화된 값).
+	"node": true, "namespace": true, "pod": true,
 }
 
 // GetIncidents godoc
