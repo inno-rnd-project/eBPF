@@ -200,6 +200,42 @@ func TestSynthesis_GetNode(t *testing.T) {
 	}
 }
 
+// TestSynthesis_GetNode_MemoryPressureUsageScale 은 memory 차원 pressure 의 usage 임계 환산을
+// 검증한다. memory 의 node pressure 는 실측 사용률이라 일반 임계 (0.4) 로는 정상 상주 사용률
+// (0.58) 이 warn 으로 과민 판정되어 node-map 의 healthy 와 모순됐다. 0.85 미만은 ok, 0.87 은
+// warn 이며, memory 재척도로 dominant (최대값) 차원과 최악 등급이 어긋나는 케이스 (memory 0.6
+// dominant + cpu 0.45 elevated) 에서 전 차원 등급화가 cpu 의 warn 을 잡는다.
+func TestSynthesis_GetNode_MemoryPressureUsageScale(t *testing.T) {
+	cases := []struct {
+		name       string
+		memory     float64
+		cpu        float64
+		wantStatus string
+	}{
+		{"memory-58pct-ok", 0.58, 0.10, "ok"},
+		{"memory-87pct-warn", 0.87, 0.10, "warn"},
+		{"non-dominant-cpu-elevated-warn", 0.60, 0.45, "warn"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := (&fakeQuerier{}).
+				on("node:memory_pressure_score", sample(tc.memory, "node", "worker2")).
+				on("node:cpu_pressure_score", sample(tc.cpu, "node", "worker2")).
+				on("node:cpu_health_score", sample(0.95, "node", "worker2"))
+			h := NewSynthesisHandler(q, nil, nil)
+			rec := httptest.NewRecorder()
+			h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/worker2", nil))
+			var resp NodeResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.Status != tc.wantStatus || resp.StatusBasis != "pressure" {
+				t.Errorf("status=%q basis=%q want %s/pressure (memory %.2f, cpu %.2f)", resp.Status, resp.StatusBasis, tc.wantStatus, tc.memory, tc.cpu)
+			}
+		})
+	}
+}
+
 // TestSynthesis_GetNode_WorstOfHealthAndAlert 는 #324 의 gpu 노드 실측 사례 재현이다. dominant
 // pressure 가 낮아도 (ok) health.gpu 0.0 과 firing alert 가 있으면 worst-of 합성으로 status 가
 // degraded (basis=health) 가 되어, node-map 의 warning 판정과 모순되지 않는다.

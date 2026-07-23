@@ -958,7 +958,7 @@ const docTemplatecorrelation = `{
         },
         "/api/v1/node/{node}": {
             "get": {
-                "description": "노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 dominant pressure 등급과 노드 사용량(CPU/memory 점유율, allocatable 분모, 0.85 warn/0.95 degraded) 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(severity critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis 가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서 제외한다. 등급 어휘 ok/warn/degraded 는 overview 와 node-map 의 healthy/warning 과 같은 입력 신호(pressure, firing alert)를 공유하고, down(ready 기반) 판정은 node-map 소관이다.",
+                "description": "노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 차원별 pressure 등급(전 차원 worst, memory 는 node_exporter 실측 사용률이라 일반 임계 대신 usage 임계 0.85/0.95 로 환산해 health 불감대·usage 축 설계와 정합)과 노드 사용량(CPU/memory 점유율, allocatable 분모, 0.85 warn/0.95 degraded) 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(severity critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis 가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서 제외한다. 등급 어휘 ok/warn/degraded 는 overview 와 node-map 의 healthy/warning 과 같은 입력 신호(pressure, firing alert)를 공유하고, down(ready 기반) 판정은 node-map 소관이다.",
                 "produces": [
                     "application/json"
                 ],

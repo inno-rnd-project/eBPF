@@ -586,7 +586,7 @@ type NodePodPressure struct {
 
 // GetNode godoc
 // @Summary      노드 1대 전체 압박 상황
-// @Description  노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 dominant pressure 등급과 노드 사용량(CPU/memory 점유율, allocatable 분모, 0.85 warn/0.95 degraded) 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(severity critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis 가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서 제외한다. 등급 어휘 ok/warn/degraded 는 overview 와 node-map 의 healthy/warning 과 같은 입력 신호(pressure, firing alert)를 공유하고, down(ready 기반) 판정은 node-map 소관이다.
+// @Description  노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 차원별 pressure 등급(전 차원 worst, memory 는 node_exporter 실측 사용률이라 일반 임계 대신 usage 임계 0.85/0.95 로 환산해 health 불감대·usage 축 설계와 정합)과 노드 사용량(CPU/memory 점유율, allocatable 분모, 0.85 warn/0.95 degraded) 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(severity critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis 가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서 제외한다. 등급 어휘 ok/warn/degraded 는 overview 와 node-map 의 healthy/warning 과 같은 입력 신호(pressure, firing alert)를 공유하고, down(ready 기반) 판정은 node-map 소관이다.
 // @Tags         interference
 // @Produce      json
 // @Param        node  path  string  true  "노드 이름"
@@ -671,13 +671,13 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// status 는 dominant pressure 등급, 노드 사용량 등급, 차원별 health 최솟값 등급, firing
+		// status 는 차원별 pressure 등급, 노드 사용량 등급, 차원별 health 최솟값 등급, firing
 		// alert 등급의 worst-of 합성이다 (#324, #325). dominant pressure 만으로는 pressure 계열
 		// 밖의 이상 (GPU throttle alert firing + health 0.0, limit 없는 pod 의 CPU 포화) 이 가려져
 		// node-map 의 warning 판정과 모순된다. overall (node:pressure_score) 은 차원을 블렌딩해
 		// 단일 차원 hotspot 을 희석하므로 정보 필드로만 노출하고 status 에는 쓰지 않는다 (예:
 		// memory 0.97 이어도 overall 0.24 면 ok 로 가려짐).
-		resp.Status, resp.StatusBasis = composeNodeStatus(domDim, domVal, usage, resp.Health, alertGrade)
+		resp.Status, resp.StatusBasis = composeNodeStatus(nodePressureGrade(resp.Pressure), usage, resp.Health, alertGrade)
 
 		sort.Slice(resp.TopPods, func(i, j int) bool {
 			if resp.TopPods[i].Pressure != resp.TopPods[j].Pressure {
@@ -709,20 +709,21 @@ func nodeStatusRank(s string) int {
 	}
 }
 
-// composeNodeStatus 는 #324 와 #325 의 4입력 worst-of 합성이다. dominant pressure 등급, 노드
-// 사용량 (CPU / memory 점유율) 등급, 차원별 health 최솟값 등급 (HealthStatus 매핑 재사용), 이
-// 노드를 가리키는 firing alert 등급 (severity critical 은 degraded, 그 외 warn, #325) 중 가장
-// 나쁜 등급을 채택하고 결정 신호를 basis 로 돌려준다. 등급 동률이면 pressure, usage, health,
-// alert 순으로 귀속하며, 신호가 전부 부재면 unknown 과 빈 basis 를 돌려준다.
-func composeNodeStatus(domDim string, domVal float64, usage []float64, health map[string]float64, alertGrade string) (string, string) {
+// composeNodeStatus 는 #324 와 #325 의 4입력 worst-of 합성이다. 차원별 pressure 등급
+// (nodePressureGrade), 노드 사용량 (CPU / memory 점유율) 등급, 차원별 health 최솟값 등급
+// (HealthStatus 매핑 재사용), 이 노드를 가리키는 firing alert 등급 (severity critical 은
+// degraded, 그 외 warn, #325) 중 가장 나쁜 등급을 채택하고 결정 신호를 basis 로 돌려준다. 등급
+// 동률이면 pressure, usage, health, alert 순으로 귀속하며, 신호가 전부 부재면 unknown 과 빈
+// basis 를 돌려준다.
+func composeNodeStatus(pressureGrade string, usage []float64, health map[string]float64, alertGrade string) (string, string) {
 	status, basis := "unknown", ""
 	consider := func(s, b string) {
 		if nodeStatusRank(s) > nodeStatusRank(status) {
 			status, basis = s, b
 		}
 	}
-	if domDim != "" {
-		consider(pressureStatusLabel(domVal), "pressure")
+	if pressureGrade != "" {
+		consider(pressureGrade, "pressure")
 	}
 	for _, frac := range usage {
 		consider(usageStatusLabel(frac), "usage")
@@ -740,6 +741,26 @@ func composeNodeStatus(domDim string, domVal float64, usage []float64, health ma
 		consider(alertGrade, "alert")
 	}
 	return status, basis
+}
+
+// nodePressureGrade 는 차원별 pressure 를 status 어휘로 환산한 뒤 가장 나쁜 등급을 돌려준다.
+// memory 의 node pressure 는 node_exporter 실측 사용률 (0~1) 이라 일반 임계 (0.4/0.7) 로는 정상
+// 상주 사용률이 경고로 과민 판정되어 node-map (블렌딩 pressure 기준 healthy) 과 모순됐다. health
+// 의 위험 구간 매핑 (0.80 이하 불감대, #286) 과 usage 축 임계 (#325) 의 설계와 정합하도록 memory
+// 만 usage 임계 (0.85/0.95) 로 환산한다. memory 재척도로 dominant (최대값) 차원의 등급이 최악
+// 등급과 어긋날 수 있어 dominant 한 차원이 아니라 전 차원을 등급화해 worst 를 취한다.
+func nodePressureGrade(pressure map[string]float64) string {
+	grade := ""
+	for dim, v := range pressure {
+		g := pressureStatusLabel(v)
+		if dim == "memory" {
+			g = usageStatusLabel(v)
+		}
+		if nodeStatusRank(g) > nodeStatusRank(grade) {
+			grade = g
+		}
+	}
+	return grade
 }
 
 // usageStatusLabel 은 노드 점유율 (0~1, pod 합산 사용량 / allocatable) 을 status 어휘로 환산한다
