@@ -50,7 +50,7 @@ type NodePodUsage struct {
 
 // GetNodePods godoc
 // @Summary      노드 하위 pod별 자원 사용량 목록
-// @Description  노드에 스케줄된 pod 별로 신원 (namespace 와 pod 와 uid) 과 CPU (limit 대비 percent 와 절대량 cores), memory (limit 대비 percent 와 working set bytes), network bytes rate (netobs pod bytes 의 5분 rate 합산) 와 상태를 한 응답으로 돌려준다. percent 는 limit 분모라 limit 없는 pod 는 생략되고 절대량 필드로 표현된다 (#328 과 동일 규약). severity 는 pod pressure score 3종 최대의 환산 (low/elevated/high) 이고, 종료 pod 와 미관측 사유 (unobserved_reason) 는 pods API 의 규약 (#314, #320) 을 그대로 쓴다. 관측 판정 소스는 rate 결과 존재라 (pods API 는 시리즈 존재) 카운터 샘플이 부족한 신규 pod 의 짧은 창에서는 여기서만 일시적으로 사유가 붙을 수 있고 1분 내 자연 수렴한다. 정렬은 namespace 와 pod 사전순으로 결정적이며 이상 우선 정렬은 severity 를 근거로 표시 계층이 수행한다. at 파라미터로 사건 시점을 재구성할 수 있다.
+// @Description  노드에 스케줄된 pod 별로 신원 (namespace 와 pod 와 uid) 과 CPU (limit 대비 percent 와 절대량 cores), memory (limit 대비 percent 와 working set bytes), network bytes rate (netobs pod bytes 의 5분 rate 합산) 와 상태를 한 응답으로 돌려준다. percent 는 limit 분모라 limit 없는 pod 는 생략되고 절대량 필드로 표현된다 (#328 과 동일 규약). severity 는 pod pressure score 3종 최대의 환산 (low/elevated/high) 이고, 종료 pod 와 미관측 사유 (unobserved_reason, no_traffic 포함 #342) 는 pods API 의 규약 (#314, #320) 을 그대로 쓴다. 관측 판정 소스는 rate 결과 존재라 (pods API 는 시리즈 존재) 카운터 샘플이 부족한 신규 pod 의 짧은 창에서는 여기서만 일시적으로 사유가 붙을 수 있고 1분 내 자연 수렴한다. 정렬은 namespace 와 pod 사전순으로 결정적이며 이상 우선 정렬은 severity 를 근거로 표시 계층이 수행한다. at 파라미터로 사건 시점을 재구성할 수 있다.
 // @Tags         interference
 // @Produce      json
 // @Param        node  path   string  true   "노드 이름 (DNS-1123 형식)"
@@ -109,6 +109,8 @@ func (h *SynthesisHandler) GetNodePods(w http.ResponseWriter, r *http.Request) {
 		"pod:network_pressure_score:5m"+sel,
 		// #320 미관측 사유 판별용 agent 배치 여부. 단일 노드라 이 노드의 시리즈 존재만 본다.
 		"netobs_bpf_program_loaded"+sel,
+		// #342 무소켓 pod 집합 (no_traffic 판별 입력).
+		fmt.Sprintf("count by(src_namespace, src_pod) (netobs_pod_no_sockets%s)", sel),
 	)
 
 	phase := map[string]string{}
@@ -156,6 +158,10 @@ func (h *SynthesisHandler) GetNodePods(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	agentNodes := map[string]bool{node: len(res[10]) > 0}
+	noSockets := map[nsPod]bool{}
+	for _, sm := range res[11] {
+		noSockets[nsPod{sm.Labels["src_namespace"], sm.Labels["src_pod"]}] = true
+	}
 
 	for _, sm := range res[0] {
 		ns, pod := sm.Labels["namespace"], sm.Labels["pod"]
@@ -191,7 +197,7 @@ func (h *SynthesisHandler) GetNodePods(w http.ResponseWriter, r *http.Request) {
 		}
 		// 미관측 사유. 종료 / Unknown phase 는 사유 판정이 무의미해 생략한다 (pods API 공용 조건).
 		if !observed[k] && !unobservedReasonExempt(p.Phase) {
-			p.UnobservedReason = unobservedReason(node, sm.Labels["pod_ip"], sm.Labels["host_ip"], agentNodes)
+			p.UnobservedReason = unobservedReason(node, sm.Labels["pod_ip"], sm.Labels["host_ip"], agentNodes, noSockets[k])
 		}
 		resp.Pods = append(resp.Pods, p)
 	}

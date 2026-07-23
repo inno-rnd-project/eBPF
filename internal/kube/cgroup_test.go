@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -122,5 +123,35 @@ func TestReadPIDCgroup_TempFile(t *testing.T) {
 	// 존재하지 않는 PID는 에러를 돌려준다.
 	if _, err := readPIDCgroup(99999); err == nil {
 		t.Error("expected error for missing PID file, got nil")
+	}
+}
+
+// TestPodCgroupPIDs 는 pod slice 와 자식 scope 의 cgroup.procs 에서 PID 를 모으는지 검증한다
+// (#342). cgroup v2 는 프로세스가 leaf 에만 속하므로 자식 scope 읽기가 판별 성립의 핵심이다.
+func TestPodCgroupPIDs(t *testing.T) {
+	root := t.TempDir()
+	uid := "40206357-b3f0-4a13-80c1-365204f7a06f"
+	slice := filepath.Join(root, "kubepods.slice", "kubepods-besteffort.slice",
+		"kubepods-besteffort-pod"+strings.ReplaceAll(uid, "-", "_")+".slice")
+	scope := filepath.Join(slice, "cri-containerd-abc.scope")
+	if err := os.MkdirAll(scope, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// pod-level 은 internal node 라 비어 있고 leaf scope 에만 PID 가 있다 (cgroup v2 규약 재현).
+	if err := os.WriteFile(filepath.Join(slice, "cgroup.procs"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scope, "cgroup.procs"), []byte("3383213\n3383299\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := PodCgroupPIDs(uid, root, 1); len(got) != 1 || got[0] != 3383213 {
+		t.Errorf("pids=%v want [3383213] (limit 1)", got)
+	}
+	if got := PodCgroupPIDs(uid, root, 10); len(got) != 2 {
+		t.Errorf("pids=%v want 2개", got)
+	}
+	if got := PodCgroupPIDs("no-such-uid", root, 1); got != nil {
+		t.Errorf("미존재 UID pids=%v want nil (graceful)", got)
 	}
 }

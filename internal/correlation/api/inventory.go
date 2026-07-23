@@ -58,22 +58,27 @@ type PodInventory struct {
 	// Observed 는 eBPF 관측 커버리지다 (#248). netobs 가 상시 수집하는 netobs_pod_bytes_total
 	// 시리즈가 이 pod 에 존재하면 true, 없으면 no-data 로 판정한다.
 	Observed bool `json:"observed"`
-	// UnobservedReason 은 미관측 사유 분류다 (#320). agent_absent (노드에 netobs 미배치), host_network
-	// (pod IP 가 host IP 와 같아 IP 귀속이 성립하지 않음), no_data (관측 가능한데 시리즈 부재) 로
-	// 구분한다. host_network 는 확정이 아닌 시점 의존 분류로, cgroup 힌트 (#228) 가 TCP 트래픽에서
-	// 학습되면 observed=true (live) 로 전환될 수 있다. observed=true 와 종료/Unknown phase 는 생략된다.
+	// UnobservedReason 은 미관측 사유 분류다 (#320, #342). agent_absent (노드에 netobs 미배치),
+	// host_network (pod IP 가 host IP 와 같아 IP 귀속이 성립하지 않음), no_traffic (netns 소켓
+	// 테이블이 비어 네트워크 미사용이 증명됨, unix socket 전용 pod 등), no_data (관측 가능한데
+	// 시리즈 부재) 로 구분한다. host_network 는 확정이 아닌 시점 의존 분류로, cgroup 힌트 (#228)
+	// 가 TCP 트래픽에서 학습되면 observed=true (live) 로 전환될 수 있다. observed=true 와
+	// 종료/Unknown phase 는 생략된다.
 	UnobservedReason string `json:"unobserved_reason,omitempty"`
 }
 
 // unobservedReason 은 #320 의 미관측 사유 판정이다. 우선순위는 agent_absent (hostNetwork 여부와
-// 무관하게 관측 자체가 불가) → host_network → no_data 다. agentNodes 는 netobs_bpf_program_loaded
-// 가 존재하는 노드 집합이다.
-func unobservedReason(node, podIP, hostIP string, agentNodes map[string]bool) string {
+// 무관하게 관측 자체가 불가) → host_network → no_traffic (#342, agent 의 소켓 스캔이 netns 무소켓
+// 을 증명해 시리즈 부재가 정상) → no_data 다. agentNodes 는 netobs_bpf_program_loaded 가 존재하는
+// 노드 집합이고, noTraffic 은 netobs_pod_no_sockets 시리즈 존재 여부다.
+func unobservedReason(node, podIP, hostIP string, agentNodes map[string]bool, noTraffic bool) string {
 	switch {
 	case node != "" && !agentNodes[node]:
 		return "agent_absent"
 	case podIP != "" && podIP == hostIP:
 		return "host_network"
+	case noTraffic:
+		return "no_traffic"
 	default:
 		return "no_data"
 	}
@@ -221,7 +226,7 @@ func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
 
 // GetPods godoc
 // @Summary      파드 인벤토리
-// @Description  파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by), priority, phase, qos, 관측 커버리지(observed)를 kube-state-metrics 기반으로 돌려준다. observed 는 netobs 의 eBPF 시리즈가 존재하는지로, false 면 unobserved_reason 이 미관측 사유를 분류한다 (#320): agent_absent 는 노드에 netobs 미배치, host_network 는 pod IP 가 host IP 와 같아 IP 귀속이 성립하지 않는 상태로 cgroup 힌트가 학습되면 live 로 전환될 수 있는 시점 의존 분류다. no_data 는 관측 가능한데 시리즈 부재다. 종료 pod (phase Succeeded/Failed) 는 telemetry 부재가 정상이라 observed=false 에 사유가 생략된다 (#314). ?namespace 로 필터한다. 다른 API의 src_namespace/src_pod/pod_uid와 동일 키로 매핑한다.
+// @Description  파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by), priority, phase, qos, 관측 커버리지(observed)를 kube-state-metrics 기반으로 돌려준다. observed 는 netobs 의 eBPF 시리즈가 존재하는지로, false 면 unobserved_reason 이 미관측 사유를 분류한다 (#320, #342): agent_absent 는 노드에 netobs 미배치, host_network 는 pod IP 가 host IP 와 같아 IP 귀속이 성립하지 않는 상태로 cgroup 힌트가 학습되면 live 로 전환될 수 있는 시점 의존 분류다. no_traffic 은 agent 의 소켓 스캔이 pod netns 의 무소켓을 증명한 상태 (unix socket 전용 pod 등) 로 시리즈 부재가 정상이고, no_data 는 관측 가능한데 시리즈 부재다. 종료 pod (phase Succeeded/Failed) 는 telemetry 부재가 정상이라 observed=false 에 사유가 생략된다 (#314). ?namespace 로 필터한다. 다른 API의 src_namespace/src_pod/pod_uid와 동일 키로 매핑한다.
 // @Tags         inventory
 // @Produce      json
 // @Param        namespace  query  string  false  "namespace 필터 (생략 시 전체)"
@@ -247,6 +252,8 @@ func (h *SynthesisHandler) GetPods(w http.ResponseWriter, r *http.Request) {
 		"count by(src_namespace, src_pod) (netobs_pod_bytes_total)",
 		// #320 미관측 사유 판별용 netobs agent 배치 노드 집합.
 		"count by(node) (netobs_bpf_program_loaded)",
+		// #342 무소켓 pod 집합 (no_traffic 판별 입력).
+		"count by(src_namespace, src_pod) (netobs_pod_no_sockets)",
 	)
 
 	// kube_pod_info: base set. namespace 필터는 PromQL injection 을 피해 Go 측에서 적용한다.
@@ -300,11 +307,15 @@ func (h *SynthesisHandler) GetPods(w http.ResponseWriter, r *http.Request) {
 			agentNodes[n] = true
 		}
 	}
+	noSockets := map[[2]string]bool{}
+	for _, sm := range res[5] {
+		noSockets[[2]string{sm.Labels["src_namespace"], sm.Labels["src_pod"]}] = true
+	}
 	for _, p := range pods {
 		p.Observed = observed[[2]string{p.Namespace, p.Pod}]
 		// #320 미관측 사유. 관측 성공과 사유 판정이 무의미한 phase (종료 / Unknown) 는 생략한다.
 		if !p.Observed && !unobservedReasonExempt(p.Phase) {
-			p.UnobservedReason = unobservedReason(p.Node, p.PodIP, p.HostIP, agentNodes)
+			p.UnobservedReason = unobservedReason(p.Node, p.PodIP, p.HostIP, agentNodes, noSockets[[2]string{p.Namespace, p.Pod}])
 		}
 	}
 

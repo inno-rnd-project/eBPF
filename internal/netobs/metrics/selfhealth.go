@@ -50,6 +50,35 @@ var (
 		},
 	)
 
+	// podNoSockets 는 #342 의 pod 별 소켓 존재 스캔 결과다. netns 소켓 테이블 (tcp/tcp6/udp/udp6)
+	// 이 전부 빈 pod 만 1 로 노출한다. TCP/UDP 이벤트가 구조적으로 없어 netobs 시리즈 부재가 관측
+	// 결함이 아님을 증명하는 시리즈로, correlation 의 미관측 사유 no_traffic 판별 입력이 된다.
+	// hostNetwork pod 는 netns 공유로 판별이 무의미해 emit 되지 않는다. 스캔마다 Reset 후 재설정
+	// 되어 소켓이 생긴 pod 의 시리즈는 자연 소거된다.
+	podNoSockets = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "netobs_pod_no_sockets",
+			Help: "1 if the pod's network namespace currently has zero tcp/tcp6/udp/udp6 sockets (checked from /proc/<pid>/net on the cgroup scanner cycle). Such pods structurally produce no netobs series, so their absence is classified as no_traffic instead of no_data. hostNetwork pods are excluded because they share the host netns.",
+		},
+		[]string{"node", "src_namespace", "src_pod"},
+	)
+
+	// socketScanDurationSeconds 와 socketScanPods 는 #342 소켓 스캔의 self-health 다. 스캔 비용
+	// (마지막 스캔 소요 시간) 과 판별에 성공한 pod 수를 노출해 cgroup.procs / procfs 읽기 비용이
+	// 노드 pod 수에 비례해 커지는 상황을 운영자가 관찰할 수 있게 한다.
+	socketScanDurationSeconds = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "netobs_socket_scan_duration_seconds",
+			Help: "Wall-clock duration of the last per-pod socket presence scan piggybacking on the cgroup scanner cycle.",
+		},
+	)
+	socketScanPods = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "netobs_socket_scan_pods",
+			Help: "Number of pods whose socket presence was successfully determined in the last scan. Pods skipped for hostNetwork, missing PIDs (terminated), or procfs read failures are not counted.",
+		},
+	)
+
 	// informerSyncLagSeconds 는 kube.Resolver 의 마지막 watch event 수신 후 경과 시간이다. 첫
 	// 이벤트 수신 전 (agent startup 직후) 윈도우에서는 agent 기동 시각으로부터의 경과 시간으로
 	// fallback 해 startup 단계에서도 의미 있는 신호를 노출한다. API server 단절이나 RBAC 실수로
@@ -122,6 +151,18 @@ func SetCgroup2Available(ok bool) {
 		v = 1
 	}
 	cgroup2Available.Set(v)
+}
+
+// SetSocketScan 은 #342 소켓 존재 스캔 결과를 emit 한다. 무소켓 pod 게이지는 스캔마다 Reset 후
+// 재설정되어 stale 시리즈가 남지 않고, self-health 2 종 (소요 시간과 판별 pod 수) 을 함께 갱신한다.
+// socketless 는 (namespace, pod) 쌍의 평탄화 슬라이스다.
+func SetSocketScan(node string, socketless [][2]string, scanned int, durationSeconds float64) {
+	podNoSockets.Reset()
+	for _, np := range socketless {
+		podNoSockets.WithLabelValues(node, np[0], np[1]).Set(1)
+	}
+	socketScanDurationSeconds.Set(durationSeconds)
+	socketScanPods.Set(float64(scanned))
 }
 
 // SetInformerSyncLag 는 informer watch event 수신 lag 을 초 단위로 emit 한다. 호출 측이 last

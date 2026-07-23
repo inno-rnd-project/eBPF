@@ -160,6 +160,15 @@ func main() {
 	if kr.Enabled() && cgroup2OK {
 		scanner := metadata.NewCgroupScanner(kr, cfg.NodeName, metadata.DefaultCgroupRoot)
 		enricher.SetCgroupScanner(scanner)
+		// #342 스캔 주기에 편승하는 pod 소켓 존재 스캔. 무소켓 pod 를 게이지로 노출해 correlation
+		// 의 미관측 사유 no_traffic 판별 입력이 된다. hostPID 라 /proc 에서 host PID 가 보인다.
+		scanner.SetSocketScan(func(socketless []kube.PodIdentity, scanned int, dur time.Duration) {
+			pairs := make([][2]string, 0, len(socketless))
+			for _, id := range socketless {
+				pairs = append(pairs, [2]string{id.Namespace, id.PodName})
+			}
+			metrics.SetSocketScan(cfg.NodeName, pairs, scanned, dur.Seconds())
+		})
 		go func() {
 			// informer 첫 동기화를 기다린 뒤 스캔해야 기동 직후 빈 pod 목록으로 빈 테이블을 만들지
 			// 않는다. Run 은 첫 스캔 직후 테이블 크기를 로그로 남긴다.

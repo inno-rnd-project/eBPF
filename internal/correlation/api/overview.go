@@ -39,8 +39,9 @@ type OverviewNodes struct {
 
 // OverviewPods 는 pod 관측 커버리지 집계다. live 는 netobs eBPF 시리즈가 존재하는 pod (pods API 의
 // observed 와 동일 판정) 이고, terminated 는 종료 pod (phase Succeeded/Failed, #314) 로 telemetry
-// 부재가 정상이라 no_data 분모에서 제외된다. unobservable 은 구조적 미관측 (#320, agent 미배치
-// 또는 hostNetwork 로 IP 귀속 불가) 으로 관측 결함이 아니라 역시 분모에서 제외되며, no_data 는
+// 부재가 정상이라 no_data 분모에서 제외된다. unobservable 은 구조적 미관측 (#320, #342, agent
+// 미배치 또는 hostNetwork 로 IP 귀속 불가 또는 netns 무소켓으로 증명된 네트워크 미사용) 으로 관측
+// 결함이 아니라 역시 분모에서 제외되며, no_data 는
 // 실행 중이고 관측 가능한 pod 기준의 나머지다. node-map 의 completed 상태는 Succeeded 만
 // 가리키므로 (Failed 는 down), 상위 집합인 본 집계는 terminated 로 명명해 의미 충돌을 피한다.
 type OverviewPods struct {
@@ -155,6 +156,9 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 	// #320 미관측 사유 판별용 netobs agent 배치 노드 집합.
 	agentIdx := len(queries)
 	queries = append(queries, "count by(node) (netobs_bpf_program_loaded)")
+	// #342 무소켓 pod 집합 (no_traffic 판별 입력).
+	noSocketsIdx := len(queries)
+	queries = append(queries, "count by(src_namespace, src_pod) (netobs_pod_no_sockets)")
 	res := h.queryParallel(evalCtx, queries...)
 
 	// 노드 3단 상태. ready / firing alert / 압박을 노드별로 모은 뒤 nodeStatus 로 판정한다.
@@ -216,6 +220,10 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 			agentNodes[n] = true
 		}
 	}
+	noSockets := map[[2]string]bool{}
+	for _, sm := range res[noSocketsIdx] {
+		noSockets[[2]string{sm.Labels["src_namespace"], sm.Labels["src_pod"]}] = true
+	}
 	for _, sm := range res[4] {
 		if sm.Labels["pod"] == "" {
 			continue
@@ -227,8 +235,9 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 			resp.Pods.Terminated++
 		case observed[key]:
 			resp.Pods.Live++
-		case unobservedReason(sm.Labels["node"], sm.Labels["pod_ip"], sm.Labels["host_ip"], agentNodes) != "no_data":
-			// #320 구조적 미관측 (agent 미배치 / hostNetwork) 은 관측 결함이 아니라 분리한다.
+		case unobservedReason(sm.Labels["node"], sm.Labels["pod_ip"], sm.Labels["host_ip"], agentNodes, noSockets[key]) != "no_data":
+			// #320, #342 구조적 미관측 (agent 미배치 / hostNetwork / 네트워크 미사용) 은 관측
+			// 결함이 아니라 분리한다.
 			resp.Pods.Unobservable++
 		}
 	}

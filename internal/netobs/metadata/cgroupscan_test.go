@@ -6,6 +6,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"netobs/internal/kube"
 )
@@ -99,5 +100,70 @@ func TestCgroupScanner_StaticPodConfigHash(t *testing.T) {
 	inodes := kube.PodCgroupInodes(hash, root)
 	if len(inodes) != 1 || inodes[0] != dirIno(t, slice) {
 		t.Fatalf("config hash inode=%v want 슬라이스 1개", inodes)
+	}
+}
+
+// TestScanSockets 는 #342 의 pod 소켓 존재 스캔을 검증한다. 무소켓 pod 만 socketless 로 모이고,
+// 소켓 있는 pod 와 hostNetwork pod (netns 공유로 판별 무의미) 와 PID 부재 pod (종료 등) 는
+// 제외되며, scanned 는 판별 성공 pod 수만 센다.
+func TestScanSockets(t *testing.T) {
+	cgroupRoot := t.TempDir()
+	procRoot := t.TempDir()
+
+	mkPod := func(uid, pid string) {
+		scope := filepath.Join(cgroupRoot, "kubepods.slice", "kubepods-besteffort.slice",
+			"kubepods-besteffort-pod"+strings.ReplaceAll(uid, "-", "_")+".slice", "cri-x.scope")
+		if err := os.MkdirAll(scope, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(scope, "cgroup.procs"), []byte(pid+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mkNet := func(pid string, tcpEntries int) {
+		dir := filepath.Join(procRoot, pid, "net")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		header := "  sl  local_address rem_address   st\n"
+		tcp := header
+		for i := 0; i < tcpEntries; i++ {
+			tcp += "   0: 00000000:0000 00000000:0000 0A\n"
+		}
+		for f, content := range map[string]string{"tcp": tcp, "tcp6": header, "udp": header, "udp6": header} {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	mkPod("aaaaaaaa-0000-0000-0000-000000000001", "100")
+	mkNet("100", 0) // 무소켓
+	mkPod("aaaaaaaa-0000-0000-0000-000000000002", "200")
+	mkNet("200", 2) // 소켓 있음
+	mkPod("aaaaaaaa-0000-0000-0000-000000000003", "300")
+	// PID 300 의 /proc 부재 (프로세스 소멸 재현) → 판별 생략
+
+	pods := []kube.PodIdentity{
+		{IdentityClass: kube.IdentityClassPod, Namespace: "nvdp", PodName: "device-plugin", PodUID: "aaaaaaaa-0000-0000-0000-000000000001"},
+		{IdentityClass: kube.IdentityClassPod, Namespace: "app", PodName: "web", PodUID: "aaaaaaaa-0000-0000-0000-000000000002"},
+		{IdentityClass: kube.IdentityClassPod, Namespace: "app", PodName: "gone", PodUID: "aaaaaaaa-0000-0000-0000-000000000003"},
+		{IdentityClass: kube.IdentityClassPod, Namespace: "kube-system", PodName: "hostnet", PodUID: "aaaaaaaa-0000-0000-0000-000000000004", HostNetwork: true},
+	}
+
+	sc := NewCgroupScanner(nil, "n1", cgroupRoot)
+	sc.procRoot = procRoot
+	var gotSocketless []kube.PodIdentity
+	var gotScanned int
+	sc.SetSocketScan(func(socketless []kube.PodIdentity, scanned int, dur time.Duration) {
+		gotSocketless, gotScanned = socketless, scanned
+	})
+	sc.scanSockets(pods)
+
+	if len(gotSocketless) != 1 || gotSocketless[0].PodName != "device-plugin" {
+		t.Errorf("socketless=%+v want device-plugin 단독", gotSocketless)
+	}
+	if gotScanned != 2 {
+		t.Errorf("scanned=%d want 2 (판별 성공: device-plugin 과 web)", gotScanned)
 	}
 }
