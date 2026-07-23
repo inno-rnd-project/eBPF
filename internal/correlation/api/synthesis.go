@@ -565,8 +565,9 @@ type NodeResponse struct {
 	Health  map[string]float64 `json:"health"`
 	Overall *float64           `json:"overall"`
 	Status  string             `json:"status"`
-	// StatusBasis 는 status 등급을 결정한 신호다 (#324, pressure / health / alert). 등급 동률이면
-	// pressure, health, alert 순으로 귀속하며 status 가 unknown (신호 전부 부재) 이면 생략된다.
+	// StatusBasis 는 status 등급을 결정한 신호다 (#324, #325, pressure / usage / health / alert).
+	// 등급 동률이면 pressure, usage, health, alert 순으로 귀속하며 status 가 unknown (신호 전부
+	// 부재) 이면 생략된다.
 	StatusBasis string `json:"status_basis,omitempty"`
 	// Confidence 는 dominant 차원 판정 신뢰도 (0-1, #264) 다. 압박 top1 과 top2 차원의 격차로,
 	// gpu-rca 의 신뢰도와 동일 축이라 한 차원이 지배적일수록 1 에 가깝다.
@@ -585,7 +586,7 @@ type NodePodPressure struct {
 
 // GetNode godoc
 // @Summary      노드 1대 전체 압박 상황
-// @Description  노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 dominant pressure 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(warn 고정)의 worst-of 합성(#324)이며, status_basis 가 결정 신호(pressure/health/alert)를 담는다. 등급 어휘 ok/warn/degraded 는 overview 와 node-map 의 healthy/warning 과 같은 입력 신호(pressure, firing alert)를 공유하고, down(ready 기반) 판정은 node-map 소관이다.
+// @Description  노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 dominant pressure 등급과 노드 사용량(CPU/memory 점유율, allocatable 분모, 0.85 warn/0.95 degraded) 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(severity critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis 가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서 제외한다. 등급 어휘 ok/warn/degraded 는 overview 와 node-map 의 healthy/warning 과 같은 입력 신호(pressure, firing alert)를 공유하고, down(ready 기반) 판정은 node-map 소관이다.
 // @Tags         interference
 // @Produce      json
 // @Param        node  path  string  true  "노드 이름"
@@ -645,18 +646,38 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 		resp.DominantDimension = domDim
 
 		// #324 이 노드를 가리키는 firing alert. overview / node-map 의 alertedNodes 와 동일하게
-		// ALERTS 의 node 라벨로 매칭한다.
-		alertFiring := false
+		// ALERTS 의 node 라벨로 매칭하고, severity critical 포함 여부로 등급을 나눈다 (#325).
+		alertGrade := ""
 		if s, err := h.querier.Query(ctx, fmt.Sprintf(`ALERTS{alertstate="firing",node=%q}`, node)); err == nil && len(s) > 0 {
-			alertFiring = true
+			alertGrade = "warn"
+			for _, sm := range s {
+				if sm.Labels["severity"] == "critical" {
+					alertGrade = "degraded"
+					break
+				}
+			}
 		}
 
-		// status 는 dominant pressure 등급, 차원별 health 최솟값 등급, firing alert 의 worst-of
-		// 합성이다 (#324). dominant pressure 만으로는 pressure 계열 밖의 이상 (예: GPU throttle
-		// alert firing + health 0.0) 이 가려져 node-map 의 warning 판정과 모순된다. overall
-		// (node:pressure_score) 은 차원을 블렌딩해 단일 차원 hotspot 을 희석하므로 정보 필드로만
-		// 노출하고 status 에는 쓰지 않는다 (예: memory 0.97 이어도 overall 0.24 면 ok 로 가려짐).
-		resp.Status, resp.StatusBasis = composeNodeStatus(domDim, domVal, resp.Health, alertFiring)
+		// #325 노드 사용량 점유율. node-vitals (#313) 와 동일한 allocatable 분모 산식 (pod-level
+		// cgroup 행 한정, 분모 max 집계) 을 비율 (0~1) 로 읽는다. GPU 사용률은 포화가 정상 활용일
+		// 수 있어 등급 입력에서 제외한다 (GPU 이상은 health 의 gpu 차원이 담당).
+		usage := []float64{}
+		for _, q := range []string{
+			fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total{node=%q,container="",pod!=""}[5m])) / max(kube_node_status_allocatable{node=%q, resource="cpu"})`, node, node),
+			fmt.Sprintf(`sum(container_memory_working_set_bytes{node=%q,container="",pod!=""}) / max(kube_node_status_allocatable{node=%q, resource="memory"})`, node, node),
+		} {
+			if s, err := h.querier.Query(ctx, q); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
+				usage = append(usage, s[0].Value)
+			}
+		}
+
+		// status 는 dominant pressure 등급, 노드 사용량 등급, 차원별 health 최솟값 등급, firing
+		// alert 등급의 worst-of 합성이다 (#324, #325). dominant pressure 만으로는 pressure 계열
+		// 밖의 이상 (GPU throttle alert firing + health 0.0, limit 없는 pod 의 CPU 포화) 이 가려져
+		// node-map 의 warning 판정과 모순된다. overall (node:pressure_score) 은 차원을 블렌딩해
+		// 단일 차원 hotspot 을 희석하므로 정보 필드로만 노출하고 status 에는 쓰지 않는다 (예:
+		// memory 0.97 이어도 overall 0.24 면 ok 로 가려짐).
+		resp.Status, resp.StatusBasis = composeNodeStatus(domDim, domVal, usage, resp.Health, alertGrade)
 
 		sort.Slice(resp.TopPods, func(i, j int) bool {
 			if resp.TopPods[i].Pressure != resp.TopPods[j].Pressure {
@@ -688,12 +709,12 @@ func nodeStatusRank(s string) int {
 	}
 }
 
-// composeNodeStatus 는 #324 의 worst-of 합성이다. dominant pressure 등급, 차원별 health 최솟값
-// 등급 (HealthStatus 매핑 재사용), 이 노드를 가리키는 firing alert 셋 중 가장 나쁜 등급을 채택하고
-// 결정 신호를 basis 로 돌려준다. alert 는 nodeStatus (overview / node-map) 의 warning 규약을 따라
-// severity 세분화 없이 warn 고정이다. 등급 동률이면 pressure, health, alert 순으로 귀속하며, 세
-// 신호가 전부 부재면 unknown 과 빈 basis 를 돌려준다.
-func composeNodeStatus(domDim string, domVal float64, health map[string]float64, alertFiring bool) (string, string) {
+// composeNodeStatus 는 #324 와 #325 의 4입력 worst-of 합성이다. dominant pressure 등급, 노드
+// 사용량 (CPU / memory 점유율) 등급, 차원별 health 최솟값 등급 (HealthStatus 매핑 재사용), 이
+// 노드를 가리키는 firing alert 등급 (severity critical 은 degraded, 그 외 warn, #325) 중 가장
+// 나쁜 등급을 채택하고 결정 신호를 basis 로 돌려준다. 등급 동률이면 pressure, usage, health,
+// alert 순으로 귀속하며, 신호가 전부 부재면 unknown 과 빈 basis 를 돌려준다.
+func composeNodeStatus(domDim string, domVal float64, usage []float64, health map[string]float64, alertGrade string) (string, string) {
 	status, basis := "unknown", ""
 	consider := func(s, b string) {
 		if nodeStatusRank(s) > nodeStatusRank(status) {
@@ -702,6 +723,9 @@ func composeNodeStatus(domDim string, domVal float64, health map[string]float64,
 	}
 	if domDim != "" {
 		consider(pressureStatusLabel(domVal), "pressure")
+	}
+	for _, frac := range usage {
+		consider(usageStatusLabel(frac), "usage")
 	}
 	if len(health) > 0 {
 		minHealth := math.Inf(1)
@@ -712,10 +736,24 @@ func composeNodeStatus(domDim string, domVal float64, health map[string]float64,
 		}
 		consider(correlation.HealthStatus(minHealth), "health")
 	}
-	if alertFiring {
-		consider("warn", "alert")
+	if alertGrade != "" {
+		consider(alertGrade, "alert")
 	}
 	return status, basis
+}
+
+// usageStatusLabel 은 노드 점유율 (0~1, pod 합산 사용량 / allocatable) 을 status 어휘로 환산한다
+// (#325). limit 없는 pod 의 CPU 포화처럼 CFS throttle 기반 pressure 에 잡히지 않는 사용량 포화를
+// 판정에 반영한다.
+func usageStatusLabel(frac float64) string {
+	switch {
+	case frac >= correlation.NodeUsageDegradedThreshold:
+		return "degraded"
+	case frac >= correlation.NodeUsageWarnThreshold:
+		return "warn"
+	default:
+		return "ok"
+	}
 }
 
 // pressureConfidence 는 dominant 차원 판정 신뢰도 (#264) 다. 차원 pressure 를 내림차순으로 봤을 때

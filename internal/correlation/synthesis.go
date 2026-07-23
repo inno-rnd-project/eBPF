@@ -13,6 +13,12 @@ const (
 	// PressureHighThreshold 이상은 high, PressureElevatedThreshold 이상 high 미만은 elevated, 그 미만은 low.
 	PressureHighThreshold     = 0.7
 	PressureElevatedThreshold = 0.4
+	// 노드 사용량 점유율 (0~1, pod 합산 사용량 / 노드 allocatable) 등급 임계다 (#325).
+	// NodeUsageDegradedThreshold 이상은 degraded, NodeUsageWarnThreshold 이상 degraded 미만은 warn.
+	// limit 없는 pod 의 CPU 포화처럼 pressure 계열 (CFS throttle 기반) 에 잡히지 않는 포화를
+	// node 상세 status 판정에 반영하기 위한 임계로, 분자가 5분 창 합산이라 순간 스파이크에 튀지 않는다.
+	NodeUsageDegradedThreshold = 0.95
+	NodeUsageWarnThreshold     = 0.85
 	// ZScoreHighThreshold 이상(절대값)은 high, ZScoreElevatedThreshold 이상 high 미만은 elevated, 그 미만은 none.
 	ZScoreHighThreshold     = 3.0
 	ZScoreElevatedThreshold = 2.0
