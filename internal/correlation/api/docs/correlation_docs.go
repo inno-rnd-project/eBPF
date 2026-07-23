@@ -1136,7 +1136,7 @@ const docTemplatecorrelation = `{
         },
         "/api/v1/overview": {
             "get": {
-                "description": "랜딩 요약 카드 5장 (노드 3단 상태, pod 관측 커버리지, firing alert severity 집계, GPU fleet, weakest signal) 을 한 응답으로 돌려준다. 노드 warning 은 firing alert 또는 통합 압박 elevated 초과, pod live 는 netobs eBPF 시리즈 존재, issues 는 alertname 단위 집계다. at 파라미터로 사건 시점의 랜딩 화면을 재구성할 수 있다.",
+                "description": "랜딩 요약 카드 5장 (노드 3단 상태, pod 관측 커버리지, firing alert severity 집계, GPU fleet, weakest signal) 을 한 응답으로 돌려준다. 노드 warning 은 firing alert 또는 통합 압박 elevated 초과, pod live 는 netobs eBPF 시리즈 존재다. issues 는 alertname 단위 dedup 집계라 total 은 alert 종류 수이며, pod 뱃지 합계 (pod별 부착 수) 와 기준이 달라 두 숫자는 다를 수 있다. 상시 발화 heartbeat 인 Watchdog 은 활성 이슈가 아니라 집계에서 제외된다 (#326). scope 3종 (pod_scope/node_scope/cluster_scope) 은 alert 라벨 기준 단일 분류로 total 에 대해 additive 하며, cluster scope 는 node 와 pod 라벨이 없어 특정 노드·pod 화면에 나타나지 않는 전역 이슈다. at 파라미터로 사건 시점의 랜딩 화면을 재구성할 수 있다.",
                 "produces": [
                     "application/json"
                 ],
@@ -3010,7 +3010,16 @@ const docTemplatecorrelation = `{
         "internal_correlation_api.OverviewIssues": {
             "type": "object",
             "properties": {
+                "cluster_scope": {
+                    "type": "integer"
+                },
                 "critical": {
+                    "type": "integer"
+                },
+                "node_scope": {
+                    "type": "integer"
+                },
+                "pod_scope": {
                     "type": "integer"
                 },
                 "total": {
