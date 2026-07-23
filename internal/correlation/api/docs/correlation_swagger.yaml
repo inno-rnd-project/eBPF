@@ -695,6 +695,18 @@ definitions:
         additionalProperties:
           type: string
         type: object
+      namespace:
+        type: string
+      node:
+        type: string
+      pod:
+        type: string
+      scope:
+        description: |-
+          Scope 는 overview issues 와 동일 분류 (#326, #332) 로 pod / node / cluster 다. Node 와
+          Namespace 와 Pod 는 귀속 entity 라 프론트가 이슈에서 해당 화면으로 라우팅하는 입력이 되며,
+          cluster scope 는 라우팅 대상이 없어 전역 알림 목록에서 표시하는 것이 프론트 계약이다.
+        type: string
       severity:
         type: string
       starts_at:
@@ -2369,7 +2381,10 @@ paths:
       description: Prometheus 의 ALERTS 시계열을 range 합성해 기간 내 alert 발화 이력을 돌려준다. 동일 alert
         의 재발화는 샘플 간극으로 별개 에피소드로 분리되고, range 끝까지 발화 중이면 status=firing, 중간에 끊겼으면 status=resolved
         와 종료 시각이 채워진다. starts_at 은 synthesis API 의 at 파라미터에 그대로 넣어 발화 시점 상태를 재구성하는
-        진입점이다.
+        진입점이다. 상시 발화 heartbeat (Watchdog) 는 overview issues 와 공용 필터로 제외되어 발화 중 목록의
+        alertname dedup 수가 카드 total 과 일치한다 (#332). 각 항목의 scope (pod/node/cluster,
+        overview 와 동일 분류) 와 귀속 entity (node 와 namespace 와 pod) 는 프론트가 이슈에서 해당 화면으로
+        라우팅하는 입력이며, cluster scope 는 라우팅 대상이 없어 전역 알림 목록에서 표시한다.
       parameters:
       - description: '조회 기간 (예: 1h, 6h, 최대 24h, 기본 1h)'
         in: query
@@ -2719,8 +2734,9 @@ paths:
       description: 랜딩 요약 카드 5장 (노드 3단 상태, pod 관측 커버리지, firing alert severity 집계, GPU
         fleet, weakest signal) 을 한 응답으로 돌려준다. 노드 warning 은 firing alert 또는 통합 압박 elevated
         초과, pod live 는 netobs eBPF 시리즈 존재다. issues 는 alertname 단위 dedup 집계라 total
-        은 alert 종류 수이며, pod 뱃지 합계 (pod별 부착 수) 와 기준이 달라 두 숫자는 다를 수 있다. 상시 발화 heartbeat
-        인 Watchdog 은 활성 이슈가 아니라 집계에서 제외된다 (#326). scope 3종 (pod_scope/node_scope/cluster_scope)
+        은 활성 alertname 종류 수이며, incidents 의 발화 중 (firing) 목록을 alertname 으로 dedup 한
+        수와 같고 (#332, 동일 heartbeat 필터 공유), pod 뱃지 합계 (pod별 부착 수) 와는 기준이 달라 두 숫자는 다를
+        수 있다. 상시 발화 heartbeat 인 Watchdog 은 활성 이슈가 아니라 집계에서 제외된다 (#326). scope 3종 (pod_scope/node_scope/cluster_scope)
         은 alert 라벨 기준 단일 분류로 total 에 대해 additive 하며, cluster scope 는 node 와 pod 라벨이
         없어 특정 노드·pod 화면에 나타나지 않는 전역 이슈다. at 파라미터로 사건 시점의 랜딩 화면을 재구성할 수 있다.
       parameters:

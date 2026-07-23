@@ -72,9 +72,13 @@ func TestIncidents(t *testing.T) {
 	if resp.Incidents[2].Status != "resolved" {
 		t.Errorf("incidents[2]=%+v want 최초 에피소드 resolved", resp.Incidents[2])
 	}
-	// 라벨 필터: 전용 필드 승격분과 scrape 계열 제외, node 는 유지.
-	if resp.Incidents[0].Labels["node"] != "gpu" {
-		t.Errorf("labels=%v want node 유지", resp.Incidents[0].Labels)
+	// 라벨 필터: 전용 필드 승격분 (node 포함, #332) 과 scrape 계열은 labels 에서 제외되고 승격
+	// 필드로만 노출된다.
+	if resp.Incidents[0].Node != "gpu" {
+		t.Errorf("incidents[0]=%+v want Node=gpu (승격 필드)", resp.Incidents[0])
+	}
+	if _, ok := resp.Incidents[0].Labels["node"]; ok {
+		t.Errorf("labels=%v want node 제외 (승격분 이중 노출 방지)", resp.Incidents[0].Labels)
 	}
 	if _, ok := resp.Incidents[0].Labels["job"]; ok {
 		t.Errorf("labels=%v want job 제외", resp.Incidents[0].Labels)
@@ -132,8 +136,8 @@ func TestIncidents_StableTieOrder(t *testing.T) {
 		t.Fatalf("incidents=%d want 3", len(resp.Incidents))
 	}
 	for i, want := range []string{"a", "b", "c"} {
-		if resp.Incidents[i].Labels["node"] != want {
-			t.Errorf("incidents[%d].node=%q want %q (입력 순서 보존)", i, resp.Incidents[i].Labels["node"], want)
+		if resp.Incidents[i].Node != want {
+			t.Errorf("incidents[%d].node=%q want %q (입력 순서 보존)", i, resp.Incidents[i].Node, want)
 		}
 	}
 }
@@ -206,5 +210,61 @@ func TestIncidents_NilFetcher(t *testing.T) {
 	}
 	if len(resp.Incidents) != 0 {
 		t.Errorf("incidents=%d want 0", len(resp.Incidents))
+	}
+}
+
+// TestIncidents_HeartbeatExcludedAndEntityRouting 은 #332 의 발견 가능성 계약을 검증한다. 상시
+// 발화 heartbeat (Watchdog) 는 overview 와 공용 필터로 목록에서 제외되어 발화 중 alertname dedup
+// 수가 카드 total 과 일치하고, 각 항목에는 scope (overview 와 동일 분류) 와 귀속 entity (node 와
+// namespace 와 pod) 가 채워져 프론트 라우팅 입력이 된다.
+func TestIncidents_HeartbeatExcludedAndEntityRouting(t *testing.T) {
+	now := time.Now()
+	m := func(t time.Time) int64 { return t.UnixMilli() }
+	mk := func(labels map[string]string) correlation.LabeledSeries {
+		return correlation.LabeledSeries{Series: correlation.TimeSeries{Labels: labels, Samples: []correlation.Sample{
+			{TimestampMs: m(now.Add(-6 * time.Minute)), Value: 1},
+			{TimestampMs: m(now.Add(-1 * time.Minute)), Value: 1},
+		}}}
+	}
+	f := &fakeFetcher{series: []correlation.LabeledSeries{
+		mk(map[string]string{"alertname": "Watchdog", "severity": "none"}),
+		mk(map[string]string{"alertname": "NetObsDropBurst", "severity": "critical", "node": "gpu", "src_namespace": "ml", "src_pod": "trainer"}),
+		mk(map[string]string{"alertname": "GPUObsThrottleActive", "severity": "critical", "node": "gpu"}),
+		mk(map[string]string{"alertname": "GPUUtilAnomalyDetected", "severity": "warning"}),
+	}}
+	h := NewIncidentsHandler(f)
+	rec := httptest.NewRecorder()
+	h.GetIncidents(rec, httptest.NewRequest(http.MethodGet, "/api/v1/incidents?step=5m", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp IncidentsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// Watchdog 제외로 3건 (전부 firing). 카드 total 과 같은 모수다.
+	if len(resp.Incidents) != 3 {
+		t.Fatalf("incidents=%d want 3 (Watchdog 제외): %+v", len(resp.Incidents), resp.Incidents)
+	}
+	byName := map[string]Incident{}
+	for _, inc := range resp.Incidents {
+		if inc.Alertname == "Watchdog" {
+			t.Fatal("Watchdog 이 목록에 잔존 (공용 heartbeat 필터 미적용)")
+		}
+		byName[inc.Alertname] = inc
+	}
+	if inc := byName["NetObsDropBurst"]; inc.Scope != "pod" || inc.Node != "gpu" || inc.Namespace != "ml" || inc.Pod != "trainer" {
+		t.Errorf("pod scope entity=%+v want pod/gpu/ml/trainer", inc)
+	}
+	// 승격분 (node/namespace/pod) 은 labels 에서 제외되지만 src 계열 원본은 규약 쌍 출처 보존을
+	// 위해 남는다.
+	if inc := byName["NetObsDropBurst"]; inc.Labels["src_pod"] != "trainer" {
+		t.Errorf("labels=%v want src_pod 원본 잔존", inc.Labels)
+	}
+	if inc := byName["GPUObsThrottleActive"]; inc.Scope != "node" || inc.Node != "gpu" || inc.Pod != "" {
+		t.Errorf("node scope entity=%+v want node/gpu", inc)
+	}
+	if inc := byName["GPUUtilAnomalyDetected"]; inc.Scope != "cluster" || inc.Node != "" || inc.Pod != "" {
+		t.Errorf("cluster scope entity=%+v want cluster/빈 entity", inc)
 	}
 }

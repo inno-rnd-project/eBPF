@@ -53,7 +53,8 @@ type OverviewPods struct {
 
 // OverviewIssues 는 firing alert 의 alertname 단위 집계다. 동일 alert 가 라벨만 다르게 다건 발화해도
 // 1건으로 세어 다중 시리즈 인플레를 막는다. critical / warning 외 severity 는 total 에만 계상된다.
-// 상시 발화가 정상인 heartbeat (Watchdog) 는 활성 이슈가 아니라 집계 전체에서 제외된다 (#326).
+// 상시 발화가 정상인 heartbeat (Watchdog) 는 활성 이슈가 아니라 집계 전체에서 제외되며, incidents
+// 목록과 공용 필터 (heartbeatAlert) 를 공유해 카드와 목록의 모수가 일치한다 (#326, #332).
 // scope 3종은 alertname 단위 단일 분류 (#326) 로, 시리즈 라벨에 pod 계열 (pod/src_pod/victim_pod,
 // alertTargetsPod 규약) 이 있으면 pod, 없이 node 가 있으면 node, 둘 다 없으면 cluster 다. 동일
 // alertname 의 시리즈 간 라벨이 다르면 가장 구체적인 쪽 (pod > node > cluster) 을 채택한다.
@@ -116,7 +117,7 @@ func nodeStatus(ready bool, hasFiringAlert bool, pressure float64) string {
 
 // GetOverview godoc
 // @Summary      랜딩 대시보드 요약
-// @Description  랜딩 요약 카드 5장 (노드 3단 상태, pod 관측 커버리지, firing alert severity 집계, GPU fleet, weakest signal) 을 한 응답으로 돌려준다. 노드 warning 은 firing alert 또는 통합 압박 elevated 초과, pod live 는 netobs eBPF 시리즈 존재다. issues 는 alertname 단위 dedup 집계라 total 은 alert 종류 수이며, pod 뱃지 합계 (pod별 부착 수) 와 기준이 달라 두 숫자는 다를 수 있다. 상시 발화 heartbeat 인 Watchdog 은 활성 이슈가 아니라 집계에서 제외된다 (#326). scope 3종 (pod_scope/node_scope/cluster_scope) 은 alert 라벨 기준 단일 분류로 total 에 대해 additive 하며, cluster scope 는 node 와 pod 라벨이 없어 특정 노드·pod 화면에 나타나지 않는 전역 이슈다. at 파라미터로 사건 시점의 랜딩 화면을 재구성할 수 있다.
+// @Description  랜딩 요약 카드 5장 (노드 3단 상태, pod 관측 커버리지, firing alert severity 집계, GPU fleet, weakest signal) 을 한 응답으로 돌려준다. 노드 warning 은 firing alert 또는 통합 압박 elevated 초과, pod live 는 netobs eBPF 시리즈 존재다. issues 는 alertname 단위 dedup 집계라 total 은 활성 alertname 종류 수이며, incidents 의 발화 중 (firing) 목록을 alertname 으로 dedup 한 수와 같고 (#332, 동일 heartbeat 필터 공유), pod 뱃지 합계 (pod별 부착 수) 와는 기준이 달라 두 숫자는 다를 수 있다. 상시 발화 heartbeat 인 Watchdog 은 활성 이슈가 아니라 집계에서 제외된다 (#326). scope 3종 (pod_scope/node_scope/cluster_scope) 은 alert 라벨 기준 단일 분류로 total 에 대해 additive 하며, cluster scope 는 node 와 pod 라벨이 없어 특정 노드·pod 화면에 나타나지 않는 전역 이슈다. at 파라미터로 사건 시점의 랜딩 화면을 재구성할 수 있다.
 // @Tags         meta
 // @Produce      json
 // @Param        at  query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
@@ -234,13 +235,13 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 	resp.Pods.NoData = resp.Pods.Total - resp.Pods.Terminated - resp.Pods.Live - resp.Pods.Unobservable
 
 	// issues: firing alert 의 alertname 단위 dedup 집계. severity 는 alert 규칙 정의라 동일
-	// alertname 내에서 균일하다. Watchdog 은 상시 발화가 정상인 heartbeat 라 제외하고 (#326),
+	// alertname 내에서 균일하다. heartbeat 는 incidents 와 공용 필터로 제외하고 (#326, #332),
 	// scope 는 시리즈 간 라벨 차이에 대비해 가장 구체적인 값 (pod > node > cluster) 을 채택한다.
 	issueSeverity := map[string]string{}
 	issueScope := map[string]string{}
 	for _, sm := range res[2] {
 		name := sm.Labels["alertname"]
-		if name == "" || name == "Watchdog" {
+		if name == "" || heartbeatAlert(name) {
 			continue
 		}
 		issueSeverity[name] = sm.Labels["severity"]
