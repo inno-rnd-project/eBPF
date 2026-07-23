@@ -37,6 +37,7 @@ kube-state-metrics 와 cadvisor 와 node_exporter 는 kube-prometheus-stack 번�
 | gpuobs `nodeSelector` | gpuobs 의 `patch-daemonset.yaml` | `accelerator: nvidia` + opt-in 라벨 | gpuobs 를 GPU 노드로 한정하는 스케줄 라벨. GPU 노드 라벨 스킴이 다른 클러스터 (예: `nvidia.com/gpu.present`) 는 이 값을 맞춘다. non-GPU 노드 상주는 NVML init 실패 후 비활성 pod 만 남는 낭비다. GPU 노드의 `nvidia.com/gpu` taint 는 base toleration 이 허용한다 (#295) |
 | CUDA/NCCL 라이브러리 경로 | gpuobs 의 `patch-daemonset.yaml` (env) | (empty = 자동 순회) | 미지정 시 Debian multiarch 와 RHEL lib64 와 GPU Operator driver 컨테이너 후보를 순회해 첫 실존 경로에 attach 한다 (#296). 후보 밖 특수 경로만 `GPUOBS_CUDA_LIBCUDA_PATH` 와 `GPUOBS_NCCL_LIB_PATH` 로 고정한다 |
 | 이미지 `newTag` | 각 `kustomization.yaml` | 현재 `VERSION` | `make bump` 이 overlays 전체를 자동 갱신하므로 손대지 않는다 |
+| control-plane 관측 포함 | 노드 라벨 (매니페스트 변경 없음) | 미포함 | control-plane 노드에 opt-in 라벨을 붙이면 netobs 가 배치된다 (#341, base 의 control-plane taint toleration 은 스케줄 허용만). apiserver 와 etcd 통신 관측이 열리고 master 의 hostNetwork pod 귀속은 cgroup 역매핑이 담당한다. etcd latency 에 민감한 환경은 라벨 미부여를 권고한다. gpuobs 는 GPU 가 없어 대상이 아니다 |
 
 ## 절차
 
@@ -58,7 +59,7 @@ kube-state-metrics 와 cadvisor 와 node_exporter 는 kube-prometheus-stack 번�
    kubectl --context <ctx> label nodes <gpu-node...> accelerator=nvidia
    ```
 
-   dev overlay 를 쓰는 클러스터는 netobs 가 `observability.netobs/canary=true` 라벨 단독 opt-in 이라 (#312) 관측 대상 워커 전부에 canary 라벨을 부여한다. GPU 라벨은 gpuobs 전용이며 netobs 스케줄에 요구되지 않는다.
+   dev overlay 를 쓰는 클러스터는 netobs 가 `observability.netobs/canary=true` 라벨 단독 opt-in 이라 (#312) 관측 대상 워커 전부에 canary 라벨을 부여한다. GPU 라벨은 gpuobs 전용이며 netobs 스케줄에 요구되지 않는다. control-plane 노드를 관측에 포함하려면 같은 opt-in 라벨을 붙인다 (#341, 위 변경값 표의 결정 기준 참고).
 
 4. GHCR pull secret 을 생성한다. namespace 는 netobs base 가 생성하지만 secret 을 먼저 두려면 namespace 를 선생성한다.
 
