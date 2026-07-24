@@ -1303,6 +1303,12 @@ spec:
         # 없는 노드만 우변의 1.0 을 받는다 (양변 모두 {node} 단일 라벨이라 시그니처 정합). 앵커는 같은
         # 그룹 상단에 순차 평가되어 지연이 없다. 이 프로젝트의 노드 fallback 관용구 (or on(node)
         # (... * 0)) 와 동일 축이다.
+        # 결합 유의: 앵커가 memory_health 라 fallback 경로의 cpu health 가 node_exporter 가용성에
+        # 간접 의존한다. node_exporter 가 빠진 노드는 cpu 와 memory health 가 동반 결측되어 일관은
+        # 유지되나, 더 중립적 앵커가 필요하면 kube_node_info (kube-state, node_exporter 무관) 로 교체
+        # 가능하다. 또한 fallback 의 1.0 은 실측이 아닌 "throttle 없음" 상수로, CPU 여유를 뜻하지
+        # 않는다 (memory health 실측과 성격이 다름). cpu limit 없는 pod 의 노드 CPU 폭주는 cpu health
+        # 가 아니라 node status 의 usage 축 (#333) 이 담당한다.
         - record: node:cpu_health_score:5m
           expr: |
             (
