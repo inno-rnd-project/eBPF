@@ -1,7 +1,8 @@
 # gpuobs-node-health.test.yaml 은 #264 의 노드 차원 health rule 4종 검증 promtool unit test 다.
 # cluster health 와 동일 산식을 노드 차원으로 이식했는지, 노드별로 독립 산출되는지 단정한다.
 # n1 은 cpu throttle 이 높아 cpu health 가 낮고, n2 는 정상이라 높다. network 는 n1 의 drop rate
-# 로 낮아진다.
+# 로 낮아진다. n3 은 cpu limit pod 가 없어 throttle 입력이 비지만 (#347), memory_health 앵커
+# fallback 으로 cpu health 1.0 을 받는다.
 rule_files:
   - gpuobs.yaml
 
@@ -28,9 +29,19 @@ tests:
       # n1: drop rate 50/s → network health = 1 - 50/100 = 0.5
       - series: 'netobs_drop_events_labeled_total{node="n1",src_namespace="ns1",src_workload="w1",drop_reason="r",drop_category="c"}'
         values: '0+1500x20'
+      # n3 (#347): cpu limit pod 없음 → pod:cpu_throttle_score 입력 부재. node_exporter 실측만 존재해
+      # memory_health 는 산출되고, 이를 앵커로 cpu health 가 fallback 1.0 을 받는다. Available 900 /
+      # Total 1000 → 사용률 0.1 → memory health 1.0.
+      - series: 'node_memory_MemAvailable_bytes{instance="10.0.0.3:9100"}'
+        values: '900x20'
+      - series: 'node_memory_MemTotal_bytes{instance="10.0.0.3:9100"}'
+        values: '1000x20'
+      - series: 'node_uname_info{instance="10.0.0.3:9100",nodename="n3"}'
+        values: '1x20'
 
     promql_expr_test:
-      # cpu health: 노드별 독립. n1 0.4, n2 0.9.
+      # cpu health: 노드별 독립. n1 0.4, n2 0.9. n3 (#347) 은 throttle 입력이 없어도 memory_health
+      # 앵커 fallback 으로 1.0 을 받는다 (cpu limit pod 없음 = throttle 불가 = 공급 정체 없음).
       - expr: node:cpu_health_score:5m
         eval_time: 5m
         exp_samples:
@@ -38,11 +49,16 @@ tests:
             value: 0.4
           - labels: 'node:cpu_health_score:5m{node="n2"}'
             value: 0.9
-      # memory health: n1 1.0 (위험 구간 매핑 #286, n2 는 node_exporter 시리즈 없어 산출 안 됨).
+          - labels: 'node:cpu_health_score:5m{node="n3"}'
+            value: 1
+      # memory health: n1 1.0, n3 1.0 (위험 구간 매핑 #286, n2 는 node_exporter 시리즈 없어 산출
+      # 안 됨). n3 은 #347 cpu fallback 앵커로도 쓰이는 node_exporter 실측 노드다.
       - expr: node:memory_health_score:5m
         eval_time: 5m
         exp_samples:
           - labels: 'node:memory_health_score:5m{node="n1"}'
+            value: 1
+          - labels: 'node:memory_health_score:5m{node="n3"}'
             value: 1
       # network health: n1 drop 50/s → 0.5.
       - expr: node:network_health_score:5m{node="n1"}

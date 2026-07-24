@@ -1294,12 +1294,30 @@ spec:
         # network 는 노드 drop rate inversion, gpu 는 노드 device 사용률 평균이다. gpu 는
         # node:gpu_util_ratio:5m 가 gpu_uuid 라벨로 device 별 다중 시리즈라 avg by(node) 로 노드 단위
         # 집계한다. cluster health rule 은 변경하지 않는다.
+        # cpu limit (CFS quota) 을 가진 pod 가 없는 노드는 pod:cpu_throttle_score:5m 입력이 비어
+        # quantile by(node) 가 그룹 자체를 만들지 않아 시리즈가 결측되고, GetNode API 가 health.cpu 를
+        # 생략해 프론트가 0.00 (최악) 으로 오표시한다 (#347). cpu limit pod 가 없으면 throttle 이
+        # 발생할 수 없어 CPU 공급 정체 없음 = 건강 1.0 이 정확한 판정이다. 전 노드에 존재하는
+        # node:memory_health_score:5m (node_exporter 실측 기반, #274) 를 앵커로 * 0 + 1 로 1.0 을
+        # 만들어 or 로 결합한다. throttle 이 있는 노드는 quantile 값이 or 좌변에 있어 그대로 유지되고,
+        # 없는 노드만 우변의 1.0 을 받는다 (양변 모두 {node} 단일 라벨이라 시그니처 정합). 앵커는 같은
+        # 그룹 상단에 순차 평가되어 지연이 없다. 이 프로젝트의 노드 fallback 관용구 (or on(node)
+        # (... * 0)) 와 동일 축이다.
+        # 결합 유의: 앵커가 memory_health 라 fallback 경로의 cpu health 가 node_exporter 가용성에
+        # 간접 의존한다. node_exporter 가 빠진 노드는 cpu 와 memory health 가 동반 결측되어 일관은
+        # 유지되나, 더 중립적 앵커가 필요하면 kube_node_info (kube-state, node_exporter 무관) 로 교체
+        # 가능하다. 또한 fallback 의 1.0 은 실측이 아닌 "throttle 없음" 상수로, CPU 여유를 뜻하지
+        # 않는다 (memory health 실측과 성격이 다름). cpu limit 없는 pod 의 노드 CPU 폭주는 cpu health
+        # 가 아니라 node status 의 usage 축 (#333) 이 담당한다.
         - record: node:cpu_health_score:5m
           expr: |
-            1 - clamp_max(
-              quantile by(node) (0.95, pod:cpu_throttle_score:5m),
-              1
+            (
+              1 - clamp_max(
+                quantile by(node) (0.95, pod:cpu_throttle_score:5m),
+                1
+              )
             )
+            or (node:memory_health_score:5m * 0 + 1)
 
         # node:memory_health_score:5m 는 gpu 판과 동일하게 cluster 판이 참조하는 순서 제약으로
         # cluster-health 블록 상단 (#286) 에 정의되어 있다.
