@@ -33,6 +33,10 @@ func resetMetrics() {
 		prometheus.CounterOpts{Name: "netobs_retrans_events_labeled_total"},
 		[]string{"node", "src_namespace", "src_workload", "traffic_scope", "direction", "dst_namespace", "dst_workload"},
 	)
+	sockTeardownLabeled = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "netobs_sock_teardown_total"},
+		[]string{"node", "src_namespace", "src_workload", "traffic_scope", "direction", "dst_namespace", "dst_workload"},
+	)
 	podStageEventsLabeled = prometheus.NewCounterVec(
 		prometheus.CounterOpts{Name: "netobs_pod_stage_events_labeled_total"},
 		[]string{"stage", "node", "src_namespace", "src_pod", "src_pod_uid", "traffic_scope", "direction", "dst_namespace", "dst_workload", "dst_pod_uid"},
@@ -403,5 +407,42 @@ func TestRecord_DropTimestampGauge(t *testing.T) {
 	Record(ev)
 	if got := testutil.CollectAndCount(dropLastTimestamp); got != 0 {
 		t.Errorf("allow-list 밖 dropLastTimestamp series=%d want 0 (가드 적용)", got)
+	}
+}
+
+// TestRecord_SockTeardownSeparatedFromDrop 은 #345 의 소켓 종료 정리 분리를 검증한다. StageSockTeardown
+// 이벤트는 전용 netobs_sock_teardown_total 로만 집계되고 netobs_drop_events_labeled_total 에는
+// 어떤 시리즈도 남기지 않아야 한다 (drop 노이즈 분리). StageDrop 은 반대로 drop 메트릭만 증가시킨다.
+func TestRecord_SockTeardownSeparatedFromDrop(t *testing.T) {
+	resetMetrics()
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(sockTeardownLabeled)
+	reg.MustRegister(dropEventsLabeled)
+
+	src := podID("kube-system", "coredns", "uid-c")
+	dst := externalID()
+	Record(sampleEvent(src, dst, types.StageSockTeardown, "sock_teardown"))
+
+	if got := testutil.CollectAndCount(sockTeardownLabeled); got != 1 {
+		t.Errorf("netobs_sock_teardown_total series=%d want 1", got)
+	}
+	if got := testutil.CollectAndCount(dropEventsLabeled); got != 0 {
+		t.Errorf("netobs_drop_events_labeled_total series=%d want 0 (teardown 은 drop 이 아님)", got)
+	}
+	if v := labelValue(t, reg, "netobs_sock_teardown_total", "src_workload"); v != "coredns" {
+		t.Errorf("src_workload=%q want coredns", v)
+	}
+
+	// 대조: StageDrop 은 drop 메트릭만 증가시키고 teardown 메트릭은 건드리지 않는다.
+	resetMetrics()
+	reg = prometheus.NewPedanticRegistry()
+	reg.MustRegister(sockTeardownLabeled)
+	reg.MustRegister(dropEventsLabeled)
+	Record(sampleEvent(src, dst, types.StageDrop, "drop"))
+	if got := testutil.CollectAndCount(dropEventsLabeled); got != 1 {
+		t.Errorf("drop series=%d want 1", got)
+	}
+	if got := testutil.CollectAndCount(sockTeardownLabeled); got != 0 {
+		t.Errorf("teardown series=%d want 0 for a real drop", got)
 	}
 }

@@ -1163,6 +1163,19 @@ spec:
               rate(netobs_drop_events_flow_total[1m])
             )
 
+        # netobs_sock_teardown:rate5m
+        # 소켓 종료 정리 (#345) 의 노드·워크로드 단위 5분 rate. NOT_SPECIFIED + TCP_CLOSE skb 는
+        # packet drop 이 아니라 소켓 teardown 시 큐 잔여 skb 해제라, BPF 가 drop stage 에서 분리해
+        # netobs_sock_teardown_total 로 emit 한다. 따라서 netobs_drop_events_labeled_total 기반의
+        # 모든 drop 집계 (netobs_drop_burst / cluster:network_drop_5m_rate / network health) 는
+        # 소스 단계부터 이 신호를 포함하지 않는다. 본 record 는 connection churn (짧은 TCP 연결
+        # 반복) 을 drop 노이즈와 분리해 표기하는 전용 신호다.
+        - record: netobs_sock_teardown:rate5m
+          expr: |
+            sum by(node, src_namespace, src_workload) (
+              rate(netobs_sock_teardown_total[5m])
+            )
+
     # netobs-gpuobs.flow-bandwidth.recording 그룹은 #193 flow 토폴로지 API 의 대역폭 해석을 사전 계산한다.
     # pod:network_mbps:5m 는 항상 수집되는 netobs_pod_bytes_total (nic layer) 기반이라 flow allow-list
     # 와 무관하게 emit 되고, flow:bytes_by_protocol:5m 는 netobs_flow_bytes_total 기반이라 NETOBS_FLOW_
