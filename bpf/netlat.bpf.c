@@ -1427,15 +1427,20 @@ int BPF_KPROBE(handle_kfree_skb_reason, struct sk_buff *skb, int reason)
     }
 
     /* #345 소켓 종료 정리 판별. reason 이 NOT_SPECIFIED (커널이 이유를 특정하지 않은 kfree) 이고
-     * sk_state 가 TCP_CLOSE 이면 packet drop 이 아니라 소켓 teardown 시 큐 잔여 skb 해제
-     * (inet_csk_destroy_sock 은 항상 TCP_CLOSE 에서 호출) 다. NOT_SPECIFIED 의 enum 값은 커널
-     * 버전마다 다르므로 (5.17 은 0, 이후 앞에 NOT_DROPPED_YET / CONSUMED 삽입으로 밀림)
-     * bpf_core_enum_value 로 타깃 BTF 에서 relocate 해 하드코딩 오판정을 피한다. teardown 은 drop
-     * 이 아니라 stage 를 분리하고 stack capture 를 생략한다. NOT_SPECIFIED 중 TCP_CLOSE 가 아닌
-     * 잔여는 실제 drop 가능성이 있어 기존 drop stage 를 유지한다. */
+     * TCP 소켓이 TCP_CLOSE 상태이면 packet drop 이 아니라 소켓 teardown 시 큐 잔여 skb 해제
+     * (inet_csk_destroy_sock 은 connection-oriented 전용이라 항상 TCP_CLOSE 에서 호출) 다.
+     * protocol == TCP 가드가 핵심이다: UDP unconnected 소켓은 connect() 미호출 시 sk_state 가
+     * TCP_CLOSE 로 남으므로 (#197), 이 가드가 없으면 살아있는 UDP 소켓의 실제 NOT_SPECIFIED drop 이
+     * teardown 으로 오분류돼 drop 집계에서 잘못 빠진다 (실제 손실 미관측, 노이즈 제거의 정반대
+     * 위험). NOT_SPECIFIED 의 enum 값은 커널 버전마다 다르므로 (5.17 은 0, 이후 앞에 NOT_DROPPED_YET
+     * / CONSUMED 삽입으로 밀림) bpf_core_enum_value 로 타깃 BTF 에서 relocate 해 하드코딩 오판정을
+     * 피한다. teardown 은 drop 이 아니라 stage 를 분리하고 stack capture 를 생략한다. TCP_CLOSE 가
+     * 아니거나 TCP 가 아닌 잔여 NOT_SPECIFIED 는 실제 drop 가능성이 있어 기존 drop stage 를 유지
+     * 한다. s.protocol 은 fill_conn_from_sock 가 sk_protocol 에서 채운 값이다. */
     __u8 stage = NETOBS_STAGE_DROP;
     int not_specified = bpf_core_enum_value(enum skb_drop_reason, SKB_DROP_REASON_NOT_SPECIFIED);
     if (reason == not_specified &&
+        s.protocol == IPPROTO_TCP &&
         BPF_CORE_READ(sk, __sk_common.skc_state) == TCP_CLOSE) {
         stage = NETOBS_STAGE_SOCK_TEARDOWN;
     }
