@@ -38,6 +38,10 @@ const (
 	// (SYN-ACK 수신 처리로 established 전환) 까지로, 네트워크 왕복과 커널 처리를 합친 서비스 지연의 첫
 	// 구간이다. client 발신 개시라 egress 로 분류한다.
 	StageConnect = 14
+	// #345 소켓 종료 정리. kfree_skb_reason 의 NOT_SPECIFIED reason + TCP_CLOSE 상태 skb 로,
+	// packet drop 이 아니라 소켓 teardown 시 큐 잔여 skb 해제 (inet_csk_destroy_sock 경로) 다.
+	// BPF 가 drop stage 에서 분리해 emit 하며 userspace 는 netobs_sock_teardown_total 로 집계한다.
+	StageSockTeardown = 15
 )
 
 type Event struct {
@@ -144,6 +148,8 @@ func StageName(stage uint8) string {
 		return "retrans"
 	case StageDrop:
 		return "drop"
+	case StageSockTeardown:
+		return "sock_teardown"
 	case StageRcvNic:
 		return "rcv_nic"
 	case StageRcvL3:
@@ -175,7 +181,7 @@ func StageName(stage uint8) string {
 func StageDirection(stage uint8) string {
 	switch stage {
 	case StageSendmsgRet, StageToVeth, StageToDevQ, StageRetrans, StageDrop,
-		StageTcpWriteXmit, StageTcpTransmitSkb, StageConnect:
+		StageTcpWriteXmit, StageTcpTransmitSkb, StageConnect, StageSockTeardown:
 		return "egress"
 	case StageRcvNic, StageRcvL3, StageRcvDemux, StageRcvEstablished, StageRcvApp, StageAckWait:
 		return "ingress"

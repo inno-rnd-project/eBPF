@@ -52,6 +52,11 @@ enum netobs_event_stage {
      * 차분을 emit 한다. finish 는 softirq 콜체인이라 connect 호출자 tid 와 달라 tid 키 starts 맵 대신
      * 전용 connect_starts 맵을 쓴다 (socket_cookie 는 connect 진입 시점에 lazy 미할당이라 키 불가). */
     NETOBS_STAGE_CONNECT          = 14,
+    /* #345 소켓 종료 정리. kfree_skb_reason 의 NOT_SPECIFIED reason + TCP_CLOSE 상태 skb 는 packet
+     * drop 이 아니라 소켓 teardown 시 큐에 남은 skb 해제 (inet_csk_destroy_sock 경로) 다. drop 집계
+     * 에서 분리해 connection churn 이 높은 워크로드 (coredns 등) 의 정상 정리가 drop 노이즈로
+     * 오집계되지 않게 한다. */
+    NETOBS_STAGE_SOCK_TEARDOWN    = 15,
 };
 
 /* pod_bytes 누적 맵의 key/value. key는 (cgroup_id, direction, layer) 삼중 합성이며 동일 Pod의

@@ -154,6 +154,18 @@ var (
 		[]string{"node", "src_namespace", "src_workload", "traffic_scope", "direction", "dst_namespace", "dst_workload"},
 	)
 
+	// sockTeardownLabeled 는 #345 의 소켓 종료 정리 신호다. kfree_skb_reason 의 NOT_SPECIFIED +
+	// TCP_CLOSE skb (inet_csk_destroy_sock 경로) 로, packet drop 이 아니라 소켓 teardown 시 큐 잔여
+	// skb 해제다. connection churn 이 높은 워크로드 (coredns 등) 에서 drop 노이즈로 오집계되던 것을
+	// 별도 신호로 분리했다. drop 과 달리 reason / stage 세분화가 없어 workload 단위 라벨만 갖는다.
+	sockTeardownLabeled = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "netobs_sock_teardown_total",
+			Help: "Socket teardown cleanup events (kfree_skb_reason with NOT_SPECIFIED reason and TCP_CLOSE socket state, e.g. inet_csk_destroy_sock freeing queued skbs). These are normal connection teardown, not packet drops, and are separated from netobs_drop_events_labeled_total at the BPF source to keep the drop signal clean. A high rate reflects connection churn (short-lived TCP connections).",
+		},
+		[]string{"node", "src_namespace", "src_workload", "traffic_scope", "direction", "dst_namespace", "dst_workload"},
+	)
+
 	// dropEventsFlow 는 #64 의 drop flow 5-tuple context 메트릭이다. 기존 dropEventsLabeled 가
 	// workload 단위로 emit 하는 반면 본 메트릭은 5-tuple (src_ip, src_port, dst_ip, dst_port,
 	// protocol) 라벨로 정확한 connection 식별을 제공한다. high cardinality 메트릭이라 emit 은
@@ -270,6 +282,7 @@ func Register(reg prometheus.Registerer) {
 		stageEventsLabeled,
 		stageLatencyLabeled,
 		dropEventsLabeled,
+		sockTeardownLabeled,
 		dropEventsFlow,
 		dropLastTimestamp,
 		retransEventsLabeled,
@@ -455,6 +468,19 @@ func Record(ev types.EnrichedEvent) {
 				ev.Raw.StackID,
 			)
 		}
+
+	case types.StageSockTeardown:
+		// #345 소켓 종료 정리. drop 이 아니라 별도 신호라 drop 메트릭 / stack capture 경로를 타지
+		// 않고 전용 카운터만 증가시킨다. reason / 5-tuple 세분화 없이 workload 단위 churn 신호다.
+		sockTeardownLabeled.WithLabelValues(
+			label(ev.ObservedNodeLabel()),
+			label(ev.SourceNamespaceLabel()),
+			label(ev.SourceWorkloadLabel()),
+			label(ev.TrafficScope),
+			label(ev.Direction),
+			dstNs,
+			dstWl,
+		).Inc()
 
 	case types.StageRetrans:
 		retransEventsLabeled.WithLabelValues(
