@@ -2,26 +2,32 @@ package api
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"testing"
 )
 
-// ruleFiles 는 alert rule 을 정의하는 3 개 파일이다. 테스트가 repo 루트 기준 상대 경로로 읽는다
-// (본 테스트 파일은 internal/correlation/api 라 4 단계 상위가 루트).
-var ruleFiles = []string{
-	"../../../deploy/gpuobs/base/prometheus-rule.yaml",
-	"../../../deploy/correlation/base/prometheus-rule.yaml",
-	"../../../deploy/injector/base/prometheus-rule.yaml",
-}
+// ruleFileGlob 은 alert rule 을 정의하는 모든 컴포넌트의 base rule 파일을 매칭한다. 하드코딩
+// 목록 대신 glob 을 써 새 컴포넌트의 rule 파일이 추가돼도 커버리지 검증이 자동 포함한다 (파일
+// 누락으로 그 alert 가 조용히 검증을 빠지는 잠복 방지). 본 테스트 파일은 internal/correlation/api
+// 라 3 단계 상위가 repo 루트다.
+const ruleFileGlob = "../../../deploy/*/base/prometheus-rule.yaml"
 
 var alertLine = regexp.MustCompile(`(?m)^\s*- alert:\s*([A-Za-z0-9]+)\s*$`)
 
 // ruleAlertnames 는 rule 파일들에서 정의된 alertname 집합을 뽑는다.
 func ruleAlertnames(t *testing.T) map[string]bool {
 	t.Helper()
+	files, err := filepath.Glob(ruleFileGlob)
+	if err != nil {
+		t.Fatalf("rule 파일 glob 실패 %s: %v", ruleFileGlob, err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("rule 파일을 찾지 못함 (glob=%s, 경로 확인)", ruleFileGlob)
+	}
 	names := map[string]bool{}
-	for _, f := range ruleFiles {
+	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatalf("rule 파일 읽기 실패 %s: %v", f, err)
@@ -73,6 +79,16 @@ func TestIncidentCatalog_NoStaleEntries(t *testing.T) {
 
 // TestIncidentDescribe_RenderAndGraceful 은 summary 치환과 미등록 graceful 을 검증한다.
 func TestIncidentDescribe_RenderAndGraceful(t *testing.T) {
+	// noisy neighbor: suspect→victim 가해 관계를 담는다 (#349 리뷰). 라벨은 rule expr 의
+	// max by 유지 셋 (suspect/victim namespace·pod, resource_dimension) 이다.
+	nt, ns := incidentDescribe("CorrelationStrongNoisyNeighbor", map[string]string{
+		"suspect_namespace": "batch", "suspect_pod": "trainer",
+		"victim_namespace": "serving", "victim_pod": "api", "resource_dimension": "network",
+	})
+	if nt != "강한 noisy neighbor 간섭" || ns != "batch/trainer가 serving/api를 network 자원 경합으로 간섭" {
+		t.Errorf("noisy neighbor title=%q summary=%q", nt, ns)
+	}
+
 	// 등록 alert: labels 로 summary 치환.
 	title, summary := incidentDescribe("NetObsBpfMapUtilizationHigh", map[string]string{
 		"map": "flow_bytes", "instance": "10.0.0.1:9810",

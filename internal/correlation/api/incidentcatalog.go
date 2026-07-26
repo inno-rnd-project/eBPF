@@ -73,7 +73,7 @@ var incidentCatalog = map[string]incidentInfo{
 	"MemoryPressureSpikeDetected":   {"메모리 압박 급변", "메모리 압박 spike가 z-score 기준으로 감지됨"},
 
 	// correlation-exporter self-health 계열
-	"CorrelationStrongNoisyNeighbor":     {"강한 noisy neighbor 간섭", "{{victim_namespace}}/{{victim_pod}}가 이웃 pod의 자원 경합으로 간섭받음"},
+	"CorrelationStrongNoisyNeighbor":     {"강한 noisy neighbor 간섭", "{{suspect_namespace}}/{{suspect_pod}}가 {{victim_namespace}}/{{victim_pod}}를 {{resource_dimension}} 자원 경합으로 간섭"},
 	"CorrelationExporterStalled":         {"correlation-exporter 정체", "correlation-exporter가 10분 이상 reconcile하지 않음"},
 	"CorrelationExporterReconcileErrors": {"correlation-exporter reconcile 오류", "correlation-exporter의 reconcile 오류가 누적됨"},
 
