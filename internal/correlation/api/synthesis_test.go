@@ -559,3 +559,42 @@ type apicommonErrorBody struct {
 		Message string `json:"message"`
 	} `json:"error"`
 }
+
+// TestListPaginationContract 는 #352 의 리스트 페이지네이션 규약을 검증한다. limit 파싱 불가는
+// 400 invalid_limit, 결과가 limit 을 넘으면 total 은 전체 수·truncated=true, 안 넘으면 truncated=false.
+func TestListPaginationContract(t *testing.T) {
+	// pressure: pod scope 3건에 limit=2 → total 3, truncated true, ranking 2.
+	q := (&fakeQuerier{}).on("pod:cpu_throttle_score",
+		sample(0.9, "node", "n1", "src_namespace", "a", "src_pod", "p1"),
+		sample(0.8, "node", "n1", "src_namespace", "a", "src_pod", "p2"),
+		sample(0.7, "node", "n1", "src_namespace", "a", "src_pod", "p3"),
+	)
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetPressure(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pressure?dimension=cpu&scope=pod&limit=2", nil))
+	var pr PressureResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &pr)
+	if pr.Total != 3 || !pr.Truncated || len(pr.Ranking) != 2 {
+		t.Errorf("pressure total=%d truncated=%v len=%d want 3/true/2", pr.Total, pr.Truncated, len(pr.Ranking))
+	}
+
+	// limit 미초과: truncated false, total = 실제 수.
+	rec = httptest.NewRecorder()
+	h.GetPressure(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pressure?dimension=cpu&scope=pod&limit=10", nil))
+	_ = json.Unmarshal(rec.Body.Bytes(), &pr)
+	if pr.Total != 3 || pr.Truncated || len(pr.Ranking) != 3 {
+		t.Errorf("pressure total=%d truncated=%v len=%d want 3/false/3", pr.Total, pr.Truncated, len(pr.Ranking))
+	}
+
+	// 파싱 불가 limit → 400 invalid_limit.
+	rec = httptest.NewRecorder()
+	h.GetPressure(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pressure?dimension=cpu&limit=abc", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid limit status=%d want 400", rec.Code)
+	}
+	var eb apicommonErrorBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &eb)
+	if eb.Error.Code != "invalid_limit" {
+		t.Errorf("code=%q want invalid_limit", eb.Error.Code)
+	}
+}

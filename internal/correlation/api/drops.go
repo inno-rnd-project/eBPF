@@ -6,7 +6,6 @@ import (
 	"math"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -113,14 +112,10 @@ type RetransGroup struct {
 func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	nsFilter := strings.TrimSpace(q.Get("namespace"))
-	limit := 20
-	if v := strings.TrimSpace(q.Get("limit")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > 100 {
-		limit = 100
+	limit, ok := apicommon.ParseLimit(r, 20, 100)
+	if !ok {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_limit", "limit 은 정수여야 합니다")
+		return
 	}
 	node, err := parseNodeParam(strings.TrimSpace(q.Get("node")))
 	if err != nil {
@@ -160,17 +155,13 @@ func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
 
 		// opt-in 상세와 CNI 계층 drop: best-effort 라 실패해도 무시한다. cilium 은 미설치 클러스터에서
 		// 시계열 부재로 자연히 빈 결과가 된다.
-		res, qerr := h.queryParallel(ctx,
+		res, _ := h.queryParallel(ctx,
 			fmt.Sprintf("sum by(node, src_namespace, src_pod, direction, drop_reason, drop_category, protocol, src_ip, src_port, dst_ip, dst_port, ip_version) (rate(netobs_drop_events_flow_total%s[5m]))", sel),
 			"netobs_drop_last_timestamp_seconds"+sel,
 			fmt.Sprintf("sum by(drop_reason, drop_category, func) (rate(netobs_drop_stack_total%s[5m]))", sel),
 			fmt.Sprintf("sum by(node, reason, direction) (rate(cilium_drop_count_total%s[5m]))", sel),
 			fmt.Sprintf("sum by(node, src_namespace, src_workload, traffic_scope, dst_namespace, dst_workload) (rate(netobs_retrans_events_labeled_total%s[5m]))", sel),
 		)
-		if qerr != nil {
-			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
-			return
-		}
 		resp.Flows = buildDropFlows(res[0], res[1], nsFilter, limit)
 		resp.Stacks = buildDropStacks(res[2], limit)
 		resp.CiliumDrops = buildCiliumDrops(res[3], limit)

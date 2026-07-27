@@ -127,14 +127,10 @@ func (h *SynthesisHandler) GetBandwidth(w http.ResponseWriter, r *http.Request) 
 		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", err))
 		return
 	}
-	extras, qerr := h.queryParallel(ctx,
+	extras, _ := h.queryParallel(ctx,
 		fmt.Sprintf("sum by(node, direction, layer) (rate(netobs_pod_bytes_total%s[5m]))", nodeSel),
 		"netobs_node_nic_capacity_bytes_per_sec"+nodeSel,
 	)
-	if qerr != nil {
-		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
-		return
-	}
 
 	pods := map[bandwidthPodKey]*BandwidthPod{}
 	order := []bandwidthPodKey{}

@@ -46,6 +46,7 @@ type TopologyEdge struct {
 // @Tags         interference
 // @Produce      json
 // @Success      200  {object}  TopologyResponse
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/topology [get]
 func (h *SynthesisHandler) GetTopology(w http.ResponseWriter, r *http.Request) {
 	resp := TopologyResponse{

@@ -105,6 +105,28 @@ func ParsePagination(r *http.Request) (limit, offset int) {
 	return limit, offset
 }
 
+// ParseLimit은 "limit" 쿼리 파라미터를 endpoint별 default와 max로 파싱한다 (#352). 미지정은
+// def, 파싱 불가는 ok=false (호출 측이 400 반환), 0 이하는 def, max 초과는 max로 clamp한다.
+// synthesis 리스트 endpoint들이 제각각 strconv.Atoi로 중복 파싱하던 것을 본 헬퍼로 통일해,
+// 파싱 실패 정책(400)과 범위 초과 정책(clamp)을 한 곳에 고정한다.
+func ParseLimit(r *http.Request, def, max int) (int, bool) {
+	raw := r.URL.Query().Get("limit")
+	if raw == "" {
+		return def, true
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, false
+	}
+	if v <= 0 {
+		return def, true
+	}
+	if v > max {
+		return max, true
+	}
+	return v, true
+}
+
 // ApplyPagination 은 slice에 limit과 offset을 적용해 잘라 반환한다. 호출 측은 결과를 그대로
 // json.Marshal 하면 된다. 본 함수는 generic 으로 두어 4 agent 의 도메인 타입 어느 쪽이든 차용
 // 가능하게 한다.

@@ -6,7 +6,6 @@ import (
 	"math"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -330,6 +329,7 @@ type Anomaly struct {
 // @Tags         meta
 // @Produce      json
 // @Success      200  {object}  HealthResponse
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/health [get]
 func (h *SynthesisHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -426,7 +426,11 @@ type PressureResponse struct {
 	Dimension   string          `json:"dimension"`
 	Scope       string          `json:"scope"`
 	Ranking     []PressureEntry `json:"ranking"`
-	Summary     string          `json:"summary"`
+	// Total 은 limit 적용 전 전체 랭킹 대상 수, Truncated 는 Total 이 limit 을 초과해 잘렸는지다
+	// (#352). 클라이언트가 결과가 잘렸는지 판단할 수 있게 한다.
+	Total     int    `json:"total"`
+	Truncated bool   `json:"truncated"`
+	Summary   string `json:"summary"`
 }
 
 // PressureEntry 는 pressure 랭킹의 한 항목이다. scope=pod 일 때만 Pod 가 채워진다.
@@ -450,6 +454,7 @@ type PressureEntry struct {
 // @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  PressureResponse
 // @Failure      400  {object}  apicommon.ErrorBody
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/pressure [get]
 func (h *SynthesisHandler) GetPressure(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -466,14 +471,10 @@ func (h *SynthesisHandler) GetPressure(w http.ResponseWriter, r *http.Request) {
 		apicommon.WriteError(w, http.StatusBadRequest, "invalid_scope", "scope 는 node 또는 pod 여야 합니다")
 		return
 	}
-	limit := 10
-	if v := strings.TrimSpace(q.Get("limit")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > 100 {
-		limit = 100
+	limit, ok := apicommon.ParseLimit(r, 10, 100)
+	if !ok {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_limit", "limit 은 정수여야 합니다")
+		return
 	}
 	node, err := parseNodeParam(strings.TrimSpace(q.Get("node")))
 	if err != nil {
@@ -505,28 +506,39 @@ func (h *SynthesisHandler) GetPressure(w http.ResponseWriter, r *http.Request) {
 	if h.querier != nil {
 		ctx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
 		defer cancel()
-		if samples, err := h.querier.Query(ctx, fmt.Sprintf("topk(%d, %s)", limit, metric)); err == nil {
-			// NaN 은 JSON 직렬화 실패와 비일관 정렬을 유발하므로 랭킹 전에 걸러낸다.
-			valid := samples[:0]
-			for _, s := range samples {
-				if !math.IsNaN(s.Value) {
-					valid = append(valid, s)
-				}
+		// #352 total 을 알기 위해 topk 대신 전체를 조회해 Go 에서 정렬·절단한다. pressure 시리즈는
+		// node (scope=node) 또는 pod (scope=pod) 수로 상한돼 전체 조회 비용이 통제된다. 쿼리 실패는
+		// 백엔드 장애라 500 query_failed 로 통일한다 (#352, 데이터 부재는 빈 결과 → 200).
+		samples, err := h.querier.Query(ctx, metric)
+		if err != nil {
+			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", err))
+			return
+		}
+		// NaN 은 JSON 직렬화 실패와 비일관 정렬을 유발하므로 랭킹 전에 걸러낸다.
+		valid := samples[:0]
+		for _, s := range samples {
+			if !math.IsNaN(s.Value) {
+				valid = append(valid, s)
 			}
-			samples = valid
-			sort.Slice(samples, func(i, j int) bool {
-				if samples[i].Value != samples[j].Value {
-					return samples[i].Value > samples[j].Value
-				}
-				return podLabel(samples[i].Labels)+samples[i].Labels["node"] < podLabel(samples[j].Labels)+samples[j].Labels["node"]
-			})
-			for i, s := range samples {
-				e := PressureEntry{Rank: i + 1, Node: s.Labels["node"], Pressure: s.Value, Severity: correlation.PressureSeverity(s.Value)}
-				if scope == "pod" {
-					e.Pod = podLabel(s.Labels)
-				}
-				resp.Ranking = append(resp.Ranking, e)
+		}
+		samples = valid
+		sort.Slice(samples, func(i, j int) bool {
+			if samples[i].Value != samples[j].Value {
+				return samples[i].Value > samples[j].Value
 			}
+			return podLabel(samples[i].Labels)+samples[i].Labels["node"] < podLabel(samples[j].Labels)+samples[j].Labels["node"]
+		})
+		resp.Total = len(samples)
+		if len(samples) > limit {
+			samples = samples[:limit]
+			resp.Truncated = true
+		}
+		for i, s := range samples {
+			e := PressureEntry{Rank: i + 1, Node: s.Labels["node"], Pressure: s.Value, Severity: correlation.PressureSeverity(s.Value)}
+			if scope == "pod" {
+				e.Pod = podLabel(s.Labels)
+			}
+			resp.Ranking = append(resp.Ranking, e)
 		}
 	}
 	resp.Summary = buildPressureSummary(resp)
@@ -592,6 +604,7 @@ type NodePodPressure struct {
 // @Param        node  path  string  true  "노드 이름"
 // @Success      200  {object}  NodeResponse
 // @Failure      400  {object}  apicommon.ErrorBody
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/node/{node} [get]
 func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 	node := strings.TrimPrefix(r.URL.Path, "/api/v1/node/")
@@ -829,7 +842,10 @@ type EventsResponse struct {
 	GeneratedAt string  `json:"generated_at"`
 	Window      string  `json:"window"`
 	Events      []Event `json:"events"`
-	Summary     string  `json:"summary"`
+	// Total 은 limit 적용 전 (min_severity 필터 후) 전체 사건 수, Truncated 는 잘렸는지다 (#352).
+	Total     int    `json:"total"`
+	Truncated bool   `json:"truncated"`
+	Summary   string `json:"summary"`
 }
 
 // Event 는 단일 분석 사건이다. kind 에 따라 일부 필드 (zscore / causal_strength) 가 채워진다.
@@ -852,6 +868,7 @@ type Event struct {
 // @Param        min_severity  query  string  false  "최소 severity (low/elevated/high, 기본 elevated)"
 // @Param        limit         query  int     false  "상위 N 사건 (1-50, 기본 20)"
 // @Success      200  {object}  EventsResponse
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/events [get]
 func (h *SynthesisHandler) GetEvents(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -861,14 +878,10 @@ func (h *SynthesisHandler) GetEvents(w http.ResponseWriter, r *http.Request) {
 			minRank = rk
 		}
 	}
-	limit := 20
-	if v := strings.TrimSpace(q.Get("limit")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > 50 {
-		limit = 50
+	limit, ok := apicommon.ParseLimit(r, 20, 50)
+	if !ok {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_limit", "limit 은 정수여야 합니다")
+		return
 	}
 
 	observedAt := time.Now().UTC().Format(time.RFC3339)
@@ -884,7 +897,13 @@ func (h *SynthesisHandler) GetEvents(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		for _, d := range synthDimensions {
-			if s, err := h.querier.Query(ctx, d.zscoreMetric); err == nil && len(s) > 0 {
+			s, err := h.querier.Query(ctx, d.zscoreMetric)
+			if err != nil {
+				// #352 z-score 이상은 events 의 primary source 라 백엔드 장애 시 500 으로 통일한다.
+				apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", err))
+				return
+			}
+			if len(s) > 0 {
 				z := s[0].Value
 				if sev := correlation.ZScoreSeverity(z); sev != "none" {
 					zc := z
@@ -931,8 +950,10 @@ func (h *SynthesisHandler) GetEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		return eventStrength(resp.Events[i]) > eventStrength(resp.Events[j])
 	})
+	resp.Total = len(resp.Events)
 	if len(resp.Events) > limit {
 		resp.Events = resp.Events[:limit]
+		resp.Truncated = true
 	}
 
 	resp.Summary = buildEventsSummary(resp.Events)

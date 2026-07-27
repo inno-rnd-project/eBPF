@@ -308,6 +308,12 @@ definitions:
         type: string
       summary:
         type: string
+      total:
+        description: Total 은 limit 적용 전 (min_severity 필터 후) 전체 사건 수, Truncated 는 잘렸는지다
+          (#352).
+        type: integer
+      truncated:
+        type: boolean
       window:
         type: string
     type: object
@@ -348,6 +354,11 @@ definitions:
         type: string
       summary:
         type: string
+      total:
+        description: Total 은 limit 적용 전 전체 엣지 수, Truncated 는 잘렸는지다 (#352).
+        type: integer
+      truncated:
+        type: boolean
       window:
         type: string
     type: object
@@ -738,6 +749,13 @@ definitions:
         type: string
       summary:
         type: string
+      total:
+        description: |-
+          Total 은 limit 적용 전 전체 에피소드 수, Truncated 는 잘렸는지다 (#352, 리스트 레벨). 개별
+          Incident 의 truncated (에피소드가 range 시작 이전부터 발화) 와는 다른 차원이다.
+        type: integer
+      truncated:
+        type: boolean
     type: object
   internal_correlation_api.LatencyBreakdownResponse:
     properties:
@@ -1374,6 +1392,13 @@ definitions:
         type: string
       summary:
         type: string
+      total:
+        description: |-
+          Total 은 limit 적용 전 전체 랭킹 대상 수, Truncated 는 Total 이 limit 을 초과해 잘렸는지다
+          (#352). 클라이언트가 결과가 잘렸는지 판단할 수 있게 한다.
+        type: integer
+      truncated:
+        type: boolean
       window:
         type: string
     type: object
@@ -1916,6 +1941,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 노드별 관측 에이전트 self-health
       tags:
       - meta
@@ -2007,6 +2036,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: List cross-level interference top-N
       tags:
       - impact
@@ -2050,6 +2083,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: List cross-node interference top-N
       tags:
       - impact
@@ -2119,6 +2156,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_correlation_api.EventsResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 이벤트 분석 (anomaly + noisy-neighbor 종합)
       tags:
       - interference
@@ -2191,6 +2232,10 @@ paths:
             $ref: '#/definitions/internal_correlation_api.GpuIdleResponse'
         "400":
           description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "500":
+          description: Internal Server Error
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: GPU 유휴 원인 분석
@@ -2267,6 +2312,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 노드 GPU RCA 합성
       tags:
       - gpu
@@ -2321,6 +2370,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_correlation_api.HealthResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 클러스터 헬스 + 압박 위치 합성
       tags:
       - meta
@@ -2348,6 +2401,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: Get impact propagation graph
       tags:
       - impact
@@ -2383,6 +2440,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: List multi-hop impact propagation paths
       tags:
       - impact
@@ -2474,6 +2535,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 지연 단계 분해
       tags:
       - network
@@ -2544,6 +2609,10 @@ paths:
           description: Not Found
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 노드 그리드 (노드별 pod 상태 맵)
       tags:
       - inventory
@@ -2572,6 +2641,10 @@ paths:
             $ref: '#/definitions/internal_correlation_api.NodeVitalsResponse'
         "400":
           description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "500":
+          description: Internal Server Error
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 노드 raw 사용률 (Vitals)
@@ -2604,6 +2677,10 @@ paths:
             $ref: '#/definitions/internal_correlation_api.NodeResponse'
         "400":
           description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "500":
+          description: Internal Server Error
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 노드 1대 전체 압박 상황
@@ -2641,6 +2718,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 노드 하위 pod별 자원 사용량 목록
       tags:
       - interference
@@ -2672,6 +2753,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 노드 리소스 현황
       tags:
       - interference
@@ -2686,6 +2771,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_correlation_api.NodesResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 노드 인벤토리
       tags:
       - inventory
@@ -2741,6 +2830,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: List noisy neighbor top-N
       tags:
       - impact
@@ -2768,6 +2861,10 @@ paths:
             $ref: '#/definitions/internal_correlation_api.OverviewResponse'
         "400":
           description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "500":
+          description: Internal Server Error
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 랜딩 대시보드 요약
@@ -2802,6 +2899,10 @@ paths:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
         "404":
           description: Not Found
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "500":
+          description: Internal Server Error
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 원인별 대응 안내 카탈로그
@@ -2843,6 +2944,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: pod 단위 종합 상세
       tags:
       - interference
@@ -2869,6 +2974,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_correlation_api.PodsResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 파드 인벤토리
       tags:
       - inventory
@@ -2909,6 +3018,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 차원별 압박 drill-down 랭킹
       tags:
       - interference
@@ -2933,6 +3046,10 @@ paths:
             type: object
         "404":
           description: Not Found
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        "500":
+          description: Internal Server Error
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
         "502":
@@ -2986,6 +3103,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: List service-impact top-N
       tags:
       - impact
@@ -3001,6 +3122,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_correlation_api.TopologyResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
       summary: 클러스터 노드 토폴로지
       tags:
       - interference

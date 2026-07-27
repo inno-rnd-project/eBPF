@@ -148,6 +148,7 @@ func (h *SynthesisHandler) queryParallel(ctx context.Context, queries ...string)
 // @Tags         inventory
 // @Produce      json
 // @Success      200  {object}  NodesResponse
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/nodes [get]
 func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
 	resp := NodesResponse{GeneratedAt: time.Now().UTC().Format(time.RFC3339), Nodes: []NodeInventory{}}
@@ -249,6 +250,7 @@ func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
 // @Produce      json
 // @Param        namespace  query  string  false  "namespace 필터 (생략 시 전체)"
 // @Success      200  {object}  PodsResponse
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/pods [get]
 func (h *SynthesisHandler) GetPods(w http.ResponseWriter, r *http.Request) {
 	nsFilter := strings.TrimSpace(r.URL.Query().Get("namespace"))

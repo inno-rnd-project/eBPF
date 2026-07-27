@@ -6,7 +6,6 @@ import (
 	"math"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -23,7 +22,10 @@ type FlowsResponse struct {
 	Window                string     `json:"window"`
 	Edges                 []FlowEdge `json:"edges"`
 	FlowCollectionEnabled bool       `json:"flow_collection_enabled"`
-	Summary               string     `json:"summary"`
+	// Total 은 limit 적용 전 전체 엣지 수, Truncated 는 잘렸는지다 (#352).
+	Total     int    `json:"total"`
+	Truncated bool   `json:"truncated"`
+	Summary   string `json:"summary"`
 }
 
 // FlowEdge 는 한 pod 간 흐름 엣지다. src 는 완전 식별되고, dst 는 namespace 와 pod_uid 와 ip 로
@@ -62,14 +64,10 @@ func (h *SynthesisHandler) GetFlows(w http.ResponseWriter, r *http.Request) {
 		apicommon.WriteError(w, http.StatusBadRequest, "invalid_direction", "direction 은 egress 또는 ingress 여야 합니다")
 		return
 	}
-	limit := 50
-	if v := strings.TrimSpace(q.Get("limit")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > 200 {
-		limit = 200
+	limit, ok := apicommon.ParseLimit(r, 50, 200)
+	if !ok {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_limit", "limit 은 정수여야 합니다")
+		return
 	}
 
 	resp := FlowsResponse{
@@ -100,15 +98,21 @@ func (h *SynthesisHandler) GetFlows(w http.ResponseWriter, r *http.Request) {
 			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", err))
 			return
 		}
-		resp.Edges = buildFlowEdges(s, limit)
-		resp.FlowCollectionEnabled = len(resp.Edges) > 0
+		edges := buildFlowEdges(s)
+		resp.Total = len(edges)
+		if len(edges) > limit {
+			edges = edges[:limit]
+			resp.Truncated = true
+		}
+		resp.Edges = edges
+		resp.FlowCollectionEnabled = len(edges) > 0
 	}
 
 	resp.Summary = buildFlowsSummary(resp)
 	apicommon.WriteJSON(w, resp)
 }
 
-func buildFlowEdges(samples []correlation.InstantSample, limit int) []FlowEdge {
+func buildFlowEdges(samples []correlation.InstantSample) []FlowEdge {
 	out := []FlowEdge{}
 	for _, sm := range samples {
 		if math.IsNaN(sm.Value) || sm.Value <= 0 {
@@ -134,9 +138,6 @@ func buildFlowEdges(samples []correlation.InstantSample, limit int) []FlowEdge {
 		}
 		return out[i].DstIP < out[j].DstIP
 	})
-	if len(out) > limit {
-		out = out[:limit]
-	}
 	return out
 }
 

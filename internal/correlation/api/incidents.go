@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -42,7 +41,11 @@ type IncidentsResponse struct {
 	Range       string     `json:"range"`
 	Step        string     `json:"step"`
 	Incidents   []Incident `json:"incidents"`
-	Summary     string     `json:"summary"`
+	// Total 은 limit 적용 전 전체 에피소드 수, Truncated 는 잘렸는지다 (#352, 리스트 레벨). 개별
+	// Incident 의 truncated (에피소드가 range 시작 이전부터 발화) 와는 다른 차원이다.
+	Total     int    `json:"total"`
+	Truncated bool   `json:"truncated"`
+	Summary   string `json:"summary"`
 }
 
 // Incident 는 한 alert 발화 에피소드다. 동일 alert 시리즈라도 샘플 간극으로 분리된 재발화는 별개
@@ -159,14 +162,10 @@ func (h *IncidentsHandler) GetIncidents(w http.ResponseWriter, r *http.Request) 
 	if step < 30*time.Second {
 		step = 30 * time.Second
 	}
-	limit := 50
-	if v := strings.TrimSpace(q.Get("limit")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > 200 {
-		limit = 200
+	limit, ok := apicommon.ParseLimit(r, 50, 200)
+	if !ok {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_limit", "limit 은 정수여야 합니다")
+		return
 	}
 
 	resp := IncidentsResponse{
@@ -201,7 +200,13 @@ func (h *IncidentsHandler) GetIncidents(w http.ResponseWriter, r *http.Request) 
 				return alertTargetsPod(labels, "", pod)
 			})
 		}
-		resp.Incidents = buildIncidents(series, start, end, step, limit)
+		all := buildIncidents(series, start, end, step)
+		resp.Total = len(all)
+		if len(all) > limit {
+			all = all[:limit]
+			resp.Truncated = true
+		}
+		resp.Incidents = all
 	}
 
 	resp.Summary = buildIncidentsSummary(resp)
@@ -211,7 +216,7 @@ func (h *IncidentsHandler) GetIncidents(w http.ResponseWriter, r *http.Request) 
 // buildIncidents 는 ALERTS 시리즈들을 발화 에피소드로 분해한다. 연속 샘플 간격이 2*step 을 넘으면
 // 발화가 끊겼다 재발한 것으로 보고 에피소드를 분리한다. 마지막 샘플이 range 끝의 2*step 이내면
 // 여전히 발화 중 (firing) 으로, 아니면 해소 (resolved) 로 판정한다.
-func buildIncidents(series []correlation.LabeledSeries, start, end time.Time, step time.Duration, limit int) []Incident {
+func buildIncidents(series []correlation.LabeledSeries, start, end time.Time, step time.Duration) []Incident {
 	gap := 2 * step
 	out := []Incident{}
 	for _, ls := range series {
@@ -271,9 +276,6 @@ func buildIncidents(series []correlation.LabeledSeries, start, end time.Time, st
 		}
 		return out[i].Alertname < out[j].Alertname
 	})
-	if len(out) > limit {
-		out = out[:limit]
-	}
 	return out
 }
 

@@ -68,6 +68,7 @@ const (
 // @Param        at    query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  AgentsResponse
 // @Failure      400  {object}  apicommon.ErrorBody
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/agents [get]
 func (h *SynthesisHandler) GetAgents(w http.ResponseWriter, r *http.Request) {
 	node, err := parseNodeParam(strings.TrimSpace(r.URL.Query().Get("node")))

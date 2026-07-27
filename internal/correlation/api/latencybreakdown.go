@@ -79,6 +79,7 @@ var latencyScopes = map[string]latencyScope{
 // @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  LatencyBreakdownResponse
 // @Failure      400  {object}  apicommon.ErrorBody
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/latency-breakdown [get]
 func (h *SynthesisHandler) GetLatencyBreakdown(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -146,14 +147,10 @@ func (h *SynthesisHandler) GetLatencyBreakdown(w http.ResponseWriter, r *http.Re
 		// #226 pod scope 한정 TCP 상태 join. netobs_tcp_state_* 가 (namespace, pod) 단위 라벨이라
 		// workload / node scope 에는 붙이지 않는다. best-effort 병렬 조회라 실패 시 필드 생략.
 		if scope == "pod" {
-			st, qerr := h.queryParallel(ctx,
+			st, _ := h.queryParallel(ctx,
 				"max by(namespace, pod) (netobs_tcp_state_max_srtt_seconds)",
 				"min by(namespace, pod) (netobs_tcp_state_min_cwnd)",
 			)
-			if qerr != nil {
-				apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
-				return
-			}
 			attachTcpState(resp.Targets, st[0], st[1])
 		}
 	}

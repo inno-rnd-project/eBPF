@@ -61,6 +61,7 @@ type NodeMapPod struct {
 // @Success      200  {object}  NodeMapResponse
 // @Failure      400  {object}  apicommon.ErrorBody
 // @Failure      404  {object}  apicommon.ErrorBody
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/node-map [get]
 func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 	evalCtx, evalAt, ok := applyAtParam(w, r, r.Context())

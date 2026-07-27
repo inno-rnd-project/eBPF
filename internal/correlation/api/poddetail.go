@@ -95,6 +95,7 @@ func parseNamespacePodPath(rest string) (string, string, error) {
 // @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  PodDetailResponse
 // @Failure      400  {object}  apicommon.ErrorBody
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/pod/{namespace}/{pod} [get]
 func (h *SynthesisHandler) GetPodDetail(w http.ResponseWriter, r *http.Request) {
 	ns, pod, err := parseNamespacePodPath(strings.TrimPrefix(r.URL.Path, "/api/v1/pod/"))
