@@ -1832,9 +1832,12 @@ spec:
             description: "netobs events ringbuf reserve failed at >10/s for 2 minutes on {{ $labels.instance }}. The userspace reader is falling behind producers. Consider raising the ringbuf size in bpf/netlat.bpf.c or reducing event emit rate."
 
         # NetObsBpfMapUtilizationHigh
-        # BPF map (starts / pod_bytes) 의 현재 entry 수가 max_entries 의 80% 를 5 분 이상 넘으면 발화.
-        # LRU evict 가 동작해 1.0 도달은 통상 일어나지 않지만 0.8 안정 초과는 max_entries 가 워크로드
-        # 규모를 따라가지 못한다는 신호다. 수용 조건 ("80% 초과 시 alert 정상 발화") 을 충족한다.
+        # netobs_bpf_map_utilization_ratio 는 map 필터 없이 전역 임계라 refresher 가 노출하는 모든 map
+        # (starts / pod_bytes / flow_bytes / netobs_drop_stacks) 의 현재 entry 수가 max_entries 의 80%
+        # 를 5 분 이상 넘으면 발화한다. 특히 flow_bytes 는 5-tuple 키라 노드 규모에 비례해 차므로 (#351)
+        # 본 alert 가 evict 임박의 주 감시 신호다. LRU evict 가 동작해 1.0 도달은 통상 일어나지 않지만
+        # 0.8 안정 초과는 max_entries 가 워크로드 규모를 따라가지 못한다는 신호다. 수용 조건 ("80% 초과
+        # 시 alert 정상 발화") 을 충족한다.
         - alert: NetObsBpfMapUtilizationHigh
           expr: netobs_bpf_map_utilization_ratio > 0.8
           for: 5m
