@@ -147,3 +147,15 @@ func TestReconcileOnce_PrometheusErrorDoesNotMarkReady(t *testing.T) {
 		t.Errorf("last_success_timestamp=%v want 0 (error 가 timestamp 를 갱신해서는 안 됨)", v)
 	}
 }
+
+// TestWriteTimeoutFor_ExceedsFetchTimeout 은 #360 리뷰 보완이다. http.Server WriteTimeout 이 항상
+// FetchTimeout 보다 커야 range 핸들러 (incidents / trends) 와 RCA 프록시의 최장 응답이 절단되지
+// 않는다. 누군가 WriteTimeout 을 고정값으로 되돌리거나 연동을 끊으면 이 가드가 실패한다.
+func TestWriteTimeoutFor_ExceedsFetchTimeout(t *testing.T) {
+	for _, ft := range []time.Duration{5 * time.Second, 30 * time.Second, 60 * time.Second, 120 * time.Second} {
+		wt := writeTimeoutFor(ft)
+		if wt <= ft {
+			t.Errorf("writeTimeoutFor(%s)=%s <= FetchTimeout %s (range 응답 절단 위험)", ft, wt, ft)
+		}
+	}
+}

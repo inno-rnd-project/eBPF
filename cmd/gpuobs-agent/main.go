@@ -188,9 +188,20 @@ func main() {
 	// 호출이 없다. correlation-exporter 의 gpu-processes 프록시가 단일 진입점으로 노출한다.
 	mux.HandleFunc("/processes", col.ProcessesHandler())
 
+	// #357 http.Server 타임아웃 완비 (rca-summarizer 동형). 타임아웃 부재 시 slow-header / slow-body /
+	// slow-consumer 커넥션이 goroutine 과 fd 를 무기한 점유해 노드별 관측 에이전트를 소량 커넥션으로
+	// 고갈시킬 수 있다. WriteTimeout 30s 는 Prometheus scrape_timeout (기본 10s) 의 3 배 여유로 정상
+	// scrape 와 /processes 스냅샷을 절단하지 않으면서 slow-consumer 를 상한한다. IdleTimeout 120s 는
+	// scrape 간격 (15~30s) 보다 커 keep-alive 커넥션 재사용을 보존하면서 유휴 커넥션을 회수한다.
+	// gpuobs 는 range fetch 가 없어 WriteTimeout 을 고정 30s 로 둔다 (correlation 은 FetchTimeout 에
+	// 연동해 동적, #357/#360).
 	srv := &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: mux,
+		Addr:              cfg.ListenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	go func() {
 		log.Printf("serving gpuobs metrics on %s (node=%s)", cfg.ListenAddr, cfg.NodeName)
