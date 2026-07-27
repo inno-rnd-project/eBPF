@@ -301,7 +301,7 @@ func (h *SynthesisHandler) GetNodeGpuRca(w http.ResponseWriter, r *http.Request)
 	// 는 node selector 를 붙이지 않아 (alert 라벨 규약이 node 마다 달라) 별도로 조회한다. snapshot
 	// (neighbors / crossNode) 은 in-memory 라 쿼리에 포함되지 않는다. 미등록 device 는 avg 결과가 비어
 	// firstValue 가 nil 을 돌려주고 evidence 필드가 생략된다 (graceful).
-	res := h.queryParallel(ctx,
+	res, qerr := h.queryParallel(ctx,
 		"node:gpu_idle:5m"+sel,
 		"node:gpu_idle_cause_weight:5m"+sel,
 		"node:gpu_idle_dominant_cause:5m"+sel,
@@ -312,6 +312,10 @@ func (h *SynthesisHandler) GetNodeGpuRca(w http.ResponseWriter, r *http.Request)
 		"sum(rate(netobs_retrans_events_labeled_total"+sel+"[5m]))",
 		"max(netobs_tcp_state_max_srtt_seconds"+sel+")",
 	)
+	if qerr != nil {
+		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+		return
+	}
 	firing := res[4]
 	resp.Evidence.GpuUtilizationPercent = firstValue(res[5])
 	resp.Evidence.SMActivePercent = firstValue(res[6])
@@ -391,7 +395,7 @@ func (h *SynthesisHandler) fetchCauseEvidence(ctx context.Context, node, gpuMatc
 	if len(queries) == 0 {
 		return
 	}
-	res := h.queryParallel(ctx, queries...)
+	res, _ := h.queryParallel(ctx, queries...)
 	for i, samples := range res {
 		if v := firstValue(samples); v != nil {
 			sets[i](&resp.Evidence, *v)

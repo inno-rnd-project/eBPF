@@ -79,13 +79,17 @@ func (h *SynthesisHandler) GetNodeVitals(w http.ResponseWriter, r *http.Request)
 	// cgroup 을 함께 노출하는 표준 cadvisor 구성의 중복 합산을 막는다 (node-resources 와 동일 규약).
 	// GPU 는 device 사용률 노드 평균, GPU 메모리는 노드 device used/total 합이다.
 	podLevelSel := promSelector(nodeMatcher(node), `container=""`, `pod!=""`)
-	res := h.queryParallel(ctx,
+	res, qerr := h.queryParallel(ctx,
 		fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total%s[5m])) / max(kube_node_status_allocatable{node=%q, resource="cpu"}) * 100`, podLevelSel, node),
 		fmt.Sprintf(`sum(container_memory_working_set_bytes%s) / max(kube_node_status_allocatable{node=%q, resource="memory"}) * 100`, podLevelSel, node),
 		fmt.Sprintf(`avg by(node) (gpuobs_device_utilization_percent{node=%q})`, node),
 		fmt.Sprintf(`sum by(node) (gpuobs_device_memory_used_bytes{node=%q})`, node),
 		fmt.Sprintf(`sum by(node) (gpuobs_device_memory_total_bytes{node=%q})`, node),
 	)
+	if qerr != nil {
+		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+		return
+	}
 	resp.CPUPercent = firstValue(res[0])
 	resp.MemoryPercent = firstValue(res[1])
 	resp.GPUPercent = firstValue(res[2])

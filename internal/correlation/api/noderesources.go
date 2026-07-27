@@ -111,7 +111,7 @@ func (h *SynthesisHandler) GetNodeResources(w http.ResponseWriter, r *http.Reque
 	// 에서는 무필터 sum 이 중복 합산으로 부풀려진다 (#308 리뷰 반영, 멀티클러스터 이식성).
 	sel := fmt.Sprintf("{node=%q}", node)
 	podLevelSel := promSelector(nodeMatcher(node), `container=""`, `pod!=""`)
-	res := h.queryParallel(ctx,
+	res, qerr := h.queryParallel(ctx,
 		"kube_node_status_capacity"+sel,
 		"kube_node_status_allocatable"+sel,
 		"sum by(resource) (kube_pod_container_resource_requests"+sel+")",
@@ -121,6 +121,10 @@ func (h *SynthesisHandler) GetNodeResources(w http.ResponseWriter, r *http.Reque
 		"count(kube_pod_info"+sel+")",
 		"avg(gpuobs_device_utilization_percent"+sel+")",
 	)
+	if qerr != nil {
+		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+		return
+	}
 
 	// resource 라벨 시리즈 4종 (capacity / allocatable / requests / limits) 을 종류별로 채운다.
 	fill := func(samples []correlation.InstantSample, set func(d *NodeResourceDetail, v float64)) {

@@ -160,13 +160,17 @@ func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
 
 		// opt-in 상세와 CNI 계층 drop: best-effort 라 실패해도 무시한다. cilium 은 미설치 클러스터에서
 		// 시계열 부재로 자연히 빈 결과가 된다.
-		res := h.queryParallel(ctx,
+		res, qerr := h.queryParallel(ctx,
 			fmt.Sprintf("sum by(node, src_namespace, src_pod, direction, drop_reason, drop_category, protocol, src_ip, src_port, dst_ip, dst_port, ip_version) (rate(netobs_drop_events_flow_total%s[5m]))", sel),
 			"netobs_drop_last_timestamp_seconds"+sel,
 			fmt.Sprintf("sum by(drop_reason, drop_category, func) (rate(netobs_drop_stack_total%s[5m]))", sel),
 			fmt.Sprintf("sum by(node, reason, direction) (rate(cilium_drop_count_total%s[5m]))", sel),
 			fmt.Sprintf("sum by(node, src_namespace, src_workload, traffic_scope, dst_namespace, dst_workload) (rate(netobs_retrans_events_labeled_total%s[5m]))", sel),
 		)
+		if qerr != nil {
+			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+			return
+		}
 		resp.Flows = buildDropFlows(res[0], res[1], nsFilter, limit)
 		resp.Stacks = buildDropStacks(res[2], limit)
 		resp.CiliumDrops = buildCiliumDrops(res[3], limit)

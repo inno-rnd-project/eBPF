@@ -146,10 +146,14 @@ func (h *SynthesisHandler) GetLatencyBreakdown(w http.ResponseWriter, r *http.Re
 		// #226 pod scope 한정 TCP 상태 join. netobs_tcp_state_* 가 (namespace, pod) 단위 라벨이라
 		// workload / node scope 에는 붙이지 않는다. best-effort 병렬 조회라 실패 시 필드 생략.
 		if scope == "pod" {
-			st := h.queryParallel(ctx,
+			st, qerr := h.queryParallel(ctx,
 				"max by(namespace, pod) (netobs_tcp_state_max_srtt_seconds)",
 				"min by(namespace, pod) (netobs_tcp_state_min_cwnd)",
 			)
+			if qerr != nil {
+				apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+				return
+			}
 			attachTcpState(resp.Targets, st[0], st[1])
 		}
 	}

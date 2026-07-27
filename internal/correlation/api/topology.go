@@ -62,7 +62,11 @@ func (h *SynthesisHandler) GetTopology(w http.ResponseWriter, r *http.Request) {
 		for i, d := range synthDimensions {
 			queries[i] = d.nodePressure
 		}
-		res := h.queryParallel(ctx, queries...)
+		res, qerr := h.queryParallel(ctx, queries...)
+		if qerr != nil {
+			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+			return
+		}
 		resp.Nodes = buildTopologyNodes(res)
 	}
 

@@ -96,7 +96,7 @@ func (h *SynthesisHandler) GetNodePods(w http.ResponseWriter, r *http.Request) {
 	// 조회 후 uid 로 join 한다 (node-map 규약).
 	sel := fmt.Sprintf("{node=%q}", node)
 	podLevelSel := promSelector(nodeMatcher(node), `container=""`, `pod!=""`)
-	res := h.queryParallel(ctx,
+	res, qerr := h.queryParallel(ctx,
 		"kube_pod_info"+sel,
 		"kube_pod_status_phase",
 		fmt.Sprintf("sum by(namespace, pod) (rate(container_cpu_usage_seconds_total%s[5m]))", podLevelSel),
@@ -112,6 +112,10 @@ func (h *SynthesisHandler) GetNodePods(w http.ResponseWriter, r *http.Request) {
 		// #342 무소켓 pod 집합 (no_traffic 판별 입력).
 		fmt.Sprintf("count by(src_namespace, src_pod) (netobs_pod_no_sockets%s)", sel),
 	)
+	if qerr != nil {
+		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+		return
+	}
 
 	phase := map[string]string{}
 	for _, sm := range res[1] {

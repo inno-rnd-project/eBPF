@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +26,14 @@ type fakeQuerier struct {
 	lastQuery string
 	queries   []string
 	lastAt    time.Time
+	// failErr 가 설정되면 Query 가 항상 이 error 를 돌려준다 (#352 query_failed 500 규약 테스트용,
+	// Prometheus 백엔드 장애 재현).
+	failErr error
+}
+
+// failing 은 Query 가 항상 error 를 내는 fakeQuerier 를 만든다 (백엔드 장애 재현).
+func failingQuerier() *fakeQuerier {
+	return &fakeQuerier{failErr: fmt.Errorf("prometheus unreachable")}
 }
 
 // sawQuery 는 실행된 쿼리 중 sub 를 포함하는 것이 있는지 돌려준다. queryParallel 이 Query 를 동시
@@ -56,7 +65,11 @@ func (f *fakeQuerier) Query(ctx context.Context, query string) ([]correlation.In
 	if t, ok := correlation.QueryTimeFrom(ctx); ok {
 		f.lastAt = t
 	}
+	failErr := f.failErr
 	f.mu.Unlock()
+	if failErr != nil {
+		return nil, failErr
+	}
 	for _, r := range f.rules {
 		if strings.Contains(query, r.contains) {
 			return r.samples, nil
@@ -493,4 +506,56 @@ func TestSynthesis_GetHealth_NilQuerier(t *testing.T) {
 	if resp.Dimensions["cpu"].Status != "unknown" || resp.Dimensions["cpu"].Health != nil {
 		t.Errorf("cpu=%+v want unknown/nil health (nil querier)", resp.Dimensions["cpu"])
 	}
+}
+
+// TestQueryFailed500Contract 는 #352 의 오류 응답 규약 통일을 검증한다. Prometheus 백엔드 장애
+// (Query error) 시 queryParallel 을 쓰는 전 엔드포인트가 200+빈데이터가 아니라 500 query_failed 를
+// 돌려줘야 한다. 각 호출 패턴 (단일 queryParallel, 직접 primary + 보조 queryParallel, 다중
+// queryParallel) 을 대표 핸들러로 커버한다.
+func TestQueryFailed500Contract(t *testing.T) {
+	cases := []struct {
+		name   string
+		path   string
+		invoke func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request)
+	}{
+		{"overview", "/api/v1/overview", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetOverview(rec, req) }},
+		{"node-map", "/api/v1/node-map", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetNodeMap(rec, req) }},
+		{"nodes", "/api/v1/nodes", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetNodes(rec, req) }},
+		{"pods", "/api/v1/pods", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetPods(rec, req) }},
+		{"node-resources", "/api/v1/node/n1/resources", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) {
+			h.GetNodeResources(rec, req)
+		}},
+		{"node-pods", "/api/v1/node/n1/pods", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetNodePods(rec, req) }},
+		{"agents", "/api/v1/agents", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetAgents(rec, req) }},
+		{"node-vitals", "/api/v1/node-vitals?node=n1", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) {
+			h.GetNodeVitals(rec, req)
+		}},
+		{"pod-detail", "/api/v1/pod/ns/p", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetPodDetail(rec, req) }},
+		{"memory", "/api/v1/memory", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetMemory(rec, req) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewSynthesisHandler(failingQuerier(), nil, nil)
+			rec := httptest.NewRecorder()
+			tc.invoke(h, rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("status=%d want 500 (query_failed 규약)", rec.Code)
+			}
+			var body apicommonErrorBody
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body.Error.Code != "query_failed" {
+				t.Errorf("code=%q want query_failed", body.Error.Code)
+			}
+		})
+	}
+}
+
+// apicommonErrorBody 는 apicommon.ErrorBody 의 test 로컬 미러다 (import cycle 없이 decode).
+type apicommonErrorBody struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
 }

@@ -159,7 +159,11 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 	// #342 무소켓 pod 집합 (no_traffic 판별 입력).
 	noSocketsIdx := len(queries)
 	queries = append(queries, "count by(src_namespace, src_pod) (netobs_pod_no_sockets)")
-	res := h.queryParallel(evalCtx, queries...)
+	res, qerr := h.queryParallel(evalCtx, queries...)
+	if qerr != nil {
+		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+		return
+	}
 
 	// 노드 3단 상태. ready / firing alert / 압박을 노드별로 모은 뒤 nodeStatus 로 판정한다.
 	ready := map[string]bool{}

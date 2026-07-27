@@ -95,12 +95,16 @@ func (h *SynthesisHandler) GetMemory(w http.ResponseWriter, r *http.Request) {
 			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", err))
 			return
 		}
-		rest := h.queryParallel(ctx,
+		rest, qerr := h.queryParallel(ctx,
 			fmt.Sprintf(byPod, "rss"),
 			fmt.Sprintf(byPod, "cache"),
 			fmt.Sprintf(byPod, "swap"),
 			"sum by(namespace, pod) (kube_pod_container_resource_limits"+limitSel+")",
 		)
+		if qerr != nil {
+			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+			return
+		}
 		resp.Pods = buildPodMemory(append([][]correlation.InstantSample{ws}, rest...), limit)
 	}
 
