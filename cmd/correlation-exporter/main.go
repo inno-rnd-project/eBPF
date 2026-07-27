@@ -99,6 +99,14 @@ func (s *intSlice) Set(v string) error {
 	return nil
 }
 
+// writeTimeoutFor 는 http.Server WriteTimeout 을 FetchTimeout 에 연동한다 (#357, #360 리뷰). range
+// 핸들러 (incidents / trends) 와 RCA 프록시는 FetchTimeout 예산까지 걸릴 수 있어, 그 응답 write 가
+// 절단되지 않도록 직렬화 여유 (10s) 를 더한다. WriteTimeout > FetchTimeout 불변식을 보장해 (writeTimeoutFor
+// 회귀 테스트가 가드), 운영자가 FETCH_TIMEOUT 을 올려도 정상 range 응답이 silent 절단되지 않는다.
+func writeTimeoutFor(fetchTimeout time.Duration) time.Duration {
+	return fetchTimeout + 10*time.Second
+}
+
 func main() {
 	cfg := correlation.DefaultConfig()
 	reconcileInterval := 5 * time.Minute
@@ -316,18 +324,16 @@ func main() {
 	})
 
 	// #357 WriteTimeout 과 IdleTimeout 추가 (기존 ReadHeaderTimeout 유지). instant 핸들러는 각 5s ctx
-	// 로 상한되지만 range 핸들러 (incidents / trends) 는 r.Context() + fetcher 의 FetchTimeout 예산으로
-	// 상한된다. 따라서 WriteTimeout 을 FetchTimeout 에 직렬화 여유 (10s) 를 더해 연동해, 최장 range
-	// query (FetchTimeout 까지) 와 그 응답 write 가 절단되지 않게 한다. 고정 30s 로 두면 운영자가
-	// 큰 클러스터용으로 FETCH_TIMEOUT 을 30s 이상으로 올릴 때 정상 range 응답이 silent 절단되는
-	// 잠복 결함이 된다. 연동으로 slow-consumer 상한은 유지하면서 legitimate range 는 보존한다.
-	// IdleTimeout 120s 는 scrape·프론트 폴링의 keep-alive 재사용을 보존하면서 유휴 커넥션을 회수한다.
+	// 로 상한되지만 range 핸들러 (incidents / trends) 와 RCA 프록시는 r.Context() + FetchTimeout 예산
+	// 으로 상한된다. 따라서 WriteTimeout 을 FetchTimeout 에 연동 (writeTimeoutFor) 해 최장 응답이
+	// 절단되지 않게 한다. IdleTimeout 120s 는 scrape·프론트 폴링의 keep-alive 재사용을 보존하면서
+	// 유휴 커넥션을 회수한다.
 	srv := &http.Server{
 		Addr:              listenAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      cfg.FetchTimeout + 10*time.Second,
+		WriteTimeout:      writeTimeoutFor(cfg.FetchTimeout),
 		IdleTimeout:       120 * time.Second,
 	}
 

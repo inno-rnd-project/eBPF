@@ -193,6 +193,8 @@ func main() {
 	// 고갈시킬 수 있다. WriteTimeout 30s 는 Prometheus scrape_timeout (기본 10s) 의 3 배 여유로 정상
 	// scrape 와 /processes 스냅샷을 절단하지 않으면서 slow-consumer 를 상한한다. IdleTimeout 120s 는
 	// scrape 간격 (15~30s) 보다 커 keep-alive 커넥션 재사용을 보존하면서 유휴 커넥션을 회수한다.
+	// gpuobs 는 range fetch 가 없어 WriteTimeout 을 고정 30s 로 둔다 (correlation 은 FetchTimeout 에
+	// 연동해 동적, #357/#360).
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           mux,
