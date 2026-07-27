@@ -147,10 +147,6 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 		"count by(src_namespace, src_pod) (netobs_pod_bytes_total)",
 		`kube_node_status_capacity{resource="nvidia_com_gpu"}`,
 	}
-	// weakest 판정용 차원 health 4종은 synthDimensions 선언 순서 (사전순) 로 뒤에 붙인다.
-	for _, d := range synthDimensions {
-		queries = append(queries, d.healthMetric)
-	}
 	// #314 종료 pod 구분용 phase. 기존 인덱스를 흔들지 않게 맨 뒤에 붙이고 == 1 로 활성 phase 만 받는다.
 	phaseIdx := len(queries)
 	queries = append(queries, "kube_pod_status_phase == 1")
@@ -165,6 +161,15 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
 		return
 	}
+
+	// #352 리뷰: weakest signal 카드용 차원 health 4종은 부가 신호라 best-effort 로 분리 조회한다.
+	// 한 차원 health 쿼리가 timeout 나도 랜딩의 나머지 카드 (노드·pod·issues·GPU) 는 200 으로 뜨도록,
+	// 필수 카운트 (위 queryParallel, 500 게이트) 와 달리 여기서는 실패를 degrade (weakest 생략) 한다.
+	healthQueries := make([]string, len(synthDimensions))
+	for i, d := range synthDimensions {
+		healthQueries[i] = d.healthMetric
+	}
+	healthRes := h.queryParallelOptional(evalCtx, healthQueries...)
 
 	// 노드 3단 상태. ready / firing alert / 압박을 노드별로 모은 뒤 nodeStatus 로 판정한다.
 	ready := map[string]bool{}
@@ -296,7 +301,7 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 
 	// weakest: 차원 health 최솟값 (#248 health 와 동일 판정, 사전순 동률 결정성).
 	for i, d := range synthDimensions {
-		s := res[7+i]
+		s := healthRes[i]
 		if len(s) == 0 || math.IsNaN(s[0].Value) {
 			continue
 		}

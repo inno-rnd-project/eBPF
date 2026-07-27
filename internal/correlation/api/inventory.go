@@ -142,6 +142,26 @@ func (h *SynthesisHandler) queryParallel(ctx context.Context, queries ...string)
 	return out, nil
 }
 
+// queryParallelOptional 은 best-effort 부가 신호 전용 병렬 조회다 (#352 리뷰). queryParallel 과 달리
+// error 를 전파하지 않고 실패한 query 를 빈 슬라이스로 남긴다. 필수 데이터와 부가 신호를 한 handler
+// 에서 함께 조회하는 endpoint (overview 의 weakest health 등) 가 부가 신호의 부분 실패로 전체 500 이
+// 되지 않도록, 필수는 queryParallel (500 게이트), 부가는 본 함수 (degrade) 로 분리한다.
+func (h *SynthesisHandler) queryParallelOptional(ctx context.Context, queries ...string) [][]correlation.InstantSample {
+	out := make([][]correlation.InstantSample, len(queries))
+	var wg sync.WaitGroup
+	for i, q := range queries {
+		wg.Add(1)
+		go func(i int, q string) {
+			defer wg.Done()
+			if s, err := h.querier.Query(ctx, q); err == nil {
+				out[i] = s
+			}
+		}(i, q)
+	}
+	wg.Wait()
+	return out
+}
+
 // GetNodes godoc
 // @Summary      노드 인벤토리
 // @Description  노드별 이름, uid, 내부/외부 IP, Ready 상태, 역할(control-plane 등), 버전, capacity(cpu/memory/gpu)를 kube-state-metrics 기반으로 돌려준다. 다른 API의 node 라벨과 동일 키로 매핑한다.
