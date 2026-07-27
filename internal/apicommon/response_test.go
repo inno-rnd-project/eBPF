@@ -93,3 +93,32 @@ func sliceEqual(a, b []int) bool {
 	}
 	return true
 }
+
+// TestParseLimit 은 #352 의 limit 파싱 규약을 검증한다. 미지정은 def, 파싱 불가는 ok=false (400),
+// 0 이하는 def, max 초과는 clamp.
+func TestParseLimit(t *testing.T) {
+	cases := []struct {
+		raw      string
+		def, max int
+		want     int
+		wantOK   bool
+	}{
+		{"", 20, 100, 20, true},     // 미지정 → def
+		{"50", 20, 100, 50, true},   // 정상
+		{"0", 20, 100, 20, true},    // 0 → def
+		{"-5", 20, 100, 20, true},   // 음수 → def
+		{"500", 20, 100, 100, true}, // 초과 → clamp
+		{"abc", 20, 100, 0, false},  // 파싱 불가 → 400
+	}
+	for _, tc := range cases {
+		url := "/x"
+		if tc.raw != "" {
+			url += "?limit=" + tc.raw
+		}
+		r := httptest.NewRequest(http.MethodGet, url, nil)
+		got, ok := ParseLimit(r, tc.def, tc.max)
+		if got != tc.want || ok != tc.wantOK {
+			t.Errorf("ParseLimit(raw=%q)=%d,%v want %d,%v", tc.raw, got, ok, tc.want, tc.wantOK)
+		}
+	}
+}

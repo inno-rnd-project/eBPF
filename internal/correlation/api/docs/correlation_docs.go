@@ -51,6 +51,12 @@ const docTemplatecorrelation = `{
                         "schema": {
                             "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
                     }
                 }
             }
@@ -185,6 +191,12 @@ const docTemplatecorrelation = `{
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.ErrorResponse"
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
                     }
                 }
             }
@@ -248,6 +260,12 @@ const docTemplatecorrelation = `{
                         "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
                     }
                 }
@@ -340,6 +358,12 @@ const docTemplatecorrelation = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.EventsResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
                     }
                 }
@@ -445,6 +469,12 @@ const docTemplatecorrelation = `{
                         "schema": {
                             "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
                     }
                 }
             }
@@ -539,6 +569,12 @@ const docTemplatecorrelation = `{
                         "schema": {
                             "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
                     }
                 }
             }
@@ -605,6 +641,12 @@ const docTemplatecorrelation = `{
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.HealthResponse"
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
                     }
                 }
             }
@@ -644,6 +686,12 @@ const docTemplatecorrelation = `{
                         "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
                     }
                 }
@@ -696,6 +744,12 @@ const docTemplatecorrelation = `{
                         "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
                     }
                 }
@@ -819,6 +873,12 @@ const docTemplatecorrelation = `{
                         "schema": {
                             "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
                     }
                 }
             }
@@ -911,6 +971,12 @@ const docTemplatecorrelation = `{
                         "schema": {
                             "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
                     }
                 }
             }
@@ -952,6 +1018,12 @@ const docTemplatecorrelation = `{
                         "schema": {
                             "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
                     }
                 }
             }
@@ -984,6 +1056,12 @@ const docTemplatecorrelation = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
@@ -1028,6 +1106,12 @@ const docTemplatecorrelation = `{
                         "schema": {
                             "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
                     }
                 }
             }
@@ -1069,6 +1153,12 @@ const docTemplatecorrelation = `{
                         "schema": {
                             "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
                     }
                 }
             }
@@ -1088,6 +1178,12 @@ const docTemplatecorrelation = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.NodesResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
                     }
                 }
@@ -1171,6 +1267,12 @@ const docTemplatecorrelation = `{
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.ErrorResponse"
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
                     }
                 }
             }
@@ -1202,6 +1304,12 @@ const docTemplatecorrelation = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
@@ -1248,6 +1356,12 @@ const docTemplatecorrelation = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
@@ -1299,6 +1413,12 @@ const docTemplatecorrelation = `{
                         "schema": {
                             "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
                     }
                 }
             }
@@ -1326,6 +1446,12 @@ const docTemplatecorrelation = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.PodsResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
                     }
                 }
@@ -1386,6 +1512,12 @@ const docTemplatecorrelation = `{
                         "schema": {
                             "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
                     }
                 }
             }
@@ -1418,6 +1550,12 @@ const docTemplatecorrelation = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
@@ -1497,6 +1635,12 @@ const docTemplatecorrelation = `{
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.ErrorResponse"
                         }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
+                        }
                     }
                 }
             }
@@ -1516,6 +1660,12 @@ const docTemplatecorrelation = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.TopologyResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
                     }
                 }
@@ -2023,6 +2173,13 @@ const docTemplatecorrelation = `{
                 "summary": {
                     "type": "string"
                 },
+                "total": {
+                    "description": "Total 은 limit 적용 전 (min_severity 필터 후) 전체 사건 수, Truncated 는 잘렸는지다 (#352).",
+                    "type": "integer"
+                },
+                "truncated": {
+                    "type": "boolean"
+                },
                 "window": {
                     "type": "string"
                 }
@@ -2083,6 +2240,13 @@ const docTemplatecorrelation = `{
                 },
                 "summary": {
                     "type": "string"
+                },
+                "total": {
+                    "description": "Total 은 limit 적용 전 전체 엣지 수, Truncated 는 잘렸는지다 (#352).",
+                    "type": "integer"
+                },
+                "truncated": {
+                    "type": "boolean"
                 },
                 "window": {
                     "type": "string"
@@ -2620,6 +2784,13 @@ const docTemplatecorrelation = `{
                 },
                 "summary": {
                     "type": "string"
+                },
+                "total": {
+                    "description": "Total 은 limit 적용 전 전체 에피소드 수, Truncated 는 잘렸는지다 (#352, 리스트 레벨). 개별\nIncident 의 truncated (에피소드가 range 시작 이전부터 발화) 와는 다른 차원이다.",
+                    "type": "integer"
+                },
+                "truncated": {
+                    "type": "boolean"
                 }
             }
         },
@@ -3537,6 +3708,13 @@ const docTemplatecorrelation = `{
                 },
                 "summary": {
                     "type": "string"
+                },
+                "total": {
+                    "description": "Total 은 limit 적용 전 전체 랭킹 대상 수, Truncated 는 Total 이 limit 을 초과해 잘렸는지다\n(#352). 클라이언트가 결과가 잘렸는지 판단할 수 있게 한다.",
+                    "type": "integer"
+                },
+                "truncated": {
+                    "type": "boolean"
                 },
                 "window": {
                     "type": "string"

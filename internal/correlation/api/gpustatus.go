@@ -236,11 +236,15 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 	for i, b := range binds {
 		bq[i] = b.query
 	}
-	bres := h.queryParallel(ctx, bq...)
+	bres, qerr := h.queryParallel(ctx, bq...)
+	if qerr != nil {
+		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+		return
+	}
 
 	// 목록 (throttle 활성 reason) 과 서브라벨 map (clock, temperature threshold), pod 점유, 노드 단위
 	// 능력·오류 신호 (#279) 는 단일값이 아니라 별도로 조회한다.
-	sub := h.queryParallel(ctx,
+	sub, qerr := h.queryParallel(ctx,
 		"gpuobs_device_throttle_active"+sel+" == 1",
 		"gpuobs_device_clock_mhz"+sel,
 		"gpuobs_device_temperature_threshold_celsius"+sel,
@@ -251,6 +255,10 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 		// #304 노드 dominant cause. tie-break 포함 rule 이라 gpu-rca 와 동일 판정 소스다.
 		"node:gpu_idle_dominant_cause:5m"+sel,
 	)
+	if qerr != nil {
+		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+		return
+	}
 
 	devices := map[gpuDeviceKey]*GpuDevice{}
 	order := []gpuDeviceKey{}

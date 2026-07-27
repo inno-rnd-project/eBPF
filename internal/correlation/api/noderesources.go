@@ -73,6 +73,7 @@ func (h *SynthesisHandler) nodeSubroute(w http.ResponseWriter, r *http.Request) 
 // @Param        at    query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  NodeResourcesResponse
 // @Failure      400  {object}  apicommon.ErrorBody
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/node/{node}/resources [get]
 func (h *SynthesisHandler) GetNodeResources(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/node/")
@@ -111,7 +112,7 @@ func (h *SynthesisHandler) GetNodeResources(w http.ResponseWriter, r *http.Reque
 	// 에서는 무필터 sum 이 중복 합산으로 부풀려진다 (#308 리뷰 반영, 멀티클러스터 이식성).
 	sel := fmt.Sprintf("{node=%q}", node)
 	podLevelSel := promSelector(nodeMatcher(node), `container=""`, `pod!=""`)
-	res := h.queryParallel(ctx,
+	res, qerr := h.queryParallel(ctx,
 		"kube_node_status_capacity"+sel,
 		"kube_node_status_allocatable"+sel,
 		"sum by(resource) (kube_pod_container_resource_requests"+sel+")",
@@ -121,6 +122,10 @@ func (h *SynthesisHandler) GetNodeResources(w http.ResponseWriter, r *http.Reque
 		"count(kube_pod_info"+sel+")",
 		"avg(gpuobs_device_utilization_percent"+sel+")",
 	)
+	if qerr != nil {
+		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+		return
+	}
 
 	// resource 라벨 시리즈 4종 (capacity / allocatable / requests / limits) 을 종류별로 채운다.
 	fill := func(samples []correlation.InstantSample, set func(d *NodeResourceDetail, v float64)) {

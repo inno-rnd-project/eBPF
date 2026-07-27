@@ -84,6 +84,7 @@ type playbookCheckEntry struct {
 // @Success      200  {object}  PlaybooksResponse
 // @Failure      400  {object}  apicommon.ErrorBody
 // @Failure      404  {object}  apicommon.ErrorBody
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/playbooks [get]
 func (h *PlaybooksHandler) GetPlaybooks(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()

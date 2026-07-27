@@ -68,6 +68,7 @@ const (
 // @Param        at    query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  AgentsResponse
 // @Failure      400  {object}  apicommon.ErrorBody
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/agents [get]
 func (h *SynthesisHandler) GetAgents(w http.ResponseWriter, r *http.Request) {
 	node, err := parseNodeParam(strings.TrimSpace(r.URL.Query().Get("node")))
@@ -94,7 +95,7 @@ func (h *SynthesisHandler) GetAgents(w http.ResponseWriter, r *http.Request) {
 	sel := promSelector(nodeMatcher(node))
 	upSel := promSelector(`job=~"netobs-agent|gpuobs-agent"`, nodeMatcher(node))
 
-	res := h.queryParallel(ctx,
+	res, qerr := h.queryParallel(ctx,
 		"up"+upSel,
 		"sum by(node) (netobs_bpf_program_loaded"+sel+")",
 		"count by(node) (netobs_bpf_program_loaded"+sel+")",
@@ -106,6 +107,10 @@ func (h *SynthesisHandler) GetAgents(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf(`min by(node) (gpuobs_cuda_symbol_available{symbol!~"cuda.*"%s})`, nodeSuffixMatcher(node)),
 		fmt.Sprintf(`min by(node) (gpuobs_cuda_symbol_available{symbol=~"cuda.*"%s})`, nodeSuffixMatcher(node)),
 	)
+	if qerr != nil {
+		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+		return
+	}
 
 	// (node, agent) 항목의 골격은 up 시리즈에서 만든다. job 라벨이 agent 종류다.
 	type agentKey struct{ node, agent string }

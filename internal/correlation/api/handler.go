@@ -202,6 +202,7 @@ type ErrorDetail struct {
 // @Param        offset             query  int     false  "응답 시작 offset (기본 0)"
 // @Success      200  {object}  NoisyNeighborListResponse
 // @Failure      400  {object}  ErrorResponse
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/noisy-neighbor [get]
 func (h *Handler) ListNoisyNeighbors(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -313,6 +314,7 @@ func validVictimSignal(s string) bool {
 // @Param        offset         query  int     false  "응답 시작 offset (기본 0)"
 // @Success      200  {object}  CrossNodeListResponse
 // @Failure      400  {object}  ErrorResponse
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/cross-node-interference [get]
 func (h *Handler) ListCrossNode(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -394,6 +396,7 @@ func (h *Handler) ListCrossNode(w http.ResponseWriter, r *http.Request) {
 // @Param        offset            query  int     false  "응답 시작 offset (기본 0)"
 // @Success      200  {object}  ServiceImpactListResponse
 // @Failure      400  {object}  ErrorResponse
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/service-impact [get]
 func (h *Handler) ListServiceImpact(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -489,6 +492,7 @@ func validDirection(d string) bool {
 // @Param        offset          query  int     false  "응답 시작 offset (기본 0)"
 // @Success      200  {object}  CrossLevelListResponse
 // @Failure      400  {object}  ErrorResponse
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/cross-level [get]
 func (h *Handler) ListCrossLevel(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -577,6 +581,7 @@ func (h *Handler) ListCrossLevel(w http.ResponseWriter, r *http.Request) {
 // @Param        min_score  query  number  false  "score 가 이 값 이상인 엣지만"
 // @Success      200  {object}  ImpactGraphResponse
 // @Failure      400  {object}  ErrorResponse
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/impact-graph [get]
 func (h *Handler) GetImpactGraph(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -631,6 +636,7 @@ func (h *Handler) GetImpactGraph(w http.ResponseWriter, r *http.Request) {
 // @Param        min_score     query  number   false  "경로 weakest-link score 하한 필터"
 // @Success      200  {object}  ImpactPathsResponse
 // @Failure      400  {object}  ErrorResponse
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/impact-paths [get]
 func (h *Handler) ListImpactPaths(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()

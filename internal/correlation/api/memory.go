@@ -95,7 +95,7 @@ func (h *SynthesisHandler) GetMemory(w http.ResponseWriter, r *http.Request) {
 			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", err))
 			return
 		}
-		rest := h.queryParallel(ctx,
+		rest, _ := h.queryParallel(ctx,
 			fmt.Sprintf(byPod, "rss"),
 			fmt.Sprintf(byPod, "cache"),
 			fmt.Sprintf(byPod, "swap"),

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"net/http"
 	"sort"
@@ -111,21 +112,67 @@ type PodsResponse struct {
 
 // queryParallel 은 여러 instant query 를 goroutine 으로 동시에 실행해 결과를 입력 순서대로 돌려준다.
 // 각 goroutine 이 out 슬라이스의 자기 인덱스에만 써 mutex 없이 race-free 하고, 호출부는 배리어 뒤에서
-// 순차로 병합한다. 실패한 query 는 nil 슬라이스로 남는다.
-func (h *SynthesisHandler) queryParallel(ctx context.Context, queries ...string) [][]correlation.InstantSample {
+// 순차로 병합한다. 하나라도 query 가 error 를 내면 (#352) 그 첫 error 를 함께 돌려준다. PromQL 은
+// "메트릭 부재" 를 error 가 아닌 빈 결과로 돌려주므로 error != nil 은 항상 Prometheus 백엔드 장애
+// (timeout / transport) 를 뜻한다. 따라서 호출부는 error 를 500 query_failed 로 통일해 데이터 부재
+// (빈 결과, error nil → 200) 와 백엔드 장애를 상태코드로 구분한다. 보조 신호만 다루는 best-effort
+// 호출부 (fetchCauseEvidence) 만 error 를 의도적으로 무시한다.
+func (h *SynthesisHandler) queryParallel(ctx context.Context, queries ...string) ([][]correlation.InstantSample, error) {
 	out := make([][]correlation.InstantSample, len(queries))
+	errs := make([]error, len(queries))
 	var wg sync.WaitGroup
 	for i, q := range queries {
 		wg.Add(1)
 		go func(i int, q string) {
 			defer wg.Done()
-			if s, err := h.querier.Query(ctx, q); err == nil {
-				out[i] = s
+			s, err := h.querier.Query(ctx, q)
+			if err != nil {
+				errs[i] = err
+				return
 			}
+			out[i] = s
 		}(i, q)
 	}
 	wg.Wait()
-	return out
+	for _, e := range errs {
+		if e != nil {
+			return out, e
+		}
+	}
+	return out, nil
+}
+
+// queryParallelOptional 은 best-effort 부가 신호 전용 병렬 조회다 (#352 리뷰). queryParallel 과 달리
+// error 를 전파하지 않고 실패한 query 를 빈 슬라이스로 남기며, 대신 실패한 query 개수 (failed) 를
+// 함께 돌려준다. 필수 데이터와 부가 신호를 한 handler 에서 함께 조회하는 endpoint (overview 의
+// weakest health 등) 가 부가 신호의 부분 실패로 전체 500 이 되지 않도록, 필수는 queryParallel
+// (500 게이트), 부가는 본 함수 (degrade) 로 분리한다. failed > 0 는 "쿼리 실패로 빈 것" 과 "데이터가
+// 원래 없어 빈 것" 을 호출부가 구분하게 해, 전 차원 비교가 필요한 판정 (weakest 최약 신호) 이 부분
+// 실패 시 성공분만으로 오답을 내지 않도록 한다.
+func (h *SynthesisHandler) queryParallelOptional(ctx context.Context, queries ...string) ([][]correlation.InstantSample, int) {
+	out := make([][]correlation.InstantSample, len(queries))
+	errs := make([]error, len(queries))
+	var wg sync.WaitGroup
+	for i, q := range queries {
+		wg.Add(1)
+		go func(i int, q string) {
+			defer wg.Done()
+			s, err := h.querier.Query(ctx, q)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			out[i] = s
+		}(i, q)
+	}
+	wg.Wait()
+	failed := 0
+	for _, e := range errs {
+		if e != nil {
+			failed++
+		}
+	}
+	return out, failed
 }
 
 // GetNodes godoc
@@ -134,6 +181,7 @@ func (h *SynthesisHandler) queryParallel(ctx context.Context, queries ...string)
 // @Tags         inventory
 // @Produce      json
 // @Success      200  {object}  NodesResponse
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/nodes [get]
 func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
 	resp := NodesResponse{GeneratedAt: time.Now().UTC().Format(time.RFC3339), Nodes: []NodeInventory{}}
@@ -145,13 +193,17 @@ func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// 4개 메트릭을 동시에 조회하고 (I/O 병렬), 맵 병합은 배리어 뒤에서 순차로 한다.
-	res := h.queryParallel(ctx,
+	res, qerr := h.queryParallel(ctx,
 		"kube_node_info",
 		`kube_node_status_addresses{type="ExternalIP"}`,
 		`kube_node_status_condition{condition="Ready",status="true"}`,
 		"kube_node_status_capacity",
 		"kube_node_role",
 	)
+	if qerr != nil {
+		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+		return
+	}
 
 	nodes := map[string]*NodeInventory{}
 	get := func(name string) *NodeInventory {
@@ -231,6 +283,7 @@ func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
 // @Produce      json
 // @Param        namespace  query  string  false  "namespace 필터 (생략 시 전체)"
 // @Success      200  {object}  PodsResponse
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/pods [get]
 func (h *SynthesisHandler) GetPods(w http.ResponseWriter, r *http.Request) {
 	nsFilter := strings.TrimSpace(r.URL.Query().Get("namespace"))
@@ -245,7 +298,7 @@ func (h *SynthesisHandler) GetPods(w http.ResponseWriter, r *http.Request) {
 	// base(kube_pod_info)와 enrich(phase/qos/관측 커버리지)를 동시에 조회하고 배리어 뒤에서 join 으로
 	// 병합한다. 관측 커버리지는 netobs 가 allow-list 무관 상시 수집하는 netobs_pod_bytes_total 의
 	// 시리즈 존재로 판정한다 (#248).
-	res := h.queryParallel(ctx,
+	res, qerr := h.queryParallel(ctx,
 		"kube_pod_info",
 		"kube_pod_status_phase",
 		"kube_pod_status_qos_class",
@@ -255,6 +308,10 @@ func (h *SynthesisHandler) GetPods(w http.ResponseWriter, r *http.Request) {
 		// #342 무소켓 pod 집합 (no_traffic 판별 입력).
 		"count by(src_namespace, src_pod) (netobs_pod_no_sockets)",
 	)
+	if qerr != nil {
+		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+		return
+	}
 
 	// kube_pod_info: base set. namespace 필터는 PromQL injection 을 피해 Go 측에서 적용한다.
 	pods := []*PodInventory{}

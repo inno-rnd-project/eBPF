@@ -61,6 +61,7 @@ type NodeMapPod struct {
 // @Success      200  {object}  NodeMapResponse
 // @Failure      400  {object}  apicommon.ErrorBody
 // @Failure      404  {object}  apicommon.ErrorBody
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/node-map [get]
 func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 	evalCtx, evalAt, ok := applyAtParam(w, r, r.Context())
@@ -75,7 +76,7 @@ func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res := h.queryParallel(evalCtx,
+	res, qerr := h.queryParallel(evalCtx,
 		"kube_node_info",
 		`kube_node_status_condition{condition="Ready",status="true"}`,
 		"kube_node_role",
@@ -90,6 +91,10 @@ func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 		// #342 무소켓 pod 집합 (no_traffic 판별 입력).
 		"count by(src_namespace, src_pod) (netobs_pod_no_sockets)",
 	)
+	if qerr != nil {
+		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+		return
+	}
 
 	// 노드 골격. overview 와 동일 소스에서 ready / roles / GPU capacity / 압박을 모은다.
 	nodes := map[string]*NodeMapNode{}

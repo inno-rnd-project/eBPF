@@ -1,7 +1,7 @@
 swagger: '2.0'
 info:
   title: netobs unified API
-  version: 2.5.6
+  version: 2.5.9
 paths:
   /api/v1/agents:
     get:
@@ -30,6 +30,10 @@ paths:
             $ref: '#/definitions/internal_correlation_api.AgentsResponse'
         '400':
           description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '500':
+          description: Internal Server Error
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/bandwidth:
@@ -123,6 +127,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/cross-node-interference:
     get:
       description: victim_node 와 suspect_node 와 dimension 과 rank 필터 후 pagination 적용한
@@ -166,6 +174,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/drops:
     get:
       description: netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction
@@ -235,6 +247,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_correlation_api.EventsResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/flows:
     get:
       description: netobs_flow_bytes_total(5-tuple pod 간 RX/TX)을 rate 로 환산해 pod 간
@@ -307,6 +323,10 @@ paths:
             $ref: '#/definitions/internal_correlation_api.GpuIdleResponse'
         '400':
           description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '500':
+          description: Internal Server Error
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/gpu-processes:
@@ -383,6 +403,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/gpu-status:
     get:
       description: 'node 와 GPU device 단위 사용률, 메모리, 전력, 온도, 활성 throttle reason, 점유
@@ -437,6 +461,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_correlation_api.HealthResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/impact-graph:
     get:
       description: suspect → victim 1-hop 엣지로 구성된 영향 전파 그래프의 정점 (out/in degree 포함)
@@ -464,6 +492,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/impact-paths:
     get:
       description: 근원 suspect(root)에서 종착 victim(terminal)으로 이어지는 다단계 경로와 근원 요약 반환.
@@ -499,6 +531,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/incidents:
     get:
       description: Prometheus 의 ALERTS 시계열을 range 합성해 기간 내 alert 발화 이력을 돌려준다. 동일 alert
@@ -590,6 +626,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/memory:
     get:
       description: pod별 cAdvisor 종류별 메모리(working_set / rss / cache / swap bytes)와
@@ -660,6 +700,10 @@ paths:
           description: Not Found
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/node-vitals:
     get:
       description: '노드의 CPU 와 memory 사용률 퍼센트 (노드 내 pod 합산 사용량을 노드 allocatable 로 나눈
@@ -688,6 +732,10 @@ paths:
             $ref: '#/definitions/internal_correlation_api.NodeVitalsResponse'
         '400':
           description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '500':
+          description: Internal Server Error
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/node/{node}:
@@ -720,6 +768,10 @@ paths:
             $ref: '#/definitions/internal_correlation_api.NodeResponse'
         '400':
           description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '500':
+          description: Internal Server Error
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/node/{node}/pods:
@@ -757,6 +809,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/node/{node}/resources:
     get:
       description: 노드의 리소스 종류별 (cpu 와 memory 와 pods 와 gpu) capacity 와 allocatable,
@@ -788,6 +844,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/nodes:
     get:
       description: 노드별 이름, uid, 내부/외부 IP, Ready 상태, 역할(control-plane 등), 버전, capacity(cpu/memory/gpu)를
@@ -802,6 +862,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_correlation_api.NodesResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/noisy-neighbor:
     get:
       description: victim/suspect 와 dimension 과 rank 필터 후 pagination 적용한 noisy neighbor
@@ -857,6 +921,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/overview:
     get:
       description: 랜딩 요약 카드 5장 (노드 3단 상태, pod 관측 커버리지, firing alert severity 집계, GPU
@@ -884,6 +952,10 @@ paths:
             $ref: '#/definitions/internal_correlation_api.OverviewResponse'
         '400':
           description: Bad Request
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '500':
+          description: Internal Server Error
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/playbooks:
@@ -918,6 +990,10 @@ paths:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
         '404':
           description: Not Found
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '500':
+          description: Internal Server Error
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/pod/{namespace}/{pod}:
@@ -959,6 +1035,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/pods:
     get:
       description: '파드별 namespace, 이름, uid, pod IP, host IP, node, workload(created_by),
@@ -985,6 +1065,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_correlation_api.PodsResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/pressure:
     get:
       description: 한 자원 차원의 node 또는 pod 를 pressure score 내림차순으로 랭킹해, /health 의 hotspot
@@ -1025,6 +1109,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/rca:
     get:
       description: rca-summarizer 가 Alertmanager webhook 으로 생성한 alert 별 root cause
@@ -1049,6 +1137,10 @@ paths:
             additionalProperties: true
         '404':
           description: Not Found
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
+        '500':
+          description: Internal Server Error
           schema:
             $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
         '502':
@@ -1102,6 +1194,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_correlation_api.ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/topology:
     get:
       description: 노드별 status(healthy/warning/critical/unknown, 4개 자원 차원 pressure
@@ -1117,6 +1213,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_correlation_api.TopologyResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/netobs_internal_apicommon.ErrorBody'
   /api/v1/trends:
     get:
       description: '진단 신호와 자원 사용량, 지연의 클러스터 추이를 range query 로 돌려준다. signal 은 화이트리스트(간섭
@@ -1474,6 +1574,12 @@ definitions:
         type: string
       summary:
         type: string
+      total:
+        description: Total 은 limit 적용 전 (min_severity 필터 후) 전체 사건 수, Truncated 는 잘렸는지다
+          (#352).
+        type: integer
+      truncated:
+        type: boolean
       window:
         type: string
   internal_correlation_api.FlowEdge:
@@ -1514,6 +1620,11 @@ definitions:
         type: string
       summary:
         type: string
+      total:
+        description: Total 은 limit 적용 전 전체 엣지 수, Truncated 는 잘렸는지다 (#352).
+        type: integer
+      truncated:
+        type: boolean
       window:
         type: string
   internal_correlation_api.GpuCauseWeight:
@@ -1928,6 +2039,14 @@ definitions:
         type: string
       summary:
         type: string
+      total:
+        description: 'Total 은 limit 적용 전 전체 에피소드 수, Truncated 는 잘렸는지다 (#352, 리스트 레벨).
+          개별
+
+          Incident 의 truncated (에피소드가 range 시작 이전부터 발화) 와는 다른 차원이다.'
+        type: integer
+      truncated:
+        type: boolean
   internal_correlation_api.LatencyBreakdownResponse:
     type: object
     properties:
@@ -2585,6 +2704,14 @@ definitions:
         type: string
       summary:
         type: string
+      total:
+        description: 'Total 은 limit 적용 전 전체 랭킹 대상 수, Truncated 는 Total 이 limit 을 초과해
+          잘렸는지다
+
+          (#352). 클라이언트가 결과가 잘렸는지 판단할 수 있게 한다.'
+        type: integer
+      truncated:
+        type: boolean
       window:
         type: string
   internal_correlation_api.RcaEvidence:

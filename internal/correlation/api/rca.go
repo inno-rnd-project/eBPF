@@ -48,6 +48,7 @@ func (h *RCAProxyHandler) Register(mux *http.ServeMux) {
 // @Success      200  {object}  map[string]interface{}
 // @Failure      404  {object}  apicommon.ErrorBody
 // @Failure      502  {object}  apicommon.ErrorBody
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/rca [get]
 func (h *RCAProxyHandler) GetRCA(w http.ResponseWriter, r *http.Request) {
 	// ResolveReference 로 경로를 구성해 base 에 인코딩된 경로가 있어도 RawPath 잔존 없이 안전하게

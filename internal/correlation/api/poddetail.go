@@ -95,6 +95,7 @@ func parseNamespacePodPath(rest string) (string, string, error) {
 // @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  PodDetailResponse
 // @Failure      400  {object}  apicommon.ErrorBody
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/pod/{namespace}/{pod} [get]
 func (h *SynthesisHandler) GetPodDetail(w http.ResponseWriter, r *http.Request) {
 	ns, pod, err := parseNamespacePodPath(strings.TrimPrefix(r.URL.Path, "/api/v1/pod/"))
@@ -135,7 +136,7 @@ func (h *SynthesisHandler) GetPodDetail(w http.ResponseWriter, r *http.Request) 
 		return fmt.Sprintf(`{namespace=%q, pod=%q, resource=%q}`, ns, pod, resource)
 	}
 
-	res := h.queryParallel(ctx,
+	res, qerr := h.queryParallel(ctx,
 		"kube_pod_info"+kubeSel,
 		"pod:cpu_throttle_score:5m"+srcSel,
 		"pod:memory_pressure_score:5m"+srcSel,
@@ -154,6 +155,10 @@ func (h *SynthesisHandler) GetPodDetail(w http.ResponseWriter, r *http.Request) 
 		// #328 CPU 절대 사용량 (cores). limit 분모 percent 와 달리 limit 유무와 무관하게 산출된다.
 		fmt.Sprintf("sum(rate(container_cpu_usage_seconds_total%s[5m]))", cadvisorSel),
 	)
+	if qerr != nil {
+		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+		return
+	}
 
 	if len(res[0]) > 0 {
 		l := res[0][0].Labels

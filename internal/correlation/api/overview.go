@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"time"
@@ -124,6 +125,7 @@ func nodeStatus(ready bool, hasFiringAlert bool, pressure float64) string {
 // @Param        at  query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  OverviewResponse
 // @Failure      400  {object}  apicommon.ErrorBody
+// @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/overview [get]
 func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 	evalCtx, evalAt, ok := applyAtParam(w, r, r.Context())
@@ -146,10 +148,6 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 		"count by(src_namespace, src_pod) (netobs_pod_bytes_total)",
 		`kube_node_status_capacity{resource="nvidia_com_gpu"}`,
 	}
-	// weakest 판정용 차원 health 4종은 synthDimensions 선언 순서 (사전순) 로 뒤에 붙인다.
-	for _, d := range synthDimensions {
-		queries = append(queries, d.healthMetric)
-	}
 	// #314 종료 pod 구분용 phase. 기존 인덱스를 흔들지 않게 맨 뒤에 붙이고 == 1 로 활성 phase 만 받는다.
 	phaseIdx := len(queries)
 	queries = append(queries, "kube_pod_status_phase == 1")
@@ -159,7 +157,20 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 	// #342 무소켓 pod 집합 (no_traffic 판별 입력).
 	noSocketsIdx := len(queries)
 	queries = append(queries, "count by(src_namespace, src_pod) (netobs_pod_no_sockets)")
-	res := h.queryParallel(evalCtx, queries...)
+	res, qerr := h.queryParallel(evalCtx, queries...)
+	if qerr != nil {
+		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+		return
+	}
+
+	// #352 리뷰: weakest signal 카드용 차원 health 4종은 부가 신호라 best-effort 로 분리 조회한다.
+	// 한 차원 health 쿼리가 timeout 나도 랜딩의 나머지 카드 (노드·pod·issues·GPU) 는 200 으로 뜨도록,
+	// 필수 카운트 (위 queryParallel, 500 게이트) 와 달리 여기서는 실패를 degrade (weakest 생략) 한다.
+	healthQueries := make([]string, len(synthDimensions))
+	for i, d := range synthDimensions {
+		healthQueries[i] = d.healthMetric
+	}
+	healthRes, healthFailed := h.queryParallelOptional(evalCtx, healthQueries...)
 
 	// 노드 3단 상태. ready / firing alert / 압박을 노드별로 모은 뒤 nodeStatus 로 판정한다.
 	ready := map[string]bool{}
@@ -289,15 +300,24 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 		resp.GPU.Devices += int(sm.Value)
 	}
 
-	// weakest: 차원 health 최솟값 (#248 health 와 동일 판정, 사전순 동률 결정성).
-	for i, d := range synthDimensions {
-		s := res[7+i]
-		if len(s) == 0 || math.IsNaN(s[0].Value) {
-			continue
-		}
-		v := s[0].Value
-		if resp.Weakest == nil || v < resp.Weakest.Health {
-			resp.Weakest = &WeakestSignal{Dimension: d.name, Health: v, Status: correlation.HealthStatus(v)}
+	// weakest: 차원 health 최솟값 (#248 health 와 동일 판정, 사전순 동률 결정성). weakest 는 전 차원을
+	// 비교해야 최약이 정해지는 판정이라 부분 신뢰가 무의미하다 (#352 리뷰). health 쿼리가 하나라도
+	// 실패하면 (healthFailed > 0) 실패한 차원이 실제 최약일 수 있어, 성공분만으로 오답을 내지 않도록
+	// weakest 전체를 생략한다. 쿼리 실패로 빈 것과 데이터가 원래 없어 빈 것을 queryParallelOptional 의
+	// failed 개수로 구분한다 (genuine empty 는 기존대로 skip 후 성공분 min 이 정확). degrade 는 필수
+	// 경로의 500 과 달리 silent 하므로 사유를 로그로 노출한다.
+	if healthFailed > 0 {
+		log.Printf("overview: weakest signal 생략 (health 쿼리 %d/%d 실패, 부분 신뢰 불가)", healthFailed, len(healthQueries))
+	} else {
+		for i, d := range synthDimensions {
+			s := healthRes[i]
+			if len(s) == 0 || math.IsNaN(s[0].Value) {
+				continue
+			}
+			v := s[0].Value
+			if resp.Weakest == nil || v < resp.Weakest.Health {
+				resp.Weakest = &WeakestSignal{Dimension: d.name, Health: v, Status: correlation.HealthStatus(v)}
+			}
 		}
 	}
 
