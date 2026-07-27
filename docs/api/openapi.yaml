@@ -1,7 +1,7 @@
 swagger: '2.0'
 info:
   title: netobs unified API
-  version: 2.5.1
+  version: 2.5.4
 paths:
   /api/v1/agents:
     get:
@@ -507,7 +507,10 @@ paths:
         진입점이다. 상시 발화 heartbeat (Watchdog) 는 overview issues 와 공용 필터로 제외되어 발화 중 목록의
         alertname dedup 수가 카드 total 과 일치한다 (#332). 각 항목의 scope (pod/node/cluster,
         overview 와 동일 분류) 와 귀속 entity (node 와 namespace 와 pod) 는 프론트가 이슈에서 해당 화면으로
-        라우팅하는 입력이며, cluster scope 는 라우팅 대상이 없어 전역 알림 목록에서 표시한다.
+        라우팅하는 입력이며, cluster scope 는 라우팅 대상이 없어 전역 알림 목록에서 표시한다. title 과 summary 는
+        사람이 읽을 설명으로 (#349), title 은 alertname 의 한국어 제목이고 summary 는 항목 labels 로 치환된
+        설명이다. 카탈로그 미등록 alertname (kube-prometheus-stack 내장 alert 등) 은 title 에 alertname
+        을 그대로 쓰고 summary 를 생략한다.
       produces:
       - application/json
       tags:
@@ -1897,6 +1900,16 @@ definitions:
       starts_at:
         type: string
       status:
+        type: string
+      summary:
+        type: string
+      title:
+        description: 'Title 과 Summary 는 #349 의 사람이 읽을 설명이다. Title 은 alertname 의 한국어
+          제목이고
+
+          Summary 는 항목 labels 로 치환된 설명이다 (incidentCatalog). 카탈로그 미등록 alertname 은
+
+          Title 에 alertname 을 그대로 쓰고 Summary 를 생략한다 (신규 alert 도 incidents 가 안 깨짐).'
         type: string
       truncated:
         type: boolean

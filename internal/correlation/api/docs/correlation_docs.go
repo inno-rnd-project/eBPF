@@ -703,7 +703,7 @@ const docTemplatecorrelation = `{
         },
         "/api/v1/incidents": {
             "get": {
-                "description": "Prometheus 의 ALERTS 시계열을 range 합성해 기간 내 alert 발화 이력을 돌려준다. 동일 alert 의 재발화는 샘플 간극으로 별개 에피소드로 분리되고, range 끝까지 발화 중이면 status=firing, 중간에 끊겼으면 status=resolved 와 종료 시각이 채워진다. starts_at 은 synthesis API 의 at 파라미터에 그대로 넣어 발화 시점 상태를 재구성하는 진입점이다. 상시 발화 heartbeat (Watchdog) 는 overview issues 와 공용 필터로 제외되어 발화 중 목록의 alertname dedup 수가 카드 total 과 일치한다 (#332). 각 항목의 scope (pod/node/cluster, overview 와 동일 분류) 와 귀속 entity (node 와 namespace 와 pod) 는 프론트가 이슈에서 해당 화면으로 라우팅하는 입력이며, cluster scope 는 라우팅 대상이 없어 전역 알림 목록에서 표시한다.",
+                "description": "Prometheus 의 ALERTS 시계열을 range 합성해 기간 내 alert 발화 이력을 돌려준다. 동일 alert 의 재발화는 샘플 간극으로 별개 에피소드로 분리되고, range 끝까지 발화 중이면 status=firing, 중간에 끊겼으면 status=resolved 와 종료 시각이 채워진다. starts_at 은 synthesis API 의 at 파라미터에 그대로 넣어 발화 시점 상태를 재구성하는 진입점이다. 상시 발화 heartbeat (Watchdog) 는 overview issues 와 공용 필터로 제외되어 발화 중 목록의 alertname dedup 수가 카드 total 과 일치한다 (#332). 각 항목의 scope (pod/node/cluster, overview 와 동일 분류) 와 귀속 entity (node 와 namespace 와 pod) 는 프론트가 이슈에서 해당 화면으로 라우팅하는 입력이며, cluster scope 는 라우팅 대상이 없어 전역 알림 목록에서 표시한다. title 과 summary 는 사람이 읽을 설명으로 (#349), title 은 alertname 의 한국어 제목이고 summary 는 항목 labels 로 치환된 설명이다. 카탈로그 미등록 alertname (kube-prometheus-stack 내장 alert 등) 은 title 에 alertname 을 그대로 쓰고 summary 를 생략한다.",
                 "produces": [
                     "application/json"
                 ],
@@ -2586,6 +2586,13 @@ const docTemplatecorrelation = `{
                     "type": "string"
                 },
                 "status": {
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "title": {
+                    "description": "Title 과 Summary 는 #349 의 사람이 읽을 설명이다. Title 은 alertname 의 한국어 제목이고\nSummary 는 항목 labels 로 치환된 설명이다 (incidentCatalog). 카탈로그 미등록 alertname 은\nTitle 에 alertname 을 그대로 쓰고 Summary 를 생략한다 (신규 alert 도 incidents 가 안 깨짐).",
                     "type": "string"
                 },
                 "truncated": {
