@@ -125,9 +125,18 @@ func main() {
 
 	mux := server.NewMux("netobs-agent", reg, ready)
 
+	// #357 http.Server 타임아웃 완비 (rca-summarizer 동형). 타임아웃 부재 시 slow-header / slow-body /
+	// slow-consumer 커넥션이 goroutine 과 fd 를 무기한 점유해 노드별 관측 에이전트를 소량 커넥션으로
+	// 고갈시킬 수 있다. WriteTimeout 30s 는 Prometheus scrape_timeout (기본 10s) 의 3 배 여유로 정상
+	// scrape (BPF map iterate) 를 절단하지 않으면서 slow-consumer 를 상한한다. IdleTimeout 120s 는
+	// scrape 간격 (15~30s) 보다 커 keep-alive 커넥션 재사용을 보존하면서 유휴 커넥션을 회수한다.
 	srv := &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: mux,
+		Addr:              cfg.ListenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	// HTTP server: ListenAndServe는 shutdown 전까지 블록되어야 정상 동작이며,
