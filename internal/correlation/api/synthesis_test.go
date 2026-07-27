@@ -604,4 +604,3 @@ func TestListPaginationContract(t *testing.T) {
 		t.Errorf("code=%q want invalid_limit", eb.Error.Code)
 	}
 }
-
