@@ -1,0 +1,28 @@
+# netobs agent 는 전 노드의 metrics 포트 (9810) 를 무인증으로 노출하므로 네트워크 계층에서 접근
+# 출처를 한정한다 (#357, correlation-exporter 의 #217 과 gpuobs 의 #281 규약과 동일 접근). netobs 는
+# scrape 전용이라 허용 출처는 Prometheus scrape 의 monitoring 네임스페이스 한 갈래다 (gpuobs 와 달리
+# correlation-exporter 가 직접 접근하는 로컬 프록시 endpoint 가 없어 same-namespace 소비자를 두지
+# 않는다). kubelet 의 liveness/readiness httpGet probe 는 로컬 노드 host 발신이라 Cilium 이 정책과
+# 무관하게 허용한다. egress 는 본 이슈 범위 외라 제한하지 않는다 (policyTypes 에 Egress 미포함).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: netobs-agent
+  labels:
+    app.kubernetes.io/name: netobs-agent
+    app.kubernetes.io/part-of: ebpf-project
+    app.kubernetes.io/component: network-observer
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: netobs-agent
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9810
+          protocol: TCP
