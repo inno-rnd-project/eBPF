@@ -56,9 +56,13 @@ type Enricher struct {
 	cgroupScanner *CgroupScanner
 }
 
-// SetCgroupScanner 는 #228 폴백 스캐너를 주입한다. startup 시 1회 호출한다.
+// SetCgroupScanner 는 #228 폴백 스캐너를 주입한다. startup 시 1회 호출한다. 메트릭 서버 goroutine 이
+// 주입보다 먼저 기동해 그 사이 scrape 가 lookupCgroupHint 로 이 필드를 읽으므로 (#358), 다른 필드와
+// 동일하게 e.mu 로 보호해 동기화 규약을 통일한다.
 func (e *Enricher) SetCgroupScanner(c *CgroupScanner) {
+	e.mu.Lock()
 	e.cgroupScanner = c
+	e.mu.Unlock()
 }
 
 // NewEnricher는 외부에서 구성된 *kube.Resolver를 받아 netobs 전용 캐시와 함께 Enricher를 구성한다.
@@ -193,6 +197,9 @@ func (e *Enricher) lookupCgroupHint(cgroupID uint64, now time.Time) (kube.PodIde
 
 	e.mu.RLock()
 	entry, ok := e.runtimeByCgroup[cgroupID]
+	// 스캐너 포인터도 e.mu 아래에서 포착한다 (#358). Lookup 은 CgroupScanner 자체 락을 잡으므로
+	// e.mu 를 쥔 채 호출하지 않고 언락 후 사용한다.
+	scanner := e.cgroupScanner
 	e.mu.RUnlock()
 
 	if ok && now.Sub(entry.LastSeen) <= e.runtimeTTL {
@@ -200,8 +207,8 @@ func (e *Enricher) lookupCgroupHint(cgroupID uint64, now time.Time) (kube.PodIde
 	}
 	// #228 힌트 미학습 (TCP 트래픽 없는 UDP 전용 pod) 폴백. 스캐너 테이블은 informer 와 host cgroup
 	// inode 스캔으로 주기 재구성되어 ringbuf 이벤트 없이도 귀속이 성립한다.
-	if e.cgroupScanner != nil {
-		if id, ok := e.cgroupScanner.Lookup(cgroupID); ok {
+	if scanner != nil {
+		if id, ok := scanner.Lookup(cgroupID); ok {
 			return id, true
 		}
 	}

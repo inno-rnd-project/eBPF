@@ -58,6 +58,41 @@ func TestEnricher_RWMutexPromoteIdempotent(t *testing.T) {
 	}
 }
 
+// TestEnricher_SetCgroupScannerRace 는 #358 회귀 가드 다. netobs-agent 기동 시 메트릭 서버 goroutine
+// 이 SetCgroupScanner 주입보다 먼저 시작해, 그 사이 scrape 가 ResolveCgroup → lookupCgroupHint 로
+// e.cgroupScanner 를 읽으면서 주입 쓰기와 경합하던 기동 윈도우 를 재현한다. Set 과 Resolve 를 동시 진입
+// 시켜 go test -race 가 무동기 접근 을 잡을 수 있는 표면적 을 영구 확보 한다.
+func TestEnricher_SetCgroupScannerRace(t *testing.T) {
+	e := NewEnricher(nil)
+	scanner := NewCgroupScanner(nil, "node-a", "/sys/fs/cgroup")
+
+	const workers = 16
+	const iterations = 100
+
+	var wg sync.WaitGroup
+	wg.Add(workers * 2)
+	// Writer goroutine: 기동 윈도우 의 주입 쓰기 를 반복 자극.
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				e.SetCgroupScanner(scanner)
+			}
+		}()
+	}
+	// Reader goroutine: scrape 경로 의 ResolveCgroup 동시 진입. kr 이 nil 이라 Lookup 은 항상 miss 지만
+	// e.cgroupScanner 읽기 자체 가 write 와 경합 하는 race window 를 자극 한다.
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				_, _ = e.ResolveCgroup(uint64(0x2000 + j))
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 // TestEnricher_ConcurrentMultiOpRace 는 lookupFlow read 경로 와 rememberFlow write / rotate 경로 가
 // multi-goroutine 동시 진입 시 race detector 위반 없이 흐르는지 검증. flowCurrent 와 flowPrevious 의
 // 일관된 RWMutex 보호 영구 가드. read-only 시나리오 만 으로는 rotate 경로 의 동시 쓰기 race window 가
