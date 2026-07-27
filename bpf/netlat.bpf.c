@@ -72,9 +72,19 @@ struct {
  * ret > 0 분기 와 tcp_cleanup_rbuf 의 copied > 0 분기 에서 5-tuple key 로 본 맵 에 bytes 를 누적 한다.
  * userspace flow.Collector 가 scrape 시점 에 본 맵 을 iterate 해 netobs_flow_bytes_total 로 emit 한다.
  */
+/* #351 max_entries 1024 → 32768. flow_bytes 는 5-tuple 키라 노드의 모든 flow 가 슬롯을 경쟁하고
+ * (userspace FlowGuard allow-list 는 scrape 단계에만 있어 BPF 점유를 막지 못함), 1024 에서는 관심
+ * flow 가 노이즈 flow 에 밀려 LRU evict 되어 재등장 시 bytes 가 0 부터 다시 쌓여 counter reset /
+ * 과소계상이 반복됐다. 상향 크기는 실측 working set 기반이다: 1024 에서 dev 노드 사용률이 0.6~0.9 로
+ * 포화였고, 16384 로 올려 재측정하니 control-plane (master) 의 실제 flow working set 이 ~10,600 (기존
+ * cap 의 10 배) 으로 드러났다. busiest 노드에 3 배 헤드룸을 남기도록 32768 로 둔다. 포화 임박은
+ * netobs_bpf_map_utilization_ratio{map="flow_bytes"} 로 관측되고 NetObsBpfMapUtilizationHigh (>0.8)
+ * alert 가 커버하므로 부족하면 데이터 기반으로 재조정한다. allow-list cgroup 을 BPF 로 내려 노이즈 를
+ * 원천 필터하는 방식은 빈 allowed-set / cgroup v1 / 신규 pod warmup 창 에서 관심 flow 를 silent drop
+ * 할 위험이 있어 채택하지 않는다. */
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, 1024);
+    __uint(max_entries, 32768);
     __type(key, struct netobs_flow_key);
     __type(value, struct netobs_flow_value);
 } flow_bytes SEC(".maps");

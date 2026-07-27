@@ -53,3 +53,23 @@ func TestEventSize(t *testing.T) {
 		t.Errorf("types.Event size=%d want %d (#121 full_latency_ns 추가 후 size 정합)", got, want)
 	}
 }
+
+// TestFlowBytesMaxEntries 는 #351 의 flow_bytes max_entries 상향 (1024 → 32768) 을 회귀 가드한다.
+// flow_bytes 는 5-tuple 키라 노드의 모든 flow 가 슬롯을 경쟁하고 userspace FlowGuard allow-list 는
+// scrape 단계에만 있어 BPF 점유를 막지 못해, 1024 에서는 관심 flow 가 노이즈에 밀려 evict 되어
+// counter reset 이 반복됐다. embedded CollectionSpec 을 커널 없이 파싱해 max_entries 를 단정한다.
+// 값이 되돌려지면 본 가드가 깨진다.
+func TestFlowBytesMaxEntries(t *testing.T) {
+	const want = 32768
+	spec, err := LoadNetObs()
+	if err != nil {
+		t.Fatalf("LoadNetObs: %v", err)
+	}
+	m, ok := spec.Maps["flow_bytes"]
+	if !ok {
+		t.Fatal("flow_bytes map spec 부재")
+	}
+	if int(m.MaxEntries) != want {
+		t.Errorf("flow_bytes MaxEntries=%d want %d (#351 상향 회귀)", m.MaxEntries, want)
+	}
+}
