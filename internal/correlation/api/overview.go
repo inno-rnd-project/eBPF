@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"time"
@@ -169,7 +170,7 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 	for i, d := range synthDimensions {
 		healthQueries[i] = d.healthMetric
 	}
-	healthRes := h.queryParallelOptional(evalCtx, healthQueries...)
+	healthRes, healthFailed := h.queryParallelOptional(evalCtx, healthQueries...)
 
 	// 노드 3단 상태. ready / firing alert / 압박을 노드별로 모은 뒤 nodeStatus 로 판정한다.
 	ready := map[string]bool{}
@@ -299,15 +300,24 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 		resp.GPU.Devices += int(sm.Value)
 	}
 
-	// weakest: 차원 health 최솟값 (#248 health 와 동일 판정, 사전순 동률 결정성).
-	for i, d := range synthDimensions {
-		s := healthRes[i]
-		if len(s) == 0 || math.IsNaN(s[0].Value) {
-			continue
-		}
-		v := s[0].Value
-		if resp.Weakest == nil || v < resp.Weakest.Health {
-			resp.Weakest = &WeakestSignal{Dimension: d.name, Health: v, Status: correlation.HealthStatus(v)}
+	// weakest: 차원 health 최솟값 (#248 health 와 동일 판정, 사전순 동률 결정성). weakest 는 전 차원을
+	// 비교해야 최약이 정해지는 판정이라 부분 신뢰가 무의미하다 (#352 리뷰). health 쿼리가 하나라도
+	// 실패하면 (healthFailed > 0) 실패한 차원이 실제 최약일 수 있어, 성공분만으로 오답을 내지 않도록
+	// weakest 전체를 생략한다. 쿼리 실패로 빈 것과 데이터가 원래 없어 빈 것을 queryParallelOptional 의
+	// failed 개수로 구분한다 (genuine empty 는 기존대로 skip 후 성공분 min 이 정확). degrade 는 필수
+	// 경로의 500 과 달리 silent 하므로 사유를 로그로 노출한다.
+	if healthFailed > 0 {
+		log.Printf("overview: weakest signal 생략 (health 쿼리 %d/%d 실패, 부분 신뢰 불가)", healthFailed, len(healthQueries))
+	} else {
+		for i, d := range synthDimensions {
+			s := healthRes[i]
+			if len(s) == 0 || math.IsNaN(s[0].Value) {
+				continue
+			}
+			v := s[0].Value
+			if resp.Weakest == nil || v < resp.Weakest.Health {
+				resp.Weakest = &WeakestSignal{Dimension: d.name, Health: v, Status: correlation.HealthStatus(v)}
+			}
 		}
 	}
 

@@ -605,28 +605,3 @@ func TestListPaginationContract(t *testing.T) {
 	}
 }
 
-// TestOverview_OptionalHealthDegrades 는 #352 리뷰 보완이다. overview 의 부가 신호 (weakest signal 용
-// 차원 health) 쿼리만 실패해도 필수 카운트 카드는 200 으로 뜨고 weakest 만 생략된다 (부분 실패 시
-// 전체 500 이 아닌 degrade). 필수 쿼리 실패는 여전히 500 (TestQueryFailed500Contract 가 커버).
-func TestOverview_OptionalHealthDegrades(t *testing.T) {
-	q := &fakeQuerier{failOn: "health_score"} // cluster:*_health_score:5m 만 실패
-	q.on("kube_node_info", sample(1, "node", "n1")).
-		on("kube_pod_info", sample(1, "namespace", "ns", "pod", "p", "node", "n1")).
-		on("netobs_bpf_program_loaded", sample(26, "node", "n1"))
-	h := NewSynthesisHandler(q, nil, nil)
-	rec := httptest.NewRecorder()
-	h.GetOverview(rec, httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d want 200 (부가 health 실패는 degrade)", rec.Code)
-	}
-	var resp OverviewResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.Weakest != nil {
-		t.Errorf("weakest=%+v want nil (health 쿼리 실패로 생략)", resp.Weakest)
-	}
-	if resp.Nodes.Total != 1 {
-		t.Errorf("nodes.total=%d want 1 (필수 카운트는 정상)", resp.Nodes.Total)
-	}
-}

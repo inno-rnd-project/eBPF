@@ -143,23 +143,36 @@ func (h *SynthesisHandler) queryParallel(ctx context.Context, queries ...string)
 }
 
 // queryParallelOptional 은 best-effort 부가 신호 전용 병렬 조회다 (#352 리뷰). queryParallel 과 달리
-// error 를 전파하지 않고 실패한 query 를 빈 슬라이스로 남긴다. 필수 데이터와 부가 신호를 한 handler
-// 에서 함께 조회하는 endpoint (overview 의 weakest health 등) 가 부가 신호의 부분 실패로 전체 500 이
-// 되지 않도록, 필수는 queryParallel (500 게이트), 부가는 본 함수 (degrade) 로 분리한다.
-func (h *SynthesisHandler) queryParallelOptional(ctx context.Context, queries ...string) [][]correlation.InstantSample {
+// error 를 전파하지 않고 실패한 query 를 빈 슬라이스로 남기며, 대신 실패한 query 개수 (failed) 를
+// 함께 돌려준다. 필수 데이터와 부가 신호를 한 handler 에서 함께 조회하는 endpoint (overview 의
+// weakest health 등) 가 부가 신호의 부분 실패로 전체 500 이 되지 않도록, 필수는 queryParallel
+// (500 게이트), 부가는 본 함수 (degrade) 로 분리한다. failed > 0 는 "쿼리 실패로 빈 것" 과 "데이터가
+// 원래 없어 빈 것" 을 호출부가 구분하게 해, 전 차원 비교가 필요한 판정 (weakest 최약 신호) 이 부분
+// 실패 시 성공분만으로 오답을 내지 않도록 한다.
+func (h *SynthesisHandler) queryParallelOptional(ctx context.Context, queries ...string) ([][]correlation.InstantSample, int) {
 	out := make([][]correlation.InstantSample, len(queries))
+	errs := make([]error, len(queries))
 	var wg sync.WaitGroup
 	for i, q := range queries {
 		wg.Add(1)
 		go func(i int, q string) {
 			defer wg.Done()
-			if s, err := h.querier.Query(ctx, q); err == nil {
-				out[i] = s
+			s, err := h.querier.Query(ctx, q)
+			if err != nil {
+				errs[i] = err
+				return
 			}
+			out[i] = s
 		}(i, q)
 	}
 	wg.Wait()
-	return out
+	failed := 0
+	for _, e := range errs {
+		if e != nil {
+			failed++
+		}
+	}
+	return out, failed
 }
 
 // GetNodes godoc

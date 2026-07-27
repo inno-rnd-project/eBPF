@@ -178,3 +178,54 @@ func TestOverview_IssueScopeAndWatchdog(t *testing.T) {
 		t.Errorf("issues=%+v want %+v (Watchdog 제외, scope 단일 분류)", resp.Issues, want)
 	}
 }
+
+// TestOverview_OptionalHealthDegrades 는 #352 리뷰 보완이다. weakest signal 용 차원 health 쿼리가
+// 전부 실패해도 필수 카운트 카드는 200 으로 뜨고 weakest 만 생략된다 (부분 실패 시 전체 500 이
+// 아닌 degrade). 필수 쿼리 실패는 여전히 500 (TestQueryFailed500Contract 커버).
+func TestOverview_OptionalHealthDegrades(t *testing.T) {
+	q := &fakeQuerier{failOn: "health_score"} // cluster:*_health_score:5m 만 실패
+	q.on("kube_node_info", sample(1, "node", "n1")).
+		on("kube_pod_info", sample(1, "namespace", "ns", "pod", "p", "node", "n1")).
+		on("netobs_bpf_program_loaded", sample(26, "node", "n1"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetOverview(rec, httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 (부가 health 실패는 degrade)", rec.Code)
+	}
+	var resp OverviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Weakest != nil {
+		t.Errorf("weakest=%+v want nil (health 쿼리 실패로 생략)", resp.Weakest)
+	}
+	if resp.Nodes.Total != 1 {
+		t.Errorf("nodes.total=%d want 1 (필수 카운트는 정상)", resp.Nodes.Total)
+	}
+}
+
+// TestOverview_PartialHealthOmitsWeakest 는 #352 재리뷰 보완이다. health 4종 중 gpu 만 실패하고
+// 나머지가 성공하면, 실패한 gpu 가 실제 최약 (0.22) 일 수 있으므로 성공분 (cpu/mem/net) 만으로
+// weakest 오답을 내지 않고 weakest 전체를 생략해야 한다. 부분 신뢰 금지를 부가 경로에도 적용한다.
+func TestOverview_PartialHealthOmitsWeakest(t *testing.T) {
+	q := &fakeQuerier{failOn: "gpu_health_score"} // gpu health 만 실패
+	q.on("kube_node_info", sample(1, "node", "n1")).
+		on("cluster:cpu_health_score", sample(0.9)).
+		on("cluster:memory_health_score", sample(0.95)).
+		on("cluster:network_health_score", sample(0.8))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetOverview(rec, httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp OverviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// gpu 실패 → weakest 는 network 0.8 오답이 아니라 nil 이어야 한다.
+	if resp.Weakest != nil {
+		t.Errorf("weakest=%+v want nil (gpu health 실패로 부분 신뢰 불가, 성공분 min 오답 금지)", resp.Weakest)
+	}
+}
