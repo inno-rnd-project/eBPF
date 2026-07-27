@@ -37,10 +37,9 @@ type Config struct {
 	// 너무 짧으면 timeout 위험이 있어 30s 이상을 권장한다.
 	FetchTimeout time.Duration
 
-	// GrangerLag 는 #69 의 Granger causality 산정에 사용하는 lag order p 다. AIC / BIC 자동 선택은
-	// 본 시리즈 scope 외이며 호출자가 고정 lag 로 운영한다. 본 시리즈의 기본값은 2 이며 한 단계 lag
-	// 의 직접 영향과 두 단계 lag 의 누적 영향까지 잡는다.
-	GrangerLag int
+	// #353 GrangerLag (고정 lag order) 는 제거됐다. Granger 검정은 Pearson 이 선택한 lag
+	// (CorrelationResult.MaxAbsLag) 에서 산정해 lag_seconds 와 pvalue 가 동일 lag 을 가리키게 한다.
+	// 고정 lag 은 Pearson 선택 lag 과 어긋나 인과 유의성이 보고된 lag 을 뒷받침하지 못했다.
 
 	// GrangerMinSamples 는 Granger 산정에서 lag 적용 후 유효 표본 수의 하한이다. 운영 환경의 짧은
 	// window (30m / 30s step = 60 samples) 에서도 OK 결과가 나오도록 Pearson 의 MinSamples 와 분리해
@@ -206,7 +205,6 @@ func DefaultConfig() Config {
 			`avg by(node, src_namespace, src_pod, src_pod_uid) (pod:gpu_util_p95:5m)`,
 		},
 		FetchTimeout:      30 * time.Second,
-		GrangerLag:        2,
 		GrangerMinSamples: 30,
 		CrossNodeEnabled:  true,
 		CrossNodeMaxPairs: 1024,

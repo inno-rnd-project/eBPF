@@ -321,3 +321,119 @@ func TestCorrelator_WeakSuspectGate(t *testing.T) {
 		t.Errorf("유의미한 suspect 인데 results=0 (게이트 과차단)")
 	}
 }
+
+// pseudoNoise 는 lag 구조 검증용 결정적 비주기 시퀀스다 (선형 추세가 없어 lag 별 상관이 갈린다).
+func pseudoNoise(n int) []float64 {
+	out := make([]float64, n)
+	for i := 0; i < n; i++ {
+		out[i] = math.Sin(float64(i)*0.7) + 0.3*math.Sin(float64(i)*1.9)
+	}
+	return out
+}
+
+// valSeries 는 주어진 값 슬라이스로 LabeledSeries 를 만든다 (1s 간격).
+func valSeries(labels map[string]string, metric string, vals []float64) LabeledSeries {
+	s := LabeledSeries{Metric: metric, Series: TimeSeries{Labels: labels, Samples: make([]Sample, len(vals))}}
+	for i, v := range vals {
+		s.Series.Samples[i] = Sample{TimestampMs: int64(i) * 1000, Value: v}
+	}
+	return s
+}
+
+// TestCorrelator_GrangerUsesSelectedLag 는 #353 의 핵심 수정을 검증한다. Granger 검정이 고정
+// GrangerLag 이 아니라 Pearson 이 선택한 lag (MaxAbsLag) 에서 산정되어 lag_seconds 와 pvalue 가
+// 동일 lag 을 가리킨다. (1) src 가 dst 를 1 step 선행하면 MaxAbsLag=1 이고 그 lag 에서 Granger 인과가
+// 잡혀 GrangerOK=true, (2) contemporaneous (MaxAbsLag=0) 이면 granger.Test 가 lag<1 로 빈 결과를 내
+// GrangerOK=false 가 되어 인과 주장이 억제된다 (고정 lag=2 였다면 무관한 lag 에서 OK 가 날 수 있었다).
+func TestCorrelator_GrangerUsesSelectedLag(t *testing.T) {
+	const n = 40
+	src := pseudoNoise(n)
+	// dst[i] = src[i-1] + 미세 noise: src 가 dst 를 1 step 선행 (applyLag 규약상 lag=1 에서 최대 상관).
+	// 완전 일치 (src[i-1]) 는 Granger 의 rssU=0 특이로 not-OK 가 되므로 작은 독립 noise 를 더해 강하지만
+	// 완전하지 않은 예측으로 둔다 (lag=1 최대 상관은 유지).
+	lagged := make([]float64, n)
+	for i := 1; i < n; i++ {
+		lagged[i] = src[i-1] + 0.05*math.Cos(float64(i)*1.3)
+	}
+	fetcher := &mockFetcher{responses: map[string][]LabeledSeries{
+		"metric_a": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, "metric_a", src)},
+		"metric_b": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, "metric_b", lagged)},
+	}}
+	cfg := Config{
+		Window: 40 * time.Second, Step: 1 * time.Second,
+		MinSamples: 10, GrangerMinSamples: 10,
+		LagSteps: []int{-1, 0, 1}, DefaultMetrics: []string{"metric_a", "metric_b"},
+	}
+	results, err := New(fetcher, cfg).Correlate(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("Correlate: %v", err)
+	}
+	// p1(metric_a) → p2(metric_b) 방향 페어에서 MaxAbsLag=1, 그 lag 에서 Granger OK.
+	var found bool
+	for _, r := range results {
+		if r.Pair.SrcPod == "p1" && r.Pair.DstPod == "p2" {
+			found = true
+			if r.MaxAbsLag != 1 {
+				t.Errorf("MaxAbsLag=%d want 1 (src 가 dst 를 1 step 선행)", r.MaxAbsLag)
+			}
+			if !r.GrangerOK {
+				t.Errorf("GrangerOK=false want true (선택 lag 1 에서 인과 유의)")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("p1→p2 페어 없음")
+	}
+
+	// contemporaneous: src=dst 동일 → MaxAbsLag=0 → granger.Test(lag<1) 빈 결과 → GrangerOK=false.
+	fetcher2 := &mockFetcher{responses: map[string][]LabeledSeries{
+		"metric_a": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, "metric_a", src)},
+		"metric_b": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, "metric_b", src)},
+	}}
+	results2, err := New(fetcher2, cfg).Correlate(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("Correlate(contemporaneous): %v", err)
+	}
+	for _, r := range results2 {
+		if r.MaxAbsLag == 0 && r.GrangerOK {
+			t.Errorf("pair %+v: MaxAbsLag=0 인데 GrangerOK=true (lag<1 인과 주장 억제 실패)", r.Pair)
+		}
+	}
+}
+
+// TestCorrelator_CrossNodeGrangerUsesSelectedLag 는 cross-node 페어 (IsCrossNode) 에도 동일한 lag
+// 정합이 적용되는지 검증한다 (#353). contemporaneous node 시계열 페어에서 MaxAbsLag=0 이면
+// GrangerOK=false 여야 한다.
+func TestCorrelator_CrossNodeGrangerUsesSelectedLag(t *testing.T) {
+	const n = 40
+	vals := pseudoNoise(n)
+	srcMetric := "node:cpu_pressure_score:5m"
+	dstMetric := "node:netobs_pod_stage_latency_p99:5m"
+	fetcher := &mockFetcher{responses: map[string][]LabeledSeries{
+		srcMetric: {valSeries(map[string]string{"node": "n1"}, srcMetric, vals)},
+		dstMetric: {valSeries(map[string]string{"node": "n2"}, dstMetric, vals)}, // n1 선행 없음 (동일 시각)
+	}}
+	cfg := Config{
+		Window: 40 * time.Second, Step: 1 * time.Second,
+		MinSamples: 10, GrangerMinSamples: 10,
+		LagSteps: []int{-1, 0, 1}, DefaultMetrics: []string{srcMetric, dstMetric},
+		CrossNodeEnabled: true, CrossNodeMaxPairs: 16,
+	}
+	results, err := New(fetcher, cfg).Correlate(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("Correlate: %v", err)
+	}
+	var crossFound bool
+	for _, r := range results {
+		if !r.IsCrossNode {
+			continue
+		}
+		crossFound = true
+		if r.MaxAbsLag == 0 && r.GrangerOK {
+			t.Errorf("cross-node pair %+v: MaxAbsLag=0 인데 GrangerOK=true (lag 정합 실패)", r.NodePair)
+		}
+	}
+	if !crossFound {
+		t.Fatal("cross-node 결과 없음 (CrossNodeEnabled/페어 enumerate 확인)")
+	}
+}

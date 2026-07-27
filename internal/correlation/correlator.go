@@ -119,11 +119,15 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 		r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
 		r.Pair = p.Key
 		// #69 Granger causality 산정. src 의 과거 값이 dst 의 현재 값을 예측하는 데 통계적으로 유의한
-		// 추가 정보를 제공하는지의 F-statistic 과 p-value 를 추가 첨부한다. 표본 부족 또는 행렬
-		// singular 케이스는 GrangerOK=false 로 자연 skip 된다.
+		// 추가 정보를 제공하는지의 F-statistic 과 p-value 를 추가 첨부한다. #353 Pearson 이 선택한 lag
+		// (r.MaxAbsLag) 을 그대로 쓴다: lag_seconds (Pearson 선택 lag) 와 pvalue (Granger) 가 동일 lag 을
+		// 가리켜 "suspect 가 victim 을 N 초 선행하며 그 인과가 유의하다" 가 한 lag 구조로 정합한다.
+		// MaxAbsLag < 1 (contemporaneous 또는 victim 선행) 이면 granger.Test 가 빈 Result 를 돌려
+		// GrangerOK=false 가 되어 인과 주장을 억제한다 (collector 가 GrangerOK 일 때만 pvalue emit).
+		// 표본 부족 또는 행렬 singular 케이스도 GrangerOK=false 로 자연 skip 된다.
 		srcVals := getValues(p.Src)
 		dstVals := getValues(p.Dst)
-		g := granger.Test(srcVals, dstVals, c.config.GrangerLag, c.config.GrangerMinSamples)
+		g := granger.Test(srcVals, dstVals, r.MaxAbsLag, c.config.GrangerMinSamples)
 		r.FStatistic = g.F
 		r.PValue = g.PValue
 		r.GrangerOK = g.OK
@@ -174,7 +178,7 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 			r.IsCrossNode = true
 			srcVals := getValues(p.Src)
 			dstVals := getValues(p.Dst)
-			g := granger.Test(srcVals, dstVals, c.config.GrangerLag, c.config.GrangerMinSamples)
+			g := granger.Test(srcVals, dstVals, r.MaxAbsLag, c.config.GrangerMinSamples)
 			r.FStatistic = g.F
 			r.PValue = g.PValue
 			r.GrangerOK = g.OK
@@ -201,7 +205,7 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 			r.IsServiceImpact = true
 			srcVals := getValues(p.Src)
 			dstVals := getValues(p.Dst)
-			g := granger.Test(srcVals, dstVals, c.config.GrangerLag, c.config.GrangerMinSamples)
+			g := granger.Test(srcVals, dstVals, r.MaxAbsLag, c.config.GrangerMinSamples)
 			r.FStatistic = g.F
 			r.PValue = g.PValue
 			r.GrangerOK = g.OK
@@ -228,7 +232,7 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 			r.IsCrossLevel = true
 			srcVals := getValues(p.Src)
 			dstVals := getValues(p.Dst)
-			g := granger.Test(srcVals, dstVals, c.config.GrangerLag, c.config.GrangerMinSamples)
+			g := granger.Test(srcVals, dstVals, r.MaxAbsLag, c.config.GrangerMinSamples)
 			r.FStatistic = g.F
 			r.PValue = g.PValue
 			r.GrangerOK = g.OK
