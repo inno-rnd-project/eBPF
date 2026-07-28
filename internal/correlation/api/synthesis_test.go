@@ -322,6 +322,59 @@ func TestSynthesis_GetHealth_MemoryDoesNotStealDominant(t *testing.T) {
 	}
 }
 
+// TestSynthesis_GetHealth_DominantTieBreakScaleNeutral 은 #359 리뷰의 동률 tie-break 정합을 검증한다.
+// memory usage 0.87 과 cpu throttle 0.45 는 둘 다 elevated 동률이지만, raw 값 tie-break 이면 memory 가
+// 0.87 > 0.45 로 dominant 를 선점한다. severityProgress (자기 임계 대비 상대 위치) tie-break 로는
+// cpu (0.45/0.4 = 1.125) 가 memory (0.87/0.85 = 1.024) 보다 커 dominant 가 cpu 에 귀속돼야 한다.
+func TestSynthesis_GetHealth_DominantTieBreakScaleNeutral(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("node:cpu_pressure_score", sample(0.45, "node", "worker2")).
+		on("node:memory_pressure_score", sample(0.87, "node", "worker2"))
+	rec := httptest.NewRecorder()
+	NewSynthesisHandler(q, nil, nil).GetHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	var resp HealthResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// 둘 다 elevated 동률임을 먼저 확인해 tie-break 경로가 실제로 자극되는지 보장한다.
+	if resp.Dimensions["cpu"].Hotspot == nil || resp.Dimensions["cpu"].Hotspot.Severity != "elevated" {
+		t.Fatalf("cpu hotspot=%+v want severity elevated", resp.Dimensions["cpu"].Hotspot)
+	}
+	if resp.Dimensions["memory"].Hotspot == nil || resp.Dimensions["memory"].Hotspot.Severity != "elevated" {
+		t.Fatalf("memory hotspot=%+v want severity elevated", resp.Dimensions["memory"].Hotspot)
+	}
+	if resp.DominantPressure == nil || resp.DominantPressure.Dimension != "cpu" {
+		t.Errorf("dominant=%+v want cpu (동률 elevated 에서 척도 중립 tie-break 으로 cpu 귀속)", resp.DominantPressure)
+	}
+}
+
+// TestSynthesis_GetPressure_MemoryScaleByScope 은 #359 리뷰의 /pressure scope 별 memory 척도를 검증한다.
+// scope=node 는 node:memory_pressure_score (실측 사용률) 라 usage 임계로 60% 가 low 여야 /health · /node
+// 와 정합하고, scope=pod 는 pod:memory_pressure_score (OOM 근접도) 라 일반 임계로 60% 가 elevated 를
+// 유지해야 한다.
+func TestSynthesis_GetPressure_MemoryScaleByScope(t *testing.T) {
+	t.Run("node-usage-scale", func(t *testing.T) {
+		q := (&fakeQuerier{}).on("node:memory_pressure_score", sample(0.60, "node", "worker2"))
+		rec := httptest.NewRecorder()
+		NewSynthesisHandler(q, nil, nil).GetPressure(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pressure?dimension=memory&scope=node&limit=10", nil))
+		var resp PressureResponse
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		if len(resp.Ranking) != 1 || resp.Ranking[0].Severity != "low" {
+			t.Errorf("ranking=%+v want severity low (usage 60%% < 0.85)", resp.Ranking)
+		}
+	})
+	t.Run("pod-oom-scale", func(t *testing.T) {
+		q := (&fakeQuerier{}).on("pod:memory_pressure_score", sample(0.60, "node", "worker2", "src_namespace", "ns", "src_pod", "p"))
+		rec := httptest.NewRecorder()
+		NewSynthesisHandler(q, nil, nil).GetPressure(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pressure?dimension=memory&scope=pod&limit=10", nil))
+		var resp PressureResponse
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		if len(resp.Ranking) != 1 || resp.Ranking[0].Severity != "elevated" {
+			t.Errorf("ranking=%+v want severity elevated (OOM 근접도는 일반 임계 유지)", resp.Ranking)
+		}
+	})
+}
+
 // TestSynthesis_GetNode_WorstOfHealthAndAlert 는 #324 의 gpu 노드 실측 사례 재현이다. dominant
 // pressure 가 낮아도 (ok) health.gpu 0.0 과 firing alert 가 있으면 worst-of 합성으로 status 가
 // degraded (basis=health) 가 되어, node-map 의 warning 판정과 모순되지 않는다.

@@ -270,15 +270,36 @@ func pressureSeverityRank(sev string) int {
 	}
 }
 
-// moreDominant 는 두 hotspot 을 severity 우선, 동급이면 raw pressure 로 비교한다. memory hotspot 의
-// severity 가 이미 usage 임계로 환산돼 있어 (#359), 60% 사용 중인 memory (low) 가 throttle 기반
-// cpu (elevated) 를 raw 값만으로 눌러 dominant 를 차지하던 문제를 막는다.
-func moreDominant(a, b *Hotspot) bool {
+// severityElevatedThreshold 는 차원이 elevated 로 진입하는 임계다. memory 는 실측 사용률이라 usage
+// 임계 (0.85), 그 외는 문제 신호 기반이라 일반 임계 (0.4) 다.
+func severityElevatedThreshold(dim string) float64 {
+	if dim == "memory" {
+		return correlation.NodeUsageWarnThreshold
+	}
+	return correlation.PressureElevatedThreshold
+}
+
+// severityProgress 는 pressure 를 차원의 elevated 임계로 정규화한 상대 위치다. severity 동률일 때
+// 척도가 다른 차원 (memory usage vs cpu / network / gpu 문제 score) 을 raw 값으로 직접 비교하지 않고,
+// 각자 자기 임계 대비 얼마나 진행했는지로 비교해 척도 중립적으로 dominant 를 고른다 (#359 리뷰).
+func severityProgress(dim string, v float64) float64 {
+	t := severityElevatedThreshold(dim)
+	if t == 0 {
+		return v
+	}
+	return v / t
+}
+
+// moreDominant 는 두 hotspot 을 severity 우선, 동급이면 severityProgress (자기 임계 대비 상대 위치) 로
+// 비교한다. severity 환산 (#359) 이 tier 는 정합시켰지만 동률 구간의 raw pressure tie-break 에는 여전히
+// 척도 불일치가 남아 (memory usage 0.87 이 cpu throttle 0.45 를 raw 값만으로 누름), tie-break 도
+// 척도 중립 정규화로 바꿔 memory 사용률이 문제 신호 기반 차원을 부당히 선점하지 못하게 한다 (#359 리뷰).
+func moreDominant(aDim string, a *Hotspot, bDim string, b *Hotspot) bool {
 	ra, rb := pressureSeverityRank(a.Severity), pressureSeverityRank(b.Severity)
 	if ra != rb {
 		return ra > rb
 	}
-	return a.Pressure > b.Pressure
+	return severityProgress(aDim, a.Pressure) > severityProgress(bDim, b.Pressure)
 }
 
 // pressureStatusLabel 은 pressure severity 를 health status 어휘 (ok/warn/degraded) 로 환산해 node
@@ -428,12 +449,15 @@ func (h *SynthesisHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 
 	var dominant *DominantPressure
 	var domHotspot *Hotspot
+	var domDim string
 	for _, res := range results {
 		resp.Dimensions[res.name] = res.dh
-		// dominant 는 severity 우선, 동급이면 raw pressure 로 고른다 (#359). 차원 인지된 hotspot
-		// severity (memory 는 usage 임계 환산) 를 써 raw 사용률 큰 memory 의 부당한 dominant 선점을 막는다.
-		if res.hotspot != nil && (domHotspot == nil || moreDominant(res.hotspot, domHotspot)) {
+		// dominant 는 severity 우선, 동급이면 severityProgress (자기 임계 대비 상대 위치) 로 고른다
+		// (#359). 차원 인지 severity 와 척도 중립 tie-break 로 raw 사용률 큰 memory 의 부당한 dominant
+		// 선점을 tier·동률 양쪽에서 막는다.
+		if res.hotspot != nil && (domHotspot == nil || moreDominant(res.name, res.hotspot, domDim, domHotspot)) {
 			domHotspot = res.hotspot
+			domDim = res.name
 			dominant = &DominantPressure{Dimension: res.name, Node: res.hotspot.Node, Pod: res.hotspot.TopPod, Pressure: res.hotspot.Pressure}
 		}
 		if res.anomaly != nil {
@@ -586,7 +610,14 @@ func (h *SynthesisHandler) GetPressure(w http.ResponseWriter, r *http.Request) {
 			resp.Truncated = true
 		}
 		for i, s := range samples {
-			e := PressureEntry{Rank: i + 1, Node: s.Labels["node"], Pressure: s.Value, Severity: correlation.PressureSeverity(s.Value)}
+			// scope=node memory 는 /health · /node 와 같은 node:memory_pressure_score (실측 사용률) 라
+			// usage 임계로 환산해 정합시킨다 (#359 리뷰). scope=pod memory 는 pod:memory_pressure_score
+			// (working_set 대비 limit 비율 = OOM 근접도) 라 usage 임계가 무의미해 일반 임계를 유지한다.
+			sev := correlation.PressureSeverity(s.Value)
+			if d.name == "memory" && scope == "node" {
+				sev = pressureSeverityFor(d.name, s.Value)
+			}
+			e := PressureEntry{Rank: i + 1, Node: s.Labels["node"], Pressure: s.Value, Severity: sev}
 			if scope == "pod" {
 				e.Pod = podLabel(s.Labels)
 			}
