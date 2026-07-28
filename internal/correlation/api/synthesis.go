@@ -233,6 +233,54 @@ func lookupDimension(name string) (synthDimension, bool) {
 	return synthDimension{}, false
 }
 
+// pressureSeverityFor 는 차원별 hotspot severity 를 low / elevated / high 어휘로 돌려준다. memory 의
+// node pressure 는 node_exporter 실측 사용률 (0~1) 이라 일반 임계 (0.4/0.7) 로는 정상 상주 사용률이
+// elevated 로 과민 판정되어 /node 의 nodePressureGrade (usage 임계 0.85/0.95, #340) 와 어긋난다.
+// memory 만 usage 임계로 환산해 /health 와 /node 가 같은 노드에 동일 등급을 내게 하고, 문제 신호 기반
+// score 인 cpu (throttle) · network (drop/retrans) · gpu (host_compute_stall) 는 일반 PressureSeverity
+// 를 유지한다 (#359). 어휘 (low/elevated/high) 는 그대로라 Hotspot.Severity 스키마는 바뀌지 않는다.
+func pressureSeverityFor(dim string, v float64) string {
+	if dim != "memory" {
+		return correlation.PressureSeverity(v)
+	}
+	switch {
+	case math.IsNaN(v):
+		return "unknown"
+	case v >= correlation.NodeUsageDegradedThreshold:
+		return "high"
+	case v >= correlation.NodeUsageWarnThreshold:
+		return "elevated"
+	default:
+		return "low"
+	}
+}
+
+// pressureSeverityRank 는 hotspot severity 어휘의 심각도 순위다. dominant 비교에서 차원 간 raw pressure
+// 척도 차이 (memory 사용률 vs cpu/gpu/network 문제 score) 를 넘어 severity 우선으로 정렬하는 데 쓴다.
+func pressureSeverityRank(sev string) int {
+	switch sev {
+	case "high":
+		return 3
+	case "elevated":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// moreDominant 는 두 hotspot 을 severity 우선, 동급이면 raw pressure 로 비교한다. memory hotspot 의
+// severity 가 이미 usage 임계로 환산돼 있어 (#359), 60% 사용 중인 memory (low) 가 throttle 기반
+// cpu (elevated) 를 raw 값만으로 눌러 dominant 를 차지하던 문제를 막는다.
+func moreDominant(a, b *Hotspot) bool {
+	ra, rb := pressureSeverityRank(a.Severity), pressureSeverityRank(b.Severity)
+	if ra != rb {
+		return ra > rb
+	}
+	return a.Pressure > b.Pressure
+}
+
 // pressureStatusLabel 은 pressure severity 를 health status 어휘 (ok/warn/degraded) 로 환산해 node
 // 응답이 health 와 동일 status 어휘를 쓰게 한다.
 func pressureStatusLabel(p float64) string {
@@ -379,9 +427,13 @@ func (h *SynthesisHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 
 	var dominant *DominantPressure
+	var domHotspot *Hotspot
 	for _, res := range results {
 		resp.Dimensions[res.name] = res.dh
-		if res.hotspot != nil && (dominant == nil || res.hotspot.Pressure > dominant.Pressure) {
+		// dominant 는 severity 우선, 동급이면 raw pressure 로 고른다 (#359). 차원 인지된 hotspot
+		// severity (memory 는 usage 임계 환산) 를 써 raw 사용률 큰 memory 의 부당한 dominant 선점을 막는다.
+		if res.hotspot != nil && (domHotspot == nil || moreDominant(res.hotspot, domHotspot)) {
+			domHotspot = res.hotspot
 			dominant = &DominantPressure{Dimension: res.name, Node: res.hotspot.Node, Pod: res.hotspot.TopPod, Pressure: res.hotspot.Pressure}
 		}
 		if res.anomaly != nil {
@@ -409,7 +461,7 @@ func (h *SynthesisHandler) hotspot(ctx context.Context, d synthDimension) *Hotsp
 	}
 	node := s[0].Labels["node"]
 	press := s[0].Value
-	hs := &Hotspot{Node: node, Pressure: press, Severity: correlation.PressureSeverity(press)}
+	hs := &Hotspot{Node: node, Pressure: press, Severity: pressureSeverityFor(d.name, press)}
 	if node != "" {
 		if ps, err := h.querier.Query(ctx, fmt.Sprintf("topk(1, %s{node=%q})", d.podPressure, node)); err == nil && len(ps) > 0 {
 			hs.TopPod = podLabel(ps[0].Labels)

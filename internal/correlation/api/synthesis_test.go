@@ -255,6 +255,73 @@ func TestSynthesis_GetNode_MemoryPressureUsageScale(t *testing.T) {
 	}
 }
 
+// TestSynthesis_GetHealth_MemoryHotspotUsageScale 은 #359 회귀 가드다. /health 의 memory hotspot
+// severity 가 usage 임계 (0.85/0.95) 로 환산돼, 같은 노드·같은 값에 대해 /node 의 memory 등급과 동일
+// tier 를 내는지 검증한다. Hotspot.Severity 어휘 (low/elevated/high) 와 node status 어휘
+// (ok/warn/degraded) 는 다르므로 tier 대응 (low↔ok, elevated↔warn, high↔degraded) 으로 대조한다.
+// 일반 임계 (0.4) 를 쓰던 기존 코드에서는 memory 0.60 이 elevated 로 떠 /node 의 ok 와 어긋났다.
+func TestSynthesis_GetHealth_MemoryHotspotUsageScale(t *testing.T) {
+	cases := []struct {
+		name         string
+		memory       float64
+		wantSeverity string // /health hotspot
+		wantNodeTier string // /node memory 등급
+	}{
+		{"memory-60pct-low", 0.60, "low", "ok"},
+		{"memory-88pct-elevated", 0.88, "elevated", "warn"},
+		{"memory-97pct-high", 0.97, "high", "degraded"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// /health: memory 차원 hotspot severity.
+			qh := (&fakeQuerier{}).on("node:memory_pressure_score", sample(tc.memory, "node", "worker2"))
+			recH := httptest.NewRecorder()
+			NewSynthesisHandler(qh, nil, nil).GetHealth(recH, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+			var health HealthResponse
+			if err := json.Unmarshal(recH.Body.Bytes(), &health); err != nil {
+				t.Fatalf("health decode: %v", err)
+			}
+			hs := health.Dimensions["memory"].Hotspot
+			if hs == nil || hs.Severity != tc.wantSeverity {
+				t.Fatalf("/health memory hotspot=%+v want severity %q (memory %.2f)", hs, tc.wantSeverity, tc.memory)
+			}
+
+			// /node: 같은 memory 값의 등급. cpu·health·alert 미설정이라 status 는 memory pressure 등급.
+			qn := (&fakeQuerier{}).on("node:memory_pressure_score", sample(tc.memory, "node", "worker2"))
+			recN := httptest.NewRecorder()
+			NewSynthesisHandler(qn, nil, nil).GetNode(recN, httptest.NewRequest(http.MethodGet, "/api/v1/node/worker2", nil))
+			var node NodeResponse
+			if err := json.Unmarshal(recN.Body.Bytes(), &node); err != nil {
+				t.Fatalf("node decode: %v", err)
+			}
+			if node.Status != tc.wantNodeTier {
+				t.Fatalf("/node status=%q want %q (memory %.2f)", node.Status, tc.wantNodeTier, tc.memory)
+			}
+		})
+	}
+}
+
+// TestSynthesis_GetHealth_MemoryDoesNotStealDominant 은 #359 의 dominant 정합을 검증한다. 60% 사용
+// 중인 memory (usage 임계로 low) 가 raw 값 (0.60) 만으로 throttle 기반 cpu (0.45, elevated) 를 눌러
+// DominantPressure 를 차지하던 문제가, severity 우선 비교로 cpu 에 귀속되는지 확인한다.
+func TestSynthesis_GetHealth_MemoryDoesNotStealDominant(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("node:cpu_pressure_score", sample(0.45, "node", "worker2")).
+		on("node:memory_pressure_score", sample(0.60, "node", "worker2"))
+	rec := httptest.NewRecorder()
+	NewSynthesisHandler(q, nil, nil).GetHealth(rec, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	var resp HealthResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Dimensions["memory"].Hotspot == nil || resp.Dimensions["memory"].Hotspot.Severity != "low" {
+		t.Errorf("memory hotspot=%+v want severity low", resp.Dimensions["memory"].Hotspot)
+	}
+	if resp.DominantPressure == nil || resp.DominantPressure.Dimension != "cpu" {
+		t.Errorf("dominant=%+v want cpu (memory low 가 cpu elevated 를 누르면 안 됨)", resp.DominantPressure)
+	}
+}
+
 // TestSynthesis_GetNode_WorstOfHealthAndAlert 는 #324 의 gpu 노드 실측 사례 재현이다. dominant
 // pressure 가 낮아도 (ok) health.gpu 0.0 과 firing alert 가 있으면 worst-of 합성으로 status 가
 // degraded (basis=health) 가 되어, node-map 의 warning 판정과 모순되지 않는다.
