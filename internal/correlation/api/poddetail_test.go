@@ -174,3 +174,53 @@ func TestPodDetail_NoLimitCpuCores(t *testing.T) {
 		t.Errorf("limit_cores=%v want 생략", resp.Cpu.LimitCores)
 	}
 }
+
+// TestPodDetail_LimitlessDimensions 는 #378 회귀 가드다. cpu·memory limit 이 없어 두 pressure score 와
+// limit 대비 percent 를 산출할 수 없는 pod 는 health 에 network 만 담기고 cpu·memory 는 생략된다.
+// node/pods 의 partial severity 와 규약을 통일하기 위해, "정상이라 생략" 이 아니라 "limit 없어 측정
+// 불가" 임을 summary 에 명시한다. 이로써 node/pods (severity=partial) 와 pod-detail (health 생략 +
+// summary 사유) 가 같은 pod 를 정합하게 표현한다.
+func TestPodDetail_LimitlessDimensions(t *testing.T) {
+	q := (&fakeQuerier{}).
+		// percent 나눗셈 조각을 먼저 등록해 limit 없는 pod 의 cpu·memory percent 를 빈 결과로 만든다.
+		on("/ sum(kube_pod_container_resource_limits").
+		on("kube_pod_info", sample(1, "namespace", "mon", "pod", "prometheus-0", "uid", "u-9", "node", "n1", "pod_ip", "10.0.0.9")).
+		on("pod:network_pressure_score:5m", sample(0.0002, "src_namespace", "mon", "src_pod", "prometheus-0")).
+		on("sum(container_memory_working_set_bytes", sample(5e8)).
+		on("container_cpu_usage_seconds_total", sample(0.3))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetPodDetail(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pod/mon/prometheus-0", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp PodDetailResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// health 는 network 만 담기고 cpu·memory 는 생략된다.
+	if v, ok := resp.Health["network"]; !ok || v < 0.999 || v > 1.0 {
+		t.Errorf("health network=%v want ~0.9998 (1-0.0002)", resp.Health)
+	}
+	if _, ok := resp.Health["cpu"]; ok {
+		t.Errorf("health cpu 존재 want 생략 (limit 없어 score 미산출)")
+	}
+	if _, ok := resp.Health["memory"]; ok {
+		t.Errorf("health memory 존재 want 생략 (limit 없어 score 미산출)")
+	}
+	// percent 는 limit 없어 생략, 절대량 (cores) 은 존재.
+	if resp.Vitals.CPUPercent != nil || resp.Vitals.MemoryPercent != nil {
+		t.Errorf("percent=%+v want 생략 (limit 없음)", resp.Vitals)
+	}
+	// #378 node/pods 와 동일한 additive 구조 필드로 측정 불가 차원을 노출한다 (두 API 대칭).
+	if len(resp.UnmeasuredDimensions) != 2 || resp.UnmeasuredDimensions[0] != "cpu" || resp.UnmeasuredDimensions[1] != "memory" {
+		t.Errorf("unmeasured_dimensions=%v want [cpu memory]", resp.UnmeasuredDimensions)
+	}
+	// summary 가 limit 없어 측정 불가한 차원을 명시해 node/pods 의 결측 차원 노출과 정합.
+	if !strings.Contains(resp.Summary, "limit 없어 pressure 측정 불가") {
+		t.Errorf("summary=%q want cpu·memory 측정 불가 사유", resp.Summary)
+	}
+	if !strings.Contains(resp.Summary, "cpu") || !strings.Contains(resp.Summary, "memory") {
+		t.Errorf("summary=%q want cpu·memory 차원 명시", resp.Summary)
+	}
+}

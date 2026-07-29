@@ -29,11 +29,15 @@ type PodDetailResponse struct {
 	CreatedByName string `json:"created_by_name,omitempty"`
 	// Health 는 차원별 health (0-1, 1 이 healthy) 다. pod 단위 pressure score rule 의 1 - score
 	// 환산이며, score 미산출 차원은 엔트리가 생략된다.
-	Health  map[string]float64 `json:"health"`
-	Vitals  PodVitals          `json:"vitals"`
-	Cpu     PodCpuDetail       `json:"cpu"`
-	Network PodNetworkDetail   `json:"network"`
-	Summary string             `json:"summary"`
+	Health map[string]float64 `json:"health"`
+	// UnmeasuredDimensions 는 limit 이 없어 pressure score 를 산출할 수 없는 차원 (cpu / memory) 목록이다
+	// (#378). health 엔트리 생략이 "정상이라 생략" 인지 "측정 불가라 생략" 인지 구분한다. node/pods 의
+	// 동일 필드와 대칭이라 두 API 가 결측 차원을 같은 구조로 노출한다.
+	UnmeasuredDimensions []string         `json:"unmeasured_dimensions,omitempty"`
+	Vitals               PodVitals        `json:"vitals"`
+	Cpu                  PodCpuDetail     `json:"cpu"`
+	Network              PodNetworkDetail `json:"network"`
+	Summary              string           `json:"summary"`
 }
 
 // PodVitals 는 사용률 스냅샷이다. CPU 와 memory 퍼센트는 limit 대비 비율이라 limit 미설정 pod 는
@@ -199,6 +203,12 @@ func (h *SynthesisHandler) GetPodDetail(w http.ResponseWriter, r *http.Request) 
 	resp.Network.DropPerSec = firstValue(res[13])
 	resp.Network.MaxSrttSeconds = firstValue(res[14])
 	resp.Vitals.CPUUsageCores = firstValue(res[15])
+	// #378 limit 이 없어 pressure score 를 산출할 수 없는 차원을 node/pods 와 동일 구조로 노출한다.
+	// Vitals percent 는 limit 분모라 nil 이면 해당 차원 limit 이 없다는 뜻으로, node/pods 의 cpuLimit /
+	// memLimit 판정과 같은 근거다. pod 미관측 (Node 부재) 이면 판정이 무의미해 생략한다.
+	if resp.Node != "" {
+		resp.UnmeasuredDimensions = limitlessDimensions(resp.Vitals.CPUPercent != nil, resp.Vitals.MemoryPercent != nil)
+	}
 
 	resp.Summary = buildPodDetailSummary(resp)
 	apicommon.WriteJSON(w, resp)
@@ -215,6 +225,12 @@ func buildPodDetailSummary(r PodDetailResponse) string {
 		if v, ok := r.Health[dim]; ok {
 			seg += fmt.Sprintf(", %s health %.2f", dim, v)
 		}
+	}
+	// #378 limit 이 없어 pressure score 를 산출할 수 없는 차원을 summary 에도 명시한다. 구조 필드
+	// unmeasured_dimensions 를 그대로 읽어 health 엔트리 생략이 "정상이라 생략" 이 아니라 "측정 불가라
+	// 생략" 임을 사람이 읽는 요약에서도 드러낸다.
+	if len(r.UnmeasuredDimensions) > 0 {
+		seg += fmt.Sprintf(", %s limit 없어 pressure 측정 불가", strings.Join(r.UnmeasuredDimensions, "·"))
 	}
 	if r.Cpu.ThrottledRatio != nil {
 		seg += fmt.Sprintf(", throttle %.0f%%", *r.Cpu.ThrottledRatio*100)

@@ -139,3 +139,69 @@ func TestNodePods_InvalidPath(t *testing.T) {
 		t.Errorf("거부 후 쿼리 실행됨: %v", q.queries)
 	}
 }
+
+// TestNodePods_LimitlessUnmeasuredDimensions 는 #378 회귀 가드다. severity 는 low/elevated/high 3값을
+// 유지하고, cpu·memory limit 이 없어 pressure score 를 산출할 수 없는 차원은 unmeasured_dimensions 로
+// 노출한다. netlow (network 만 low, limit 없음) 는 severity=low + unmeasured=[cpu,memory] 로 정상 단정을
+// 회피하고, full (전 차원 low, limit 있음) 은 severity=low + unmeasured 생략, netelev (limit 없음,
+// network elevated) 는 severity=elevated 로 실제 압박을 그대로 노출하면서 unmeasured=[cpu,memory] 를 함께 둔다.
+func TestNodePods_LimitlessUnmeasuredDimensions(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("kube_pod_info",
+			sample(1, "namespace", "ns1", "pod", "netlow", "uid", "u-1", "node", "n1", "pod_ip", "10.0.0.1", "host_ip", "192.168.1.10"),
+			sample(1, "namespace", "ns1", "pod", "full", "uid", "u-2", "node", "n1", "pod_ip", "10.0.0.2", "host_ip", "192.168.1.10"),
+			sample(1, "namespace", "ns1", "pod", "netelev", "uid", "u-3", "node", "n1", "pod_ip", "10.0.0.3", "host_ip", "192.168.1.10")).
+		on("kube_pod_status_phase",
+			sample(1, "uid", "u-1", "phase", "Running"),
+			sample(1, "uid", "u-2", "phase", "Running"),
+			sample(1, "uid", "u-3", "phase", "Running")).
+		on("rate(container_cpu_usage_seconds_total",
+			sample(0.05, "namespace", "ns1", "pod", "netlow"),
+			sample(0.05, "namespace", "ns1", "pod", "full"),
+			sample(0.05, "namespace", "ns1", "pod", "netelev")).
+		on("container_memory_working_set_bytes",
+			sample(5e7, "namespace", "ns1", "pod", "netlow"),
+			sample(5e7, "namespace", "ns1", "pod", "full"),
+			sample(5e7, "namespace", "ns1", "pod", "netelev")).
+		// limit 은 full pod 만 보유한다.
+		on(`resource="cpu"`, sample(2, "namespace", "ns1", "pod", "full")).
+		on(`resource="memory"`, sample(4e8, "namespace", "ns1", "pod", "full")).
+		on("netobs_pod_bytes_total",
+			sample(64, "src_namespace", "ns1", "src_pod", "netlow"),
+			sample(64, "src_namespace", "ns1", "src_pod", "full"),
+			sample(64, "src_namespace", "ns1", "src_pod", "netelev")).
+		on("pod:cpu_throttle_score:5m", sample(0.0001, "src_namespace", "ns1", "src_pod", "full")).
+		on("pod:memory_pressure_score:5m", sample(0.0001, "src_namespace", "ns1", "src_pod", "full")).
+		on("pod:network_pressure_score:5m",
+			sample(0.0001, "src_namespace", "ns1", "src_pod", "netlow"),
+			sample(0.0001, "src_namespace", "ns1", "src_pod", "full"),
+			sample(0.5, "src_namespace", "ns1", "src_pod", "netelev")).
+		on("netobs_bpf_program_loaded", sample(26, "node", "n1"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodePods(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/n1/pods", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp NodePodsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byPod := map[string]NodePodUsage{}
+	for _, p := range resp.Pods {
+		byPod[p.Pod] = p
+	}
+	// netlow: severity=low 유지 (3값 계약 불변) + unmeasured=[cpu,memory] 로 network 단독 low 임을 노출.
+	if netlow := byPod["netlow"]; netlow.Severity != "low" ||
+		len(netlow.UnmeasuredDimensions) != 2 || netlow.UnmeasuredDimensions[0] != "cpu" || netlow.UnmeasuredDimensions[1] != "memory" {
+		t.Errorf("netlow=%+v want severity=low, unmeasured=[cpu memory]", netlow)
+	}
+	// full: 전 차원 측정·low + limit 존재 → severity=low, unmeasured 생략.
+	if full := byPod["full"]; full.Severity != "low" || len(full.UnmeasuredDimensions) != 0 {
+		t.Errorf("full=%+v want severity=low, unmeasured 생략", full)
+	}
+	// netelev: network elevated 는 실제 압박이라 severity=elevated 로 노출하되 unmeasured 는 사실대로 병기.
+	if netelev := byPod["netelev"]; netelev.Severity != "elevated" || len(netelev.UnmeasuredDimensions) != 2 {
+		t.Errorf("netelev=%+v want severity=elevated, unmeasured=[cpu memory]", netelev)
+	}
+}
