@@ -1,0 +1,129 @@
+# netobs-stage-latency-alert.test.yaml 은 #362 의 dead alert 수정 회귀 검증이다.
+# netobs_stage_latency_labeled_seconds 의 버킷은 ExponentialBuckets(1e-6, 2, 20) 이라 최상위 finite
+# 경계가 0.524288s 이고, histogram_quantile 은 이 경계를 넘는 값을 낼 수 없다. 따라서 기존 임계 1.0s 는
+# 어떤 부하에서도 도달 불가한 dead alert 였다. 수정 임계 0.4s 는 최상위 finite 버킷 [0.262144, 0.524288]
+# 안이라 도달 가능하다. 또 alert 는 stage!~"to_veth|ack_wait|rcv_app|connect" 로 구조적 고값 stage
+# (전송 간격·지연 ACK 타이머·app pickup 대기·핸드셰이크 RTT) 를 제외해 로컬 처리 병목만 대상으로 한다.
+# rule_files 는 make test-prometheus-rules 가 추출해 마운트하는 gpuobs.yaml.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # 고부하(처리 stage): 처리 stage(to_devq) latency 가 천장(0.524288s) 을 넘겨 +Inf 버킷에 쌓이는
+  # 포화 시나리오. histogram_quantile 은 최상위 finite 경계 0.524288s 로 캡한다. 이 최대값에서도 구
+  # 임계 1.0 은 미발화(dead), 신 임계 0.4 는 발화함을 단정하고 배포 rule 을 end-to-end 로 검증한다.
+  - interval: 30s
+    input_series:
+      - series: 'netobs_stage_latency_labeled_seconds_bucket{le="0.524288",stage="to_devq",src_workload="w1",src_namespace="ns1",node="n1"}'
+        values: '0+0x40'
+      - series: 'netobs_stage_latency_labeled_seconds_bucket{le="+Inf",stage="to_devq",src_workload="w1",src_namespace="ns1",node="n1"}'
+        values: '0+150x40'
+      - series: 'netobs_stage_latency_labeled_seconds_count{stage="to_devq",src_workload="w1",src_namespace="ns1",node="n1"}'
+        values: '0+150x40'
+    # 배포된 NetObsHighStageLatencyP99 rule 이 처리 stage 에서 신 임계로 실제 발화하는지 검증한다.
+    # 임계를 1.0 으로 되돌리면 본 단정이 깨져 회귀를 막는다.
+    alert_rule_test:
+      - alertname: NetObsHighStageLatencyP99
+        eval_time: 12m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: netobs
+              stage: to_devq
+              src_workload: w1
+              src_namespace: ns1
+              node: n1
+            exp_annotations:
+              summary: "netobs stage latency p99 over 0.4s (node=n1 workload=ns1/w1 stage=to_devq)"
+              description: "stage to_devq latency p99 of workload ns1/w1 on node n1 is 524.3ms over the last 5 minutes."
+    promql_expr_test:
+      # p99 는 최상위 finite 경계 0.524288s 에서 캡된다 (천장 초과분은 관측 불가).
+      - expr: |
+          histogram_quantile(0.99,
+            sum by (le, stage, src_workload, src_namespace, node) (
+              rate(netobs_stage_latency_labeled_seconds_bucket{stage!~"to_veth|ack_wait|rcv_app|connect"}[5m])
+            )
+          )
+        eval_time: 10m
+        exp_samples:
+          - labels: '{stage="to_devq", src_workload="w1", src_namespace="ns1", node="n1"}'
+            value: 0.524288
+      # 구 임계 1.0: 도달 가능한 최대 p99 에서도 미발화 → 결과 empty (dead alert 증명).
+      - expr: |
+          count(
+            (histogram_quantile(0.99,
+              sum by (le, stage, src_workload, src_namespace, node) (
+                rate(netobs_stage_latency_labeled_seconds_bucket{stage!~"to_veth|ack_wait|rcv_app|connect"}[5m])
+              )
+            ) > 1.0)
+            and
+            (sum by (stage, src_workload, src_namespace, node) (
+              rate(netobs_stage_latency_labeled_seconds_count{stage!~"to_veth|ack_wait|rcv_app|connect"}[5m])
+            ) > 1)
+          )
+        eval_time: 10m
+        exp_samples: []
+
+  # 제외 stage 오탐 가드: 대기 stage(to_veth) 가 천장 포화 + 높은 event rate 여도 alert 가 발화하지
+  # 않아야 한다. stage!~ 매처가 없으면 #362 실측처럼 상시 오탐이 되므로 이를 영구 가드한다.
+  - interval: 30s
+    input_series:
+      - series: 'netobs_stage_latency_labeled_seconds_bucket{le="0.524288",stage="to_veth",src_workload="w1",src_namespace="ns1",node="n1"}'
+        values: '0+0x40'
+      - series: 'netobs_stage_latency_labeled_seconds_bucket{le="+Inf",stage="to_veth",src_workload="w1",src_namespace="ns1",node="n1"}'
+        values: '0+150x40'
+      - series: 'netobs_stage_latency_labeled_seconds_count{stage="to_veth",src_workload="w1",src_namespace="ns1",node="n1"}'
+        values: '0+150x40'
+    alert_rule_test:
+      - alertname: NetObsHighStageLatencyP99
+        eval_time: 12m
+        exp_alerts: []
+
+  # 고부하(보간): 처리 stage(to_devq) sample 이 최상위 finite 버킷 [0.262144, 0.524288] 에 쌓여 p99 가
+  # 보간으로 0.4 를 넘는 시나리오. 포화가 아니어도 신 임계가 발화함을 확인한다.
+  - interval: 30s
+    input_series:
+      - series: 'netobs_stage_latency_labeled_seconds_bucket{le="0.262144",stage="to_devq",src_workload="w1",src_namespace="ns1",node="n1"}'
+        values: '0+0x40'
+      - series: 'netobs_stage_latency_labeled_seconds_bucket{le="0.524288",stage="to_devq",src_workload="w1",src_namespace="ns1",node="n1"}'
+        values: '0+150x40'
+      - series: 'netobs_stage_latency_labeled_seconds_bucket{le="+Inf",stage="to_devq",src_workload="w1",src_namespace="ns1",node="n1"}'
+        values: '0+150x40'
+      - series: 'netobs_stage_latency_labeled_seconds_count{stage="to_devq",src_workload="w1",src_namespace="ns1",node="n1"}'
+        values: '0+150x40'
+    promql_expr_test:
+      - expr: |
+          count(
+            (histogram_quantile(0.99,
+              sum by (le, stage, src_workload, src_namespace, node) (
+                rate(netobs_stage_latency_labeled_seconds_bucket{stage!~"to_veth|ack_wait|rcv_app|connect"}[5m])
+              )
+            ) > 0.4)
+            and
+            (sum by (stage, src_workload, src_namespace, node) (
+              rate(netobs_stage_latency_labeled_seconds_count{stage!~"to_veth|ack_wait|rcv_app|connect"}[5m])
+            ) > 1)
+          )
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+
+  # baseline: 처리 stage(to_devq) 가 실측 수준(약 0.004s) 의 낮은 latency. 신 임계 0.4 로도 발화하지
+  # 않아 false positive 가 없음을 단정한다.
+  - interval: 30s
+    input_series:
+      - series: 'netobs_stage_latency_labeled_seconds_bucket{le="0.002048",stage="to_devq",src_workload="w1",src_namespace="ns1",node="n1"}'
+        values: '0+0x40'
+      - series: 'netobs_stage_latency_labeled_seconds_bucket{le="0.004096",stage="to_devq",src_workload="w1",src_namespace="ns1",node="n1"}'
+        values: '0+150x40'
+      - series: 'netobs_stage_latency_labeled_seconds_bucket{le="+Inf",stage="to_devq",src_workload="w1",src_namespace="ns1",node="n1"}'
+        values: '0+150x40'
+      - series: 'netobs_stage_latency_labeled_seconds_count{stage="to_devq",src_workload="w1",src_namespace="ns1",node="n1"}'
+        values: '0+150x40'
+    alert_rule_test:
+      - alertname: NetObsHighStageLatencyP99
+        eval_time: 12m
+        exp_alerts: []

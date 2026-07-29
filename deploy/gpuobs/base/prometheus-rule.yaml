@@ -1342,29 +1342,44 @@ spec:
       interval: 30s
       rules:
         # NetObsHighStageLatencyP99
-        # 5분 윈도우 p99 stage latency가 1초를 초과하고 동시에 해당 stage의 이벤트 발생률이
-        # 1event/s 이상일 때만 발화한다. 발생률 필터는 sparse 시리즈에서 +Inf 버킷 fallback이
-        # 만드는 노이즈를 차단한다. 임계 1초는 현재 histogram bucket의 최상위 finite 경계
-        # (0.524288s)보다 위로 두어 bucket fallback 값(0.524288)이 baseline에서 발화하지 않도록
-        # 한다. 더 세밀한 임계가 필요하면 netobs의 histogram bucket 범위를 확장한 뒤 임계를
-        # 낮추는 follow-up이 필요하다.
+        # 로컬 커널 처리 stage의 5분 윈도우 p99 latency가 0.4초를 초과하고 동시에 해당 stage의
+        # 이벤트 발생률이 1event/s 이상일 때만 발화한다. 발생률 필터는 sparse 시리즈에서 +Inf 버킷
+        # fallback이 만드는 노이즈를 차단한다. netobs_stage_latency_labeled_seconds의 버킷은
+        # ExponentialBuckets(1e-6, 2, 20)이라 최상위 finite 경계가 0.524288s이고,
+        # histogram_quantile은 이 경계를 넘는 값을 낼 수 없다. 기존 임계 1.0s는 이 천장 위라
+        # 어떤 부하에서도 도달 불가한 dead alert였다(#362). 임계 0.4s는 최상위 finite 버킷
+        # [0.262144s, 0.524288s] 안이라 도달 가능하며, 처리 stage의 실측 baseline p99(최대 약
+        # 0.014s) 위로 충분한 여유를 둔다. 관측 상한은 0.524288s로 유지되어 그보다 큰 latency는
+        # 천장에서 포화하지만 0.4s 임계는 여전히 발화한다.
+        # stage!~ 매처로 대기/간격/네트워크 stage를 제외한다. to_veth(전송 간격)와 ack_wait(지연 ACK
+        # 타이머, 설계상 최대 200~500ms)와 rcv_app(app pickup 대기)과 connect(핸드셰이크 왕복 RTT)은
+        # 로컬 처리 병목이 아니라 트래픽 패턴·TCP 타이머·앱 스케줄링·네트워크 RTT에 좌우되어 정상
+        # 상태에서도 구조적으로 천장 근처에 상주한다. 이들을 포함하면 임계 0.4s가 상시 오탐이 되므로
+        # (#362 실측: 0.4 발화가 전부 to_veth·ack_wait), 처리 병목만 SLO 대상으로 남긴다. 더 큰 상한
+        # 관측이 필요하면 histogram bucket 범위를 확장한 뒤 임계를 재설정하는 follow-up이 필요하다.
+        # stage!~ 는 부정 목록이라 새 latency stage 추가 시 SLO 적합성을 재검토해야 부적합 stage가
+        # 자동 포함돼 오탐이 되는 것을 막는다 (현재 retrans·drop·sock_teardown 은 latency histogram 을
+        # emit 하지 않아 시리즈 부재로 무해). 제외한 stage(ack_wait·rcv_app·connect)의 실제 비정상은
+        # 별도 alert 로 감지해야 하며 이 SLO 로는 잡지 않는다(#362 리뷰, follow-up). rate(count) > 1
+        # 게이트는 sparse +Inf fallback 노이즈를 막는 대신 초당 1 event 미만 저트래픽 워크로드의 처리
+        # 병목은 놓치는 트레이드오프가 있다.
         - alert: NetObsHighStageLatencyP99
           expr: |
             histogram_quantile(0.99,
               sum by (le, stage, src_workload, src_namespace, node) (
-                rate(netobs_stage_latency_labeled_seconds_bucket[5m])
+                rate(netobs_stage_latency_labeled_seconds_bucket{stage!~"to_veth|ack_wait|rcv_app|connect"}[5m])
               )
-            ) > 1.0
+            ) > 0.4
             and
             sum by (stage, src_workload, src_namespace, node) (
-              rate(netobs_stage_latency_labeled_seconds_count[5m])
+              rate(netobs_stage_latency_labeled_seconds_count{stage!~"to_veth|ack_wait|rcv_app|connect"}[5m])
             ) > 1
           for: 5m
           labels:
             severity: warning
             component: netobs
           annotations:
-            summary: "netobs stage latency p99 over 1s (node={{ $labels.node }} workload={{ $labels.src_namespace }}/{{ $labels.src_workload }} stage={{ $labels.stage }})"
+            summary: "netobs stage latency p99 over 0.4s (node={{ $labels.node }} workload={{ $labels.src_namespace }}/{{ $labels.src_workload }} stage={{ $labels.stage }})"
             description: "stage {{ $labels.stage }} latency p99 of workload {{ $labels.src_namespace }}/{{ $labels.src_workload }} on node {{ $labels.node }} is {{ $value | humanizeDuration }} over the last 5 minutes."
 
         # NetObsHighDropRate
