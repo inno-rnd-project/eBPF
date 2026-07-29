@@ -139,3 +139,67 @@ func TestNodePods_InvalidPath(t *testing.T) {
 		t.Errorf("거부 후 쿼리 실행됨: %v", q.queries)
 	}
 }
+
+// TestNodePods_LimitlessPartialSeverity 는 #378 회귀 가드다. cpu·memory limit 이 없어 두 pressure
+// score 를 산출할 수 없고 network 만 low 인 pod 는 network 단독으로 low 를 단정하지 않고 partial 로
+// 구분한다. limit 이 모두 있는 pod 는 종전대로 low 이고, limit 이 없어도 network 가 elevated 면 실제
+// 압박이라 elevated 를 그대로 노출한다.
+func TestNodePods_LimitlessPartialSeverity(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("kube_pod_info",
+			sample(1, "namespace", "ns1", "pod", "netlow", "uid", "u-1", "node", "n1", "pod_ip", "10.0.0.1", "host_ip", "192.168.1.10"),
+			sample(1, "namespace", "ns1", "pod", "full", "uid", "u-2", "node", "n1", "pod_ip", "10.0.0.2", "host_ip", "192.168.1.10"),
+			sample(1, "namespace", "ns1", "pod", "netelev", "uid", "u-3", "node", "n1", "pod_ip", "10.0.0.3", "host_ip", "192.168.1.10")).
+		on("kube_pod_status_phase",
+			sample(1, "uid", "u-1", "phase", "Running"),
+			sample(1, "uid", "u-2", "phase", "Running"),
+			sample(1, "uid", "u-3", "phase", "Running")).
+		on("rate(container_cpu_usage_seconds_total",
+			sample(0.05, "namespace", "ns1", "pod", "netlow"),
+			sample(0.05, "namespace", "ns1", "pod", "full"),
+			sample(0.05, "namespace", "ns1", "pod", "netelev")).
+		on("container_memory_working_set_bytes",
+			sample(5e7, "namespace", "ns1", "pod", "netlow"),
+			sample(5e7, "namespace", "ns1", "pod", "full"),
+			sample(5e7, "namespace", "ns1", "pod", "netelev")).
+		// limit 은 full pod 만 보유한다.
+		on(`resource="cpu"`, sample(2, "namespace", "ns1", "pod", "full")).
+		on(`resource="memory"`, sample(4e8, "namespace", "ns1", "pod", "full")).
+		on("netobs_pod_bytes_total",
+			sample(64, "src_namespace", "ns1", "src_pod", "netlow"),
+			sample(64, "src_namespace", "ns1", "src_pod", "full"),
+			sample(64, "src_namespace", "ns1", "src_pod", "netelev")).
+		on("pod:cpu_throttle_score:5m", sample(0.0001, "src_namespace", "ns1", "src_pod", "full")).
+		on("pod:memory_pressure_score:5m", sample(0.0001, "src_namespace", "ns1", "src_pod", "full")).
+		on("pod:network_pressure_score:5m",
+			sample(0.0001, "src_namespace", "ns1", "src_pod", "netlow"),
+			sample(0.0001, "src_namespace", "ns1", "src_pod", "full"),
+			sample(0.5, "src_namespace", "ns1", "src_pod", "netelev")).
+		on("netobs_bpf_program_loaded", sample(26, "node", "n1"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodePods(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/n1/pods", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp NodePodsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	sev := map[string]string{}
+	for _, p := range resp.Pods {
+		sev[p.Pod] = p.Severity
+	}
+	// netlow: network 만 low + cpu·memory limit 없음 → partial (network 단독 low 단정 회피).
+	if sev["netlow"] != severityPartial {
+		t.Errorf("netlow severity=%q want %q (limit 없는 network 단독 low)", sev["netlow"], severityPartial)
+	}
+	// full: cpu·memory·network 모두 low 이고 limit 존재 → low.
+	if sev["full"] != "low" {
+		t.Errorf("full severity=%q want low (전 차원 측정·low)", sev["full"])
+	}
+	// netelev: limit 없어도 network 가 elevated 면 실제 압박이라 그대로 노출 (partial 아님).
+	if sev["netelev"] != "elevated" {
+		t.Errorf("netelev severity=%q want elevated (실제 network 압박은 partial 로 가리지 않음)", sev["netelev"])
+	}
+}

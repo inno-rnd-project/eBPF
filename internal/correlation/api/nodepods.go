@@ -30,10 +30,16 @@ type NodePodsResponse struct {
 // NodePodUsage 는 노드 위 한 pod 의 자원 사용량과 상태다. percent 2종은 limit 분모라 limit 미설정
 // pod 는 생략되고 절대량 (cores / working set bytes) 으로 표현된다 (pod 상세 vitals 와 동일 규약,
 // #328). severity 는 pod pressure score 3종 최대의 PressureSeverity 환산 (low/elevated/high) 이며
-// score 미산출 pod 는 생략된다. unobserved_reason 은 pods API 와 동일 enum·생략 조건 (#320) 이되,
+// score 미산출 pod 는 생략된다. cpu / memory limit 이 없어 두 pressure score 를 산출할 수 없고 network
+// 만 측정돼 low 인 pod 는 정상을 단정하지 않고 partial 로 둔다 (#378, pod-detail 의 결측 차원 규약과 정합). unobserved_reason 은 pods API 와 동일 enum·생략 조건 (#320) 이되,
 // 관측 판정 소스가 rate[5m] 결과 존재라 (pods API 는 시리즈 존재) 카운터 샘플이 2개 미만인 신규
 // pod 의 짧은 창 (스크레이프 1~2주기) 에서는 여기서만 일시적으로 사유가 붙을 수 있고 1분 내 자연
 // 수렴한다.
+// severityPartial 은 limit 이 없어 cpu / memory pressure score 를 산출할 수 없어 network 만 측정된 pod 의
+// 부분 판정 severity 다 (#378). network 만으로 low (정상) 를 단정하는 대신 "일부 차원 측정 불가" 를
+// 구분해, node/pods 와 pod-detail 이 limit 없는 pod 를 같은 규약으로 표현하게 한다.
+const severityPartial = "partial"
+
 type NodePodUsage struct {
 	Namespace             string   `json:"namespace"`
 	Pod                   string   `json:"pod"`
@@ -50,7 +56,7 @@ type NodePodUsage struct {
 
 // GetNodePods godoc
 // @Summary      노드 하위 pod별 자원 사용량 목록
-// @Description  노드에 스케줄된 pod 별로 신원 (namespace 와 pod 와 uid) 과 CPU (limit 대비 percent 와 절대량 cores), memory (limit 대비 percent 와 working set bytes), network bytes rate (netobs pod bytes 의 5분 rate 합산) 와 상태를 한 응답으로 돌려준다. percent 는 limit 분모라 limit 없는 pod 는 생략되고 절대량 필드로 표현된다 (#328 과 동일 규약). severity 는 pod pressure score 3종 최대의 환산 (low/elevated/high) 이고, 종료 pod 와 미관측 사유 (unobserved_reason, no_traffic 포함 #342) 는 pods API 의 규약 (#314, #320) 을 그대로 쓴다. 관측 판정 소스는 rate 결과 존재라 (pods API 는 시리즈 존재) 카운터 샘플이 부족한 신규 pod 의 짧은 창에서는 여기서만 일시적으로 사유가 붙을 수 있고 1분 내 자연 수렴한다. 정렬은 namespace 와 pod 사전순으로 결정적이며 이상 우선 정렬은 severity 를 근거로 표시 계층이 수행한다. at 파라미터로 사건 시점을 재구성할 수 있다.
+// @Description  노드에 스케줄된 pod 별로 신원 (namespace 와 pod 와 uid) 과 CPU (limit 대비 percent 와 절대량 cores), memory (limit 대비 percent 와 working set bytes), network bytes rate (netobs pod bytes 의 5분 rate 합산) 와 상태를 한 응답으로 돌려준다. percent 는 limit 분모라 limit 없는 pod 는 생략되고 절대량 필드로 표현된다 (#328 과 동일 규약). severity 는 pod pressure score 3종 최대의 환산 (low/elevated/high) 이되 cpu·memory limit 이 없어 두 score 를 산출할 수 없고 network 만 low 인 pod 는 partial 로 구분해 정상을 단정하지 않으며 (#378 pod-detail 규약과 정합), 종료 pod 와 미관측 사유 (unobserved_reason, no_traffic 포함 #342) 는 pods API 의 규약 (#314, #320) 을 그대로 쓴다. 관측 판정 소스는 rate 결과 존재라 (pods API 는 시리즈 존재) 카운터 샘플이 부족한 신규 pod 의 짧은 창에서는 여기서만 일시적으로 사유가 붙을 수 있고 1분 내 자연 수렴한다. 정렬은 namespace 와 pod 사전순으로 결정적이며 이상 우선 정렬은 severity 를 근거로 표시 계층이 수행한다. at 파라미터로 사건 시점을 재구성할 수 있다.
 // @Tags         interference
 // @Produce      json
 // @Param        node  path   string  true   "노드 이름 (DNS-1123 형식)"
@@ -198,7 +204,16 @@ func (h *SynthesisHandler) GetNodePods(w http.ResponseWriter, r *http.Request) {
 			p.NetworkBytesPerSec = &v
 		}
 		if v, ok := maxScore[k]; ok {
-			p.Severity = correlation.PressureSeverity(v)
+			sev := correlation.PressureSeverity(v)
+			// #378 limit 이 없어 cpu / memory pressure score 를 구조적으로 산출할 수 없는 pod 는 network
+			// 단독 (0.0001) 으로 low 를 단정하지 않고 partial 로 구분한다. 측정된 차원이 모두 low 인데
+			// cpu 나 memory 한쪽이라도 limit 이 없어 측정 불가하면 부분 판정이다. cpuLimit / memLimit 은
+			// pod-detail 의 CPUPercent / MemoryPercent nil 과 동일한 limit 부재 신호로, 두 API 가 같은
+			// 근거로 결측 차원을 판정하게 한다. elevated / high 는 실제 압박이라 그대로 노출한다.
+			if sev == "low" && (cpuLimit[k] <= 0 || memLimit[k] <= 0) {
+				sev = severityPartial
+			}
+			p.Severity = sev
 		}
 		// 미관측 사유. 종료 / Unknown phase 는 사유 판정이 무의미해 생략한다 (pods API 공용 조건).
 		if !observed[k] && !unobservedReasonExempt(p.Phase) {

@@ -216,6 +216,19 @@ func buildPodDetailSummary(r PodDetailResponse) string {
 			seg += fmt.Sprintf(", %s health %.2f", dim, v)
 		}
 	}
+	// #378 limit 이 없어 pressure score 를 산출할 수 없는 cpu / memory 차원을 명시한다. Vitals percent 는
+	// limit 분모라 nil 이면 해당 차원 limit 이 없다는 뜻이고, node/pods 의 partial 판정과 동일 근거다.
+	// health 엔트리 생략만으로는 "정상이라 생략" 과 "측정 불가라 생략" 이 구분되지 않아 사유를 적는다.
+	var limitless []string
+	if r.Vitals.CPUPercent == nil {
+		limitless = append(limitless, "cpu")
+	}
+	if r.Vitals.MemoryPercent == nil {
+		limitless = append(limitless, "memory")
+	}
+	if len(limitless) > 0 {
+		seg += fmt.Sprintf(", %s limit 없어 pressure 측정 불가", strings.Join(limitless, "·"))
+	}
 	if r.Cpu.ThrottledRatio != nil {
 		seg += fmt.Sprintf(", throttle %.0f%%", *r.Cpu.ThrottledRatio*100)
 	}
