@@ -212,7 +212,11 @@ func TestPodDetail_LimitlessDimensions(t *testing.T) {
 	if resp.Vitals.CPUPercent != nil || resp.Vitals.MemoryPercent != nil {
 		t.Errorf("percent=%+v want 생략 (limit 없음)", resp.Vitals)
 	}
-	// summary 가 limit 없어 측정 불가한 차원을 명시해 node/pods 의 partial 판정과 정합.
+	// #378 node/pods 와 동일한 additive 구조 필드로 측정 불가 차원을 노출한다 (두 API 대칭).
+	if len(resp.UnmeasuredDimensions) != 2 || resp.UnmeasuredDimensions[0] != "cpu" || resp.UnmeasuredDimensions[1] != "memory" {
+		t.Errorf("unmeasured_dimensions=%v want [cpu memory]", resp.UnmeasuredDimensions)
+	}
+	// summary 가 limit 없어 측정 불가한 차원을 명시해 node/pods 의 결측 차원 노출과 정합.
 	if !strings.Contains(resp.Summary, "limit 없어 pressure 측정 불가") {
 		t.Errorf("summary=%q want cpu·memory 측정 불가 사유", resp.Summary)
 	}

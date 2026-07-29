@@ -140,11 +140,12 @@ func TestNodePods_InvalidPath(t *testing.T) {
 	}
 }
 
-// TestNodePods_LimitlessPartialSeverity 는 #378 회귀 가드다. cpu·memory limit 이 없어 두 pressure
-// score 를 산출할 수 없고 network 만 low 인 pod 는 network 단독으로 low 를 단정하지 않고 partial 로
-// 구분한다. limit 이 모두 있는 pod 는 종전대로 low 이고, limit 이 없어도 network 가 elevated 면 실제
-// 압박이라 elevated 를 그대로 노출한다.
-func TestNodePods_LimitlessPartialSeverity(t *testing.T) {
+// TestNodePods_LimitlessUnmeasuredDimensions 는 #378 회귀 가드다. severity 는 low/elevated/high 3값을
+// 유지하고, cpu·memory limit 이 없어 pressure score 를 산출할 수 없는 차원은 unmeasured_dimensions 로
+// 노출한다. netlow (network 만 low, limit 없음) 는 severity=low + unmeasured=[cpu,memory] 로 정상 단정을
+// 회피하고, full (전 차원 low, limit 있음) 은 severity=low + unmeasured 생략, netelev (limit 없음,
+// network elevated) 는 severity=elevated 로 실제 압박을 그대로 노출하면서 unmeasured=[cpu,memory] 를 함께 둔다.
+func TestNodePods_LimitlessUnmeasuredDimensions(t *testing.T) {
 	q := (&fakeQuerier{}).
 		on("kube_pod_info",
 			sample(1, "namespace", "ns1", "pod", "netlow", "uid", "u-1", "node", "n1", "pod_ip", "10.0.0.1", "host_ip", "192.168.1.10"),
@@ -186,20 +187,21 @@ func TestNodePods_LimitlessPartialSeverity(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	sev := map[string]string{}
+	byPod := map[string]NodePodUsage{}
 	for _, p := range resp.Pods {
-		sev[p.Pod] = p.Severity
+		byPod[p.Pod] = p
 	}
-	// netlow: network 만 low + cpu·memory limit 없음 → partial (network 단독 low 단정 회피).
-	if sev["netlow"] != severityPartial {
-		t.Errorf("netlow severity=%q want %q (limit 없는 network 단독 low)", sev["netlow"], severityPartial)
+	// netlow: severity=low 유지 (3값 계약 불변) + unmeasured=[cpu,memory] 로 network 단독 low 임을 노출.
+	if netlow := byPod["netlow"]; netlow.Severity != "low" ||
+		len(netlow.UnmeasuredDimensions) != 2 || netlow.UnmeasuredDimensions[0] != "cpu" || netlow.UnmeasuredDimensions[1] != "memory" {
+		t.Errorf("netlow=%+v want severity=low, unmeasured=[cpu memory]", netlow)
 	}
-	// full: cpu·memory·network 모두 low 이고 limit 존재 → low.
-	if sev["full"] != "low" {
-		t.Errorf("full severity=%q want low (전 차원 측정·low)", sev["full"])
+	// full: 전 차원 측정·low + limit 존재 → severity=low, unmeasured 생략.
+	if full := byPod["full"]; full.Severity != "low" || len(full.UnmeasuredDimensions) != 0 {
+		t.Errorf("full=%+v want severity=low, unmeasured 생략", full)
 	}
-	// netelev: limit 없어도 network 가 elevated 면 실제 압박이라 그대로 노출 (partial 아님).
-	if sev["netelev"] != "elevated" {
-		t.Errorf("netelev severity=%q want elevated (실제 network 압박은 partial 로 가리지 않음)", sev["netelev"])
+	// netelev: network elevated 는 실제 압박이라 severity=elevated 로 노출하되 unmeasured 는 사실대로 병기.
+	if netelev := byPod["netelev"]; netelev.Severity != "elevated" || len(netelev.UnmeasuredDimensions) != 2 {
+		t.Errorf("netelev=%+v want severity=elevated, unmeasured=[cpu memory]", netelev)
 	}
 }
