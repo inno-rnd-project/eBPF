@@ -1064,7 +1064,7 @@
         },
         "/api/v1/node/{node}/pods": {
             "get": {
-                "description": "노드에 스케줄된 pod 별로 신원 (namespace 와 pod 와 uid) 과 CPU (limit 대비 percent 와 절대량 cores), memory (limit 대비 percent 와 working set bytes), network bytes rate (netobs pod bytes 의 5분 rate 합산) 와 상태를 한 응답으로 돌려준다. percent 는 limit 분모라 limit 없는 pod 는 생략되고 절대량 필드로 표현된다 (#328 과 동일 규약). severity 는 pod pressure score 3종 최대의 환산 (low/elevated/high) 이되 cpu·memory limit 이 없어 두 score 를 산출할 수 없고 network 만 low 인 pod 는 partial 로 구분해 정상을 단정하지 않으며 (#378 pod-detail 규약과 정합), 종료 pod 와 미관측 사유 (unobserved_reason, no_traffic 포함 #342) 는 pods API 의 규약 (#314, #320) 을 그대로 쓴다. 관측 판정 소스는 rate 결과 존재라 (pods API 는 시리즈 존재) 카운터 샘플이 부족한 신규 pod 의 짧은 창에서는 여기서만 일시적으로 사유가 붙을 수 있고 1분 내 자연 수렴한다. 정렬은 namespace 와 pod 사전순으로 결정적이며 이상 우선 정렬은 severity 를 근거로 표시 계층이 수행한다. at 파라미터로 사건 시점을 재구성할 수 있다.",
+                "description": "노드에 스케줄된 pod 별로 신원 (namespace 와 pod 와 uid) 과 CPU (limit 대비 percent 와 절대량 cores), memory (limit 대비 percent 와 working set bytes), network bytes rate (netobs pod bytes 의 5분 rate 합산) 와 상태를 한 응답으로 돌려준다. percent 는 limit 분모라 limit 없는 pod 는 생략되고 절대량 필드로 표현된다 (#328 과 동일 규약). severity 는 pod pressure score 3종 최대의 환산 (low/elevated/high) 이고 cpu·memory limit 이 없어 두 score 를 산출할 수 없는 차원은 unmeasured_dimensions 로 노출해 severity=low 가 정상 단정인지 network 만 측정된 부분 판정인지 구분하며 (#378 pod-detail 규약과 정합), 종료 pod 와 미관측 사유 (unobserved_reason, no_traffic 포함 #342) 는 pods API 의 규약 (#314, #320) 을 그대로 쓴다. 관측 판정 소스는 rate 결과 존재라 (pods API 는 시리즈 존재) 카운터 샘플이 부족한 신규 pod 의 짧은 창에서는 여기서만 일시적으로 사유가 붙을 수 있고 1분 내 자연 수렴한다. 정렬은 namespace 와 pod 사전순으로 결정적이며 이상 우선 정렬은 severity 를 근거로 표시 계층이 수행한다. at 파라미터로 사건 시점을 재구성할 수 있다.",
                 "produces": [
                     "application/json"
                 ],
@@ -3095,6 +3095,13 @@
                 "uid": {
                     "type": "string"
                 },
+                "unmeasured_dimensions": {
+                    "description": "UnmeasuredDimensions 는 limit 이 없어 pressure score 를 산출할 수 없는 차원 (cpu / memory) 목록이다\n(#378). severity 는 측정된 차원 기준값이라, 이 필드가 비어있지 않으면 severity=low 여도 정상 단정이\n아니라 network 만 측정된 부분 판정임을 뜻한다. pod-detail 도 동일 필드로 노출해 두 API 가 정합한다.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "unobserved_reason": {
                     "type": "string"
                 }
@@ -3526,6 +3533,13 @@
                 "uid": {
                     "description": "기본 정보는 kube_pod_info 라벨에서 온다. pod 미관측 시 생략된다.",
                     "type": "string"
+                },
+                "unmeasured_dimensions": {
+                    "description": "UnmeasuredDimensions 는 limit 이 없어 pressure score 를 산출할 수 없는 차원 (cpu / memory) 목록이다\n(#378). health 엔트리 생략이 \"정상이라 생략\" 인지 \"측정 불가라 생략\" 인지 구분한다. node/pods 의\n동일 필드와 대칭이라 두 API 가 결측 차원을 같은 구조로 노출한다.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "vitals": {
                     "$ref": "#/definitions/internal_correlation_api.PodVitals"
