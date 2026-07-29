@@ -183,3 +183,65 @@ func TestMedianOf(t *testing.T) {
 		t.Errorf("medianOf(even)=%v want 2.5", m)
 	}
 }
+
+// TestAlignByLag 는 alignByLag 의 cross-correlation shift 관례 (pearson.go 의 applyLag 와 동일) 와
+// 경계 조건을 검증한다. lag k > 0 은 suspect[t] 를 victim[t+k] 와 짝짓고, lag 이 길이 이상이면 빈
+// 슬라이스를 돌려준다 (#363).
+func TestAlignByLag(t *testing.T) {
+	s := []float64{0, 1, 2, 3, 4}
+	v := []float64{10, 11, 12, 13, 14}
+
+	// lag 0: 원본 그대로.
+	if as, av := alignByLag(s, v, 0); len(as) != 5 || len(av) != 5 || as[0] != 0 || av[0] != 10 {
+		t.Errorf("lag 0 정렬 실패: as=%v av=%v", as, av)
+	}
+	// lag 2 (suspect 선행): suspect[:3]=[0,1,2] 와 victim[2:5]=[12,13,14] 를 짝짓는다.
+	as, av := alignByLag(s, v, 2)
+	if len(as) != 3 || len(av) != 3 || as[0] != 0 || as[2] != 2 || av[0] != 12 || av[2] != 14 {
+		t.Errorf("lag 2 정렬 실패: as=%v av=%v want [0,1,2]/[12,13,14]", as, av)
+	}
+	// lag -1 (반대 방향): suspect[1:5]=[1,2,3,4] 와 victim[:4]=[10,11,12,13].
+	as, av = alignByLag(s, v, -1)
+	if len(as) != 4 || len(av) != 4 || as[0] != 1 || av[0] != 10 || av[3] != 13 {
+		t.Errorf("lag -1 정렬 실패: as=%v av=%v", as, av)
+	}
+	// lag 이 길이 이상: 겹침 없음 → 빈 슬라이스.
+	if as, av := alignByLag(s, v, 5); as != nil || av != nil {
+		t.Errorf("lag>=n 정렬 실패: as=%v av=%v want nil/nil", as, av)
+	}
+}
+
+// TestEffectSize_LagAlignmentRecoversMagnitude 는 #363 의 핵심 회귀 가드다. suspect 가 victim 을 2 step
+// 선행하면 victim degradation 이 2 step 뒤에 나타나, lag 0 원계열로 high/low 를 나누면 압박 구간에
+// 아직 상승 전 victim 값이 섞여 magnitude 가 희석된다. alignByLag 로 lag 2 에서 정렬하면 압박 구간이
+// 실제 degradation 과 정렬돼 참 magnitude 가 복원되고 Welch p-value 도 산출된다.
+func TestEffectSize_LagAlignmentRecoversMagnitude(t *testing.T) {
+	// suspect: 앞 5 개 비압박(0), 뒤 5 개 압박(1). victim: 압박 영향이 2 step 뒤 (index 7~9) 에 상승.
+	suspect := []float64{0, 0, 0, 0, 0, 1, 1, 1, 1, 1}
+	victim := []float64{0.010, 0.012, 0.009, 0.011, 0.010, 0.011, 0.010, 0.101, 0.099, 0.100}
+
+	// lag 0 원계열: 압박 구간 (index 5~9) victim 에 아직 상승 전 값 (index 5,6) 이 섞여 희석.
+	raw := EffectSize(suspect, victim, SignalLatency, 2)
+	if !raw.OK {
+		t.Fatalf("raw OK=false want true")
+	}
+
+	// lag 2 정렬: 압박 구간이 실제 degradation (index 7~9) 과 정렬.
+	as, av := alignByLag(suspect, victim, 2)
+	aligned := EffectSize(as, av, SignalLatency, 2)
+	if !aligned.OK {
+		t.Fatalf("aligned OK=false want true")
+	}
+
+	// 정렬 magnitude 가 참값 (~0.09) 에 수렴하고 희석된 raw 보다 뚜렷이 크다.
+	if math.Abs(aligned.Magnitude-0.09) > 5e-3 {
+		t.Errorf("aligned Magnitude=%v want ~0.09 (참 degradation)", aligned.Magnitude)
+	}
+	if aligned.Magnitude <= raw.Magnitude {
+		t.Errorf("aligned(%v) <= raw(%v): lag 정렬이 희석을 복원하지 못함", aligned.Magnitude, raw.Magnitude)
+	}
+	// 정렬 후에는 압박/비압박 구간이 분산을 가져 Welch p-value 가 산출된다.
+	if !aligned.PValueOK {
+		t.Errorf("aligned PValueOK=false want true (정렬 후 구간 분산 존재)")
+	}
+}

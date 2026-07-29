@@ -144,7 +144,13 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 			impactMin = 2
 		}
 		victimSignal := classifyVictimSignal(p.Key.DstMetric)
-		es := EffectSize(srcVals, dstVals, victimSignal, impactMin)
+		// #363 EffectSize 를 Pearson 이 선택한 lag (r.MaxAbsLag) 에서 산정한다. suspect 가 victim 을 k
+		// step 선행하면 압박 구간의 victim degradation 이 k step 뒤에 나타나므로, lag 0 원계열로 high /
+		// low 를 분할하면 magnitude 와 p-value 가 희석·편향된다. Granger 와 동일 lag 으로 정렬해 Pearson
+		// (lag_seconds) 과 Granger (pvalue) 와 effect 세 신호가 같은 lag 구조를 가리키게 한다. reverse
+		// 페어는 victimSignal=SignalNone 으로 EffectSize 가 자연 skip 하는 규약을 유지한다.
+		alignedSrc, alignedDst := alignByLag(srcVals, dstVals, r.MaxAbsLag)
+		es := EffectSize(alignedSrc, alignedDst, victimSignal, impactMin)
 		r.ImpactMagnitude = es.Magnitude
 		r.ImpactMagnitudeOK = es.OK
 		r.ImpactPValue = es.PValue

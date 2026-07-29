@@ -31,6 +31,33 @@ func victimDegradesUp(signal VictimSignal) bool {
 	}
 }
 
+// alignByLag 는 suspect / victim 값 시계열을 lag step 만큼 shift 해 정렬한다. pearson.go 의 applyLag 와
+// 동일한 cross-correlation 관례로, lag k > 0 은 suspect[t] 를 victim[t+k] 와 짝지어 suspect 가 victim 을
+// k step 선행하는 지연을 보정한다. lag k < 0 은 반대 방향이다. #363: EffectSize 가 Pearson (lag_seconds)
+// 과 Granger (pvalue) 와 같은 MaxAbsLag 에서 산정되게 해 세 신호가 동일 lag 을 가리키게 한다. lag 이
+// 시계열 길이 이상이면 정렬 가능한 겹침이 없어 빈 슬라이스를 돌려주고, EffectSize 의 minSamples 가드가
+// 이를 자연 skip 한다.
+func alignByLag(suspect, victim []float64, lag int) ([]float64, []float64) {
+	if lag == 0 {
+		return suspect, victim
+	}
+	n := len(suspect)
+	if len(victim) < n {
+		n = len(victim)
+	}
+	abs := lag
+	if abs < 0 {
+		abs = -abs
+	}
+	if abs >= n {
+		return nil, nil
+	}
+	if lag > 0 {
+		return suspect[:n-lag], victim[lag:n]
+	}
+	return suspect[-lag:n], victim[:n+lag]
+}
+
 // EffectSize 는 suspect 압박 구간과 비압박 구간의 victim 값 차이를 victim 신호별 native 단위의 절대
 // 영향 크기로 산정하고, 그 차이의 통계적 유의성을 Welch t-test p-value 로 함께 돌려준다 (#146 / #175).
 // Pearson 상관계수가 "victim 과 얼마나 동조하는가" 의 강도를 본다면, 본 함수는 "압박이 victim 품질을
