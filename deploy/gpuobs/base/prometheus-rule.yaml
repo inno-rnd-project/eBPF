@@ -1357,6 +1357,12 @@ spec:
         # 상태에서도 구조적으로 천장 근처에 상주한다. 이들을 포함하면 임계 0.4s가 상시 오탐이 되므로
         # (#362 실측: 0.4 발화가 전부 to_veth·ack_wait), 처리 병목만 SLO 대상으로 남긴다. 더 큰 상한
         # 관측이 필요하면 histogram bucket 범위를 확장한 뒤 임계를 재설정하는 follow-up이 필요하다.
+        # stage!~ 는 부정 목록이라 새 latency stage 추가 시 SLO 적합성을 재검토해야 부적합 stage가
+        # 자동 포함돼 오탐이 되는 것을 막는다 (현재 retrans·drop·sock_teardown 은 latency histogram 을
+        # emit 하지 않아 시리즈 부재로 무해). 제외한 stage(ack_wait·rcv_app·connect)의 실제 비정상은
+        # 별도 alert 로 감지해야 하며 이 SLO 로는 잡지 않는다(#362 리뷰, follow-up). rate(count) > 1
+        # 게이트는 sparse +Inf fallback 노이즈를 막는 대신 초당 1 event 미만 저트래픽 워크로드의 처리
+        # 병목은 놓치는 트레이드오프가 있다.
         - alert: NetObsHighStageLatencyP99
           expr: |
             histogram_quantile(0.99,
