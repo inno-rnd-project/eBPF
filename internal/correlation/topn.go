@@ -163,6 +163,9 @@ func isVictimMetric(metric string) bool {
 //     가 만드는 (Y,X)) 은 같은 (victim, suspect) 가 두 번 등장하지 않도록 자동 dedup 의미로 제외한다.
 //   - Status 가 StatusOK 또는 StatusPartial 인 결과만 채택한다. SkippedConstant / SkippedLowSamples
 //     는 의미 있는 score 가 없어 제외한다.
+//   - #367 방향 게이트: 채택 lag (MaxAbsLag) 의 상관 부호가 신호별 기대 부호 (victimDegradesUp 이면
+//     양, 아니면 음) 와 다른 페어는 제외한다. 역방향 강상관 (비간섭) 이 rank 와 causal_strength 로
+//     승격되지 않는다.
 //   - suspect 메트릭에서 dimension 을 분류해 DimensionUnknown 이면 제외한다 (카디널리티 가드).
 //   - (victim_namespace, victim_pod, victim_pod_uid, victim_signal, dimension) 그룹별 max_abs_value
 //     내림차순으로 정렬해 상위 topN 개에 rank 1..topN 부여한다. 동률은 (suspect_namespace, suspect_pod,
@@ -224,6 +227,22 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		victimSignal := dstSignal
 		dim := classifyDimension(r.Pair.SrcMetric)
 		if dim == DimensionUnknown {
+			continue
+		}
+		// #367 방향 게이트. 간섭은 suspect 압박 증가가 victim 악화와 동조하는 방향의 상관이다.
+		// latency / error 는 악화가 값 증가 (victimDegradesUp) 라 양의 상관만, throughput / gpu 는
+		// 악화가 값 감소라 음의 상관만 간섭 후보다 (GPU 음의 상관 의도 유지, #174). MaxAbsValue 는
+		// 부호 무관 |corr| 라 채택 lag 의 부호를 CorrelationByLag 에서 읽어, 역방향 강상관 (예:
+		// suspect 압박 증가에 latency 감소) 이 rank 상위와 causal_strength 로 승격되는 것을 막는다
+		// (EffectSize 는 이미 방향을 거르나 score / Pearson·Granger 항은 부호를 안 봤다). 정확히 0
+		// 인 상관은 중립이라 통과하며 score 0 이라 순위 영향이 없다. 채택 lag 가 역방향인 페어는
+		// 이번 주기에서 제외되고, 정방향 상관이 실재하면 다음 주기 재평가에서 포착된다.
+		signed := r.CorrelationByLag[r.MaxAbsLag]
+		if victimDegradesUp(victimSignal) {
+			if signed < 0 {
+				continue
+			}
+		} else if signed > 0 {
 			continue
 		}
 		// same-pod cross-metric pair 는 noisy neighbor 모델 (이웃 Pod 의 자원 압박) 에 부합하지
