@@ -96,16 +96,17 @@ func buildLagged(n, lag int, histories [][]float64) *mat.Dense {
 	return mat.NewDense(n, cols, data)
 }
 
-// ols 는 정규 방정식 (X^T X) beta = X^T y 를 SolveVec 으로 풀어 OLS 계수를 구하고 RSS =
-// sum((y - X*beta)^2) 반환한다. Inverse 직접 호출 대신 SolveVec 을 써 수치 안정성과 효율성을 함께
-// 확보하고 특이행렬은 SolveVec 의 error 로 잡아 ok=false 반환한다.
+// ols 는 X 의 QR 분해 기반 최소자승으로 OLS 계수를 구하고 RSS = sum((y - X*beta)^2) 를 반환한다
+// (#368). 종전 정규방정식 (X^T X) beta = X^T y 은 조건수를 제곱해, y 의 과거 lag 회귀자처럼 강한
+// 자기상관으로 X 가 근-공선인 입력에서 SolveVec 이 error 없이 통과해도 beta 와 RSS 가 부정확해지고
+// RSS_R - RSS_U 차분 왜곡이 F / p-value / granger_ok / causal_strength 로 전파됐다. QR 은 X 의
+// 조건수 그대로 풀어 근-공선에서 안정적이며, rank 부족과 과대 조건수는 SolveVecTo 의 error 로 잡아
+// ok=false 반환한다 (종전과 동일 계약).
 func ols(X *mat.Dense, y *mat.VecDense) (float64, bool) {
-	var xtx mat.Dense
-	xtx.Mul(X.T(), X)
-	var xty mat.VecDense
-	xty.MulVec(X.T(), y)
+	var qr mat.QR
+	qr.Factorize(X)
 	var beta mat.VecDense
-	if err := beta.SolveVec(&xtx, &xty); err != nil {
+	if err := qr.SolveVecTo(&beta, false, y); err != nil {
 		return 0, false
 	}
 	var fitted mat.VecDense
