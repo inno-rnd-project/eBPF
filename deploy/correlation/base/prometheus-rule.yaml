@@ -68,18 +68,42 @@ spec:
         # max_abs_value 0.85 를 10분 지속하면 발화한다. rank 와 pod_uid 는 group 키에서 제외해 동일
         # 페어가 rank 별로 또는 pod 재시작 전후로 중복 발화하지 않게 한다. 0.85 임계는 합성 부하
         # 시나리오에서 1.0 동기화 페어와 0.5 미만 무관 페어를 명확히 분리하는 값이다.
+        # #366 부터 상관 강도 단독이 아니라 인과 증거 조인을 함께 요구한다. 짧은 관측 구간의 우연한
+        # 고상관이 10분만 유지되면 인과 증거 없이 오발화하던 것을, causal_strength > 0.6 또는 Granger
+        # pvalue < 0.05 게이트로 차단한다. causal_strength (0.5·|corr| + 0.3·granger + 0.2·effect,
+        # ComputeCausalStrength 단일 진실원) 는 상관 단독 상한이 0.5 라 0.6 은 인과 항 (Granger 또는
+        # effect size 유의성) 의 실질 기여를 강제하고, Granger 검정이 불가한 동시 간섭 (lag=0) 도
+        # effect 유의성 경로 (상한 0.7) 로 통과할 수 있다 (임계 0.7 이면 이 경로가 사실상 막힌다).
+        # pvalue 분기는 GrangerOK 페어의 직접 증거다 (pvalue 는 GrangerOK 페어만 emit). 증거 게이트는
+        # and on() 조인이라 $value (max |corr|) 와 라벨은 종전과 동일하다.
         - alert: CorrelationStrongNoisyNeighbor
           expr: |
-            max by (victim_namespace, victim_pod, suspect_namespace, suspect_pod, resource_dimension) (
-              correlation_noisy_neighbor_score
-            ) > 0.85
+            (
+              max by (victim_namespace, victim_pod, suspect_namespace, suspect_pod, resource_dimension) (
+                correlation_noisy_neighbor_score
+              ) > 0.85
+            )
+            and on (victim_namespace, victim_pod, suspect_namespace, suspect_pod, resource_dimension)
+            (
+              (
+                max by (victim_namespace, victim_pod, suspect_namespace, suspect_pod, resource_dimension) (
+                  correlation_noisy_neighbor_causal_strength
+                ) > 0.6
+              )
+              or
+              (
+                min by (victim_namespace, victim_pod, suspect_namespace, suspect_pod, resource_dimension) (
+                  correlation_noisy_neighbor_pvalue
+                ) < 0.05
+              )
+            )
           for: 10m
           labels:
             severity: warning
             component: correlation
           annotations:
             summary: "noisy neighbor detected (victim={{ $labels.victim_namespace }}/{{ $labels.victim_pod }} suspect={{ $labels.suspect_namespace }}/{{ $labels.suspect_pod }} dimension={{ $labels.resource_dimension }})"
-            description: "victim {{ $labels.victim_namespace }}/{{ $labels.victim_pod }} 의 latency 가 suspect {{ $labels.suspect_namespace }}/{{ $labels.suspect_pod }} 의 {{ $labels.resource_dimension }} 자원 변동과 max |corr| {{ $value }} 로 10분 이상 동조하고 있다. internal/correlation/README.md 의 runbook 절차를 따른다."
+            description: "victim {{ $labels.victim_namespace }}/{{ $labels.victim_pod }} 의 latency 가 suspect {{ $labels.suspect_namespace }}/{{ $labels.suspect_pod }} 의 {{ $labels.resource_dimension }} 자원 변동과 max |corr| {{ $value }} 로 10분 이상 동조하고 있다. causal_strength 0.6 초과 또는 Granger pvalue 0.05 미만의 인과 증거 게이트를 함께 통과했다 (#366). internal/correlation/README.md 의 runbook 절차를 따른다."
             runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationstrongnoisyneighbor"
 
         # CorrelationExporterStalled

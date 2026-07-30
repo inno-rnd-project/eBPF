@@ -1,0 +1,76 @@
+# correlation-noisy-neighbor-evidence.test.yaml 은 #366 의 CorrelationStrongNoisyNeighbor 인과 증거
+# 게이트 검증이다. 종전 게이트는 score (Pearson max |corr|) > 0.85 단독이라 짧은 관측 구간의 우연한
+# 고상관이 10분만 유지되면 오발화했다. 세 케이스를 단정한다. 첫째, 상관만 높고 인과 증거가 없는
+# 페어 (causal_strength 0.45 = 0.5·0.9, pvalue 미emit) 는 발화하지 않는다 (종전이면 발화). 둘째,
+# Granger 유의 (pvalue 0.01) 페어는 발화한다. 셋째, Granger 불가 (lag=0 동시 간섭) 라도 effect
+# 유의성으로 causal_strength 0.65 인 페어는 발화한다 (임계 0.7 이면 막혔을 경로).
+rule_files:
+  - correlation.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # 케이스 1: 고상관 + 인과 증거 없음 → 미발화.
+  - interval: 30s
+    input_series:
+      - series: 'correlation_noisy_neighbor_score{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '0.9x40'
+      - series: 'correlation_noisy_neighbor_causal_strength{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '0.45x40'
+
+    alert_rule_test:
+      - alertname: CorrelationStrongNoisyNeighbor
+        eval_time: 15m
+        exp_alerts: []
+
+  # 케이스 2: 고상관 + Granger 유의 (pvalue 0.01) → 발화.
+  - interval: 30s
+    input_series:
+      - series: 'correlation_noisy_neighbor_score{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '0.9x40'
+      - series: 'correlation_noisy_neighbor_causal_strength{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '0.45x40'
+      - series: 'correlation_noisy_neighbor_pvalue{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '0.01x40'
+
+    alert_rule_test:
+      - alertname: CorrelationStrongNoisyNeighbor
+        eval_time: 15m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: correlation
+              victim_namespace: ns
+              victim_pod: v1
+              suspect_namespace: ns
+              suspect_pod: s1
+              resource_dimension: cpu
+            exp_annotations:
+              summary: "noisy neighbor detected (victim=ns/v1 suspect=ns/s1 dimension=cpu)"
+              description: "victim ns/v1 의 latency 가 suspect ns/s1 의 cpu 자원 변동과 max |corr| 0.9 로 10분 이상 동조하고 있다. causal_strength 0.6 초과 또는 Granger pvalue 0.05 미만의 인과 증거 게이트를 함께 통과했다 (#366). internal/correlation/README.md 의 runbook 절차를 따른다."
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationstrongnoisyneighbor"
+
+  # 케이스 3: 고상관 + Granger 불가 (pvalue 미emit) 지만 effect 유의성으로 causal_strength 0.65 → 발화.
+  - interval: 30s
+    input_series:
+      - series: 'correlation_noisy_neighbor_score{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '0.9x40'
+      - series: 'correlation_noisy_neighbor_causal_strength{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '0.65x40'
+
+    alert_rule_test:
+      - alertname: CorrelationStrongNoisyNeighbor
+        eval_time: 15m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: correlation
+              victim_namespace: ns
+              victim_pod: v1
+              suspect_namespace: ns
+              suspect_pod: s1
+              resource_dimension: cpu
+            exp_annotations:
+              summary: "noisy neighbor detected (victim=ns/v1 suspect=ns/s1 dimension=cpu)"
+              description: "victim ns/v1 의 latency 가 suspect ns/s1 의 cpu 자원 변동과 max |corr| 0.9 로 10분 이상 동조하고 있다. causal_strength 0.6 초과 또는 Granger pvalue 0.05 미만의 인과 증거 게이트를 함께 통과했다 (#366). internal/correlation/README.md 의 runbook 절차를 따른다."
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationstrongnoisyneighbor"
