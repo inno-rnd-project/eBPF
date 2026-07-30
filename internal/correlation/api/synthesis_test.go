@@ -782,3 +782,50 @@ func TestListPaginationContract(t *testing.T) {
 		t.Errorf("code=%q want invalid_limit", eb.Error.Code)
 	}
 }
+
+// TestSynthesis_GetNode_TopPodsFilterOptIn 은 #380 회귀 가드다. top_pods 원인 후보 임계는 opt-in 이라
+// (1) is_filtered 미전달 기본은 전 pod 를 종전대로 노출하고, (2) is_filtered=true 면 dominant 가
+// elevated 이상일 때 pod pressure 가 PressureElevatedThreshold(0.4) 이상인 pod 만 결정적 정렬로 남기며
+// 임계 미만(0.12)은 제외하고, (3) is_filtered=true 이고 dominant severity 가 low(정상)면 목록을 비운다.
+func TestSynthesis_GetNode_TopPodsFilterOptIn(t *testing.T) {
+	// dominant cpu 0.78 (degraded), pod 는 elevated(0.78, 0.50)와 임계 미만(0.12) 혼재.
+	newQ := func() *fakeQuerier {
+		return (&fakeQuerier{}).
+			on("node:cpu_pressure_score", sample(0.78, "node", "worker2")).
+			on("pod:cpu_throttle_score", []correlation.InstantSample{
+				{Value: 0.12, Labels: map[string]string{"node": "worker2", "src_namespace": "default", "src_pod": "weak"}},
+				{Value: 0.78, Labels: map[string]string{"node": "worker2", "src_namespace": "default", "src_pod": "app-x"}},
+				{Value: 0.50, Labels: map[string]string{"node": "worker2", "src_namespace": "default", "src_pod": "app-y"}},
+			}...)
+	}
+	get := func(q *fakeQuerier, path string) NodeResponse {
+		rec := httptest.NewRecorder()
+		NewSynthesisHandler(q, nil, nil).GetNode(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		var resp NodeResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return resp
+	}
+
+	// (1) 기본 (미전달): 임계 미만 포함 전 pod 노출 (종전 동작).
+	base := get(newQ(), "/api/v1/node/worker2")
+	if len(base.TopPods) != 3 {
+		t.Errorf("기본 top_pods=%+v want 3 (임계 미적용, 전 pod)", base.TopPods)
+	}
+
+	// (2) is_filtered=true: 0.12 제외, 0.78·0.50 만 pressure 내림차순.
+	filt := get(newQ(), "/api/v1/node/worker2?is_filtered=true")
+	if len(filt.TopPods) != 2 || filt.TopPods[0].Pod != "default/app-x" || filt.TopPods[1].Pod != "default/app-y" {
+		t.Errorf("filtered top_pods=%+v want [app-x(0.78), app-y(0.50)] (0.12 제외·내림차순)", filt.TopPods)
+	}
+
+	// (3) is_filtered=true + dominant low: pod 가 0.78 이어도 정상 노드라 비움.
+	qLow := (&fakeQuerier{}).
+		on("node:cpu_pressure_score", sample(0.20, "node", "worker2")).
+		on("pod:cpu_throttle_score", sample(0.78, "node", "worker2", "src_namespace", "default", "src_pod", "app-x"))
+	low := get(qLow, "/api/v1/node/worker2?is_filtered=true")
+	if len(low.TopPods) != 0 {
+		t.Errorf("dominant low + filtered top_pods=%+v want 비움", low.TopPods)
+	}
+}

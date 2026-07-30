@@ -691,10 +691,11 @@ type NodePodPressure struct {
 
 // GetNode godoc
 // @Summary      노드 1대 전체 압박 상황
-// @Description  노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 차원별 pressure 등급(전 차원 worst, memory 는 node_exporter 실측 사용률이라 일반 임계 대신 usage 임계 0.85/0.95 로 환산해 health 불감대·usage 축 설계와 정합)과 노드 사용량(CPU/memory 점유율, allocatable 분모, 0.85 warn/0.95 degraded) 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(severity critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis 가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서 제외한다. 등급 어휘 ok/warn/degraded 는 overview 와 node-map 의 healthy/warning 과 같은 입력 신호(pressure, firing alert)를 공유하고, down(ready 기반) 판정은 node-map 소관이다.
+// @Description  노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 차원별 pressure 등급(전 차원 worst, memory 는 node_exporter 실측 사용률이라 일반 임계 대신 usage 임계 0.85/0.95 로 환산해 health 불감대·usage 축 설계와 정합)과 노드 사용량(CPU/memory 점유율, allocatable 분모, 0.85 warn/0.95 degraded) 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(severity critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis 가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서 제외한다. 등급 어휘 ok/warn/degraded 는 overview 와 node-map 의 healthy/warning 과 같은 입력 신호(pressure, firing alert)를 공유하고, down(ready 기반) 판정은 node-map 소관이다. top_pods 는 dominant 압박의 원인 후보이며 is_filtered=true 면 pod pressure 가 elevated 임계(0.4) 이상인 pod 만 남기고 dominant severity 가 low(정상)면 목록을 비워 낮은 수치 pod 가 원인으로 오인되지 않게 한다(#380). 미전달 기본은 전 pod 를 노출한다.
 // @Tags         interference
 // @Produce      json
 // @Param        node  path  string  true  "노드 이름"
+// @Param        is_filtered  query  bool  false  "top_pods 를 원인 후보 임계(pressure>=0.4, dominant severity low 면 비움)로 필터링 (기본 false)"
 // @Success      200  {object}  NodeResponse
 // @Failure      400  {object}  apicommon.ErrorBody
 // @Failure      500  {object}  apicommon.ErrorBody
@@ -705,6 +706,9 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node", "경로는 /api/v1/node/{node} 형식이어야 합니다")
 		return
 	}
+	// #380 is_filtered=true 면 top_pods 를 원인 후보 임계로 거른다 (opt-in). 미전달 기본은 종전대로 전
+	// pod 를 노출해 기존 소비자에 무영향이다 (additive 쿼리 파라미터, 응답 스키마 불변).
+	isFiltered := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("is_filtered")), "true")
 
 	resp := NodeResponse{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
@@ -816,6 +820,32 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 			}
 			return resp.TopPods[i].Pod < resp.TopPods[j].Pod
 		})
+		// #380 is_filtered=true 면 top_pods 를 원인 후보 임계로 거른다. top_pods 는 dominant 압박의 원인
+		// 후보라, 임계 미만 pod 와 정상 노드의 낮은 수치 후보를 제외해 사용자가 낮은 값 pod 를 원인으로
+		// 오인하지 않게 한다. dominant 차원 severity 가 low (정상) 면 원인 후보가 없어 목록을 비우고
+		// (memory 는 node 사용률 축이라 usage 임계로, 나머지는 pressure 임계로 등급화해 status 산정과
+		// 규약을 맞춘다), elevated 이상이면 pod pressure 가 PressureElevatedThreshold (0.4) 이상인 pod 만
+		// 남긴다. 정렬 뒤에 거르므로 결정적 순서 (pressure 내림차순 + pod 사전순 tie-break) 가 보존된다.
+		// pod pressure score 산식과 top_pods 필드 형태는 불변이며 표시 임계만 opt-in 으로 더한다 (비목표).
+		if isFiltered {
+			dominantLow := domDim == ""
+			if domDim != "" {
+				g := pressureStatusLabel(domVal)
+				if domDim == "memory" {
+					g = usageStatusLabel(domVal)
+				}
+				dominantLow = g == "ok"
+			}
+			kept := resp.TopPods[:0]
+			if !dominantLow {
+				for _, p := range resp.TopPods {
+					if p.Pressure >= correlation.PressureElevatedThreshold {
+						kept = append(kept, p)
+					}
+				}
+			}
+			resp.TopPods = kept
+		}
 		if len(resp.TopPods) > 5 {
 			resp.TopPods = resp.TopPods[:5]
 		}

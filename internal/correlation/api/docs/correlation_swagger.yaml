@@ -2686,13 +2686,21 @@ paths:
         critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis
         가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서
         제외한다. 등급 어휘 ok/warn/degraded 는 overview 와 node-map 의 healthy/warning 과 같은
-        입력 신호(pressure, firing alert)를 공유하고, down(ready 기반) 판정은 node-map 소관이다.'
+        입력 신호(pressure, firing alert)를 공유하고, down(ready 기반) 판정은 node-map 소관이다. top_pods
+        는 dominant 압박의 원인 후보이며 is_filtered=true 면 pod pressure 가 elevated 임계(0.4)
+        이상인 pod 만 남기고 dominant severity 가 low(정상)면 목록을 비워 낮은 수치 pod 가 원인으로 오인되지 않게
+        한다(#380). 미전달 기본은 전 pod 를 노출한다.'
       parameters:
       - description: 노드 이름
         in: path
         name: node
         required: true
         type: string
+      - description: top_pods 를 원인 후보 임계(pressure>=0.4, dominant severity low 면 비움)로
+          필터링 (기본 false)
+        in: query
+        name: is_filtered
+        type: boolean
       produces:
       - application/json
       responses:
