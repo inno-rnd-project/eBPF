@@ -1,0 +1,69 @@
+# gpuobs-idle-device-gating.test.yaml 은 #364 의 device cause 노드별 유휴 게이팅 검증 promtool
+# unit test 다. 첫 블록은 오귀속 방지 회귀로, 유휴 노드 (n1) 와 바쁜 노드 (n2, DCGM PCIe replay
+# storm) 혼재 시 종전에는 전역 스칼라 게이트만 열리면 n2 의 device 포화가 유휴의 dominant cause 로
+# 둔갑했다. 게이팅 후에는 유휴 노드 자신의 device 신호 (0) 만 계상되어 weight 와 dominant 가
+# emit 되지 않아야 한다. 둘째 블록은 진귀속 보존으로, 유휴 노드 자신의 device 신호는 종전과 동일하게
+# dominant 로 귀속된다.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # 오귀속 방지: n1 유휴 (util 5%), n2 바쁨 (util 90%) + PCIe replay 100/s (score 1).
+  - interval: 30s
+    input_series:
+      - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
+        values: '5x40'
+      - series: 'gpuobs_device_utilization_percent{node="n2",gpu_uuid="g2"}'
+        values: '90x40'
+      - series: 'DCGM_FI_DEV_PCIE_REPLAY_COUNTER{node="n2",gpu="0"}'
+        values: '0+3000x40'
+
+    promql_expr_test:
+      # 전제 확인: n2 의 노드 score 는 1 (replay 100/s = 정규화 임계).
+      - expr: node:dcgm_pcie_replay_score:5m{node="n2"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'node:dcgm_pcie_replay_score:5m{node="n2"}'
+            value: 1
+      # 게이팅된 cluster 판은 유휴 노드 (n1, fallback 0) 만 계상해 0 이다. 종전 비게이팅 판이면 1.
+      - expr: cluster:gpu_idle_dcgm_pcie_replay_score:5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'cluster:gpu_idle_dcgm_pcie_replay_score:5m'
+            value: 0
+      # cause_sum 0 (노이즈 하한 0.05 미달) 이라 weight 와 dominant 는 emit 되지 않는다. 종전에는
+      # dcgm_pcie_replay weight 1 과 dominant 가 emit 되던 오귀속 케이스다.
+      - expr: gpu_idle_cause_weight:5m{cause="dcgm_pcie_replay"}
+        eval_time: 10m
+        exp_samples: []
+      - expr: cluster:gpu_idle_dominant_cause:5m
+        eval_time: 10m
+        exp_samples: []
+
+  # 진귀속 보존: 유휴 노드 n1 자신의 PCIe replay storm 은 종전과 동일하게 dominant 로 귀속된다.
+  - interval: 30s
+    input_series:
+      - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
+        values: '5x40'
+      - series: 'DCGM_FI_DEV_PCIE_REPLAY_COUNTER{node="n1",gpu="0"}'
+        values: '0+3000x40'
+
+    promql_expr_test:
+      - expr: cluster:gpu_idle_dcgm_pcie_replay_score:5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'cluster:gpu_idle_dcgm_pcie_replay_score:5m'
+            value: 1
+      - expr: gpu_idle_cause_weight:5m{cause="dcgm_pcie_replay"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'gpu_idle_cause_weight:5m{cause="dcgm_pcie_replay"}'
+            value: 1
+      # dominant 값은 weight 1 + tie-breaker offset (dcgm_pcie_replay 7e-6) 이다.
+      - expr: cluster:gpu_idle_dominant_cause:5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'cluster:gpu_idle_dominant_cause:5m{cause="dcgm_pcie_replay"}'
+            value: 1.000007
