@@ -75,7 +75,10 @@ spec:
         # effect size 유의성) 의 실질 기여를 강제하고, Granger 검정이 불가한 동시 간섭 (lag=0) 도
         # effect 유의성 경로 (상한 0.7) 로 통과할 수 있다 (임계 0.7 이면 이 경로가 사실상 막힌다).
         # pvalue 분기는 GrangerOK 페어의 직접 증거다 (pvalue 는 GrangerOK 페어만 emit). 증거 게이트는
-        # and on() 조인이라 $value (max |corr|) 와 라벨은 종전과 동일하다.
+        # and on() 조인이라 $value (max |corr|) 와 라벨은 종전과 동일하다. 양측 모두 5라벨 grain 으로
+        # 집계하므로 victim_signal 축은 의도적으로 병합된다. score 와 증거가 같은 페어의 서로 다른
+        # victim_signal 변형에서 와도 통과하며, 같은 (victim, suspect, dimension) 페어의 인과 증거라는
+        # 의미론으로 수용한다 (victim_signal 까지 조인 키에 넣으면 게이트가 과도하게 좁아진다).
         - alert: CorrelationStrongNoisyNeighbor
           expr: |
             (
