@@ -4,7 +4,7 @@
 
 ## 규약
 
-1. 절대량은 항상 제공한다. memory 사용량은 working set bytes, cpu 사용량은 5분 rate cores가 기준 개념이며, 신규 필드명은 `memory_working_set_bytes`와 `cpu_usage_cores`를 그대로 재사용한다. 절대량은 limit 유무와 무관하게 전 pod와 전 노드에서 산출되므로 프론트 비교 축이 된다.
+1. 절대량은 항상 제공한다. memory 사용량은 working set bytes, cpu 사용량은 5분 rate cores가 기준 개념이며, 신규 필드명은 `memory_working_set_bytes`와 `cpu_usage_cores`를 그대로 재사용한다. 절대량은 limit 유무와 무관하게 전 pod와 전 노드에서 산출되므로 프론트 비교 축이 된다. 여기서 "항상"은 limit 유무와 무관하다는 뜻이고, 수집 공백 시에는 `omitempty`로 생략된다(절대량 생략 = 데이터 부재, 상대량 생략 = 분모 부재).
 2. 상대량은 분모가 있을 때만 additive로 병기한다(`omitempty` pointer). 신규 상대량 필드명은 분모 토큰을 포함해 자명하게 한다.
    - limit 분모: `*_limit_percent`(0~100) 또는 `*_limit_ratio`(0~1)
    - allocatable 분모: `*_allocatable_percent`(0~100) 또는 `*_allocatable_ratio`(0~1)
