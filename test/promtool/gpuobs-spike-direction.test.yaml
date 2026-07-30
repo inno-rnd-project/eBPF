@@ -1,0 +1,64 @@
+# gpuobs-spike-direction.test.yaml 은 #365 의 spike alert 방향성 임계 검증이다. #89 spike 4종이
+# abs(z) > 3 양방향이라 무해한 하강 (조용한 5분의 drop 0, throttle 완화, 사용량 감소) 이 오발화했다.
+# drop / cpu / memory 는 상승 (z > 3) 만, gpu_util 은 급락 (z < -3, 워크로드 스톨 신호) 만 발화해야
+# 한다. z-score record 는 산식 불변 (비목표) 이라 record 시리즈를 직접 input 으로 주어 alert expr 의
+# 방향만 단정한다 (base 입력 부재라 record rule 은 미평가). abs() 로 되돌리면 미발화 단정이 깨져
+# 회귀를 막는다.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  - interval: 30s
+    input_series:
+      # 하강 케이스 3종: 종전 abs() 면 전부 오발화, 방향성 임계면 전부 미발화.
+      - series: 'cluster:network_drop_zscore:5m'
+        values: '-4x40'
+      - series: 'cluster:memory_pressure_zscore:5m'
+        values: '-4x40'
+      # gpu_util 급등: 정상 활용이라 미발화.
+      - series: 'cluster:gpu_util_zscore:5m'
+        values: '4x40'
+      # cpu 급등: 유해 방향이라 발화.
+      - series: 'cluster:cpu_throttle_zscore:5m'
+        values: '4x40'
+
+    alert_rule_test:
+      # 무해 방향 3종은 미발화다.
+      - alertname: NetworkDropSpikeDetected
+        eval_time: 10m
+        exp_alerts: []
+      - alertname: MemoryPressureSpikeDetected
+        eval_time: 10m
+        exp_alerts: []
+      - alertname: GPUUtilSpikeDetected
+        eval_time: 10m
+        exp_alerts: []
+      # cpu 급등은 발화한다.
+      - alertname: CPUThrottleSpikeDetected
+        eval_time: 10m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: cpu-anomaly
+            exp_annotations:
+              summary: "CPU throttle spike (z=4)"
+              description: "Cluster CPU CFS throttle ratio 의 5분 z-score 가 직전 7일 baseline 대비 z=4 로 5분 sustained 급등했다 (#365, 하강 (throttle 완화) 은 무해라 발화하지 않는다). 즉시 RCA spike 신호 로 CPU limit 상향 또는 워크로드 재배치를 검토 하라."
+
+  # gpu_util 급락은 워크로드 스톨 신호라 발화한다.
+  - interval: 30s
+    input_series:
+      - series: 'cluster:gpu_util_zscore:5m'
+        values: '-4x40'
+
+    alert_rule_test:
+      - alertname: GPUUtilSpikeDetected
+        eval_time: 10m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: gpuobs-anomaly
+            exp_annotations:
+              summary: "GPU utilization crash (z=-4)"
+              description: "Cluster GPU utilization 의 5분 z-score 가 직전 7일 baseline 대비 z=-4 로 5분 sustained 급락했다. 잘 돌던 GPU 워크로드의 스톨 또는 중단 신호다 (#365, 급등은 정상 활용이라 발화하지 않는다). observability-overview 의 Resource anomaly spike row 에서 시점 확인 후 gpu-idle 원인 귀속과 gpu-rca 로 root cause 를 추적하라."
