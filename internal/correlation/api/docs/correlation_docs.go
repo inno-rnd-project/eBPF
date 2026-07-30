@@ -3215,6 +3215,13 @@ const docTemplatecorrelation = `{
                 "status": {
                     "type": "string"
                 },
+                "status_alerts": {
+                    "description": "StatusAlerts 는 이 노드에서 지속성 게이트 (#379, alertStatusMinHold) 를 통과한 firing alertname\n목록이다 (additive). status_basis=alert 이면 이들이 status 를 올린 근거라 pressure/usage 가 정상인데\nwarn 인 이유를 추적하게 한다. 통과한 alert 가 없으면 생략된다. status/status_basis 필드는 불변이며\n본 필드만 additive 로 더한다 (비목표: 출력 스키마 변경 없음, additive 는 미인지 소비자가 무시).",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "status_basis": {
                     "description": "StatusBasis 는 status 등급을 결정한 신호다 (#324, #325, pressure / usage / health / alert).\n등급 동률이면 pressure, usage, health, alert 순으로 귀속하며 status 가 unknown (신호 전부\n부재) 이면 생략된다.",
                     "type": "string"

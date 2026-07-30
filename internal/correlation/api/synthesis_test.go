@@ -403,8 +403,9 @@ func TestSynthesis_GetNode_WorstOfHealthAndAlert(t *testing.T) {
 	}
 }
 
-// TestSynthesis_GetNode_AlertSeverityGrades 는 pressure 와 health 가 정상일 때 firing alert 의
-// severity 가 등급을 가르는지 검증한다 (#325). critical 은 degraded, 그 외 severity 는 warn 이다.
+// TestSynthesis_GetNode_AlertSeverityGrades 는 pressure 와 health 가 정상일 때 지속성 게이트를 통과한
+// firing alert 의 severity 가 등급을 가르는지 검증한다 (#325, #379). critical 은 degraded, 그 외
+// severity 는 warn 이며, status 를 올린 alertname 이 StatusAlerts 로 노출된다.
 func TestSynthesis_GetNode_AlertSeverityGrades(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -419,6 +420,10 @@ func TestSynthesis_GetNode_AlertSeverityGrades(t *testing.T) {
 			q := (&fakeQuerier{}).
 				on("node:cpu_pressure_score", sample(0.1, "node", "worker1")).
 				on("node:cpu_health_score", sample(0.95, "node", "worker1")).
+				// #379 active-age (초). ALERTS_FOR_STATE 스텁을 ALERTS 보다 먼저 등록해
+				// time() - ALERTS_FOR_STATE 쿼리가 이 값을 받게 한다 (substring 매칭 우선). 3600s 는
+				// alertStatusMinHold 를 넘겨 지속성 게이트를 통과한다.
+				on("ALERTS_FOR_STATE", sample(3600, "alertname", "NetObsRetransSpike", "severity", tc.severity, "node", "worker1")).
 				on("ALERTS", sample(1, "alertname", "NetObsRetransSpike", "severity", tc.severity, "node", "worker1"))
 			h := NewSynthesisHandler(q, nil, nil)
 			rec := httptest.NewRecorder()
@@ -428,7 +433,60 @@ func TestSynthesis_GetNode_AlertSeverityGrades(t *testing.T) {
 			if resp.Status != tc.wantStatus || resp.StatusBasis != "alert" {
 				t.Errorf("status=%q basis=%q want %s/alert", resp.Status, resp.StatusBasis, tc.wantStatus)
 			}
+			if len(resp.StatusAlerts) != 1 || resp.StatusAlerts[0] != "NetObsRetransSpike" {
+				t.Errorf("status_alerts=%v want [NetObsRetransSpike] (status 근거 노출)", resp.StatusAlerts)
+			}
+			if !strings.Contains(resp.Summary, "NetObsRetransSpike") {
+				t.Errorf("summary=%q want alertname 명시", resp.Summary)
+			}
 		})
+	}
+}
+
+// TestSynthesis_GetNode_AlertPersistenceGate 는 #379 의 핵심 회귀 가드다. pressure/usage 가 정상일 때
+// firing alert 가 (1) active-age 가 alertStatusMinHold 미만이면 transient 라 status 에 반영되지 않아
+// status=ok 를 유지하고 (flapping 억제), (2) 지속 시간을 넘기면 warn(basis alert) 으로 반영되는지를
+// 같은 alert 로 대조한다. 두 케이스의 차이는 오직 active-age 라 게이트 자체를 격리 검증한다.
+func TestSynthesis_GetNode_AlertPersistenceGate(t *testing.T) {
+	build := func(ageSeconds float64) NodeResponse {
+		q := (&fakeQuerier{}).
+			on("node:cpu_pressure_score", sample(0.1, "node", "worker1")).
+			on("node:cpu_health_score", sample(0.95, "node", "worker1")).
+			on("ALERTS_FOR_STATE", sample(ageSeconds, "alertname", "NetObsBpfMapUtilizationHigh", "severity", "warning", "node", "worker1")).
+			on("ALERTS", sample(1, "alertname", "NetObsBpfMapUtilizationHigh", "severity", "warning", "node", "worker1"))
+		rec := httptest.NewRecorder()
+		NewSynthesisHandler(q, nil, nil).GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/worker1", nil))
+		var resp NodeResponse
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		return resp
+	}
+	// transient (60s < 10m): status 에 반영 안 됨 → pressure 기준 ok, StatusAlerts 생략.
+	if r := build(60); r.Status != "ok" || r.StatusBasis == "alert" || len(r.StatusAlerts) != 0 {
+		t.Errorf("transient alert: status=%q basis=%q alerts=%v want ok/비alert/생략", r.Status, r.StatusBasis, r.StatusAlerts)
+	}
+	// sustained (1200s > 10m): warn(basis alert) 로 반영 + StatusAlerts 노출.
+	if r := build(1200); r.Status != "warn" || r.StatusBasis != "alert" || len(r.StatusAlerts) != 1 {
+		t.Errorf("sustained alert: status=%q basis=%q alerts=%v want warn/alert/[1건]", r.Status, r.StatusBasis, r.StatusAlerts)
+	}
+}
+
+// TestSynthesis_GetNode_AlertMinHoldConfigurable 은 #379 리뷰의 env 튜닝을 검증한다. AlertMinHold 를
+// 30s 로 낮추면 default (10m) 로는 transient 로 억제되던 age 60s alert 가 반영돼, 필드가 게이트 임계로
+// 실제 쓰이는지 (correlation-exporter 가 ALERT_STATUS_MIN_HOLD 로 주입하는 값) 확인한다.
+func TestSynthesis_GetNode_AlertMinHoldConfigurable(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("node:cpu_pressure_score", sample(0.1, "node", "worker1")).
+		on("node:cpu_health_score", sample(0.95, "node", "worker1")).
+		on("ALERTS_FOR_STATE", sample(60, "alertname", "NetObsBpfMapUtilizationHigh", "severity", "warning", "node", "worker1")).
+		on("ALERTS", sample(1, "alertname", "NetObsBpfMapUtilizationHigh", "severity", "warning", "node", "worker1"))
+	h := NewSynthesisHandler(q, nil, nil)
+	h.AlertMinHold = 30 * time.Second // env 주입 모사: default 10m 보다 낮춤.
+	rec := httptest.NewRecorder()
+	h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/worker1", nil))
+	var resp NodeResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Status != "warn" || resp.StatusBasis != "alert" || len(resp.StatusAlerts) != 1 {
+		t.Errorf("낮춘 hold: status=%q basis=%q alerts=%v want warn/alert/[1건] (age 60s > 30s hold)", resp.Status, resp.StatusBasis, resp.StatusAlerts)
 	}
 }
 
