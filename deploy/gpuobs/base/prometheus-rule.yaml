@@ -1220,9 +1220,14 @@ spec:
         # (유휴 GPU 의 양성 코드 Not Found / Not Supported 제외, alert 임계 1/s 정규화), 성능성
         # throttle 활성 (GPUObsThrottleActive 와 동일 reason 셋, 정보성 gpu_idle 제외)) 이고
         # health = 1 - unhealth 다. sig 라벨은 or 유니온에서 세 신호가 서로 가려지지 않게 하는
-        # 구분자로 max 가 소거한다. 다른 node health 3종 (#264 블록) 보다 앞에 두는 이유는 아래
-        # cluster 판이 같은 그룹 내 순차 평가로 본 rule 을 지연 없이 참조하기 위함이다. GPU 미설치
-        # 노드에서는 base series 가 비어 score 가 산출되지 않는다.
+        # 구분자로 max 가 소거한다. throttle 신호는 avg_over_time 5분 평활 (#389) 이다. 순간 게이지
+        # 원값을 쓰면 소비자 GPU 의 부스트성 sw_power_cap blip (스크레이프 1회) 이 unhealth 1 이 되어
+        # health 0 으로 직행하고 cluster 판의 min() 이 전 클러스터를 0 으로 만들며, 같은 reason 셋의
+        # GPUObsThrottleActive (for: 1m debounce) 보다 health 가 더 과민한 비대칭이 있었다. 평활로
+        # thermal (5분 score) 및 NVML (5분 rate) 과 시간 축이 정합하고, blip 은 지속 비율만큼만
+        # 기여하며 5분 내내 지속된 throttle 만 health 0 이 된다. 다른 node health 3종 (#264 블록)
+        # 보다 앞에 두는 이유는 아래 cluster 판이 같은 그룹 내 순차 평가로 본 rule 을 지연 없이
+        # 참조하기 위함이다. GPU 미설치 노드에서는 base series 가 비어 score 가 산출되지 않는다.
         - record: node:gpu_health_score:5m
           expr: |
             1 - clamp_max(
@@ -1232,7 +1237,7 @@ spec:
                   clamp_max(sum by(node) (rate(gpuobs_nvml_errors_total{error_code!~"Not Supported|Not Found"}[5m])), 1),
                   "sig", "nvml", "", "")
                 or label_replace(
-                  max by(node) (gpuobs_device_throttle_active{reason=~"hw_slowdown|hw_thermal_slowdown|hw_power_brake_slowdown|sw_thermal_slowdown|sw_power_cap"}),
+                  max by(node) (avg_over_time(gpuobs_device_throttle_active{reason=~"hw_slowdown|hw_thermal_slowdown|hw_power_brake_slowdown|sw_thermal_slowdown|sw_power_cap"}[5m])),
                   "sig", "throttle", "", "")
               ),
               1
