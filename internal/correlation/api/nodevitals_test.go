@@ -73,6 +73,35 @@ func TestNodeVitals_ControlPlane(t *testing.T) {
 	}
 }
 
+// TestNodeVitals_AbsoluteUsage 는 percent 와 같은 분자의 절대 사용량 (cpu_usage_cores 와
+// memory_working_set_bytes, #382 사용량 표현 규약) 이 additive 로 실리는지 검증한다. percent 쿼리는
+// allocatable 분모 (resource= 셀렉터) 를 포함하고 절대량 쿼리는 포함하지 않아, 분모 셀렉터를 먼저
+// 등록해 두 쿼리를 구분한다 (fakeQuerier 는 등록순 substring 매칭).
+func TestNodeVitals_AbsoluteUsage(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on(`resource="cpu"`, sample(4.1, "node", "gpu")).
+		on(`resource="memory"`, sample(36.1, "node", "gpu")).
+		on("container_cpu_usage_seconds_total", sample(1.85, "node", "gpu")).
+		on("container_memory_working_set_bytes", sample(5.9e9, "node", "gpu"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodeVitals(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node-vitals?node=gpu", nil))
+	var resp NodeVitalsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.CPUUsageCores == nil || *resp.CPUUsageCores != 1.85 {
+		t.Errorf("cpu_usage_cores=%v want 1.85 (절대량)", resp.CPUUsageCores)
+	}
+	if resp.MemoryWorkingSetBytes == nil || *resp.MemoryWorkingSetBytes != 5.9e9 {
+		t.Errorf("memory_working_set_bytes=%v want 5.9e9 (절대량)", resp.MemoryWorkingSetBytes)
+	}
+	// 기존 percent 필드는 그대로다 (출력 호환).
+	if resp.CPUPercent == nil || *resp.CPUPercent != 4.1 || resp.MemoryPercent == nil || *resp.MemoryPercent != 36.1 {
+		t.Errorf("percent=(%v,%v) want (4.1, 36.1) 불변", resp.CPUPercent, resp.MemoryPercent)
+	}
+}
+
 // TestNodeVitals_MissingNode 는 node 파라미터 누락 시 400 을 검증한다.
 func TestNodeVitals_MissingNode(t *testing.T) {
 	h := NewSynthesisHandler(nodeVitalsQuerier(), nil, nil)

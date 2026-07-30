@@ -1,7 +1,7 @@
 swagger: '2.0'
 info:
   title: netobs unified API
-  version: 2.7.3
+  version: 2.7.4
 paths:
   /api/v1/agents:
     get:
@@ -709,9 +709,12 @@ paths:
   /api/v1/node-vitals:
     get:
       description: '노드의 CPU 와 memory 사용률 퍼센트 (노드 내 pod 합산 사용량을 노드 allocatable 로 나눈
-        점유율, #313), GPU 사용률과 GPU 메모리를 instant query 로 읽어 노드 단위로 돌려준다. cadvisor 와 gpuobs
-        원시 게이지 기반이며 압박 score 로 변환하지 않는다. limit 근접도 의미는 pressure 계열이 담당한다. 프론트가 주기
-        폴링으로 실시간 값을 받는 경로이며, 시계열 range 는 trends 가 담당한다.'
+        점유율, #313) 와 같은 분자의 절대 사용량 (cpu_usage_cores 는 5분 rate cores, memory_working_set_bytes
+        는 working set bytes, #382 사용량 표현 규약의 절대량 항상 제공), GPU 사용률과 GPU 메모리를 instant
+        query 로 읽어 노드 단위로 돌려준다. percent 는 allocatable 분모라 pod 축 (node/pods) 의 limit
+        분모 동명 필드와 분모가 다르고, 절대량은 두 축이 같은 개념과 이름을 공유한다 (docs/api/usage-units.md). cadvisor
+        와 gpuobs 원시 게이지 기반이며 압박 score 로 변환하지 않는다. limit 근접도 의미는 pressure 계열이 담당한다.
+        프론트가 주기 폴링으로 실시간 값을 받는 경로이며, 시계열 range 는 trends 가 담당한다.'
       produces:
       - application/json
       tags:
@@ -2420,6 +2423,8 @@ definitions:
     properties:
       cpu_percent:
         type: number
+      cpu_usage_cores:
+        type: number
       generated_at:
         type: string
       gpu_memory_percent:
@@ -2431,6 +2436,8 @@ definitions:
       gpu_percent:
         type: number
       memory_percent:
+        type: number
+      memory_working_set_bytes:
         type: number
       node:
         type: string

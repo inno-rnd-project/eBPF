@@ -22,22 +22,28 @@ import (
 // 는 pressure 와 노드 health 가 담당한다.
 
 // NodeVitalsResponse 는 GET /api/v1/node-vitals 의 typed 응답이다. 각 사용률은 수집 공백 시 생략되도록
-// pointer 로 둔다 (NaN 은 JSON 직렬화 불가라 omitempty pointer 규약).
+// pointer 로 둔다 (NaN 은 JSON 직렬화 불가라 omitempty pointer 규약). CPUUsageCores 와
+// MemoryWorkingSetBytes 는 percent 의 분자와 동일한 노드 내 pod 합산 절대 사용량으로, 사용량 표현
+// 규약 (#382, docs/api/usage-units.md 의 절대량 항상 제공) 에 맞춰 additive 로 노출한다. percent 는
+// 노드 allocatable 분모라 pod 축 (node/pods) 의 limit 분모 동명 필드와 분모가 다르며, 절대량은 두
+// 축이 같은 개념·이름 (cpu_usage_cores, memory_working_set_bytes) 을 공유한다.
 type NodeVitalsResponse struct {
-	GeneratedAt         string   `json:"generated_at"`
-	Node                string   `json:"node"`
-	CPUPercent          *float64 `json:"cpu_percent,omitempty"`
-	MemoryPercent       *float64 `json:"memory_percent,omitempty"`
-	GPUPercent          *float64 `json:"gpu_percent,omitempty"`
-	GPUMemoryUsedBytes  *float64 `json:"gpu_memory_used_bytes,omitempty"`
-	GPUMemoryTotalBytes *float64 `json:"gpu_memory_total_bytes,omitempty"`
-	GPUMemoryPercent    *float64 `json:"gpu_memory_percent,omitempty"`
-	Summary             string   `json:"summary"`
+	GeneratedAt           string   `json:"generated_at"`
+	Node                  string   `json:"node"`
+	CPUPercent            *float64 `json:"cpu_percent,omitempty"`
+	CPUUsageCores         *float64 `json:"cpu_usage_cores,omitempty"`
+	MemoryPercent         *float64 `json:"memory_percent,omitempty"`
+	MemoryWorkingSetBytes *float64 `json:"memory_working_set_bytes,omitempty"`
+	GPUPercent            *float64 `json:"gpu_percent,omitempty"`
+	GPUMemoryUsedBytes    *float64 `json:"gpu_memory_used_bytes,omitempty"`
+	GPUMemoryTotalBytes   *float64 `json:"gpu_memory_total_bytes,omitempty"`
+	GPUMemoryPercent      *float64 `json:"gpu_memory_percent,omitempty"`
+	Summary               string   `json:"summary"`
 }
 
 // GetNodeVitals godoc
 // @Summary      노드 raw 사용률 (Vitals)
-// @Description  노드의 CPU 와 memory 사용률 퍼센트 (노드 내 pod 합산 사용량을 노드 allocatable 로 나눈 점유율, #313), GPU 사용률과 GPU 메모리를 instant query 로 읽어 노드 단위로 돌려준다. cadvisor 와 gpuobs 원시 게이지 기반이며 압박 score 로 변환하지 않는다. limit 근접도 의미는 pressure 계열이 담당한다. 프론트가 주기 폴링으로 실시간 값을 받는 경로이며, 시계열 range 는 trends 가 담당한다.
+// @Description  노드의 CPU 와 memory 사용률 퍼센트 (노드 내 pod 합산 사용량을 노드 allocatable 로 나눈 점유율, #313) 와 같은 분자의 절대 사용량 (cpu_usage_cores 는 5분 rate cores, memory_working_set_bytes 는 working set bytes, #382 사용량 표현 규약의 절대량 항상 제공), GPU 사용률과 GPU 메모리를 instant query 로 읽어 노드 단위로 돌려준다. percent 는 allocatable 분모라 pod 축 (node/pods) 의 limit 분모 동명 필드와 분모가 다르고, 절대량은 두 축이 같은 개념과 이름을 공유한다 (docs/api/usage-units.md). cadvisor 와 gpuobs 원시 게이지 기반이며 압박 score 로 변환하지 않는다. limit 근접도 의미는 pressure 계열이 담당한다. 프론트가 주기 폴링으로 실시간 값을 받는 경로이며, 시계열 range 는 trends 가 담당한다.
 // @Tags         interference
 // @Produce      json
 // @Param        node  query  string  true   "대상 노드 (DNS-1123 형식)"
@@ -79,6 +85,8 @@ func (h *SynthesisHandler) GetNodeVitals(w http.ResponseWriter, r *http.Request)
 	// 분자 합산은 pod-level cgroup 행 (container="", pod!="") 으로 한정해 container-level 과 root
 	// cgroup 을 함께 노출하는 표준 cadvisor 구성의 중복 합산을 막는다 (node-resources 와 동일 규약).
 	// GPU 는 device 사용률 노드 평균, GPU 메모리는 노드 device used/total 합이다.
+	// 절대량 2종 (#382) 은 percent 쿼리의 분자와 동일 식이다. 분자/분모 분리 후 서버 나눗셈으로
+	// 재구성하지 않고 별도 쿼리로 더해 기존 percent 쿼리를 그대로 둔다 (출력 호환).
 	podLevelSel := promSelector(nodeMatcher(node), `container=""`, `pod!=""`)
 	res, qerr := h.queryParallel(ctx,
 		fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total%s[5m])) / max(kube_node_status_allocatable{node=%q, resource="cpu"}) * 100`, podLevelSel, node),
@@ -86,6 +94,8 @@ func (h *SynthesisHandler) GetNodeVitals(w http.ResponseWriter, r *http.Request)
 		fmt.Sprintf(`avg by(node) (gpuobs_device_utilization_percent{node=%q})`, node),
 		fmt.Sprintf(`sum by(node) (gpuobs_device_memory_used_bytes{node=%q})`, node),
 		fmt.Sprintf(`sum by(node) (gpuobs_device_memory_total_bytes{node=%q})`, node),
+		fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total%s[5m]))`, podLevelSel),
+		fmt.Sprintf(`sum(container_memory_working_set_bytes%s)`, podLevelSel),
 	)
 	if qerr != nil {
 		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
@@ -96,6 +106,8 @@ func (h *SynthesisHandler) GetNodeVitals(w http.ResponseWriter, r *http.Request)
 	resp.GPUPercent = firstValue(res[2])
 	resp.GPUMemoryUsedBytes = firstValue(res[3])
 	resp.GPUMemoryTotalBytes = firstValue(res[4])
+	resp.CPUUsageCores = firstValue(res[5])
+	resp.MemoryWorkingSetBytes = firstValue(res[6])
 	if resp.GPUMemoryUsedBytes != nil && resp.GPUMemoryTotalBytes != nil && *resp.GPUMemoryTotalBytes > 0 {
 		pct := *resp.GPUMemoryUsedBytes / *resp.GPUMemoryTotalBytes * 100
 		resp.GPUMemoryPercent = &pct
