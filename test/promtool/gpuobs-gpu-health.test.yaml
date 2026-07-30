@@ -2,7 +2,9 @@
 # "유휴 GPU 가 healthy" 다 (기존 사용률 등식이면 health 0 이던 케이스). n1 은 완전 유휴 (util 5%,
 # 정보성 gpu_idle throttle, 양성 Not Found NVML 오류만) 인데 health 1 이어야 하고, n2 는 성능성
 # thermal throttle 활성이라 health 0, n3 은 유의미 NVML 오류 0.5/s 라 health 0.5 다. cluster 는
-# worst 노드라 0 이다.
+# worst 노드라 0 이다. 두 번째 테스트 블록은 #389 의 throttle 평활 회귀로, 순간 sw_power_cap blip
+# (스크레이프 1회) 이 health 를 0 으로 직행시키지 않고 지속 비율만큼만 깎는지, cluster min() 으로
+# 0 이 전파되지 않는지 검증한다. 지속 throttle 이 health 0 인 것은 n2 가 담보한다.
 rule_files:
   - gpuobs.yaml
 
@@ -54,3 +56,40 @@ tests:
         exp_samples:
           - labels: 'cluster:gpu_health_score:5m'
             value: 0
+
+  # #389 throttle 평활 회귀. n4 는 부스트성 sw_power_cap blip (5분 창 11 샘플 중 1회만 1) 으로,
+  # 순간 게이지 원값이면 blip 시점 health 0 직행이던 케이스다. 평활 후에는 지속 비율 (1/11) 만큼만
+  # 깎여 health 10/11 이고, 단일 노드 클러스터라 cluster 판도 같은 값으로 0 미전파를 함께 검증한다.
+  - interval: 30s
+    input_series:
+      - series: 'gpuobs_device_utilization_percent{node="n4",gpu_uuid="g4"}'
+        values: '40x20'
+      - series: 'gpuobs_device_throttle_active{node="n4",gpu_uuid="g4",reason="sw_power_cap"}'
+        values: '0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'
+
+    promql_expr_test:
+      # 핵심 회귀: blip 시점 (t=90s) 당장의 평가에서 health 가 0 으로 직행하지 않는다. 순간 게이지
+      # 원값이면 0 이던 케이스로, 평활 후에는 창 내 샘플 4개 중 1회라 1 - 1/4 = 0.75 다.
+      - expr: node:gpu_health_score:5m{node="n4"}
+        eval_time: 90s
+        exp_samples:
+          - labels: 'node:gpu_health_score:5m{node="n4"}'
+            value: 0.75
+      # blip 시점이 포함된 5분 창의 이후 평가에서도 health 는 0 이 아니라 1 - 1/11 (창 11 샘플
+      # 중 1회) = 0.9090... 이다.
+      - expr: node:gpu_health_score:5m{node="n4"}
+        eval_time: 5m
+        exp_samples:
+          - labels: 'node:gpu_health_score:5m{node="n4"}'
+            value: 0.9090909090909091
+      - expr: cluster:gpu_health_score:5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'cluster:gpu_health_score:5m'
+            value: 0.9090909090909091
+      # blip 이 5분 창을 벗어난 뒤에는 health 1 로 완전 회복된다.
+      - expr: node:gpu_health_score:5m{node="n4"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'node:gpu_health_score:5m{node="n4"}'
+            value: 1
