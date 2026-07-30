@@ -2,7 +2,7 @@
 
 이슈 #100의 자체 dashboard용 REST API layer에 대한 운영자 가이드다. `correlation-exporter`가 간섭 분석 결과를 JSON endpoint로 노출해 Prometheus query 의존 없이 자체 dashboard에서 활용 가능하게 하고, `rca-summarizer`가 `/rca` 요약을 제공한다. netobs-agent와 gpuobs-agent의 REST API는 nil source skeleton이고 소비처가 없어 #171에서 제거했으며, flow와 drop과 GPU 자원 관측은 Prometheus 스크랩(`/metrics`)으로 일원화한다.
 
-memory와 cpu 사용량 필드의 단위·분모 규약과 기존 필드 매핑은 [usage-units.md](usage-units.md)를 따른다(#382).
+memory와 cpu 사용량 필드의 단위·분모 규약과 기존 필드 매핑은 [usage-units.md](usage-units.md)를 따르고(#382), pod 식별자 필드의 분리·결합 표현 규약과 API별 매핑은 [pod-identity.md](pod-identity.md)를 따른다(#383).
 
 ## 사용 시나리오
 
