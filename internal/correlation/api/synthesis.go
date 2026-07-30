@@ -363,7 +363,12 @@ type Hotspot struct {
 	Node     string  `json:"node"`
 	Pressure float64 `json:"pressure"`
 	TopPod   string  `json:"top_pod,omitempty"`
-	Severity string  `json:"severity"`
+	// TopPodNamespace 와 TopPodName 은 top_pod 의 분리 필드다 (#383 additive). top_pod 는 ns/pod
+	// 결합 id 표현으로 불변 유지하고 신규 소비는 분리 필드를 쓴다. namespace 미상이면 생략된다
+	// (결합 표현의 _unknown sentinel 은 분리 필드에 오지 않는다).
+	TopPodNamespace string `json:"top_pod_namespace,omitempty"`
+	TopPodName      string `json:"top_pod_name,omitempty"`
+	Severity        string `json:"severity"`
 }
 
 // DominantPressure 는 클러스터 전체에서 가장 압박이 큰 단일 지점이다.
@@ -372,6 +377,10 @@ type DominantPressure struct {
 	Node      string  `json:"node"`
 	Pod       string  `json:"pod,omitempty"`
 	Pressure  float64 `json:"pressure"`
+	// Namespace 와 PodName 은 pod (ns/pod 결합 id 표현, 불변) 의 분리 필드다 (#383 additive).
+	// namespace 미상이면 생략된다.
+	Namespace string `json:"namespace,omitempty"`
+	PodName   string `json:"pod_name,omitempty"`
 }
 
 // Anomaly 는 z-score 기준선 이탈로 감지된 차원 이상이다.
@@ -384,7 +393,7 @@ type Anomaly struct {
 
 // GetHealth godoc
 // @Summary      클러스터 헬스 + 압박 위치 합성
-// @Description  4 자원 차원(cpu/gpu/memory/network)의 health 점수와 status, 압박이 집중된 node/pod(hotspot), 전체 dominant 압박 지점, z-score 이상, 한 줄 요약을 한 응답으로 돌려준다. cluster_health 는 차원 health 의 최솟값(가장 약한 고리)이고 weakest 가 그 차원을 가리켜 랜딩 카드의 단일 % 표기에 쓰인다. 데이터 부재는 null + status=unknown 으로 graceful 처리한다.
+// @Description  4 자원 차원(cpu/gpu/memory/network)의 health 점수와 status, 압박이 집중된 node/pod(hotspot), 전체 dominant 압박 지점, z-score 이상, 한 줄 요약을 한 응답으로 돌려준다. cluster_health 는 차원 health 의 최솟값(가장 약한 고리)이고 weakest 가 그 차원을 가리켜 랜딩 카드의 단일 % 표기에 쓰인다. hotspot 의 top_pod 와 dominant_pressure 의 pod 는 ns/pod 결합 id 표현으로 불변이며, 슬래시 파싱 없이 신원을 읽는 분리 필드(top_pod_namespace/top_pod_name, namespace/pod_name)가 additive 로 병기된다(#383, namespace 미상이면 생략). 데이터 부재는 null + status=unknown 으로 graceful 처리한다.
 // @Tags         meta
 // @Produce      json
 // @Success      200  {object}  HealthResponse
@@ -448,7 +457,7 @@ func (h *SynthesisHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 		if res.hotspot != nil && (domHotspot == nil || moreDominant(res.name, res.hotspot, domDim, domHotspot)) {
 			domHotspot = res.hotspot
 			domDim = res.name
-			dominant = &DominantPressure{Dimension: res.name, Node: res.hotspot.Node, Pod: res.hotspot.TopPod, Pressure: res.hotspot.Pressure}
+			dominant = &DominantPressure{Dimension: res.name, Node: res.hotspot.Node, Pod: res.hotspot.TopPod, Pressure: res.hotspot.Pressure, Namespace: res.hotspot.TopPodNamespace, PodName: res.hotspot.TopPodName}
 		}
 		if res.anomaly != nil {
 			resp.Anomalies = append(resp.Anomalies, *res.anomaly)
@@ -479,6 +488,9 @@ func (h *SynthesisHandler) hotspot(ctx context.Context, d synthDimension) *Hotsp
 	if node != "" {
 		if ps, err := h.querier.Query(ctx, fmt.Sprintf("topk(1, %s{node=%q})", d.podPressure, node)); err == nil && len(ps) > 0 {
 			hs.TopPod = podLabel(ps[0].Labels)
+			if ns, name := podFields(ps[0].Labels); name != "" {
+				hs.TopPodNamespace, hs.TopPodName = ns, name
+			}
 		}
 	}
 	return hs
@@ -499,18 +511,22 @@ type PressureResponse struct {
 	Summary   string `json:"summary"`
 }
 
-// PressureEntry 는 pressure 랭킹의 한 항목이다. scope=pod 일 때만 Pod 가 채워진다.
+// PressureEntry 는 pressure 랭킹의 한 항목이다. scope=pod 일 때만 Pod 계열이 채워진다.
 type PressureEntry struct {
-	Rank     int     `json:"rank"`
-	Node     string  `json:"node"`
-	Pod      string  `json:"pod,omitempty"`
-	Pressure float64 `json:"pressure"`
-	Severity string  `json:"severity"`
+	Rank int    `json:"rank"`
+	Node string `json:"node"`
+	Pod  string `json:"pod,omitempty"`
+	// Namespace 와 PodName 은 pod (ns/pod 결합 id 표현, 불변) 의 분리 필드다 (#383 additive).
+	// 프론트가 슬래시 파싱 없이 신원을 읽는 표준 경로이며 namespace 미상이면 생략된다.
+	Namespace string  `json:"namespace,omitempty"`
+	PodName   string  `json:"pod_name,omitempty"`
+	Pressure  float64 `json:"pressure"`
+	Severity  string  `json:"severity"`
 }
 
 // GetPressure godoc
 // @Summary      차원별 압박 drill-down 랭킹
-// @Description  한 자원 차원의 node 또는 pod 를 pressure score 내림차순으로 랭킹해, /health 의 hotspot 에서 한 단계 더 파고든다.
+// @Description  한 자원 차원의 node 또는 pod 를 pressure score 내림차순으로 랭킹해, /health 의 hotspot 에서 한 단계 더 파고든다. scope=pod 의 pod 는 ns/pod 결합 id 표현으로 불변이며, 슬래시 파싱 없이 신원을 읽는 분리 필드 namespace 와 pod_name 이 additive 로 병기된다(#383, namespace 미상이면 생략).
 // @Tags         interference
 // @Produce      json
 // @Param        dimension  query  string  true   "압박 차원 (cpu/gpu/memory/network)"
@@ -610,6 +626,9 @@ func (h *SynthesisHandler) GetPressure(w http.ResponseWriter, r *http.Request) {
 			e := PressureEntry{Rank: i + 1, Node: s.Labels["node"], Pressure: s.Value, Severity: sev}
 			if scope == "pod" {
 				e.Pod = podLabel(s.Labels)
+				if ns, name := podFields(s.Labels); name != "" {
+					e.Namespace, e.PodName = ns, name
+				}
 			}
 			resp.Ranking = append(resp.Ranking, e)
 		}
@@ -674,14 +693,18 @@ type NodeResponse struct {
 
 // NodePodPressure 는 노드 위 한 pod 의 차원별 압박이다.
 type NodePodPressure struct {
-	Pod       string  `json:"pod"`
+	Pod string `json:"pod"`
+	// Namespace 와 PodName 은 pod (ns/pod 결합 id 표현, 불변) 의 분리 필드다 (#383 additive).
+	// 프론트가 슬래시 파싱 없이 신원을 읽는 표준 경로이며 namespace 미상이면 생략된다.
+	Namespace string  `json:"namespace,omitempty"`
+	PodName   string  `json:"pod_name,omitempty"`
 	Dimension string  `json:"dimension"`
 	Pressure  float64 `json:"pressure"`
 }
 
 // GetNode godoc
 // @Summary      노드 1대 전체 압박 상황
-// @Description  노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 차원별 pressure 등급(전 차원 worst, memory 는 node_exporter 실측 사용률이라 일반 임계 대신 usage 임계 0.85/0.95 로 환산해 health 불감대·usage 축 설계와 정합)과 노드 사용량(CPU/memory 점유율, allocatable 분모, 0.85 warn/0.95 degraded) 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(severity critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis 가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서 제외한다. status 는 종전 어휘(ok/warn/degraded/unknown)를 유지하고, 같은 판정을 노드 상태 단일 규약 어휘(#381, healthy/warning/critical/unknown)로 노출하는 status_unified 필드가 additive 로 함께 실린다(ok 는 healthy, warn 은 warning, degraded 는 critical 대응). down(ready 기반) 판정은 ready 신호를 조회하지 않아 방출하지 않으며 node-map 소관이다. top_pods 는 dominant 압박의 원인 후보이며 is_filtered=true 면 pod pressure 가 elevated 임계(0.4) 이상인 pod 만 남기고 dominant severity 가 low(정상)면 목록을 비워 낮은 수치 pod 가 원인으로 오인되지 않게 한다(#380). 미전달 기본은 전 pod 를 노출한다.
+// @Description  노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 차원별 pressure 등급(전 차원 worst, memory 는 node_exporter 실측 사용률이라 일반 임계 대신 usage 임계 0.85/0.95 로 환산해 health 불감대·usage 축 설계와 정합)과 노드 사용량(CPU/memory 점유율, allocatable 분모, 0.85 warn/0.95 degraded) 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(severity critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis 가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서 제외한다. status 는 종전 어휘(ok/warn/degraded/unknown)를 유지하고, 같은 판정을 노드 상태 단일 규약 어휘(#381, healthy/warning/critical/unknown)로 노출하는 status_unified 필드가 additive 로 함께 실린다(ok 는 healthy, warn 은 warning, degraded 는 critical 대응). down(ready 기반) 판정은 ready 신호를 조회하지 않아 방출하지 않으며 node-map 소관이다. top_pods 는 dominant 압박의 원인 후보이며 is_filtered=true 면 pod pressure 가 elevated 임계(0.4) 이상인 pod 만 남기고 dominant severity 가 low(정상)면 목록을 비워 낮은 수치 pod 가 원인으로 오인되지 않게 한다(#380). 미전달 기본은 전 pod 를 노출한다. top_pods 의 pod 는 ns/pod 결합 id 표현으로 불변이며, 슬래시 파싱 없이 신원을 읽는 분리 필드 namespace 와 pod_name 이 additive 로 병기된다(#383, namespace 미상이면 생략).
 // @Tags         interference
 // @Produce      json
 // @Param        node  path  string  true  "노드 이름"
@@ -734,7 +757,8 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 					if pod := podLabel(p.Labels); pod != "" {
-						resp.TopPods = append(resp.TopPods, NodePodPressure{Pod: pod, Dimension: d.name, Pressure: p.Value})
+						ns, name := podFields(p.Labels)
+						resp.TopPods = append(resp.TopPods, NodePodPressure{Pod: pod, Namespace: ns, PodName: name, Dimension: d.name, Pressure: p.Value})
 					}
 				}
 			}
@@ -1162,6 +1186,13 @@ func podID(p correlation.PodIdentity) string {
 	default:
 		return "_unknown"
 	}
+}
+
+// podFields 는 pod 압박 시계열의 src_namespace / src_pod 를 분리 필드 값으로 돌려준다 (#383).
+// podLabel 의 결합 표현과 달리 namespace 부재 시 sentinel (_unknown) 없이 빈 값을 돌려줘 응답에서
+// omitempty 로 생략된다.
+func podFields(labels map[string]string) (namespace, name string) {
+	return labels["src_namespace"], labels["src_pod"]
 }
 
 // podLabel 은 pod 압박 시계열의 src_namespace / src_pod 를 "ns/pod" 로 합친다. src_pod 가 없으면 빈
