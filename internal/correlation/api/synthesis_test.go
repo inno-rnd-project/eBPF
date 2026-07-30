@@ -470,6 +470,26 @@ func TestSynthesis_GetNode_AlertPersistenceGate(t *testing.T) {
 	}
 }
 
+// TestSynthesis_GetNode_AlertMinHoldConfigurable 은 #379 리뷰의 env 튜닝을 검증한다. AlertMinHold 를
+// 30s 로 낮추면 default (10m) 로는 transient 로 억제되던 age 60s alert 가 반영돼, 필드가 게이트 임계로
+// 실제 쓰이는지 (correlation-exporter 가 ALERT_STATUS_MIN_HOLD 로 주입하는 값) 확인한다.
+func TestSynthesis_GetNode_AlertMinHoldConfigurable(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("node:cpu_pressure_score", sample(0.1, "node", "worker1")).
+		on("node:cpu_health_score", sample(0.95, "node", "worker1")).
+		on("ALERTS_FOR_STATE", sample(60, "alertname", "NetObsBpfMapUtilizationHigh", "severity", "warning", "node", "worker1")).
+		on("ALERTS", sample(1, "alertname", "NetObsBpfMapUtilizationHigh", "severity", "warning", "node", "worker1"))
+	h := NewSynthesisHandler(q, nil, nil)
+	h.AlertMinHold = 30 * time.Second // env 주입 모사: default 10m 보다 낮춤.
+	rec := httptest.NewRecorder()
+	h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/worker1", nil))
+	var resp NodeResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Status != "warn" || resp.StatusBasis != "alert" || len(resp.StatusAlerts) != 1 {
+		t.Errorf("낮춘 hold: status=%q basis=%q alerts=%v want warn/alert/[1건] (age 60s > 30s hold)", resp.Status, resp.StatusBasis, resp.StatusAlerts)
+	}
+}
+
 // TestSynthesis_GetNode_UsageSaturation 은 limit 없는 pod 의 CPU 포화처럼 CFS throttle 기반
 // pressure 에 잡히지 않는 사용량 포화가 status 에 반영되는지 검증한다 (#325). 점유율 0.95 이상은
 // degraded, 0.85 구간은 warn 이며 결정 신호는 usage 다.

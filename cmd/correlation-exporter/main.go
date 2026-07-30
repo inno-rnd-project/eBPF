@@ -299,8 +299,14 @@ func main() {
 		log.Printf("warn: synthesis API disabled, instant querier init failed: %v", err)
 	} else {
 		// collector 가 SnapshotSource (noisy-neighbor) 를 만족해 /api/v1/events 가 anomaly 와 함께
-		// 간섭 사건을 합성한다.
-		api.NewSynthesisHandler(iq, collector, collector).Register(mux)
+		// 간섭 사건을 합성한다. #379 node status 의 alert 지속성 게이트 임계는 클러스터별 flapping
+		// 민감도가 달라 ALERT_STATUS_MIN_HOLD env (또는 -alert-status-min-hold flag) 로 튜닝한다.
+		// 기본값은 handler 가 채운 defaultAlertStatusMinHold 를 읽어 단일 출처로 둔다.
+		sh := api.NewSynthesisHandler(iq, collector, collector)
+		alertMinHold := sh.AlertMinHold
+		applyEnvDuration("ALERT_STATUS_MIN_HOLD", "alert-status-min-hold", &alertMinHold)
+		sh.AlertMinHold = alertMinHold
+		sh.Register(mux)
 	}
 	// #195 진단 신호 추이 API. collector 가 이미 emit 하는 correlation_* 시계열을 range query 로 읽어
 	// /api/v1/trends 로 이력을 노출한다. 적재는 collector 가 수행하므로 본 핸들러는 range fetch 만 한다.

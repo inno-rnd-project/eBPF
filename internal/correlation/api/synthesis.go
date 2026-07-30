@@ -24,6 +24,10 @@ type SynthesisHandler struct {
 	// agentClient 는 #281 gpu-processes 프록시의 노드 agent 호출용 client 다. 생성자가 5s timeout
 	// 기본값으로 채우고, 테스트는 필드를 직접 교체한다.
 	agentClient *http.Client
+	// AlertMinHold 는 firing alert 가 node status 에 반영되기 위한 최소 active 지속 시간이다 (#379).
+	// 생성자가 defaultAlertStatusMinHold 로 채우고, correlation-exporter 가 ALERT_STATUS_MIN_HOLD env
+	// (또는 -alert-status-min-hold flag) 로 클러스터별 튜닝을 주입한다 (FETCH_TIMEOUT 등과 동일 관행).
+	AlertMinHold time.Duration
 }
 
 // NewSynthesisHandler 는 InstantQuerier 와 noisy-neighbor SnapshotSource, cross-node interference
@@ -32,10 +36,11 @@ type SynthesisHandler struct {
 // topology 가 노드 엣지 없이 graceful 하게 응답한다.
 func NewSynthesisHandler(querier correlation.InstantQuerier, neighbors SnapshotSource, crossNode CrossNodeSnapshotSource) *SynthesisHandler {
 	return &SynthesisHandler{
-		querier:     querier,
-		neighbors:   neighbors,
-		crossNode:   crossNode,
-		agentClient: &http.Client{Timeout: 5 * time.Second},
+		querier:      querier,
+		neighbors:    neighbors,
+		crossNode:    crossNode,
+		agentClient:  &http.Client{Timeout: 5 * time.Second},
+		AlertMinHold: defaultAlertStatusMinHold,
 	}
 }
 
@@ -764,7 +769,7 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 			}
 			names := map[string]bool{}
 			for _, sm := range firing {
-				if age, ok := ageBySig[alertSignature(sm.Labels)]; ok && age < alertStatusMinHold.Seconds() {
+				if age, ok := ageBySig[alertSignature(sm.Labels)]; ok && age < h.AlertMinHold.Seconds() {
 					continue // 지속성 미달 (transient) → status 반영 보류.
 				}
 				grade := "warn"
@@ -820,13 +825,14 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 	apicommon.WriteJSON(w, resp)
 }
 
-// alertStatusMinHold 는 firing alert 가 node status 에 반영되기 위한 최소 active 지속 시간이다 (#379).
-// alert 는 자체 for (예 5m) 로 pending debounce 를 갖지만, for 경과 직후 짧게 firing 후 resolved 되는
-// 에피소드가 status 를 warn↔ok 로 진동시켰다. ALERTS_FOR_STATE (pending 진입 시각) 기준 active-age 가
-// 이 값 미만이면 status 반영을 보류해 status 측 hysteresis 를 더한다. node status 는 dashboard rollup
-// 이라 이 지연이 수용되며 alert 자체 발화는 그대로다 (발화 로직은 각 alert 이슈 소관, 비목표).
-// ponytail: 상수로 둔다. 운영 튜닝 수요가 실측되면 config 로 승격.
-const alertStatusMinHold = 10 * time.Minute
+// defaultAlertStatusMinHold 는 SynthesisHandler.AlertMinHold 의 기본값이다 (#379). firing alert 가
+// node status 에 반영되기 위한 최소 active 지속 시간으로, alert 는 자체 for (예 5m) 로 pending debounce
+// 를 갖지만 for 경과 직후 짧게 firing 후 resolved 되는 에피소드가 status 를 warn↔ok 로 진동시켰다.
+// active-age (time() - ALERTS_FOR_STATE) 가 이 값 미만이면 status 반영을 보류해 status 측 hysteresis
+// 를 더한다. active-age 는 pending 을 포함하므로 순수 firing 지속은 age - 각 alert 의 for 이고, 여기서는
+// transient 억제가 목적이라 active 기준으로 단순화한다 (alert 마다 for 를 조회하지 않는다). node status
+// 는 dashboard rollup 이라 이 지연이 수용되며 alert 자체 발화는 그대로다 (발화 로직은 각 alert 이슈 소관).
+const defaultAlertStatusMinHold = 10 * time.Minute
 
 // alertSignature 는 ALERTS 와 ALERTS_FOR_STATE 를 인스턴스 단위로 join 하기 위한 라벨 서명이다. 두
 // 메트릭은 __name__ 과 alertstate 를 빼면 동일 라벨셋이라 그 둘을 제외한 라벨을 정렬해 잇는다 (#379).
