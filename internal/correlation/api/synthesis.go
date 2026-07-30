@@ -664,6 +664,11 @@ type NodeResponse struct {
 	// 등급 동률이면 pressure, usage, health, alert 순으로 귀속하며 status 가 unknown (신호 전부
 	// 부재) 이면 생략된다.
 	StatusBasis string `json:"status_basis,omitempty"`
+	// StatusAlerts 는 이 노드에서 지속성 게이트 (#379, alertStatusMinHold) 를 통과한 firing alertname
+	// 목록이다 (additive). status_basis=alert 이면 이들이 status 를 올린 근거라 pressure/usage 가 정상인데
+	// warn 인 이유를 추적하게 한다. 통과한 alert 가 없으면 생략된다. status/status_basis 필드는 불변이며
+	// 본 필드만 additive 로 더한다 (비목표: 출력 스키마 변경 없음, additive 는 미인지 소비자가 무시).
+	StatusAlerts []string `json:"status_alerts,omitempty"`
 	// Confidence 는 dominant 차원 판정 신뢰도 (0-1, #264) 다. 압박 top1 과 top2 차원의 격차로,
 	// gpu-rca 의 신뢰도와 동일 축이라 한 차원이 지배적일수록 1 에 가깝다.
 	Confidence        float64           `json:"confidence"`
@@ -741,17 +746,42 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.DominantDimension = domDim
 
-		// #324 이 노드를 가리키는 firing alert. overview / node-map 의 alertedNodes 와 동일하게
-		// ALERTS 의 node 라벨로 매칭하고, severity critical 포함 여부로 등급을 나눈다 (#325).
+		// #324 이 노드를 가리키는 firing alert. overview / node-map 의 alertedNodes 와 동일하게 ALERTS 의
+		// node 라벨로 매칭하고 severity critical 포함 여부로 등급을 나눈다 (#325). #379 순간 firing 이
+		// 아니라 pending 진입 후 alertStatusMinHold 이상 지속된 alert 만 반영해 transient flapping 을
+		// 억제한다. active-age 는 time() - ALERTS_FOR_STATE (pending 진입 시각) 로 재고, 값이 없으면
+		// (Prometheus 재시작 등) 지속성 확인 불가라 보수적으로 반영해 실제 alert 를 놓치지 않는다. 반영된
+		// alertname 은 status_basis=alert 의 근거로 StatusAlerts 에 노출한다.
 		alertGrade := ""
-		if s, err := h.querier.Query(ctx, fmt.Sprintf(`ALERTS{alertstate="firing",node=%q}`, node)); err == nil && len(s) > 0 {
-			alertGrade = "warn"
-			for _, sm := range s {
-				if sm.Labels["severity"] == "critical" {
-					alertGrade = "degraded"
-					break
+		if firing, ferr := h.querier.Query(ctx, fmt.Sprintf(`ALERTS{alertstate="firing",node=%q}`, node)); ferr == nil && len(firing) > 0 {
+			// active-age (초) = time() - ALERTS_FOR_STATE. time() 은 query eval 시각이라 별도 wall-clock
+			// 읽기 없이 지속 시간을 얻고, 인스턴스 단위 join 은 alertSignature 로 맞춘다.
+			ageBySig := map[string]float64{}
+			if fs, err := h.querier.Query(ctx, fmt.Sprintf(`time() - ALERTS_FOR_STATE{node=%q}`, node)); err == nil {
+				for _, sm := range fs {
+					ageBySig[alertSignature(sm.Labels)] = sm.Value
 				}
 			}
+			names := map[string]bool{}
+			for _, sm := range firing {
+				if age, ok := ageBySig[alertSignature(sm.Labels)]; ok && age < alertStatusMinHold.Seconds() {
+					continue // 지속성 미달 (transient) → status 반영 보류.
+				}
+				grade := "warn"
+				if sm.Labels["severity"] == "critical" {
+					grade = "degraded"
+				}
+				if nodeStatusRank(grade) > nodeStatusRank(alertGrade) {
+					alertGrade = grade
+				}
+				if n := sm.Labels["alertname"]; n != "" {
+					names[n] = true
+				}
+			}
+			for n := range names {
+				resp.StatusAlerts = append(resp.StatusAlerts, n)
+			}
+			sort.Strings(resp.StatusAlerts)
 		}
 
 		// #325 노드 사용량 점유율. node-vitals (#313) 와 동일한 allocatable 분모 산식 (pod-level
@@ -788,6 +818,35 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 
 	resp.Summary = buildNodeSummary(resp)
 	apicommon.WriteJSON(w, resp)
+}
+
+// alertStatusMinHold 는 firing alert 가 node status 에 반영되기 위한 최소 active 지속 시간이다 (#379).
+// alert 는 자체 for (예 5m) 로 pending debounce 를 갖지만, for 경과 직후 짧게 firing 후 resolved 되는
+// 에피소드가 status 를 warn↔ok 로 진동시켰다. ALERTS_FOR_STATE (pending 진입 시각) 기준 active-age 가
+// 이 값 미만이면 status 반영을 보류해 status 측 hysteresis 를 더한다. node status 는 dashboard rollup
+// 이라 이 지연이 수용되며 alert 자체 발화는 그대로다 (발화 로직은 각 alert 이슈 소관, 비목표).
+// ponytail: 상수로 둔다. 운영 튜닝 수요가 실측되면 config 로 승격.
+const alertStatusMinHold = 10 * time.Minute
+
+// alertSignature 는 ALERTS 와 ALERTS_FOR_STATE 를 인스턴스 단위로 join 하기 위한 라벨 서명이다. 두
+// 메트릭은 __name__ 과 alertstate 를 빼면 동일 라벨셋이라 그 둘을 제외한 라벨을 정렬해 잇는다 (#379).
+func alertSignature(labels map[string]string) string {
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		if k == "__name__" || k == "alertstate" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(labels[k])
+		b.WriteByte(0x1f)
+	}
+	return b.String()
 }
 
 // nodeStatusRank 는 node 상세 status 어휘 (ok/warn/degraded/unknown) 의 심각도 순위다. worst-of
@@ -900,18 +959,27 @@ func pressureConfidence(pressure map[string]float64) float64 {
 	return margin
 }
 
+// statusAlertSuffix 는 status_basis=alert 일 때 status 를 올린 지속 alertname 을 괄호로 덧붙인다 (#379).
+// pressure/usage 가 정상인데 warn 인 근거를 요약에서 바로 읽게 한다. alert 기준이 아니면 빈 문자열이다.
+func statusAlertSuffix(r NodeResponse) string {
+	if r.StatusBasis == "alert" && len(r.StatusAlerts) > 0 {
+		return " (" + strings.Join(r.StatusAlerts, ", ") + ")"
+	}
+	return ""
+}
+
 // buildNodeSummary 는 dominant 차원과 status, 신뢰도, 주 압박 pod 를 한 줄 narrative 로 요약한다.
 // status 가 pressure 밖 신호 (health / alert) 로 결정됐으면 그 근거를 함께 적는다 (#324).
 func buildNodeSummary(r NodeResponse) string {
 	if r.DominantDimension == "" {
 		if r.StatusBasis != "" {
-			return fmt.Sprintf("%s 의 압박 데이터가 없습니다. status 는 %s 기준 %s.", r.Node, r.StatusBasis, r.Status)
+			return fmt.Sprintf("%s 의 압박 데이터가 없습니다. status 는 %s 기준 %s%s.", r.Node, r.StatusBasis, r.Status, statusAlertSuffix(r))
 		}
 		return fmt.Sprintf("%s 의 압박 데이터가 없습니다.", r.Node)
 	}
 	seg := fmt.Sprintf("%s는 %s가 dominant(%.2f, %s, 신뢰도 %.2f)", r.Node, r.DominantDimension, r.Pressure[r.DominantDimension], r.Status, r.Confidence)
 	if r.StatusBasis != "" && r.StatusBasis != "pressure" {
-		seg += fmt.Sprintf(". status 는 %s 기준", r.StatusBasis)
+		seg += fmt.Sprintf(". status 는 %s 기준%s", r.StatusBasis, statusAlertSuffix(r))
 	}
 	if len(r.TopPods) > 0 {
 		seg += fmt.Sprintf(". 주 압박 pod %s", r.TopPods[0].Pod)
