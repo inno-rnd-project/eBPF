@@ -236,7 +236,10 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		// suspect 압박 증가에 latency 감소) 이 rank 상위와 causal_strength 로 승격되는 것을 막는다
 		// (EffectSize 는 이미 방향을 거르나 score / Pearson·Granger 항은 부호를 안 봤다). 정확히 0
 		// 인 상관은 중립이라 통과하며 score 0 이라 순위 영향이 없다. 채택 lag 가 역방향인 페어는
-		// 이번 주기에서 제외되고, 정방향 상관이 실재하면 다음 주기 재평가에서 포착된다.
+		// 역방향 피크가 |corr| 최대인 동안 매 주기 제외되고, 역방향 상관이 해소되면 재포착된다.
+		// 역방향과 정방향이 다른 lag 에 공존하는 혼합 부호 페어는 물리적으로 모호한 노이즈 패턴이라
+		// 보수적 제외가 타당하며, 정부호 lag 중 max|corr| 를 채택하는 대안은 모호 페어를 승격시킬
+		// 위험이 있어 취하지 않는다.
 		signed := r.CorrelationByLag[r.MaxAbsLag]
 		if victimDegradesUp(victimSignal) {
 			if signed < 0 {
