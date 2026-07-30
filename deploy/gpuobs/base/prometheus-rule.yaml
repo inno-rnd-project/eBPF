@@ -607,16 +607,37 @@ spec:
         - record: cluster:gpu_idle_host_compute_stall_rise:5m
           expr: max(pod:host_compute_stall_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
 
+        # cluster:gpu_idle_*_score:5m (#364)
+        # GPU 유휴 노드의 device score max. device 계열 4종 (pcie_saturation / dcgm_pcie_replay /
+        # nccl_collective_stall / thermal) 은 비게이팅 cluster:gpu_*_score:5m (클러스터 전체 max) 를
+        # 그대로 써서, weight 단계의 전역 스칼라 게이트 (max(node:gpu_idle:5m) > 0.5) 만 열리면
+        # (유휴 노드가 하나라도 있으면) 바쁜 다른 노드의 PCIe·thermal 포화가 유휴의 dominant cause
+        # 로 오귀속됐다. pod 계열의 and on(node) 게이팅 (#244) 및 node-scope rule
+        # (node:gpu_idle_cause_score:5m, #256) 의 device 게이팅과 규약을 일치시켜 유휴 노드 자신의
+        # device 신호만 cause 로 계상한다. 비게이팅 cluster:gpu_*_score:5m 는 운영자용 worst-case
+        # 뷰와 integration verify 프로브 소비처가 있어 그대로 유지된다.
+        - record: cluster:gpu_idle_pcie_saturation_score:5m
+          expr: max(node:gpu_pcie_saturation_score:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: cluster:gpu_idle_dcgm_pcie_replay_score:5m
+          expr: max(node:dcgm_pcie_replay_score:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: cluster:gpu_idle_nccl_collective_stall_score:5m
+          expr: max(node:nccl_collective_stall_score:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: cluster:gpu_idle_thermal_score:5m
+          expr: max(node:gpu_thermal_score:5m and on(node) (node:gpu_idle:5m > 0.5))
+
         - record: gpu_idle_cause_sum:5m
           expr: |
-            (cluster:gpu_pcie_saturation_score:5m or vector(0))
+            (cluster:gpu_idle_pcie_saturation_score:5m or vector(0))
             + (cluster:gpu_idle_cpu_throttle_rise:5m or vector(0))
             + (cluster:gpu_idle_memory_pressure_rise:5m or vector(0))
             + (cluster:gpu_idle_network_pressure_rise:5m or vector(0))
             + (cluster:gpu_idle_host_compute_stall_rise:5m or vector(0))
-            + (cluster:dcgm_pcie_replay_score:5m or vector(0))
-            + (cluster:nccl_collective_stall_score:5m or vector(0))
-            + (cluster:gpu_thermal_score:5m or vector(0))
+            + (cluster:gpu_idle_dcgm_pcie_replay_score:5m or vector(0))
+            + (cluster:gpu_idle_nccl_collective_stall_score:5m or vector(0))
+            + (cluster:gpu_idle_thermal_score:5m or vector(0))
             + (cluster:gpu_idle_cgroup_contention_rise:5m or vector(0))
 
         # gpu_idle_cause_weight:5m{cause}
@@ -630,13 +651,15 @@ spec:
         # #244 부터 pod 계열 5종 (cpu_throttle / memory_pressure / network_pressure /
         # cgroup_contention / host_compute_stall) 의 base 는 클러스터 전체 max 가 아니라 GPU 유휴
         # 노드 스코프의 rise (cluster:gpu_idle_*_rise:5m) 라, GPU 와 무관한 노드의 압박과 상시
-        # 포화 신호는 dominant cause 로 둔갑하지 않는다.
+        # 포화 신호는 dominant cause 로 둔갑하지 않는다. #364 부터 device 계열 4종 (pcie_saturation /
+        # dcgm_pcie_replay / nccl_collective_stall / thermal) 의 base 도 동일 규약의 유휴 노드 스코프
+        # (cluster:gpu_idle_*_score:5m) 라, 바쁜 다른 노드의 device 포화가 오귀속되지 않는다.
         - record: gpu_idle_cause_weight:5m
           labels:
             cause: pcie_saturation
           expr: |
             (
-              (cluster:gpu_pcie_saturation_score:5m or vector(0))
+              (cluster:gpu_idle_pcie_saturation_score:5m or vector(0))
               / (gpu_idle_cause_sum:5m > 0.05)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
@@ -717,7 +740,7 @@ spec:
             cause: nccl_collective_stall
           expr: |
             (
-              (cluster:nccl_collective_stall_score:5m or vector(0))
+              (cluster:gpu_idle_nccl_collective_stall_score:5m or vector(0))
               / (gpu_idle_cause_sum:5m > 0.05)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
@@ -727,7 +750,7 @@ spec:
             cause: dcgm_pcie_replay
           expr: |
             (
-              (cluster:dcgm_pcie_replay_score:5m or vector(0))
+              (cluster:gpu_idle_dcgm_pcie_replay_score:5m or vector(0))
               / (gpu_idle_cause_sum:5m > 0.05)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
@@ -742,7 +765,7 @@ spec:
             cause: thermal
           expr: |
             (
-              (cluster:gpu_thermal_score:5m or vector(0))
+              (cluster:gpu_idle_thermal_score:5m or vector(0))
               / (gpu_idle_cause_sum:5m > 0.05)
             )
             and on() (max(node:gpu_idle:5m) > 0.5)
