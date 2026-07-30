@@ -321,3 +321,58 @@ func TestSelectTopN_ImpactPropagation(t *testing.T) {
 		t.Errorf("Impact=%v want 0.042", got[0].Impact)
 	}
 }
+
+// withSignedCorr 는 채택 lag 의 부호 있는 상관을 CorrelationByLag 에 심는다 (#367 방향 게이트 검증용).
+// makeResult 기본형은 CorrelationByLag 가 비어 부호 미상 (0, 중립 통과) 케이스를 겸한다.
+func withSignedCorr(r CorrelationResult, signed float64) CorrelationResult {
+	r.CorrelationByLag = map[int]float64{r.MaxAbsLag: signed}
+	return r
+}
+
+// TestSelectTopN_DirectionGate_LatencyNegativeExcluded 는 latency victim 에서 역방향 (음) 강상관이
+// rank 상위로 승격되지 않는지 검증한다 (#367). 종전 부호 무관 max|corr| 이면 -0.9 페어가 rank 1
+// 이었다. 정방향 (+0.6) 페어만 채택되어 rank 1 이 된다.
+func TestSelectTopN_DirectionGate_LatencyNegativeExcluded(t *testing.T) {
+	results := []CorrelationResult{
+		// 역방향 강상관: suspect 압박 증가에 latency 감소 (비간섭). 제외돼야 한다.
+		withSignedCorr(makeResult("default", "inverse", "uidI", "pod:cpu_throttle_score:5m",
+			"default", "victim", "uidV", latencyMetric,
+			0.9, 1, StatusOK), -0.9),
+		// 정방향 상관: 간섭 후보. 채택돼야 한다.
+		withSignedCorr(makeResult("default", "noisy", "uidN", "pod:memory_pressure_score:5m",
+			"default", "victim", "uidV", latencyMetric,
+			0.6, 1, StatusOK), 0.6),
+	}
+
+	got := SelectTopN(results, 10)
+	if len(got) != 1 {
+		t.Fatalf("len=%d want 1 (역방향 제외), got=%+v", len(got), got)
+	}
+	if got[0].Suspect.Pod != "noisy" || got[0].Rank != 1 || got[0].Score != 0.6 {
+		t.Errorf("suspect=%s rank=%d score=%v want noisy/1/0.6", got[0].Suspect.Pod, got[0].Rank, got[0].Score)
+	}
+}
+
+// TestSelectTopN_DirectionGate_GPUNegativeKept 는 gpu victim 의 음의 상관 의도 (#174) 가 유지되는지
+// 검증한다 (#367). GPU 는 악화가 사용률 감소라 음의 상관이 간섭이고, 양의 상관 (압박 증가에 사용률
+// 증가) 이 비간섭이라 제외된다.
+func TestSelectTopN_DirectionGate_GPUNegativeKept(t *testing.T) {
+	results := []CorrelationResult{
+		// 음의 상관: GPU starvation 간섭. 채택돼야 한다.
+		withSignedCorr(makeResult("default", "noisy", "uidN", "pod:cpu_throttle_score:5m",
+			"default", "victim", "uidV", "pod:gpu_util_p95:5m",
+			0.8, 0, StatusOK), -0.8),
+		// 양의 상관: 비간섭. 제외돼야 한다.
+		withSignedCorr(makeResult("default", "inverse", "uidI", "pod:memory_pressure_score:5m",
+			"default", "victim", "uidV", "pod:gpu_util_p95:5m",
+			0.9, 0, StatusOK), 0.9),
+	}
+
+	got := SelectTopN(results, 10)
+	if len(got) != 1 {
+		t.Fatalf("len=%d want 1 (양의 상관 제외), got=%+v", len(got), got)
+	}
+	if got[0].Suspect.Pod != "noisy" || got[0].Score != 0.8 || got[0].VictimSignal != SignalGPU {
+		t.Errorf("suspect=%s score=%v signal=%s want noisy/0.8/gpu", got[0].Suspect.Pod, got[0].Score, got[0].VictimSignal)
+	}
+}
