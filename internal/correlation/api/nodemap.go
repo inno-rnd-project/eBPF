@@ -12,9 +12,10 @@ import (
 	"netobs/internal/correlation"
 )
 
-// node-map 은 #249 의 랜딩 노드 그리드 API 다. 노드별 pod 목록에 3단 상태 (live / warning / down)
-// 와 관측 no-data, 해당 pod 를 가리키는 firing alertname 을 서버에서 판정해 내장한다. alertname 은
-// rca?alert= 와 playbooks?cause= 링크 입력과 호환되어 그리드에서 사건 여정으로 바로 진입한다.
+// node-map 은 #249 의 랜딩 노드 그리드 API 다. 노드별 pod 목록에 lifecycle 축 4단 상태 (live /
+// warning / down / completed, #381 규약) 와 관측 no-data, 해당 pod 를 가리키는 firing alertname 을
+// 서버에서 판정해 내장한다. alertname 은 rca?alert= 와 playbooks?cause= 링크 입력과 호환되어
+// 그리드에서 사건 여정으로 바로 진입한다.
 
 // NodeMapResponse 는 GET /api/v1/node-map 의 typed 응답이다. 노드는 pod 수 내림차순 (동률 이름
 // 사전순) 으로 정렬되어 그리드 배치 순서와 일치한다.
@@ -24,7 +25,9 @@ type NodeMapResponse struct {
 	Summary     string        `json:"summary"`
 }
 
-// NodeMapNode 는 그리드의 한 노드 칸이다. Status 판정은 overview 와 동일 (nodeStatus 공유) 하다.
+// NodeMapNode 는 그리드의 한 노드 칸이다. Status 판정은 overview 와 동일 (nodeStatus 공유) 하며
+// 단일 규약 어휘 (#381) 중 healthy / warning / down 의 3단 rollup 이다 (critical 은 warning 으로
+// 압축, 세분은 node/{node} 의 status_unified 소관).
 type NodeMapNode struct {
 	Name       string       `json:"name"`
 	Roles      []string     `json:"roles,omitempty"`
@@ -35,10 +38,11 @@ type NodeMapNode struct {
 	Pods       []NodeMapPod `json:"pods"`
 }
 
-// NodeMapPod 는 노드 칸 안의 한 pod 뱃지다. down 은 phase Failed/Unknown, warning 은 Pending 또는
-// 이 pod 를 가리키는 firing alert 존재, completed 는 phase Succeeded (정상 종료라 telemetry 부재가
-// 정상, #314), live 는 Running 이다. NoData 는 pods API 의 observed
-// 반전과 동일 판정이다.
+// NodeMapPod 는 노드 칸 안의 한 pod 뱃지다. Status 는 pod lifecycle 축 (#381) 으로, down 은 phase
+// Failed/Unknown, warning 은 Pending 또는 이 pod 를 가리키는 firing alert 존재, completed 는 phase
+// Succeeded (정상 종료라 telemetry 부재가 정상, #314), live 는 Running 이다. pressure 등급인
+// severity 축 (low/elevated/high) 은 node/pods 와 pod-detail 이 담당한다. NoData 는 pods API 의
+// observed 반전과 동일 판정이다.
 type NodeMapPod struct {
 	Namespace string `json:"namespace"`
 	Pod       string `json:"pod"`
@@ -53,7 +57,7 @@ type NodeMapPod struct {
 
 // GetNodeMap godoc
 // @Summary      노드 그리드 (노드별 pod 상태 맵)
-// @Description  노드별 pod 목록에 4단 상태 (live/warning/down/completed) 와 관측 no-data, 해당 pod 를 가리키는 firing alertname 을 내장해 돌려준다. pod down 은 phase Failed/Unknown, warning 은 Pending 또는 firing alert 매칭, completed 는 phase Succeeded (정상 종료라 telemetry 부재가 정상, #314) 이며, issues 의 alertname 은 rca 와 playbooks 조회 입력과 호환된다. no-data 뱃지에는 미관측 사유 (no_data_reason: agent_absent 는 노드에 netobs 미배치, host_network 는 IP 귀속 불가 (cgroup 힌트 학습 시 live 전환 가능), no_traffic 은 netns 무소켓으로 증명된 네트워크 미사용 (#342), no_data 는 시리즈 부재, #320) 가 붙는다. node 파라미터로 단일 노드를 조회하고 미등록 노드는 404 다. at 파라미터로 사건 시점의 그리드를 재구성할 수 있다.
+// @Description  노드별 pod 목록에 4단 상태 (live/warning/down/completed) 와 관측 no-data, 해당 pod 를 가리키는 firing alertname 을 내장해 돌려준다. 노드 status 는 단일 규약 어휘(#381, healthy/warning/critical/down/unknown)의 3단 rollup(healthy/warning/down, critical 은 warning 으로 압축)이고, pod status 는 규약의 lifecycle 축이며 pressure 등급인 severity 축(low/elevated/high)은 node/pods 와 pod-detail 이 담당한다. pod down 은 phase Failed/Unknown, warning 은 Pending 또는 firing alert 매칭, completed 는 phase Succeeded (정상 종료라 telemetry 부재가 정상, #314) 이며, issues 의 alertname 은 rca 와 playbooks 조회 입력과 호환된다. no-data 뱃지에는 미관측 사유 (no_data_reason: agent_absent 는 노드에 netobs 미배치, host_network 는 IP 귀속 불가 (cgroup 힌트 학습 시 live 전환 가능), no_traffic 은 netns 무소켓으로 증명된 네트워크 미사용 (#342), no_data 는 시리즈 부재, #320) 가 붙는다. node 파라미터로 단일 노드를 조회하고 미등록 노드는 404 다. at 파라미터로 사건 시점의 그리드를 재구성할 수 있다.
 // @Tags         inventory
 // @Produce      json
 // @Param        node  query  string  false  "단일 노드 조회 (미등록 노드는 404)"
@@ -219,19 +223,21 @@ func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 
 // podStatus 는 pod 4단 판정이다 (#314 completed 추가). phase 가 미상 (enrich 실패) 이면 alert
 // 만으로 판정한다. Succeeded 는 stale alert 가 남아 있어도 completed 가 우선한다 (정상 종료).
+// 반환 어휘는 pod lifecycle 축 (#381, correlation.PodStatus*) 이며, pressure 등급인 severity 축
+// (low/elevated/high, node/pods·pod-detail 소관) 과 독립이다.
 func podStatus(phase string, hasIssue bool) string {
 	switch phase {
 	case "Failed", "Unknown":
-		return "down"
+		return correlation.PodStatusDown
 	case "Pending":
-		return "warning"
+		return correlation.PodStatusWarning
 	case "Succeeded":
-		return "completed"
+		return correlation.PodStatusCompleted
 	}
 	if hasIssue {
-		return "warning"
+		return correlation.PodStatusWarning
 	}
-	return "live"
+	return correlation.PodStatusLive
 }
 
 // podIssues 는 이 pod 를 가리키는 firing alertname 의 dedup 정렬 목록이다. 매칭은 #248 의
@@ -261,9 +267,9 @@ func buildNodeMapSummary(r NodeMapResponse) string {
 		pods += n.PodCount
 		for _, p := range n.Pods {
 			switch p.Status {
-			case "warning", "down":
+			case correlation.PodStatusWarning, correlation.PodStatusDown:
 				warned++
-			case "completed":
+			case correlation.PodStatusCompleted:
 				completed++
 			}
 		}

@@ -107,14 +107,17 @@ func issueScopeRank(s string) int {
 }
 
 // nodeStatus 는 노드 3단 판정이다 (#249). overview 의 집계와 node-map 의 노드별 상태가 공유한다.
+// 반환 어휘는 단일 규약 (#381, correlation.NodeStatus*) 의 부분집합으로, 랜딩 rollup 이라 pressure
+// high 와 alert severity critical 도 warning 으로 압축한다 (critical 미방출, 세분은 node/{node} 의
+// status_unified 소관). 판정식 (경계 포함 여부) 은 #249 그대로다.
 func nodeStatus(ready bool, hasFiringAlert bool, pressure float64) string {
 	if !ready {
-		return "down"
+		return correlation.NodeStatusDown
 	}
 	if hasFiringAlert || pressure > correlation.PressureElevatedThreshold {
-		return "warning"
+		return correlation.NodeStatusWarning
 	}
-	return "healthy"
+	return correlation.NodeStatusHealthy
 }
 
 // GetOverview godoc
@@ -203,9 +206,9 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 		seenNodes[name] = true
 		resp.Nodes.Total++
 		switch nodeStatus(ready[name], alertedNodes[name], pressure[name]) {
-		case "down":
+		case correlation.NodeStatusDown:
 			resp.Nodes.Down++
-		case "warning":
+		case correlation.NodeStatusWarning:
 			resp.Nodes.Warning++
 		default:
 			resp.Nodes.Healthy++
