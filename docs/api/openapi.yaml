@@ -1,7 +1,7 @@
 swagger: '2.0'
 info:
   title: netobs unified API
-  version: 2.7.4
+  version: 2.7.5
 paths:
   /api/v1/agents:
     get:
@@ -449,8 +449,10 @@ paths:
     get:
       description: 4 자원 차원(cpu/gpu/memory/network)의 health 점수와 status, 압박이 집중된 node/pod(hotspot),
         전체 dominant 압박 지점, z-score 이상, 한 줄 요약을 한 응답으로 돌려준다. cluster_health 는 차원 health
-        의 최솟값(가장 약한 고리)이고 weakest 가 그 차원을 가리켜 랜딩 카드의 단일 % 표기에 쓰인다. 데이터 부재는 null +
-        status=unknown 으로 graceful 처리한다.
+        의 최솟값(가장 약한 고리)이고 weakest 가 그 차원을 가리켜 랜딩 카드의 단일 % 표기에 쓰인다. hotspot 의 top_pod
+        와 dominant_pressure 의 pod 는 ns/pod 결합 id 표현으로 불변이며, 슬래시 파싱 없이 신원을 읽는 분리 필드(top_pod_namespace/top_pod_name,
+        namespace/pod_name)가 additive 로 병기된다(#383, namespace 미상이면 생략). 데이터 부재는 null
+        + status=unknown 으로 graceful 처리한다.
       produces:
       - application/json
       tags:
@@ -758,7 +760,9 @@ paths:
         는 healthy, warn 은 warning, degraded 는 critical 대응). down(ready 기반) 판정은 ready
         신호를 조회하지 않아 방출하지 않으며 node-map 소관이다. top_pods 는 dominant 압박의 원인 후보이며 is_filtered=true
         면 pod pressure 가 elevated 임계(0.4) 이상인 pod 만 남기고 dominant severity 가 low(정상)면
-        목록을 비워 낮은 수치 pod 가 원인으로 오인되지 않게 한다(#380). 미전달 기본은 전 pod 를 노출한다.'
+        목록을 비워 낮은 수치 pod 가 원인으로 오인되지 않게 한다(#380). 미전달 기본은 전 pod 를 노출한다. top_pods 의
+        pod 는 ns/pod 결합 id 표현으로 불변이며, 슬래시 파싱 없이 신원을 읽는 분리 필드 namespace 와 pod_name
+        이 additive 로 병기된다(#383, namespace 미상이면 생략).'
       produces:
       - application/json
       tags:
@@ -1088,7 +1092,8 @@ paths:
   /api/v1/pressure:
     get:
       description: 한 자원 차원의 node 또는 pod 를 pressure score 내림차순으로 랭킹해, /health 의 hotspot
-        에서 한 단계 더 파고든다.
+        에서 한 단계 더 파고든다. scope=pod 의 pod 는 ns/pod 결합 id 표현으로 불변이며, 슬래시 파싱 없이 신원을 읽는
+        분리 필드 namespace 와 pod_name 이 additive 로 병기된다(#383, namespace 미상이면 생략).
       produces:
       - application/json
       tags:
@@ -1436,9 +1441,17 @@ definitions:
     properties:
       dimension:
         type: string
+      namespace:
+        description: 'Namespace 와 PodName 은 pod (ns/pod 결합 id 표현, 불변) 의 분리 필드다 (#383
+          additive).
+
+          namespace 미상이면 생략된다.'
+        type: string
       node:
         type: string
       pod:
+        type: string
+      pod_name:
         type: string
       pressure:
         type: number
@@ -1957,6 +1970,16 @@ definitions:
         type: string
       top_pod:
         type: string
+      top_pod_name:
+        type: string
+      top_pod_namespace:
+        description: 'TopPodNamespace 와 TopPodName 은 top_pod 의 분리 필드다 (#383 additive).
+          top_pod 는 ns/pod
+
+          결합 id 표현으로 불변 유지하고 신규 소비는 분리 필드를 쓴다. namespace 미상이면 생략된다
+
+          (결합 표현의 _unknown sentinel 은 분리 필드에 오지 않는다).'
+        type: string
   internal_correlation_api.ImpactGraphResponse:
     type: object
     properties:
@@ -2261,7 +2284,15 @@ definitions:
     properties:
       dimension:
         type: string
+      namespace:
+        description: 'Namespace 와 PodName 은 pod (ns/pod 결합 id 표현, 불변) 의 분리 필드다 (#383
+          additive).
+
+          프론트가 슬래시 파싱 없이 신원을 읽는 표준 경로이며 namespace 미상이면 생략된다.'
+        type: string
       pod:
+        type: string
+      pod_name:
         type: string
       pressure:
         type: number
@@ -2743,9 +2774,17 @@ definitions:
   internal_correlation_api.PressureEntry:
     type: object
     properties:
+      namespace:
+        description: 'Namespace 와 PodName 은 pod (ns/pod 결합 id 표현, 불변) 의 분리 필드다 (#383
+          additive).
+
+          프론트가 슬래시 파싱 없이 신원을 읽는 표준 경로이며 namespace 미상이면 생략된다.'
+        type: string
       node:
         type: string
       pod:
+        type: string
+      pod_name:
         type: string
       pressure:
         type: number
