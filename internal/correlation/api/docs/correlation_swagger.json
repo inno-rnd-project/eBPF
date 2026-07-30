@@ -924,7 +924,7 @@
         },
         "/api/v1/node-map": {
             "get": {
-                "description": "노드별 pod 목록에 4단 상태 (live/warning/down/completed) 와 관측 no-data, 해당 pod 를 가리키는 firing alertname 을 내장해 돌려준다. pod down 은 phase Failed/Unknown, warning 은 Pending 또는 firing alert 매칭, completed 는 phase Succeeded (정상 종료라 telemetry 부재가 정상, #314) 이며, issues 의 alertname 은 rca 와 playbooks 조회 입력과 호환된다. no-data 뱃지에는 미관측 사유 (no_data_reason: agent_absent 는 노드에 netobs 미배치, host_network 는 IP 귀속 불가 (cgroup 힌트 학습 시 live 전환 가능), no_traffic 은 netns 무소켓으로 증명된 네트워크 미사용 (#342), no_data 는 시리즈 부재, #320) 가 붙는다. node 파라미터로 단일 노드를 조회하고 미등록 노드는 404 다. at 파라미터로 사건 시점의 그리드를 재구성할 수 있다.",
+                "description": "노드별 pod 목록에 4단 상태 (live/warning/down/completed) 와 관측 no-data, 해당 pod 를 가리키는 firing alertname 을 내장해 돌려준다. 노드 status 는 단일 규약 어휘(#381, healthy/warning/critical/down/unknown)의 3단 rollup(healthy/warning/down, critical 은 warning 으로 압축)이고, pod status 는 규약의 lifecycle 축이며 pressure 등급인 severity 축(low/elevated/high)은 node/pods 와 pod-detail 이 담당한다. pod down 은 phase Failed/Unknown, warning 은 Pending 또는 firing alert 매칭, completed 는 phase Succeeded (정상 종료라 telemetry 부재가 정상, #314) 이며, issues 의 alertname 은 rca 와 playbooks 조회 입력과 호환된다. no-data 뱃지에는 미관측 사유 (no_data_reason: agent_absent 는 노드에 netobs 미배치, host_network 는 IP 귀속 불가 (cgroup 힌트 학습 시 live 전환 가능), no_traffic 은 netns 무소켓으로 증명된 네트워크 미사용 (#342), no_data 는 시리즈 부재, #320) 가 붙는다. node 파라미터로 단일 노드를 조회하고 미등록 노드는 404 다. at 파라미터로 사건 시점의 그리드를 재구성할 수 있다.",
                 "produces": [
                     "application/json"
                 ],
@@ -1023,7 +1023,7 @@
         },
         "/api/v1/node/{node}": {
             "get": {
-                "description": "노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 차원별 pressure 등급(전 차원 worst, memory 는 node_exporter 실측 사용률이라 일반 임계 대신 usage 임계 0.85/0.95 로 환산해 health 불감대·usage 축 설계와 정합)과 노드 사용량(CPU/memory 점유율, allocatable 분모, 0.85 warn/0.95 degraded) 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(severity critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis 가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서 제외한다. 등급 어휘 ok/warn/degraded 는 overview 와 node-map 의 healthy/warning 과 같은 입력 신호(pressure, firing alert)를 공유하고, down(ready 기반) 판정은 node-map 소관이다. top_pods 는 dominant 압박의 원인 후보이며 is_filtered=true 면 pod pressure 가 elevated 임계(0.4) 이상인 pod 만 남기고 dominant severity 가 low(정상)면 목록을 비워 낮은 수치 pod 가 원인으로 오인되지 않게 한다(#380). 미전달 기본은 전 pod 를 노출한다.",
+                "description": "노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 차원별 pressure 등급(전 차원 worst, memory 는 node_exporter 실측 사용률이라 일반 임계 대신 usage 임계 0.85/0.95 로 환산해 health 불감대·usage 축 설계와 정합)과 노드 사용량(CPU/memory 점유율, allocatable 분모, 0.85 warn/0.95 degraded) 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(severity critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis 가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서 제외한다. status 는 종전 어휘(ok/warn/degraded/unknown)를 유지하고, 같은 판정을 노드 상태 단일 규약 어휘(#381, healthy/warning/critical/unknown)로 노출하는 status_unified 필드가 additive 로 함께 실린다(ok 는 healthy, warn 은 warning, degraded 는 critical 대응). down(ready 기반) 판정은 ready 신호를 조회하지 않아 방출하지 않으며 node-map 소관이다. top_pods 는 dominant 압박의 원인 후보이며 is_filtered=true 면 pod pressure 가 elevated 임계(0.4) 이상인 pod 만 남기고 dominant severity 가 low(정상)면 목록을 비워 낮은 수치 pod 가 원인으로 오인되지 않게 한다(#380). 미전달 기본은 전 pod 를 노출한다.",
                 "produces": [
                     "application/json"
                 ],
@@ -1646,7 +1646,7 @@
         },
         "/api/v1/topology": {
             "get": {
-                "description": "노드별 status(healthy/warning/critical/unknown, 4개 자원 차원 pressure 의 dominant severity 기준)와 노드간 간섭 엣지(cross-node interference 의 suspect_node→victim_node)를 한 응답으로 합성한다. querier 나 cross-node snapshot 이 없으면 해당 부분을 빈 값으로 graceful 처리한다.",
+                "description": "노드별 status(healthy/warning/critical/unknown, 4개 자원 차원 pressure 의 dominant severity 기준)와 노드간 간섭 엣지(cross-node interference 의 suspect_node→victim_node)를 한 응답으로 합성한다. status 는 노드 상태 단일 규약 어휘(#381, healthy/warning/critical/down/unknown)의 부분집합이며 ready 신호를 조회하지 않아 down 은 방출하지 않는다(node-map 소관). querier 나 cross-node snapshot 이 없으면 해당 부분을 빈 값으로 graceful 처리한다.",
                 "produces": [
                     "application/json"
                 ],
@@ -3223,6 +3223,10 @@
                 },
                 "status_basis": {
                     "description": "StatusBasis 는 status 등급을 결정한 신호다 (#324, #325, pressure / usage / health / alert).\n등급 동률이면 pressure, usage, health, alert 순으로 귀속하며 status 가 unknown (신호 전부\n부재) 이면 생략된다.",
+                    "type": "string"
+                },
+                "status_unified": {
+                    "description": "StatusUnified 는 status 와 같은 판정을 노드 상태 단일 규약 어휘 (#381, healthy/warning/critical/\nunknown) 로 노출하는 additive 필드다. 산정은 규약 어휘로 하고 기존 status (ok/warn/degraded/\nunknown) 는 correlation.NodeDetailStatus 환원으로 불변 유지한다. down 은 ready 신호를 조회하지\n않아 방출하지 않는다 (node-map 소관). 신규 소비는 본 필드를 쓴다.",
                     "type": "string"
                 },
                 "summary": {
