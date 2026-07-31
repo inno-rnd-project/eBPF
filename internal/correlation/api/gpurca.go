@@ -221,7 +221,10 @@ func parseGpuParam(raw string) (string, error) {
 
 // RcaSuspect 는 이 노드의 GPU 유휴에 기여하는 원인 후보다. noisy-neighbor 는 이 노드 pod 를 victim
 // 으로 하는 suspect pod (namespace-aware) 이고, cross-node 는 이 노드를 victim_node 로 하는 suspect
-// node 다. cross-node 후보는 pod 식별자가 없어 namespace/pod 가 비고 node 만 채워진다.
+// node 다. cross-node 후보는 pod 식별자가 없어 namespace/pod 가 비고 node 만 채워진다. Score 는
+// #373 부터 순수 Pearson (max|corr|) 이 아니라 통합 인과강도 (causal_strength, 0-1) 다. 상관만
+// 우연히 높은 후보가 인과 (Granger / effect) 가 확실한 후보보다 상위로 오는 것을 막아 dominant
+// cause 서사와 랭킹 축을 정합시킨다. 필드 형태 (float) 는 불변이다.
 type RcaSuspect struct {
 	Source    string   `json:"source"`
 	Namespace string   `json:"namespace,omitempty"`
@@ -234,7 +237,7 @@ type RcaSuspect struct {
 
 // GetNodeGpuRca godoc
 // @Summary      노드 GPU RCA 합성
-// @Description  노드 하나의 GPU 유휴 dominant cause 와 cause 별 가중치 (한국어 설명 포함), 신뢰도, 원인 후보 pod 랭킹, 근거 수치 (evidence), 한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와 가중치는 scope=node gpu-idle 결과를 재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor suspect pod (namespace-aware) 와 cross-node-interference suspect node 를 점수순으로 집계한다. 신뢰도는 top1 과 top2 cause 격차이며 0.1 미만 백중세는 narrative 에 판정 유보로 적는다. evidence 는 device 사용률과 SM active, 노드 재전송 rate 와 최대 RTT 에 더해 dominant cause 의 차원 맞춤 수치 (memory 는 suspect pod 의 working_set/limit 과 노드 실측 사용률, thermal 은 온도와 slowdown 여유, cpu 는 throttle 비율, 점수형 cause 는 노드 score) 를 cause 레지스트리 기반 2차 조회로 실어 narrative 에 융합하고, dominant cause 별 인과 체인 문구를 덧붙인다. gpu 파라미터 (GPU UUID 또는 device index) 로 evidence 의 GPU 수치를 device 로 좁힐 수 있고, 미등록 device 는 해당 수치가 생략된다.
+// @Description  노드 하나의 GPU 유휴 dominant cause 와 cause 별 가중치 (한국어 설명 포함), 신뢰도, 원인 후보 pod 랭킹, 근거 수치 (evidence), 한 줄 narrative 를 한 응답으로 합성한다. dominant cause 와 가중치는 scope=node gpu-idle 결과를 재사용하고, 원인 후보는 이 노드를 victim 으로 하는 noisy-neighbor suspect pod (namespace-aware) 와 cross-node-interference suspect node 를 통합 인과강도 (causal_strength, Pearson·Granger·effect 합성 0-1) 내림차순으로 집계한다 (#373, suspects 의 score 필드가 이 값이며 순수 상관만 높은 후보가 인과 확실 후보보다 상위로 오지 않는다). 신뢰도는 top1 과 top2 cause 격차이며 0.1 미만 백중세는 narrative 에 판정 유보로 적는다. evidence 는 device 사용률과 SM active, 노드 재전송 rate 와 최대 RTT 에 더해 dominant cause 의 차원 맞춤 수치 (memory 는 suspect pod 의 working_set/limit 과 노드 실측 사용률, thermal 은 온도와 slowdown 여유, cpu 는 throttle 비율, 점수형 cause 는 노드 score) 를 cause 레지스트리 기반 2차 조회로 실어 narrative 에 융합하고, dominant cause 별 인과 체인 문구를 덧붙인다. gpu 파라미터 (GPU UUID 또는 device index) 로 evidence 의 GPU 수치를 device 로 좁힐 수 있고, 미등록 device 는 해당 수치가 생략된다.
 // @Tags         gpu
 // @Produce      json
 // @Param        node   query  string  true   "대상 노드 (DNS-1123 형식)"
@@ -432,7 +435,10 @@ func dominantConfidence(causes []GpuCauseWeight) float64 {
 // pod 이고, cross-node 는 victim_node 가 이 노드인 경우의 suspect node 다. 동일 suspect 가 victim
 // 신호나 dimension 별로 여러 페어를 갖는 실측 케이스가 흔해, (source, namespace, pod, node) 키로
 // 최고 score 만 남겨 후보당 1 건의 랭킹으로 집계한다. suspect pod 에는 namespace-aware alert 매칭
-// 으로 firing alertname 을 붙인다.
+// 으로 firing alertname 을 붙인다. #373 랭킹 축은 통합 인과강도다. noisy-neighbor 는 snapshot 의
+// CausalStrength 를 그대로 쓰고, cross-node 는 snapshot 에 인과강도 필드가 없어 (NodeInterference
+// 스키마 불변) 동일 산식 (ComputeCausalStrength) 으로 Pearson 과 Granger 항을 즉석 합성한다.
+// cross-node 레이어는 EffectSize 를 산정하지 않아 effect 항이 0 (증거 부재) 인 것이 사실 그대로다.
 func (h *SynthesisHandler) rcaSuspects(node string, nodePods map[[2]string]bool, firing []correlation.InstantSample, limit int) []RcaSuspect {
 	type key struct{ source, ns, pod, node string }
 	best := map[key]RcaSuspect{}
@@ -458,7 +464,7 @@ func (h *SynthesisHandler) rcaSuspects(node string, nodePods map[[2]string]bool,
 				Namespace: n.Suspect.Namespace,
 				Pod:       n.Suspect.Pod,
 				Dimension: string(n.Dimension),
-				Score:     n.Score,
+				Score:     n.CausalStrength,
 				Issues:    podIssues(firing, n.Suspect.Namespace, n.Suspect.Pod),
 			})
 		}
@@ -473,7 +479,11 @@ func (h *SynthesisHandler) rcaSuspects(node string, nodePods map[[2]string]bool,
 				Source:    "cross_node",
 				Node:      ni.SuspectNode,
 				Dimension: string(ni.Dimension),
-				Score:     ni.Score,
+				Score: correlation.ComputeCausalStrength(correlation.CausalFactors{
+					PearsonStrength: ni.Score,
+					GrangerOK:       ni.GrangerOK,
+					GrangerPValue:   ni.PValue,
+				}),
 			})
 		}
 	}

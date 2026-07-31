@@ -33,20 +33,22 @@ func gpuRcaQuerier() *fakeQuerier {
 // victim_node 매칭으로 잡힌다.
 func TestNodeGpuRca(t *testing.T) {
 	nb := &fakeNeighbors{data: []correlation.NoisyNeighbor{
-		// victim trainer 는 gpu 노드 pod → 채택. suspect hog 에 alert 매칭 (ns2/hog).
+		// victim trainer 는 gpu 노드 pod → 채택. suspect hog 에 alert 매칭 (ns2/hog). #373 랭킹 축은
+		// CausalStrength 다.
 		{
 			Victim:    correlation.PodIdentity{Namespace: "ns1", Pod: "trainer"},
 			Suspect:   correlation.PodIdentity{Namespace: "ns2", Pod: "hog"},
-			Dimension: correlation.DimensionNetwork, Score: 0.88,
+			Dimension: correlation.DimensionNetwork, Score: 0.88, CausalStrength: 0.85,
 		},
 		// victim other 는 gpu 노드에 없음 → 제외.
 		{
 			Victim:    correlation.PodIdentity{Namespace: "ns9", Pod: "other"},
 			Suspect:   correlation.PodIdentity{Namespace: "ns9", Pod: "x"},
-			Dimension: correlation.DimensionCPU, Score: 0.99,
+			Dimension: correlation.DimensionCPU, Score: 0.99, CausalStrength: 0.9,
 		},
 	}}
 	cn := &fakeCrossNode{data: []correlation.NodeInterference{
+		// cross-node 는 인과강도 필드가 없어 즉석 합성된다. Granger 미유의라 0.5*0.5 = 0.25.
 		{VictimNode: "gpu", SuspectNode: "worker1", Dimension: correlation.DimensionNetwork, Score: 0.5},
 		{VictimNode: "worker2", SuspectNode: "worker1", Dimension: correlation.DimensionCPU, Score: 0.95}, // 다른 victim_node → 제외
 	}}
@@ -67,7 +69,7 @@ func TestNodeGpuRca(t *testing.T) {
 	if resp.Confidence < 0.499 || resp.Confidence > 0.501 {
 		t.Errorf("confidence=%v want ~0.5 (margin)", resp.Confidence)
 	}
-	// suspect 는 noisy-neighbor(hog, 0.88) + cross-node(worker1, 0.5), score 내림차순.
+	// suspect 는 noisy-neighbor(hog, causal 0.85) + cross-node(worker1, 즉석 합성 0.25), 인과강도 내림차순.
 	if len(resp.Suspects) != 2 {
 		t.Fatalf("suspects=%d want 2: %+v", len(resp.Suspects), resp.Suspects)
 	}
@@ -86,9 +88,9 @@ func TestNodeGpuRca(t *testing.T) {
 // 후보당 1 건 (최고 score) 으로 집계되는지 검증한다.
 func TestNodeGpuRca_DedupSuspect(t *testing.T) {
 	nb := &fakeNeighbors{data: []correlation.NoisyNeighbor{
-		{Victim: correlation.PodIdentity{Namespace: "ns1", Pod: "trainer"}, Suspect: correlation.PodIdentity{Namespace: "ns2", Pod: "hog"}, Dimension: correlation.DimensionNetwork, Score: 0.3},
-		{Victim: correlation.PodIdentity{Namespace: "ns1", Pod: "trainer"}, Suspect: correlation.PodIdentity{Namespace: "ns2", Pod: "hog"}, Dimension: correlation.DimensionMemory, Score: 0.8},
-		{Victim: correlation.PodIdentity{Namespace: "ns1", Pod: "sidecar"}, Suspect: correlation.PodIdentity{Namespace: "ns2", Pod: "hog"}, Dimension: correlation.DimensionCPU, Score: 0.5},
+		{Victim: correlation.PodIdentity{Namespace: "ns1", Pod: "trainer"}, Suspect: correlation.PodIdentity{Namespace: "ns2", Pod: "hog"}, Dimension: correlation.DimensionNetwork, Score: 0.3, CausalStrength: 0.3},
+		{Victim: correlation.PodIdentity{Namespace: "ns1", Pod: "trainer"}, Suspect: correlation.PodIdentity{Namespace: "ns2", Pod: "hog"}, Dimension: correlation.DimensionMemory, Score: 0.9, CausalStrength: 0.8},
+		{Victim: correlation.PodIdentity{Namespace: "ns1", Pod: "sidecar"}, Suspect: correlation.PodIdentity{Namespace: "ns2", Pod: "hog"}, Dimension: correlation.DimensionCPU, Score: 0.5, CausalStrength: 0.5},
 	}}
 	h := NewSynthesisHandler(gpuRcaQuerier(), nb, nil)
 	rec := httptest.NewRecorder()
@@ -99,7 +101,7 @@ func TestNodeGpuRca_DedupSuspect(t *testing.T) {
 		t.Fatalf("suspects=%d want 1 (동일 suspect pod dedup): %+v", len(resp.Suspects), resp.Suspects)
 	}
 	if resp.Suspects[0].Pod != "hog" || resp.Suspects[0].Score != 0.8 {
-		t.Errorf("suspect=%+v want hog 최고 score 0.8", resp.Suspects[0])
+		t.Errorf("suspect=%+v want hog 최고 인과강도 0.8", resp.Suspects[0])
 	}
 }
 
@@ -463,5 +465,43 @@ func TestNodeGpuRca_IdleNoCause(t *testing.T) {
 	}
 	if strings.Contains(resp.Narrative, "임계(idle>0.5) 미만") {
 		t.Errorf("narrative=%q want 게이팅 미만 문구 없음 (idle 1.0 모순)", resp.Narrative)
+	}
+}
+
+// TestNodeGpuRca_CausalRanking 은 #373 의 핵심 회귀다. 상관 (Pearson max|corr|) 만 우연히 높고
+// 인과 증거가 약한 후보가, 상관은 낮지만 인과 (Granger·effect 합성) 가 확실한 후보보다 상위로
+// 오지 않는다. narrative 의 최우선 의심도 같은 축 (suspects[0]) 으로 선정된다. 종전 n.Score 랭킹
+// 이면 lucky (0.95) 가 rank 1 이었다.
+func TestNodeGpuRca_CausalRanking(t *testing.T) {
+	nb := &fakeNeighbors{data: []correlation.NoisyNeighbor{
+		{
+			Victim:    correlation.PodIdentity{Namespace: "ns1", Pod: "trainer"},
+			Suspect:   correlation.PodIdentity{Namespace: "ns2", Pod: "lucky"},
+			Dimension: correlation.DimensionNetwork, Score: 0.95, CausalStrength: 0.5,
+		},
+		{
+			Victim:    correlation.PodIdentity{Namespace: "ns1", Pod: "trainer"},
+			Suspect:   correlation.PodIdentity{Namespace: "ns3", Pod: "culprit"},
+			Dimension: correlation.DimensionCPU, Score: 0.7, CausalStrength: 0.82,
+		},
+	}}
+	h := NewSynthesisHandler(gpuRcaQuerier(), nb, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodeGpuRca(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-rca?node=gpu", nil))
+	var resp NodeGpuRcaResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Suspects) != 2 {
+		t.Fatalf("suspects=%d want 2: %+v", len(resp.Suspects), resp.Suspects)
+	}
+	if resp.Suspects[0].Pod != "culprit" || resp.Suspects[0].Score != 0.82 {
+		t.Errorf("suspects[0]=%+v want culprit/0.82 (인과 확실 후보 우선)", resp.Suspects[0])
+	}
+	if resp.Suspects[1].Pod != "lucky" || resp.Suspects[1].Score != 0.5 {
+		t.Errorf("suspects[1]=%+v want lucky/0.5 (상관만 높은 후보)", resp.Suspects[1])
+	}
+	if !strings.Contains(resp.Narrative, "최우선 의심 ns3/culprit") {
+		t.Errorf("narrative=%q want 최우선 의심 ns3/culprit (같은 축 선정)", resp.Narrative)
 	}
 }
