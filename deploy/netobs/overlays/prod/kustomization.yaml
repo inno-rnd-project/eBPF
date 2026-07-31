@@ -9,7 +9,7 @@ resources:
 images:
   - name: netobs-agent
     newName: ghcr.io/inno-rnd-project/netobs-agent
-    newTag: "2.8.1"
+    newTag: "2.8.2"
 
 patches:
   - path: patch-daemonset.yaml

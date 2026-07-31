@@ -4,6 +4,8 @@ import (
 	"math"
 	"math/rand"
 	"testing"
+
+	"gonum.org/v1/gonum/mat"
 )
 
 // TestGranger_StrongCausal 은 x_{t-1} 이 y_t 를 결정적으로 만드는 인공 시계열에서 F-statistic 이
@@ -134,5 +136,56 @@ func TestGranger_PValueInRange(t *testing.T) {
 		if math.IsNaN(r.PValue) || r.PValue < 0 || r.PValue > 1 {
 			t.Errorf("%s: PValue=%g out of [0, 1]", tc.name, r.PValue)
 		}
+	}
+}
+
+// nearCollinearSeries 는 강한 자기상관 (거의 완전한 선형 추세 + 미세 섭동) 의 y 와 독립적인 x 를
+// 만든다 (#368). y 의 lag 회귀자들은 intercept 와 근-공선이라 X 의 조건수가 매우 커지고 (섭동 1e-10, 조건수 약 1e12),
+// 정규방정식은 조건수를 제곱해 이 입력에서 실패하거나 부정확했다. 섭동은 sin 기반 결정적 값이라
+// 재현 가능하다.
+func nearCollinearSeries(n int) (x, y []float64) {
+	x = make([]float64, n)
+	y = make([]float64, n)
+	for i := 0; i < n; i++ {
+		y[i] = float64(i) + 1e-10*math.Sin(float64(i)*1.7)
+		x[i] = math.Sin(float64(i) * 0.9)
+	}
+	return x, y
+}
+
+// TestGranger_NearCollinearStable 은 근-공선 회귀자 입력에서 QR 최소자승이 유한하고 유효한 F 와
+// p-value 를 안정적으로 산정하는지 검증한다 (#368).
+func TestGranger_NearCollinearStable(t *testing.T) {
+	x, y := nearCollinearSeries(120)
+	res := Test(x, y, 2, 30)
+	if !res.OK {
+		t.Fatalf("근-공선 입력에서 OK=false (QR 최소자승이면 산정 가능해야 한다)")
+	}
+	if math.IsNaN(res.F) || math.IsInf(res.F, 0) || res.F < 0 {
+		t.Errorf("F=%v want 유한 비음수", res.F)
+	}
+	if res.PValue < 0 || res.PValue > 1 {
+		t.Errorf("pvalue=%v want [0,1]", res.PValue)
+	}
+}
+
+// TestGranger_NormalEquationsFailOnNearCollinear 는 동일한 근-공선 입력에서 종전 정규방정식 경로
+// (X^T X 를 SolveVec) 가 과대 조건수로 실패함을 보여 QR 전환의 근거를 회귀로 고정한다 (#368).
+// 정규방정식은 조건수를 제곱하므로 QR 이 안정 산정하는 입력 (위 TestGranger_NearCollinearStable)
+// 에서도 해를 못 구한다.
+func TestGranger_NormalEquationsFailOnNearCollinear(t *testing.T) {
+	x, y := nearCollinearSeries(120)
+	lag := 2
+	n := len(y) - lag
+	yt := mat.NewVecDense(n, append([]float64(nil), y[lag:]...))
+	xUnre := buildLagged(n, lag, [][]float64{y, x})
+
+	var xtx mat.Dense
+	xtx.Mul(xUnre.T(), xUnre)
+	var xty mat.VecDense
+	xty.MulVec(xUnre.T(), yt)
+	var beta mat.VecDense
+	if err := beta.SolveVec(&xtx, &xty); err == nil {
+		t.Fatalf("정규방정식이 근-공선 입력에서 error 없이 통과 (조건수 제곱 실패 재현 불가)")
 	}
 }
