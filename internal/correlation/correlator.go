@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"sync"
 	"time"
 
@@ -166,25 +167,27 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 	// #84 cross-node interference layer. CrossNodeEnabled opt-in 시 node 단위 시계열 의 페어 를
 	// 추가 산출 해 IsCrossNode=true 로 마킹 한 결과 를 동일 슬라이스 에 append 한다. EnumerateNodePairs
 	// 가 node 라벨 만 있는 시계열 만 후보 로 인정 하므로 본 호출 은 pod-level 페어 산출 과 완전히
-	// 분리 된다.
+	// 분리 된다. #372 페어 캡 (maxPairs, Go 빌트인 cap() 과 의 이름 충돌 회피 명명) 은 전 페어의
+	// Pearson 산정 후 |corr| 상위로 적용한다. 종전에는 enumerate 사전순 앞 maxPairs 개로 산정 전에
+	// 잘라, 캡 초과 시 강상관 페어가 사전순 뒤라는 이유로 top-N 에서 누락됐다. Granger 는 캡 통과
+	// 페어에만 수행해 상대적으로 비싼 산정의 비용 통제 역할을 유지한다.
 	if c.config.CrossNodeEnabled {
 		nodePairs := EnumerateNodePairs(all)
-		// maxPairs 는 cross-node 페어 enumerate 의 상한 이다. Go 빌트인 cap() 과 의 이름 충돌 회피 를
-		// 위해 maxPairs 로 명명 한다.
 		maxPairs := c.config.CrossNodeMaxPairs
 		if maxPairs <= 0 {
 			maxPairs = 1024
 		}
-		if len(nodePairs) > maxPairs {
-			nodePairs = nodePairs[:maxPairs]
-		}
-		for _, p := range nodePairs {
+		layer := make([]CorrelationResult, len(nodePairs))
+		for i, p := range nodePairs {
 			r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
 			r.NodePair = p.Key
 			r.IsCrossNode = true
-			srcVals := getValues(p.Src)
-			dstVals := getValues(p.Dst)
-			g := granger.Test(srcVals, dstVals, r.MaxAbsLag, c.config.GrangerMinSamples)
+			layer[i] = r
+		}
+		for _, i := range capIndicesByScore(layer, maxPairs) {
+			r := layer[i]
+			p := nodePairs[i]
+			g := granger.Test(getValues(p.Src), getValues(p.Dst), r.MaxAbsLag, c.config.GrangerMinSamples)
 			r.FStatistic = g.F
 			r.PValue = g.PValue
 			r.GrangerOK = g.OK
@@ -202,16 +205,18 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 		if maxPairs <= 0 {
 			maxPairs = 4096
 		}
-		if len(servicePairs) > maxPairs {
-			servicePairs = servicePairs[:maxPairs]
-		}
-		for _, p := range servicePairs {
+		// #372 캡은 Pearson 산정 후 |corr| 상위 적용 (cross-node 와 동일 규약).
+		layer := make([]CorrelationResult, len(servicePairs))
+		for i, p := range servicePairs {
 			r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
 			r.ServiceImpactPair = p.Key
 			r.IsServiceImpact = true
-			srcVals := getValues(p.Src)
-			dstVals := getValues(p.Dst)
-			g := granger.Test(srcVals, dstVals, r.MaxAbsLag, c.config.GrangerMinSamples)
+			layer[i] = r
+		}
+		for _, i := range capIndicesByScore(layer, maxPairs) {
+			r := layer[i]
+			p := servicePairs[i]
+			g := granger.Test(getValues(p.Src), getValues(p.Dst), r.MaxAbsLag, c.config.GrangerMinSamples)
 			r.FStatistic = g.F
 			r.PValue = g.PValue
 			r.GrangerOK = g.OK
@@ -229,16 +234,18 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 		if maxPairs <= 0 {
 			maxPairs = 4096
 		}
-		if len(crossLevelPairs) > maxPairs {
-			crossLevelPairs = crossLevelPairs[:maxPairs]
-		}
-		for _, p := range crossLevelPairs {
+		// #372 캡은 Pearson 산정 후 |corr| 상위 적용 (cross-node 와 동일 규약).
+		layer := make([]CorrelationResult, len(crossLevelPairs))
+		for i, p := range crossLevelPairs {
 			r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
 			r.CrossLevelPair = p.Key
 			r.IsCrossLevel = true
-			srcVals := getValues(p.Src)
-			dstVals := getValues(p.Dst)
-			g := granger.Test(srcVals, dstVals, r.MaxAbsLag, c.config.GrangerMinSamples)
+			layer[i] = r
+		}
+		for _, i := range capIndicesByScore(layer, maxPairs) {
+			r := layer[i]
+			p := crossLevelPairs[i]
+			g := granger.Test(getValues(p.Src), getValues(p.Dst), r.MaxAbsLag, c.config.GrangerMinSamples)
 			r.FStatistic = g.F
 			r.PValue = g.PValue
 			r.GrangerOK = g.OK
@@ -247,6 +254,27 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 	}
 
 	return results, nil
+}
+
+// capIndicesByScore 는 #372 의 score 기준 페어 캡이다. 레이어의 전 페어 Pearson 결과에서 |corr|
+// (MaxAbsValue) 내림차순 상위 maxPairs 개의 인덱스를 원래 enumerate 순서로 돌려준다. 종전 사전순
+// 선두 절단은 캡 초과 시 강상관 페어를 순서 때문에 탈락시켰다. 동률은 SliceStable 로 enumerate
+// 순서 (사전순) 를 유지해 결정적이고, 반환 인덱스를 오름차순 복원해 emit 순서도 종전과 같은
+// enumerate 순서다. 캡 이하면 전 인덱스를 그대로 돌려줘 종전과 완전 동일 동작이다.
+func capIndicesByScore(results []CorrelationResult, maxPairs int) []int {
+	idx := make([]int, len(results))
+	for i := range idx {
+		idx[i] = i
+	}
+	if len(results) <= maxPairs {
+		return idx
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		return results[idx[a]].MaxAbsValue > results[idx[b]].MaxAbsValue
+	})
+	idx = idx[:maxPairs]
+	sort.Ints(idx)
+	return idx
 }
 
 // filterWeakSuspects 는 #245 의 무부하 노이즈 게이트다. suspect (victim 신호가 아닌 cause score)
