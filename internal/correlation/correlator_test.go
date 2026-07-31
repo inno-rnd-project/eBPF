@@ -437,3 +437,69 @@ func TestCorrelator_CrossNodeGrangerUsesSelectedLag(t *testing.T) {
 		t.Fatal("cross-node 결과 없음 (CrossNodeEnabled/페어 enumerate 확인)")
 	}
 }
+
+// TestCapIndicesByScore 는 #372 의 score 기준 페어 캡 헬퍼를 검증한다. |corr| 상위 maxPairs 개가
+// 남고 반환 순서는 원래 enumerate 순서이며, 동률은 앞선 인덱스가 우선 (결정적) 이고, 캡 이하는
+// 전 인덱스 통과다.
+func TestCapIndicesByScore(t *testing.T) {
+	rs := []CorrelationResult{
+		{MaxAbsValue: 0.2},
+		{MaxAbsValue: 0.9},
+		{MaxAbsValue: 0.5},
+		{MaxAbsValue: 0.9},
+	}
+	got := capIndicesByScore(rs, 2)
+	if len(got) != 2 || got[0] != 1 || got[1] != 3 {
+		t.Errorf("capIndicesByScore=%v want [1 3] (0.9 동률 2건, 원래 순서)", got)
+	}
+	if got := capIndicesByScore(rs, 10); len(got) != 4 {
+		t.Errorf("캡 이하 전체 통과 실패: %v", got)
+	}
+}
+
+// TestCorrelator_CrossNodeCapKeepsStrongPairs 는 #372 의 핵심 회귀다. cross-node 페어가 캡을 넘을
+// 때 종전 사전순 선두 절단은 강상관 페어 (사전순 뒤 노드 b2) 를 탈락시키고 약상관 페어 (a1) 만
+// 남겼다. score 기준 캡은 강상관 페어를 보존한다.
+func TestCorrelator_CrossNodeCapKeepsStrongPairs(t *testing.T) {
+	const n = 40
+	vals := pseudoNoise(n)
+	// a1 은 victim 과 거의 무관한 파형 (다른 주기의 결정적 시퀀스), b2 는 victim 과 동일 파형 (corr 1).
+	weak := make([]float64, n)
+	for i := 0; i < n; i++ {
+		weak[i] = math.Cos(float64(i) * 2.3)
+	}
+	srcMetric := "node:cpu_pressure_score:5m"
+	dstMetric := "node:netobs_pod_stage_latency_p99:5m"
+	fetcher := &mockFetcher{responses: map[string][]LabeledSeries{
+		srcMetric: {
+			valSeries(map[string]string{"node": "a1"}, srcMetric, weak),
+			valSeries(map[string]string{"node": "b2"}, srcMetric, vals),
+		},
+		dstMetric: {valSeries(map[string]string{"node": "v9"}, dstMetric, vals)},
+	}}
+	cfg := Config{
+		Window: 40 * time.Second, Step: 1 * time.Second,
+		MinSamples: 10, GrangerMinSamples: 10,
+		LagSteps: []int{0}, DefaultMetrics: []string{srcMetric, dstMetric},
+		CrossNodeEnabled: true, CrossNodeMaxPairs: 1,
+	}
+	results, err := New(fetcher, cfg).Correlate(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("Correlate: %v", err)
+	}
+	var cross []CorrelationResult
+	for _, r := range results {
+		if r.IsCrossNode {
+			cross = append(cross, r)
+		}
+	}
+	if len(cross) != 1 {
+		t.Fatalf("cross-node 결과 %d건 want 1 (캡 1)", len(cross))
+	}
+	if cross[0].NodePair.SrcNode != "b2" {
+		t.Errorf("캡 생존 페어 src=%s want b2 (강상관, 종전 사전순 절단이면 a1)", cross[0].NodePair.SrcNode)
+	}
+	if cross[0].MaxAbsValue < 0.9 {
+		t.Errorf("생존 페어 score=%v want >0.9", cross[0].MaxAbsValue)
+	}
+}
