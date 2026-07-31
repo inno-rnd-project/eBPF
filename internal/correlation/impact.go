@@ -79,6 +79,9 @@ func alignByLag(suspect, victim []float64, lag int) ([]float64, []float64) {
 //     음의 effect size 는 간섭 영향이 아니므로 collector 가 emit 하지 않게 해 0-value noise 를 방지한다
 //   - 양의 degradation 으로 정상 산출 시 OK=true 와 Welch t-test p-value (PValueOK 가드 통과 시) 를
 //     함께 채운다
+//   - #369 유의성 전용 하한. p-value 는 high / low 각 구간이 EffectPValueMinPerGroup 이상일 때만
+//     산정한다. magnitude (크기 정보) 는 minSamples 가드 그대로 산출되어 emit 커버리지가 유지되고,
+//     유의성 주장만 소표본에서 억제된다
 func EffectSize(suspect, victim []float64, signal VictimSignal, minSamples int) EffectSizeResult {
 	// minSamples 가 1 미만이면 high / low 구간 표본 가드가 무력화되어 빈 구간의 0 division 이나
 	// medianOf 의 빈 슬라이스 접근으로 NaN / panic 이 전파될 수 있다. exported API 방어로 즉시 skip 한다.
@@ -140,12 +143,26 @@ func EffectSize(suspect, victim []float64, signal VictimSignal, minSamples int) 
 	}
 
 	res := EffectSizeResult{Magnitude: magnitude, OK: true}
-	if p, ok := welchTTest(highVals, lowVals); ok {
-		res.PValue = p
-		res.PValueOK = true
+	// #369 유의성 전용 하한. 호출자 전달 minSamples (MinSamples/4, 하한 2) 만으로는 구간당 2 표본
+	// (Welch-Satterthwaite df 약 2) 까지 t-test 가 수행되어, 넓고 불안정한 p-value 가 causal_strength
+	// 의 effect 항 0.2*(1-p) 로 들어가 소표본에서 인과강도가 과대·과소 진동했다. 구간당 하한 미만이면
+	// PValueOK=false 로 두어 effect 항이 0 (증거 부재) 이 되고 collector 는 impact_pvalue 를 emit
+	// 하지 않는다. magnitude 는 유의성 주장이 아니라 native 단위 크기 정보라 기존 가드를 유지한다.
+	if len(highVals) >= EffectPValueMinPerGroup && len(lowVals) >= EffectPValueMinPerGroup {
+		if p, ok := welchTTest(highVals, lowVals); ok {
+			res.PValue = p
+			res.PValueOK = true
+		}
 	}
 	return res
 }
+
+// EffectPValueMinPerGroup 은 Welch t-test 유의성 산정에 요구하는 high / low 구간당 최소 표본이다
+// (#369). Pearson (MinSamples) 과 Granger (GrangerMinSamples) 가 유의성 산정에 별도 하한을 갖는 것과
+// 같은 축의 effect 유의성 전용 하한으로, 구간당 5 면 Welch-Satterthwaite 자유도가 4 이상으로 보장되어
+// t 분포 꼬리가 안정된다. 배포 기본 (MIN_SAMPLES=60, 구간 가드 15) 에서는 항상 충족되어 동작이 같고,
+// MinSamples 를 낮춘 구성에서만 소표본 p-value 를 억제한다.
+const EffectPValueMinPerGroup = 5
 
 // welchTTest 는 두 표본 평균 차이에 대한 Welch (unequal variance) two-sided t-test p-value 를 돌려준다.
 // 한쪽 표본이 2 미만이거나 두 구간 분산이 모두 0 이거나 Welch-Satterthwaite 자유도가 비정상이면 유의성
