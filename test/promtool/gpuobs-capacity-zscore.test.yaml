@@ -1,0 +1,51 @@
+# gpuobs-capacity-zscore.test.yaml 은 #370 의 capacity 1h z-score baseline 참조 구간 검증이다.
+# 종전 [30d] offset 30d 는 30~60일 전 구간을 참조해, 데이터가 시작된 지 얼마 안 된 (또는 retention
+# 60일 미만인) 환경에서 baseline window 가 비어 z-score 4종이 emit 되지 않고 capacity alert 가 영구
+# 침묵했다. trailing 30일 (offset 1h) 이면 직전 구간의 가용 표본만으로 baseline 이 산출되어 데이터
+# 2시간 만으로도 emit 된다. offset 30d 로 되돌리면 아래 count 단정이 전부 깨져 회귀를 막는다.
+# 1h_avg 는 record 지만 base 인 pod:*_score:5m 시리즈가 없어 rule 이 미평가되고 input 이 유지된다.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 5m
+
+tests:
+  - interval: 5m
+    input_series:
+      # 2시간 남짓의 진동 시계열 (stddev>0). trailing baseline 은 이 가용 표본으로 산출된다.
+      - series: 'cluster:gpu_util_1h_avg'
+        values: '0.1 0.9 0.1 0.9 0.1 0.9 0.1 0.9 0.1 0.9 0.1 0.9 0.1 0.9 0.1 0.9 0.1 0.9 0.1 0.9 0.1 0.9 0.1 0.9 0.1'
+      - series: 'cluster:network_1h_avg'
+        values: '0.2 0.6 0.2 0.6 0.2 0.6 0.2 0.6 0.2 0.6 0.2 0.6 0.2 0.6 0.2 0.6 0.2 0.6 0.2 0.6 0.2 0.6 0.2 0.6 0.2'
+      - series: 'cluster:cpu_throttle_1h_avg'
+        values: '0.05 0.3 0.05 0.3 0.05 0.3 0.05 0.3 0.05 0.3 0.05 0.3 0.05 0.3 0.05 0.3 0.05 0.3 0.05 0.3 0.05 0.3 0.05 0.3 0.05'
+      - series: 'cluster:memory_pressure_1h_avg'
+        values: '0.4 0.8 0.4 0.8 0.4 0.8 0.4 0.8 0.4 0.8 0.4 0.8 0.4 0.8 0.4 0.8 0.4 0.8 0.4 0.8 0.4 0.8 0.4 0.8 0.4'
+
+    promql_expr_test:
+      # trailing baseline 이라 데이터 2시간 만으로 z-score 4종이 전부 emit 된다. 종전 offset 30d 면
+      # baseline window (30~60일 전) 가 비어 전부 미emit 이었다.
+      - expr: count(cluster:gpu_util_zscore:1h)
+        eval_time: 2h
+        exp_samples:
+          - labels: '{}'
+            value: 1
+      - expr: count(cluster:network_zscore:1h)
+        eval_time: 2h
+        exp_samples:
+          - labels: '{}'
+            value: 1
+      - expr: count(cluster:cpu_throttle_zscore:1h)
+        eval_time: 2h
+        exp_samples:
+          - labels: '{}'
+            value: 1
+      - expr: count(cluster:memory_pressure_zscore:1h)
+        eval_time: 2h
+        exp_samples:
+          - labels: '{}'
+            value: 1
+      # clamp 범위 (-5, 5) 를 벗어난 값이 없다.
+      - expr: count(cluster:gpu_util_zscore:1h > 5 or cluster:gpu_util_zscore:1h < -5)
+        eval_time: 2h
+        exp_samples: []
