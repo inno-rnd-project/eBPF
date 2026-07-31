@@ -391,10 +391,10 @@ spec:
             )
 
     # netobs-gpuobs.dominant-cause.recording 그룹은 #66 의 GPU 유휴 dominant cause 가중치 산정에
-    # 사용하는 recording rule 을 모은다. 본 그룹의 첫 5 종은 node 와 Pod 차원으로 흩어진 cause score
-    # 5 종을 cluster 단위 단일 값으로 max rollup 해 dominant cause weight 산정 단계에서 동일한 차원
-    # 으로 비교 가능하게 한다. dominant cause 가 cluster 평균이 아니라 worst-case 신호를 따라가도록
-    # max 를 채택한다. network_pressure cause 의 base score 는 canonical pod:network_pressure_score:5m
+    # 사용하는 recording rule 을 모은다. 본 그룹의 앞부분은 node 와 Pod 차원으로 흩어진 cause 별
+    # base score 를 cluster 단위 단일 값으로 max rollup 해 (cause enum 이 늘며 함께 늘어난 rollup
+    # 8 종, #374) dominant cause weight 산정 단계에서 동일한 차원으로 비교 가능하게 한다. dominant
+    # cause 가 cluster 평균이 아니라 worst-case 신호를 따라가도록 max 를 채택한다. network_pressure cause 의 base score 는 canonical pod:network_pressure_score:5m
     # (throughput saturation 과 TCP 재전송 의 element-wise max) 의 rollup 이라, 재전송이 GPU 유휴를
     # 유발하는 경우도 network_pressure dominant cause 로 직접 분류된다 (#154). 두 신호의 스케일 차이는
     # 합산이 아닌 max 로 흡수해 cause 간 비교 의미를 유지한다. retrans 를 별도 cause slot 으로 분리하지
