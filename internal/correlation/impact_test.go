@@ -79,12 +79,13 @@ func TestEffectSize_ErrorAndGPUDirection(t *testing.T) {
 }
 
 // TestEffectSize_PValueSignificant 는 두 구간이 분산을 가지면서 평균이 뚜렷이 갈릴 때 Welch t-test
-// p-value 가 산출되고 (PValueOK=true) 유의 (p < 0.05) 한지 검증한다.
+// p-value 가 산출되고 (PValueOK=true) 유의 (p < 0.05) 한지 검증한다. 구간당 표본은 #369 유의성
+// 하한 (EffectPValueMinPerGroup=5) 을 채우도록 5 개씩이다.
 func TestEffectSize_PValueSignificant(t *testing.T) {
-	suspect := []float64{0.0, 0.1, 0.2, 0.3, 0.7, 0.8, 0.9, 1.0}
-	victim := []float64{0.010, 0.012, 0.011, 0.013, 0.100, 0.105, 0.098, 0.102}
+	suspect := []float64{0.0, 0.1, 0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 0.9, 1.0}
+	victim := []float64{0.010, 0.012, 0.011, 0.013, 0.012, 0.100, 0.105, 0.098, 0.102, 0.101}
 
-	res := EffectSize(suspect, victim, SignalLatency, 4)
+	res := EffectSize(suspect, victim, SignalLatency, 5)
 	if !res.OK {
 		t.Fatalf("OK=false want true")
 	}
@@ -216,9 +217,10 @@ func TestAlignByLag(t *testing.T) {
 // 아직 상승 전 victim 값이 섞여 magnitude 가 희석된다. alignByLag 로 lag 2 에서 정렬하면 압박 구간이
 // 실제 degradation 과 정렬돼 참 magnitude 가 복원되고 Welch p-value 도 산출된다.
 func TestEffectSize_LagAlignmentRecoversMagnitude(t *testing.T) {
-	// suspect: 앞 5 개 비압박(0), 뒤 5 개 압박(1). victim: 압박 영향이 2 step 뒤 (index 7~9) 에 상승.
-	suspect := []float64{0, 0, 0, 0, 0, 1, 1, 1, 1, 1}
-	victim := []float64{0.010, 0.012, 0.009, 0.011, 0.010, 0.011, 0.010, 0.101, 0.099, 0.100}
+	// suspect: 앞 7 개 비압박(0), 뒤 7 개 압박(1). victim: 압박 영향이 2 step 뒤 (index 9~13) 에 상승.
+	// 구간당 표본은 lag 정렬 후에도 #369 유의성 하한 (5) 을 채우는 크기다.
+	suspect := []float64{0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1}
+	victim := []float64{0.010, 0.012, 0.009, 0.011, 0.010, 0.011, 0.010, 0.012, 0.011, 0.101, 0.099, 0.100, 0.102, 0.098}
 
 	// lag 0 원계열: 압박 구간 (index 5~9) victim 에 아직 상승 전 값 (index 5,6) 이 섞여 희석.
 	raw := EffectSize(suspect, victim, SignalLatency, 2)
@@ -243,5 +245,23 @@ func TestEffectSize_LagAlignmentRecoversMagnitude(t *testing.T) {
 	// 정렬 후에는 압박/비압박 구간이 분산을 가져 Welch p-value 가 산출된다.
 	if !aligned.PValueOK {
 		t.Errorf("aligned PValueOK=false want true (정렬 후 구간 분산 존재)")
+	}
+}
+
+// TestEffectSize_SmallGroupPValueFloor 는 #369 의 유의성 전용 하한을 검증한다. 구간당 표본이
+// EffectPValueMinPerGroup (5) 미만이면 magnitude (크기 정보) 는 산출되되 Welch p-value 는 산정되지
+// 않아 (PValueOK=false) 소표본의 넓고 불안정한 p-value 가 causal_strength 의 effect 항으로 들어가지
+// 않는다. 종전에는 구간당 2 표본까지 t-test 가 수행됐다.
+func TestEffectSize_SmallGroupPValueFloor(t *testing.T) {
+	// 구간당 3 표본: magnitude 가드 (minSamples=2) 는 통과, 유의성 하한 (5) 은 미달.
+	suspect := []float64{0.0, 0.1, 0.2, 0.8, 0.9, 1.0}
+	victim := []float64{0.010, 0.012, 0.011, 0.100, 0.105, 0.098}
+
+	res := EffectSize(suspect, victim, SignalLatency, 2)
+	if !res.OK || res.Magnitude <= 0 {
+		t.Fatalf("res=%+v want OK=true (magnitude 는 기존 가드 유지)", res)
+	}
+	if res.PValueOK || res.PValue != 0 {
+		t.Errorf("PValueOK=%v PValue=%v want false/0 (구간당 5 미만은 유의성 미산정)", res.PValueOK, res.PValue)
 	}
 }
