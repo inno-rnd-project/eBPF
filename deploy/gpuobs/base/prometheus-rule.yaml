@@ -1464,13 +1464,27 @@ spec:
         # 조건 AND 로 false positive 를 차단한다. raw gauge 는 scrape 마다 reset 되어 window 내
         # min/max sample 을 의미하며 평소 baseline 과의 비교는 offset 5m 윈도우로 산출한다.
         # tcp_v4_rcv 는 emit 대상이 아니라 본 alert 는 rcv_demux 이후 stage 의 sample 만 본다.
+        # #371 baseline 부재 fallback. 갓 뜬 pod 이나 5분 미만 flow 는 baseline 이 없어 and 우변이
+        # 비고 심한 혼잡에도 발화하지 않았다. baseline 이 없는 시리즈에 한해 (unless 게이트) 절대
+        # cwnd 하한 4 이하를 fallback 으로 둔다. Linux 초기 cwnd 기본 10 에서 loss recovery backoff
+        # 는 4 이하로 수렴하므로 신생 flow 의 정상 초기값과 분리되고, srtt 200 ms 초과 AND 와 for 2m
+        # 이 그대로 걸려 있어 오발화 여지가 좁다 (현행 24h 실측 fallback 발동 0). baseline 이 생기면
+        # unless 가 fallback 을 배제해 상대 비교 단독으로 복귀한다. avg_over_time >= 0 은 cwnd 가
+        # 양수라 항상 참인 존재 술어다.
         - alert: NetObsTcpCongestion
           expr: |
             (netobs_tcp_state_max_srtt_seconds > 0.2)
             and
             (
-              netobs_tcp_state_min_cwnd
-              < (avg_over_time(netobs_tcp_state_min_cwnd[5m] offset 5m) * 0.5)
+              (
+                netobs_tcp_state_min_cwnd
+                < (avg_over_time(netobs_tcp_state_min_cwnd[5m] offset 5m) * 0.5)
+              )
+              or
+              (
+                (netobs_tcp_state_min_cwnd <= 4)
+                unless (avg_over_time(netobs_tcp_state_min_cwnd[5m] offset 5m) >= 0)
+              )
             )
           for: 2m
           labels:
@@ -1478,7 +1492,7 @@ spec:
             component: netobs
           annotations:
             summary: "netobs tcp congestion on receiving pod {{ $labels.namespace }}/{{ $labels.pod }} (node={{ $labels.node }})"
-            description: "Receiving pod {{ $labels.namespace }}/{{ $labels.pod }} on node {{ $labels.node }} shows max srtt {{ $value | humanizeDuration }} with min_cwnd dropped below 50% of the previous 5-minute baseline, sustained over 2 minutes. Inspect peer congestion or downstream link saturation via netobs_tcp_state_min_cwnd / max_srtt_seconds / min_ssthresh."
+            description: "Receiving pod {{ $labels.namespace }}/{{ $labels.pod }} on node {{ $labels.node }} shows max srtt {{ $value | humanizeDuration }} with min_cwnd dropped below 50% of the previous 5-minute baseline (or at/below the absolute floor 4 for young flows without a baseline, #371), sustained over 2 minutes. Inspect peer congestion or downstream link saturation via netobs_tcp_state_min_cwnd / max_srtt_seconds / min_ssthresh."
 
         # GPUObsThrottleActive
         # hw_* / sw_thermal_slowdown / sw_power_cap reason은 운영상 문제 시그널이라 활성이면 critical.
