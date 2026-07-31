@@ -188,5 +188,4 @@ func TestGranger_NormalEquationsFailOnNearCollinear(t *testing.T) {
 	if err := beta.SolveVec(&xtx, &xty); err == nil {
 		t.Fatalf("정규방정식이 근-공선 입력에서 error 없이 통과 (조건수 제곱 실패 재현 불가)")
 	}
-	_ = yt
 }
