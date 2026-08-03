@@ -109,6 +109,22 @@ spec:
             description: "victim {{ $labels.victim_namespace }}/{{ $labels.victim_pod }} 의 latency 가 suspect {{ $labels.suspect_namespace }}/{{ $labels.suspect_pod }} 의 {{ $labels.resource_dimension }} 자원 변동과 max |corr| {{ $value }} 로 10분 이상 동조하고 있다. causal_strength 0.6 초과 또는 Granger pvalue 0.05 미만의 인과 증거 게이트를 함께 통과했다 (#366). internal/correlation/README.md 의 runbook 절차를 따른다."
             runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationstrongnoisyneighbor"
 
+        # CorrelationExporterMetricsAbsent
+        # #405 exporter 자기관측의 마지막 공백 커버. 첫 reconcile 실패 시 /readyz 가 영구 503 이라
+        # Service Endpoints 에서 빠져 self-health 메트릭 자체가 수집되지 않는데, Stalled 계열은
+        # 시리즈가 존재해야 발화하므로 이 NotReady 침묵 구간을 아무도 감지하지 못했다. absent() 는
+        # 시리즈 부재 자체를 잡아 미수집 (scrape 대상 이탈, exporter 미기동 포함) 을 커버한다.
+        - alert: CorrelationExporterMetricsAbsent
+          expr: absent(correlation_reconcile_last_success_timestamp_seconds)
+          for: 5m
+          labels:
+            severity: critical
+            component: correlation
+          annotations:
+            summary: "correlation-exporter self-health metrics absent"
+            description: "correlation_reconcile_last_success_timestamp_seconds 시리즈가 5 분 이상 부재하다. exporter 미기동, 첫 reconcile 실패로 인한 NotReady (Endpoints 이탈), scrape 설정 문제 중 하나로 self-health 관측 자체가 끊긴 상태다. correlation-exporter pod 상태와 readyz, ServiceMonitor 대상 등록을 점검한다."
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationexporterstalled"
+
         # CorrelationExporterStalled
         # exporter 가 reconcile 을 10분 이상 성공시키지 못하면 발화한다. last_success_timestamp 가
         # 0 인 첫 reconcile 전 상태는 NewGauge default 0 으로 emit 되어 time() 과의 차이가 매우 커
