@@ -692,10 +692,10 @@ func TestSynthesis_GetHealth_NilQuerier(t *testing.T) {
 	}
 }
 
-// TestQueryFailed500Contract 는 #352 의 오류 응답 규약 통일을 검증한다. Prometheus 백엔드 장애
-// (Query error) 시 queryParallel 을 쓰는 전 엔드포인트가 200+빈데이터가 아니라 500 query_failed 를
-// 돌려줘야 한다. 각 호출 패턴 (단일 queryParallel, 직접 primary + 보조 queryParallel, 다중
-// queryParallel) 을 대표 핸들러로 커버한다.
+// TestQueryFailed500Contract 는 오류 응답 규약 통일을 검증한다 (#352, #404). Prometheus 백엔드
+// 전면 장애 (Query error) 시 querier 를 쓰는 전 엔드포인트가 200+빈데이터가 아니라 500 query_failed
+// 를 돌려줘야 한다. #404 에서 규약을 위반하던 health / node/{node} / gpu-idle (scope 3종) 이 표에
+// 합류해, 어떤 핸들러도 백엔드 장애를 200 으로 숨기지 않는 규약 갈림을 표 단위로 고정한다.
 func TestQueryFailed500Contract(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -716,6 +716,36 @@ func TestQueryFailed500Contract(t *testing.T) {
 		}},
 		{"pod-detail", "/api/v1/pod/ns/p", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetPodDetail(rec, req) }},
 		{"memory", "/api/v1/memory", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetMemory(rec, req) }},
+		// #404 규약 정합으로 합류한 3종 (종전에는 전면 장애가 200 으로 숨었다).
+		{"health", "/api/v1/health", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetHealth(rec, req) }},
+		{"node-detail", "/api/v1/node/n1", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetNode(rec, req) }},
+		{"gpu-idle-cluster", "/api/v1/gpu-idle", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetGpuIdle(rec, req) }},
+		{"gpu-idle-node", "/api/v1/gpu-idle?scope=node&node=n1", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) {
+			h.GetGpuIdle(rec, req)
+		}},
+		{"gpu-idle-pod", "/api/v1/gpu-idle?scope=pod", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetGpuIdle(rec, req) }},
+		// 기존 500 규약 엔드포인트도 표에 합류해 갈림 재발을 막는다.
+		{"pressure", "/api/v1/pressure?dimension=cpu&scope=pod", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) {
+			h.GetPressure(rec, req)
+		}},
+		{"topology", "/api/v1/topology", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetTopology(rec, req) }},
+		{"events", "/api/v1/events", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetEvents(rec, req) }},
+		{"node-vitals-2", "/api/v1/node-vitals?node=n1", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) {
+			h.GetNodeVitals(rec, req)
+		}},
+		{"gpu-status", "/api/v1/gpu-status", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetGpuStatus(rec, req) }},
+		{"gpu-rca", "/api/v1/gpu-rca?node=n1", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) {
+			h.GetNodeGpuRca(rec, req)
+		}},
+		{"gpu-processes", "/api/v1/gpu-processes?node=n1", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) {
+			h.GetGpuProcesses(rec, req)
+		}},
+		{"latency-breakdown", "/api/v1/latency-breakdown", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) {
+			h.GetLatencyBreakdown(rec, req)
+		}},
+		{"drops", "/api/v1/drops", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetDrops(rec, req) }},
+		{"flows", "/api/v1/flows", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetFlows(rec, req) }},
+		{"bandwidth", "/api/v1/bandwidth", func(h *SynthesisHandler, rec *httptest.ResponseRecorder, req *http.Request) { h.GetBandwidth(rec, req) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
