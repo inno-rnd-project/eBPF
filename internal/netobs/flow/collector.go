@@ -97,7 +97,7 @@ func New(cgroup CgroupResolver, ip IPResolver, guard *metrics.FlowGuard, dstClas
 		enabled:       enabled,
 		bytesDesc: prometheus.NewDesc(
 			"netobs_flow_bytes_total",
-			"#85 Pod 간 정상 flow 의 5-tuple RX/TX bytes counter. FlowGuard allow-list 통과 시에만 emit되며 namespace 와 LRU 1024 sampling 으로 cardinality 가 제한된다.",
+			"#85 Pod 간 정상 flow 의 5-tuple RX/TX bytes counter. FlowGuard allow-list 통과 시에만 emit되며 namespace allow-list 와 스크레이프당 emit budget (NETOBS_FLOW_MAX_ACTIVE, #403) 으로 cardinality 가 제한된다. budget 초과 거부는 netobs_flow_guard_rejected_total{guard=\"flow\"} 로 계수된다.",
 			labels, nil,
 		),
 	}
@@ -126,6 +126,10 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	if m == nil {
 		return
 	}
+
+	// #403 scrape 세대 시작. FlowGuard 의 스크레이프당 emit budget (FlowMaxActive) 이 이 시점 부터
+	// 리셋 되고, 이전 세대 의 stale entry 가 신규 flow 에 슬롯 을 내준다.
+	c.guard.BeginScrape()
 
 	var key ebpfx.NetObsNetobsFlowKey
 	var value ebpfx.NetObsNetobsFlowValue
@@ -280,7 +284,7 @@ func (c *Collector) mergeEntry(agg map[aggKey]*aggValue, key ebpfx.NetObsNetobsF
 }
 
 // formatPort 는 uint16 포트 를 라벨 string 으로 변환 한다. strconv.Itoa 는 string allocation 을 동반
-// 하나 scrape 주기 와 entry 수 (≤1024) 의 곱이 가벼워 성능 영향 무시 가능 하다.
+// 하나 scrape 주기 와 admit 상한 (FlowMaxActive, #403) 의 곱이 가벼워 성능 영향 무시 가능 하다.
 func formatPort(p uint16) string {
 	return uint16ToString(p)
 }

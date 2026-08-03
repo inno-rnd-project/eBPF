@@ -297,6 +297,7 @@ func Register(reg prometheus.Registerer) {
 		bpfProgramAttachRetryTotal,
 		bpfRingbufDropsTotal,
 		bpfMapUtilizationRatio,
+		flowGuardRejectedTotal,
 		informerSyncLagSeconds,
 		cgroup2Available,
 		podNoSockets,
@@ -306,6 +307,9 @@ func Register(reg prometheus.Registerer) {
 		dropStackResolverCacheHits,
 		dropStackResolverCacheMisses,
 	)
+	// #403 rejected 카운터의 guard 라벨 선등록. 거부가 없는 시점에도 0 시리즈가 존재해 increase()
+	// 기반 관측이 즉시 동작한다.
+	PreregisterFlowGuardLabels()
 }
 
 // SetNICCapacityBytesPerSec는 노드 NIC 이론 capacity gauge를 startup 시점에 1회 설정한다. 본 메트릭은

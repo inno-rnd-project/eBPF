@@ -38,15 +38,52 @@ func TestFlowGuard_RejectsZeroIP(t *testing.T) {
 	}
 }
 
-// TestFlowGuard_LRUEvicts 는 maxActive 초과 시 가장 오래된 flow 가 evict 되고 신규 가 admit 되는지
-// 검증 한다.
-func TestFlowGuard_LRUEvicts(t *testing.T) {
+// TestFlowGuard_ScrapeBudget 은 #403 의 스크레이프당 emit budget 계약을 검증한다. 한 세대에서
+// admit 되는 신규 키가 maxActive 를 넘지 않고 (종전 evict-후-admit 은 전부 admit 했다), budget
+// 소진 후 신규는 거부된다.
+func TestFlowGuard_ScrapeBudget(t *testing.T) {
 	g := NewFlowGuard([]string{"ns"}, 2)
-	g.Admit("ns", "10.0.0.1", 1, "10.0.0.2", 80, "TCP", "egress")
-	g.Admit("ns", "10.0.0.1", 2, "10.0.0.2", 80, "TCP", "egress")
-	g.Admit("ns", "10.0.0.1", 3, "10.0.0.2", 80, "TCP", "egress")
+	g.BeginScrape()
+	admitted := 0
+	for p := uint16(1); p <= 6; p++ {
+		if g.Admit("ns", "10.0.0.1", p, "10.0.0.2", 80, "TCP", "egress") {
+			admitted++
+		}
+	}
+	if admitted != 2 {
+		t.Errorf("admitted=%d want 2 (스크레이프당 budget)", admitted)
+	}
 	if g.Size() != 2 {
 		t.Errorf("size=%d want 2 (LRU cap 유지)", g.Size())
+	}
+	// 동일 세대에서 이미 등록된 키의 재방문은 budget 소진과 무관하게 admit 된다.
+	if !g.Admit("ns", "10.0.0.1", 1, "10.0.0.2", 80, "TCP", "egress") {
+		t.Errorf("기존 키 재방문이 거부됨")
+	}
+}
+
+// TestFlowGuard_StaleEvictedNextScrape 는 다음 세대 (BeginScrape) 에서 이전 세대의 stale entry 가
+// 신규 flow 에 슬롯을 내주는지 검증한다 (#403). 죽은 flow 가 슬롯을 영구 점유하지 않는다.
+func TestFlowGuard_StaleEvictedNextScrape(t *testing.T) {
+	g := NewFlowGuard([]string{"ns"}, 2)
+	g.BeginScrape()
+	g.Admit("ns", "10.0.0.1", 1, "10.0.0.2", 80, "TCP", "egress")
+	g.Admit("ns", "10.0.0.1", 2, "10.0.0.2", 80, "TCP", "egress")
+
+	g.BeginScrape()
+	// 신규 2건: 이전 세대 stale 2건을 evict 하고 admit 된다.
+	if !g.Admit("ns", "10.0.0.9", 3, "10.0.0.2", 80, "TCP", "egress") {
+		t.Errorf("stale evict 후 신규 admit 실패")
+	}
+	if !g.Admit("ns", "10.0.0.9", 4, "10.0.0.2", 80, "TCP", "egress") {
+		t.Errorf("stale evict 후 두 번째 신규 admit 실패")
+	}
+	// budget 소진: 세 번째 신규는 거부.
+	if g.Admit("ns", "10.0.0.9", 5, "10.0.0.2", 80, "TCP", "egress") {
+		t.Errorf("budget 소진 후 신규가 admit 됨 (#403 상한 계약 위반)")
+	}
+	if g.Size() != 2 {
+		t.Errorf("size=%d want 2", g.Size())
 	}
 }
 

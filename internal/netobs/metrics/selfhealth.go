@@ -41,6 +41,18 @@ var (
 		[]string{"map"},
 	)
 
+	// flowGuardRejectedTotal 은 #403 의 emit 상한 계약 카운터다. FlowGuard (스크레이프당 emit
+	// budget) 와 DropFlowGuard (라벨셋 sticky 상한) 가 상한 도달로 신규 flow 의 admit 을 거부한
+	// 횟수를 guard 라벨로 노출한다. 지속 증가는 max-active 상한이 관측 수요 대비 작다는 신호로,
+	// 운영자가 allow-list 를 좁히거나 상한을 올리는 판단 근거가 된다.
+	flowGuardRejectedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "netobs_flow_guard_rejected_total",
+			Help: "Admissions rejected by flow-family cardinality guards after the max-active cap is reached (#403). guard=flow is the per-scrape emit budget of netobs_flow_bytes_total; guard=drop_flow is the sticky label-set cap of netobs_drop_events_flow_total. Sustained growth means the cap is undersized for the observed flow working set.",
+		},
+		[]string{"guard"},
+	)
+
 	// cgroup2Available 은 #297 의 시작 시 statfs 검증 결과다. cgroup v1/hybrid 노드에서 역매핑
 	// 스캐너가 조용히 빈 테이블로 degrade 하던 것을 운영자가 식별할 수 있게 한다.
 	cgroup2Available = prometheus.NewGauge(
@@ -134,6 +146,20 @@ func AddBpfRingbufDrops(delta uint64) {
 		return
 	}
 	bpfRingbufDropsTotal.Add(float64(delta))
+}
+
+// AddFlowGuardRejected 는 flow 계열 가드의 상한 거부 1 회를 기록한다 (#403). guard 는 "flow"
+// (FlowGuard 의 스크레이프당 emit budget) 또는 "drop_flow" (DropFlowGuard 의 sticky 상한) 다.
+func AddFlowGuardRejected(guard string) {
+	flowGuardRejectedTotal.WithLabelValues(guard).Inc()
+}
+
+// PreregisterFlowGuardLabels 는 flow 계열 가드의 rejected 카운터 라벨을 0 으로 선등록해 거부가
+// 아직 없는 시점에도 시리즈가 존재하게 한다 (#403). increase() 기반 관측이 첫 거부 전에도 0 을
+// 읽을 수 있다.
+func PreregisterFlowGuardLabels() {
+	flowGuardRejectedTotal.WithLabelValues("flow")
+	flowGuardRejectedTotal.WithLabelValues("drop_flow")
 }
 
 // SetBpfMapUtilization 은 map 라벨 별 포화 비율을 emit 한다. ratio 는 호출 측에서 current /

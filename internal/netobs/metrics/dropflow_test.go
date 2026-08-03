@@ -71,3 +71,24 @@ func TestDropFlowGuard_RevisitMovesToFront(t *testing.T) {
 		t.Errorf("size=%d want 2", g.Size())
 	}
 }
+
+// TestDropFlowGuard_StickyCap 은 #403 의 sticky 상한 계약을 검증한다. 상한 도달 후 신규 flow 는
+// 거부되고 (종전 evict-후-admit 은 라벨셋을 무한 생성했다), 이미 등록된 flow 는 계속 admit 된다.
+func TestDropFlowGuard_StickyCap(t *testing.T) {
+	g := NewDropFlowGuard([]string{"ns"}, 2)
+	if !g.Admit("ns", "10.0.0.1", 1, "10.0.0.2", 80, "TCP") {
+		t.Fatalf("첫 admit 실패")
+	}
+	if !g.Admit("ns", "10.0.0.1", 2, "10.0.0.2", 80, "TCP") {
+		t.Fatalf("둘째 admit 실패")
+	}
+	if g.Admit("ns", "10.0.0.1", 3, "10.0.0.2", 80, "TCP") {
+		t.Errorf("상한 도달 후 신규가 admit 됨 (#403 sticky 상한 위반)")
+	}
+	if !g.Admit("ns", "10.0.0.1", 1, "10.0.0.2", 80, "TCP") {
+		t.Errorf("기존 flow 재방문이 거부됨 (카운터 누적 단절)")
+	}
+	if g.Size() != 2 {
+		t.Errorf("size=%d want 2", g.Size())
+	}
+}
