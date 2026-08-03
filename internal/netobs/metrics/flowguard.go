@@ -36,11 +36,13 @@ type flowGuardEntry struct {
 type flowGuardKey struct {
 	srcNamespace string
 	srcIP        string
-	srcPort      uint16
-	dstIP        string
-	dstPort      uint16
-	protocol     string
-	direction    string
+	// srcPort 는 emit 되는 src_port 라벨 문자열 그대로 다 (#403). fold/none 모드 에서 라벨 이 접히면
+	// 가드 슬롯 도 함께 접혀 시리즈 identity 와 가드 identity 가 1:1 로 유지 된다.
+	srcPort   string
+	dstIP     string
+	dstPort   uint16
+	protocol  string
+	direction string
 }
 
 // NewFlowGuard 는 namespace allow-list 와 LRU 상한 으로 가드 를 구성 한다. allowList 가 빈 슬라이스
@@ -87,7 +89,7 @@ func (g *FlowGuard) BeginScrape() {
 // {guard="flow"} 로 계수 된다. 이로써 한 scrape 의 admit 키 수 가 maxN 을 넘지 않는다. 빈 IP 또는
 // 0.0.0.0 의 5-tuple 은 socket bind 전 또는 INADDR_ANY 로 정확한 connection 식별이 불가 하므로
 // LRU 등록 자체 를 거부 해 cache 공간 이 낭비 되지 않게 한다.
-func (g *FlowGuard) Admit(srcNamespace, srcIP string, srcPort uint16, dstIP string, dstPort uint16, protocol, direction string) bool {
+func (g *FlowGuard) Admit(srcNamespace, srcIP, srcPort, dstIP string, dstPort uint16, protocol, direction string) bool {
 	if _, ok := g.allowSet[srcNamespace]; !ok {
 		return false
 	}

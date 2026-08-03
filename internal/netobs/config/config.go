@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"regexp"
@@ -32,6 +33,14 @@ func validateNamespaceName(ns string) error {
 	}
 	return nil
 }
+
+// FlowSrcPortMode 값 도메인이다 (#403). full 은 현행 유지 (실제 포트), none 은 src_port 라벨 제거,
+// fold 는 well-known (0~1023) 외 포트를 "other" 로 접는다.
+const (
+	FlowSrcPortModeFull = "full"
+	FlowSrcPortModeNone = "none"
+	FlowSrcPortModeFold = "fold"
+)
 
 type Config struct {
 	TargetIP             string
@@ -85,6 +94,14 @@ type Config struct {
 	// 자연 반영되고, budget 소진 거부는 netobs_flow_guard_rejected_total{guard="flow"} 로 계수된다.
 	// DropFlowMaxActive 와 admit 결과 가 독립 이라 별도 cap 으로 분리 한다. 기본 1024.
 	FlowMaxActive int
+
+	// FlowSrcPortMode 는 #403 의 netobs_flow_bytes_total src_port 라벨 표현 모드다. ephemeral
+	// client port (실측 src_port 9,917 종) 가 연결마다 새 시리즈를 만들어 TSDB 신규 시리즈 생성률을
+	// 키우는 churn 을 opt-in 으로 줄인다. full (기본) 은 실제 포트로 현행 유지, none 은 src_port
+	// 라벨을 빈 값으로 제거, fold 는 well-known (0~1023) 만 유지하고 그 외를 "other" 단일 값으로
+	// 접는다. 라벨과 FlowGuard 키와 agg 키가 함께 접히므로 fold/none 에서 시리즈와 가드 슬롯
+	// churn 이 동시에 소멸한다. 기본이 full 이라 기존 소비자에 무영향이다 (opt-in).
+	FlowSrcPortMode string
 
 	// KallsymsPath 는 #83 의 userspace symbol resolver 가 파싱하는 /proc/kallsyms 경로다. 컨테이너
 	// hostPath 마운트의 위치가 변경되는 경우에 한해 override 한다. 기본은 /proc/kallsyms.
@@ -205,6 +222,15 @@ func Parse() (Config, error) {
 		flowMaxActive = 1024
 	}
 
+	// #403 src_port 라벨 표현 모드. 미지 값은 안전 기본 (full, 현행 유지) 으로 강등한다.
+	flowSrcPortMode := strings.ToLower(getenv("NETOBS_FLOW_SRC_PORT_MODE", FlowSrcPortModeFull))
+	switch flowSrcPortMode {
+	case FlowSrcPortModeFull, FlowSrcPortModeNone, FlowSrcPortModeFold:
+	default:
+		log.Printf("config: unknown NETOBS_FLOW_SRC_PORT_MODE %q, falling back to full", flowSrcPortMode)
+		flowSrcPortMode = FlowSrcPortModeFull
+	}
+
 	cfg := Config{
 		TargetIP:                     getenv("TARGET_IP", ""),
 		ListenAddr:                   getenv("LISTEN_ADDR", ":9810"),
@@ -222,6 +248,7 @@ func Parse() (Config, error) {
 		KallsymsPath:                 getenv("NETOBS_KALLSYMS_PATH", "/proc/kallsyms"),
 		FlowAllowNamespaces:          parseNamespaceList(getenv("NETOBS_FLOW_ALLOW_NAMESPACES", "")),
 		FlowMaxActive:                flowMaxActive,
+		FlowSrcPortMode:              flowSrcPortMode,
 		NICCapacityBytesPerSec:       nicCapacity,
 	}
 

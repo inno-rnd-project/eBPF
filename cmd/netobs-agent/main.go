@@ -106,7 +106,7 @@ func main() {
 	if len(cfg.FlowAllowNamespaces) > 0 {
 		flowGuard := metrics.NewFlowGuard(cfg.FlowAllowNamespaces, cfg.FlowMaxActive)
 		dstClassifier := metadata.NewDstLabelClassifier(cfg.PodFlowDstEnabled, cfg.PodFlowDstUIDAllowNamespaces)
-		flowCollector = flow.New(enricher, kr, flowGuard, dstClassifier, cfg.NodeName, cfg.PodMetricsEnabled)
+		flowCollector = flow.New(enricher, kr, flowGuard, dstClassifier, cfg.NodeName, cfg.PodMetricsEnabled, cfg.FlowSrcPortMode)
 		reg.MustRegister(flowCollector)
 		log.Printf("flow guard: allow_namespaces=%v max_active=%d", cfg.FlowAllowNamespaces, cfg.FlowMaxActive)
 	} else {
