@@ -38,18 +38,19 @@ func linearSeries(labels map[string]string, n int, base, slope float64) LabeledS
 	return out
 }
 
-// TestCorrelator_HappyPath 는 두 메트릭이 노드 단위 페어로 묶여 Pearson 산출까지 무사히 흘러가는지
-// 검증한다. 두 시계열이 동일 선형이므로 lag 0 에서 +1 상관이 잡힌다.
+// TestCorrelator_HappyPath 는 suspect / victim 두 메트릭이 노드 단위 페어로 묶여 Pearson 산출까지
+// 무사히 흘러가는지 검증한다. 두 시계열이 동일 선형이므로 lag 0 에서 +1 상관이 잡힌다. #406 방향
+// 사전필터로 suspect → victim 단방향 페어만 생성된다.
 func TestCorrelator_HappyPath(t *testing.T) {
 	a := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, 60, 0, 1)
-	a.Metric = "metric_a"
+	a.Metric = "pod:cpu_throttle_score:5m"
 	b := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, 60, 0, 2)
-	b.Metric = "metric_b"
+	b.Metric = "pod:stage_latency_p99:5m"
 
 	fetcher := &mockFetcher{
 		responses: map[string][]LabeledSeries{
-			"metric_a": {a},
-			"metric_b": {b},
+			"pod:cpu_throttle_score:5m": {a},
+			"pod:stage_latency_p99:5m":  {b},
 		},
 	}
 	cfg := Config{
@@ -57,23 +58,24 @@ func TestCorrelator_HappyPath(t *testing.T) {
 		Step:           1 * time.Second,
 		MinSamples:     5,
 		LagSteps:       []int{0},
-		DefaultMetrics: []string{"metric_a", "metric_b"},
+		DefaultMetrics: []string{"pod:cpu_throttle_score:5m", "pod:stage_latency_p99:5m"},
 	}
 	results, err := New(fetcher, cfg).Correlate(context.Background(), time.Now())
 	if err != nil {
 		t.Fatalf("Correlate: %v", err)
 	}
-	// (a→b) 와 (b→a) 두 페어가 생성되어야 한다.
-	if len(results) != 2 {
-		t.Fatalf("results=%d want 2", len(results))
+	if len(results) != 1 {
+		t.Fatalf("results=%d want 1 (suspect→victim 단방향)", len(results))
 	}
-	for _, r := range results {
-		if r.Status != StatusOK {
-			t.Errorf("pair %+v status=%q want ok", r.Pair, r.Status)
-		}
-		if r.MaxAbsValue < 0.99 {
-			t.Errorf("pair %+v max_abs=%v want ~1.0", r.Pair, r.MaxAbsValue)
-		}
+	r := results[0]
+	if r.Pair.SrcPod != "p1" || r.Pair.DstPod != "p2" {
+		t.Errorf("pair=%s→%s want p1→p2", r.Pair.SrcPod, r.Pair.DstPod)
+	}
+	if r.Status != StatusOK {
+		t.Errorf("pair %+v status=%q want ok", r.Pair, r.Status)
+	}
+	if r.MaxAbsValue < 0.99 {
+		t.Errorf("pair %+v max_abs=%v want ~1.0", r.Pair, r.MaxAbsValue)
 	}
 }
 
@@ -95,14 +97,14 @@ func TestCorrelator_EmptyInput(t *testing.T) {
 // 되는지 검증한다. 일부 실패는 partial 한 결과를 허용하고 모든 실패만 에러로 본다.
 func TestCorrelator_PartialFetchFailure(t *testing.T) {
 	a := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, 60, 0, 1)
-	a.Metric = "metric_a"
+	a.Metric = "pod:cpu_throttle_score:5m"
 	b := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, 60, 0, 1)
-	b.Metric = "metric_b"
+	b.Metric = "pod:stage_latency_p99:5m"
 
 	fetcher := &mockFetcher{
 		responses: map[string][]LabeledSeries{
-			"metric_a": {a},
-			"metric_b": {b},
+			"pod:cpu_throttle_score:5m": {a},
+			"pod:stage_latency_p99:5m":  {b},
 		},
 		errors: map[string]error{
 			"failing_metric": errors.New("simulated 500"),
@@ -110,14 +112,14 @@ func TestCorrelator_PartialFetchFailure(t *testing.T) {
 	}
 	cfg := Config{
 		Step: 1 * time.Second, MinSamples: 5, LagSteps: []int{0},
-		DefaultMetrics: []string{"metric_a", "metric_b", "failing_metric"},
+		DefaultMetrics: []string{"pod:cpu_throttle_score:5m", "pod:stage_latency_p99:5m", "failing_metric"},
 	}
 	results, err := New(fetcher, cfg).Correlate(context.Background(), time.Now())
 	if err != nil {
 		t.Fatalf("Correlate: %v (one failure should be tolerated)", err)
 	}
-	if len(results) != 2 {
-		t.Errorf("results=%d want 2 (only successful queries form pairs)", len(results))
+	if len(results) != 1 {
+		t.Errorf("results=%d want 1 (only successful queries form pairs)", len(results))
 	}
 }
 
@@ -356,13 +358,13 @@ func TestCorrelator_GrangerUsesSelectedLag(t *testing.T) {
 		lagged[i] = src[i-1] + 0.05*math.Cos(float64(i)*1.3)
 	}
 	fetcher := &mockFetcher{responses: map[string][]LabeledSeries{
-		"metric_a": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, "metric_a", src)},
-		"metric_b": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, "metric_b", lagged)},
+		"pod:cpu_throttle_score:5m": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, "pod:cpu_throttle_score:5m", src)},
+		"pod:stage_latency_p99:5m":  {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, "pod:stage_latency_p99:5m", lagged)},
 	}}
 	cfg := Config{
 		Window: 40 * time.Second, Step: 1 * time.Second,
 		MinSamples: 10, GrangerMinSamples: 10,
-		LagSteps: []int{-1, 0, 1}, DefaultMetrics: []string{"metric_a", "metric_b"},
+		LagSteps: []int{-1, 0, 1}, DefaultMetrics: []string{"pod:cpu_throttle_score:5m", "pod:stage_latency_p99:5m"},
 	}
 	results, err := New(fetcher, cfg).Correlate(context.Background(), time.Now())
 	if err != nil {
@@ -387,8 +389,8 @@ func TestCorrelator_GrangerUsesSelectedLag(t *testing.T) {
 
 	// contemporaneous: src=dst 동일 → MaxAbsLag=0 → granger.Test(lag<1) 빈 결과 → GrangerOK=false.
 	fetcher2 := &mockFetcher{responses: map[string][]LabeledSeries{
-		"metric_a": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, "metric_a", src)},
-		"metric_b": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, "metric_b", src)},
+		"pod:cpu_throttle_score:5m": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, "pod:cpu_throttle_score:5m", src)},
+		"pod:stage_latency_p99:5m":  {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, "pod:stage_latency_p99:5m", src)},
 	}}
 	results2, err := New(fetcher2, cfg).Correlate(context.Background(), time.Now())
 	if err != nil {

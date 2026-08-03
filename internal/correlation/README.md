@@ -76,7 +76,7 @@ CLI는 `[]CorrelationResult`를 indented JSON으로 stdout에 emit한다. 각 el
     "src_metric": "pod:cpu_throttle_score:5m",
     "dst_namespace": "ebpf-project",
     "dst_pod": "netobs-agent-5trsf",
-    "dst_metric": "pod:memory_pressure_score:5m"
+    "dst_metric": "pod:netobs_pod_stage_latency_p99:5m"
   },
   "correlation_by_lag": {
     "-1": -0.0962,
@@ -111,7 +111,7 @@ CLI는 `[]CorrelationResult`를 indented JSON으로 stdout에 emit한다. 각 el
 
 ### 2단계 Pod 페어 enumeration (`pair.go`)
 
-fetch된 모든 `LabeledSeries`를 `node` 라벨로 그룹화한 뒤 같은 노드 내의 서로 다른 두 Pod에 대해 모든 `(X, Y)`와 `(Y, X)` 양방향 페어를 생성한다. self-pair와 cross-node pair는 본 단계에서 제외된다. Pod 정체성은 `(node, src_namespace, src_pod, src_pod_uid)` 4 키로 결정되어 namespace나 pod 이름이 재사용되는 StatefulSet 환경에서도 재생성 전후의 시리즈를 정확히 구분한다.
+fetch된 모든 `LabeledSeries`를 `node` 라벨로 그룹화한 뒤 같은 노드 내에서 suspect (cause score) 에서 victim (latency / throughput / error / gpu) 으로 가는 방향의 페어만 생성한다 (#406). SelectTopN이 이 방향만 채택하므로 suspect↔suspect / victim↔victim / 역방향 페어는 enumerate 단계에서 사전 제외되어 헛계산이 없다. self-pair와 cross-node pair도 본 단계에서 제외된다. Pod 정체성은 `(node, src_namespace, src_pod, src_pod_uid)` 4 키로 결정되어 namespace나 pod 이름이 재사용되는 StatefulSet 환경에서도 재생성 전후의 시리즈를 정확히 구분한다.
 
 ### 3단계 lag별 Pearson 산출 (`pearson.go`)
 
@@ -131,7 +131,7 @@ corr(x, y) = ──────────────────────�
 
 ### 5단계 victim/suspect 정규화와 dimension 분류 (`topn.go`, exporter)
 
-페어 정확히 한쪽이 latency 메트릭인 경우만 noisy neighbor 모델 (suspect 자원 압박이 victim latency 손해를 일으킴) 에 부합한다고 보고 채택한다. `Src=non-latency suspect, Dst=latency victim` 방향만 사용해 EnumeratePairs가 만드는 양방향 페어를 자동 dedup한다. lag 부호도 자연스럽게 "suspect → victim" 인과 방향으로 정렬된다.
+페어 정확히 한쪽이 latency 메트릭인 경우만 noisy neighbor 모델 (suspect 자원 압박이 victim latency 손해를 일으킴) 에 부합한다고 보고 채택한다. `Src=non-latency suspect, Dst=latency victim` 방향 판정은 EnumeratePairs의 사전필터 (#406) 와 동일 함수 (`classifyVictimSignal`) 를 공유하며, SelectTopN 단계의 방향 가드는 방어적으로 유지된다. lag 부호도 자연스럽게 "suspect → victim" 인과 방향으로 정렬된다.
 
 dimension 분류는 suspect metric query 문자열의 substring 매칭으로 결정한다. 더 구체적인 키워드가 먼저 매칭되도록 다음 순서로 평가한다.
 
