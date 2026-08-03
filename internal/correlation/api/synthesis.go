@@ -3,11 +3,11 @@ package api
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"netobs/internal/apicommon"
@@ -400,100 +400,119 @@ type Anomaly struct {
 // @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/health [get]
 func (h *SynthesisHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
 	resp := HealthResponse{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Window:      "5m",
 		Dimensions:  make(map[string]DimensionHealth, len(synthDimensions)),
 		Anomalies:   []Anomaly{},
 	}
+	if h.querier == nil {
+		for _, d := range synthDimensions {
+			resp.Dimensions[d.name] = DimensionHealth{Status: "unknown"}
+		}
+		resp.Summary = buildHealthSummary(resp)
+		apicommon.WriteJSON(w, resp)
+		return
+	}
 
-	// 차원별 health·hotspot·z-score 조회를 goroutine 으로 병렬화해 한 요청당 순차 HTTP 누적을 막는다.
-	// 각 goroutine 은 사전 할당 슬라이스의 자기 인덱스에만 기록하므로 공유 map 동시 쓰기나 mutex 가 없다.
-	type dimResult struct {
-		name    string
-		dh      DimensionHealth
-		hotspot *Hotspot
-		anomaly *Anomaly
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	// #404 필수/부가 분리. 종전에는 전 쿼리를 err == nil 조건에 흡수해 Prometheus 가 완전히 다운돼도
+	// 200 OK 와 status unknown 을 반환해 관측 시스템이 자기 백엔드 장애를 숨겼다. cluster_health 의
+	// 원천인 차원 health 4종은 필수 (실패 시 inventory 규약대로 500 query_failed) 고, hotspot 과
+	// z-score 는 부가 (queryParallelOptional, 실패 시 log degrade 후 해당 부분 생략) 다. 데이터 부재로
+	// 결과가 빈 것은 종전대로 null + unknown graceful 처리라 장애와 부재가 구분된다.
+	healthQueries := make([]string, len(synthDimensions))
+	for i, d := range synthDimensions {
+		healthQueries[i] = d.healthMetric
 	}
-	results := make([]dimResult, len(synthDimensions))
-	var wg sync.WaitGroup
-	for i := range synthDimensions {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			d := synthDimensions[i]
-			res := dimResult{name: d.name, dh: DimensionHealth{Status: "unknown"}}
-			if h.querier != nil {
-				if s, err := h.querier.Query(ctx, d.healthMetric); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
-					v := s[0].Value
-					res.dh.Health = &v
-					res.dh.Status = correlation.HealthStatus(v)
-				}
-				res.hotspot = h.hotspot(ctx, d)
-				res.dh.Hotspot = res.hotspot
-				if s, err := h.querier.Query(ctx, d.zscoreMetric); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
-					z := s[0].Value
-					if sev := correlation.ZScoreSeverity(z); sev != "none" {
-						res.anomaly = &Anomaly{Dimension: d.name, ZScore: z, Window: "5m", Severity: sev}
-					}
-				}
+	healthRes, qerr := h.queryParallel(ctx, healthQueries...)
+	if qerr != nil {
+		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+		return
+	}
+
+	// 부가 1라운드: 차원별 hotspot 노드 (topk 1 node pressure) 와 z-score.
+	nDims := len(synthDimensions)
+	optQueries := make([]string, 0, nDims*2)
+	for _, d := range synthDimensions {
+		optQueries = append(optQueries, "topk(1, "+d.nodePressure+")")
+	}
+	for _, d := range synthDimensions {
+		optQueries = append(optQueries, d.zscoreMetric)
+	}
+	optRes, optFailed := h.queryParallelOptional(ctx, optQueries...)
+	if optFailed > 0 {
+		log.Printf("health: 부가 신호 쿼리 %d개 실패, hotspot/anomaly 부분 생략으로 degrade", optFailed)
+	}
+
+	// 부가 2라운드: hotspot 노드가 확정된 차원의 top pod (topk 1 pod pressure).
+	hotspots := make([]*Hotspot, nDims)
+	podQueries := make([]string, 0, nDims)
+	podDims := make([]int, 0, nDims)
+	for i, d := range synthDimensions {
+		s := optRes[i]
+		if len(s) == 0 || math.IsNaN(s[0].Value) {
+			continue
+		}
+		node := s[0].Labels["node"]
+		hotspots[i] = &Hotspot{Node: node, Pressure: s[0].Value, Severity: pressureSeverityFor(d.name, s[0].Value)}
+		if node != "" {
+			podQueries = append(podQueries, fmt.Sprintf("topk(1, %s{node=%q})", d.podPressure, node))
+			podDims = append(podDims, i)
+		}
+	}
+	podRes, podFailed := h.queryParallelOptional(ctx, podQueries...)
+	if podFailed > 0 {
+		log.Printf("health: hotspot top pod 쿼리 %d개 실패, top_pod 생략으로 degrade", podFailed)
+	}
+	for qi, di := range podDims {
+		if ps := podRes[qi]; len(ps) > 0 {
+			hotspots[di].TopPod = podLabel(ps[0].Labels)
+			if ns, name := podFields(ps[0].Labels); name != "" {
+				hotspots[di].TopPodNamespace, hotspots[di].TopPodName = ns, name
 			}
-			results[i] = res
-		}(i)
+		}
 	}
-	wg.Wait()
 
 	var dominant *DominantPressure
 	var domHotspot *Hotspot
 	var domDim string
-	for _, res := range results {
-		resp.Dimensions[res.name] = res.dh
+	for i, d := range synthDimensions {
+		dh := DimensionHealth{Status: "unknown"}
+		if s := healthRes[i]; len(s) > 0 && !math.IsNaN(s[0].Value) {
+			v := s[0].Value
+			dh.Health = &v
+			dh.Status = correlation.HealthStatus(v)
+		}
+		dh.Hotspot = hotspots[i]
+		resp.Dimensions[d.name] = dh
 		// dominant 는 severity 우선, 동급이면 severityProgress (자기 임계 대비 상대 위치) 로 고른다
 		// (#359). 차원 인지 severity 와 척도 중립 tie-break 로 raw 사용률 큰 memory 의 부당한 dominant
 		// 선점을 tier·동률 양쪽에서 막는다.
-		if res.hotspot != nil && (domHotspot == nil || moreDominant(res.name, res.hotspot, domDim, domHotspot)) {
-			domHotspot = res.hotspot
-			domDim = res.name
-			dominant = &DominantPressure{Dimension: res.name, Node: res.hotspot.Node, Pod: res.hotspot.TopPod, Pressure: res.hotspot.Pressure, Namespace: res.hotspot.TopPodNamespace, PodName: res.hotspot.TopPodName}
+		if hotspots[i] != nil && (domHotspot == nil || moreDominant(d.name, hotspots[i], domDim, domHotspot)) {
+			domHotspot = hotspots[i]
+			domDim = d.name
+			dominant = &DominantPressure{Dimension: d.name, Node: hotspots[i].Node, Pod: hotspots[i].TopPod, Pressure: hotspots[i].Pressure, Namespace: hotspots[i].TopPodNamespace, PodName: hotspots[i].TopPodName}
 		}
-		if res.anomaly != nil {
-			resp.Anomalies = append(resp.Anomalies, *res.anomaly)
+		if s := optRes[nDims+i]; len(s) > 0 && !math.IsNaN(s[0].Value) {
+			z := s[0].Value
+			if sev := correlation.ZScoreSeverity(z); sev != "none" {
+				resp.Anomalies = append(resp.Anomalies, Anomaly{Dimension: d.name, ZScore: z, Window: "5m", Severity: sev})
+			}
 		}
-		// #248 가장 약한 고리. results 는 synthDimensions 선언 순서 (사전순) 라 동률 시 첫 항목이
-		// 결정적으로 채택된다.
-		if res.dh.Health != nil && (resp.Weakest == nil || *res.dh.Health < resp.Weakest.Health) {
-			resp.Weakest = &WeakestSignal{Dimension: res.name, Health: *res.dh.Health, Status: res.dh.Status}
-			resp.ClusterHealth = res.dh.Health
+		// #248 가장 약한 고리. synthDimensions 선언 순서 (사전순) 순회라 동률 시 첫 항목이 결정적으로
+		// 채택된다.
+		if dh.Health != nil && (resp.Weakest == nil || *dh.Health < resp.Weakest.Health) {
+			resp.Weakest = &WeakestSignal{Dimension: d.name, Health: *dh.Health, Status: dh.Status}
+			resp.ClusterHealth = dh.Health
 		}
 	}
 
 	resp.DominantPressure = dominant
 	resp.Summary = buildHealthSummary(resp)
 	apicommon.WriteJSON(w, resp)
-}
-
-// hotspot 은 한 차원의 압박 집중 node 와 그 위 top pod 를 instant query (topk 1) 로 구한다. 데이터가
-// 없으면 nil 을 돌려준다.
-func (h *SynthesisHandler) hotspot(ctx context.Context, d synthDimension) *Hotspot {
-	s, err := h.querier.Query(ctx, "topk(1, "+d.nodePressure+")")
-	if err != nil || len(s) == 0 || math.IsNaN(s[0].Value) {
-		return nil
-	}
-	node := s[0].Labels["node"]
-	press := s[0].Value
-	hs := &Hotspot{Node: node, Pressure: press, Severity: pressureSeverityFor(d.name, press)}
-	if node != "" {
-		if ps, err := h.querier.Query(ctx, fmt.Sprintf("topk(1, %s{node=%q})", d.podPressure, node)); err == nil && len(ps) > 0 {
-			hs.TopPod = podLabel(ps[0].Labels)
-			if ns, name := podFields(ps[0].Labels); name != "" {
-				hs.TopPodNamespace, hs.TopPodName = ns, name
-			}
-		}
-	}
-	return hs
 }
 
 // PressureResponse 는 GET /api/v1/pressure 의 typed 응답이다. 한 차원의 node 또는 pod 를 pressure
@@ -738,33 +757,69 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
-		domDim, domVal := "", math.Inf(-1)
+		// #404 17개 쿼리는 전부 상호 독립이라 단일 queryParallel 라운드로 실행한다. 종전 완전 순차
+		// 실행은 쿼리당 300ms 면 5s 예산을 초과했고, 초과 시점 이후 쿼리가 조용히 버려져 응답 내용이
+		// Prometheus 지연에 따라 요청마다 달라졌다. pressure·health·alert·usage 는 status worst-of
+		// 합성의 입력이고 topk pod 4종은 top_pods 표시의 입력이라, 어느 쿼리의 실패도 응답 내용을
+		// 왜곡하므로 전부 필수이며, 실패는 inventory.go 규약대로 500 query_failed
+		// 다 (데이터 부재로 결과가 빈 것은 종전대로 graceful 생략). ALERTS_FOR_STATE 는 종전에 firing
+		// 존재 시에만 2차 조회했으나 병렬화로 무조건 조회하고 결과만 조건부 사용한다 (동일 의미).
+		nDims := len(synthDimensions)
+		queries := make([]string, 0, nDims*3+5)
 		for _, d := range synthDimensions {
-			if s, err := h.querier.Query(ctx, fmt.Sprintf("%s{node=%q}", d.nodePressure, node)); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
+			queries = append(queries, fmt.Sprintf("%s{node=%q}", d.nodePressure, node))
+		}
+		for _, d := range synthDimensions {
+			// #264 노드 차원 health. node:{dim}_health_score:5m 룰을 노드로 좁혀 읽는다.
+			queries = append(queries, fmt.Sprintf("node:%s_health_score:5m{node=%q}", d.name, node))
+		}
+		for _, d := range synthDimensions {
+			queries = append(queries, fmt.Sprintf("topk(3, %s{node=%q})", d.podPressure, node))
+		}
+		overallIdx := len(queries)
+		queries = append(queries, fmt.Sprintf("node:pressure_score:5m{node=%q}", node))
+		alertsIdx := len(queries)
+		queries = append(queries, fmt.Sprintf(`ALERTS{alertstate="firing",node=%q}`, node))
+		alertAgeIdx := len(queries)
+		queries = append(queries, fmt.Sprintf(`time() - ALERTS_FOR_STATE{node=%q}`, node))
+		usageIdx := len(queries)
+		// #325 노드 사용량 점유율. node-vitals (#313) 와 동일한 allocatable 분모 산식 (pod-level
+		// cgroup 행 한정, 분모 max 집계) 을 비율 (0~1) 로 읽는다. GPU 사용률은 포화가 정상 활용일
+		// 수 있어 등급 입력에서 제외한다 (GPU 이상은 health 의 gpu 차원이 담당).
+		queries = append(queries,
+			fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total{node=%q,container="",pod!=""}[5m])) / max(kube_node_status_allocatable{node=%q, resource="cpu"})`, node, node),
+			fmt.Sprintf(`sum(container_memory_working_set_bytes{node=%q,container="",pod!=""}) / max(kube_node_status_allocatable{node=%q, resource="memory"})`, node, node),
+		)
+		res, qerr := h.queryParallel(ctx, queries...)
+		if qerr != nil {
+			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+			return
+		}
+
+		domDim, domVal := "", math.Inf(-1)
+		for i, d := range synthDimensions {
+			if s := res[i]; len(s) > 0 && !math.IsNaN(s[0].Value) {
 				resp.Pressure[d.name] = s[0].Value
 				if s[0].Value > domVal {
 					domVal = s[0].Value
 					domDim = d.name
 				}
 			}
-			// #264 노드 차원 health. node:{dim}_health_score:5m 룰을 노드로 좁혀 읽는다.
-			if s, err := h.querier.Query(ctx, fmt.Sprintf("node:%s_health_score:5m{node=%q}", d.name, node)); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
+			if s := res[nDims+i]; len(s) > 0 && !math.IsNaN(s[0].Value) {
 				resp.Health[d.name] = s[0].Value
 			}
-			if ps, err := h.querier.Query(ctx, fmt.Sprintf("topk(3, %s{node=%q})", d.podPressure, node)); err == nil {
-				for _, p := range ps {
-					if math.IsNaN(p.Value) {
-						continue
-					}
-					if pod := podLabel(p.Labels); pod != "" {
-						ns, name := podFields(p.Labels)
-						resp.TopPods = append(resp.TopPods, NodePodPressure{Pod: pod, Namespace: ns, PodName: name, Dimension: d.name, Pressure: p.Value})
-					}
+			for _, p := range res[nDims*2+i] {
+				if math.IsNaN(p.Value) {
+					continue
+				}
+				if pod := podLabel(p.Labels); pod != "" {
+					ns, name := podFields(p.Labels)
+					resp.TopPods = append(resp.TopPods, NodePodPressure{Pod: pod, Namespace: ns, PodName: name, Dimension: d.name, Pressure: p.Value})
 				}
 			}
 		}
 		resp.Confidence = pressureConfidence(resp.Pressure)
-		if s, err := h.querier.Query(ctx, fmt.Sprintf("node:pressure_score:5m{node=%q}", node)); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
+		if s := res[overallIdx]; len(s) > 0 && !math.IsNaN(s[0].Value) {
 			v := s[0].Value
 			resp.Overall = &v
 		}
@@ -777,14 +832,12 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 		// (Prometheus 재시작 등) 지속성 확인 불가라 보수적으로 반영해 실제 alert 를 놓치지 않는다. 반영된
 		// alertname 은 status_basis=alert 의 근거로 StatusAlerts 에 노출한다.
 		alertGrade := ""
-		if firing, ferr := h.querier.Query(ctx, fmt.Sprintf(`ALERTS{alertstate="firing",node=%q}`, node)); ferr == nil && len(firing) > 0 {
+		if firing := res[alertsIdx]; len(firing) > 0 {
 			// active-age (초) = time() - ALERTS_FOR_STATE. time() 은 query eval 시각이라 별도 wall-clock
 			// 읽기 없이 지속 시간을 얻고, 인스턴스 단위 join 은 alertSignature 로 맞춘다.
 			ageBySig := map[string]float64{}
-			if fs, err := h.querier.Query(ctx, fmt.Sprintf(`time() - ALERTS_FOR_STATE{node=%q}`, node)); err == nil {
-				for _, sm := range fs {
-					ageBySig[alertSignature(sm.Labels)] = sm.Value
-				}
+			for _, sm := range res[alertAgeIdx] {
+				ageBySig[alertSignature(sm.Labels)] = sm.Value
 			}
 			names := map[string]bool{}
 			for _, sm := range firing {
@@ -808,15 +861,9 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 			sort.Strings(resp.StatusAlerts)
 		}
 
-		// #325 노드 사용량 점유율. node-vitals (#313) 와 동일한 allocatable 분모 산식 (pod-level
-		// cgroup 행 한정, 분모 max 집계) 을 비율 (0~1) 로 읽는다. GPU 사용률은 포화가 정상 활용일
-		// 수 있어 등급 입력에서 제외한다 (GPU 이상은 health 의 gpu 차원이 담당).
 		usage := []float64{}
-		for _, q := range []string{
-			fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total{node=%q,container="",pod!=""}[5m])) / max(kube_node_status_allocatable{node=%q, resource="cpu"})`, node, node),
-			fmt.Sprintf(`sum(container_memory_working_set_bytes{node=%q,container="",pod!=""}) / max(kube_node_status_allocatable{node=%q, resource="memory"})`, node, node),
-		} {
-			if s, err := h.querier.Query(ctx, q); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
+		for _, s := range res[usageIdx : usageIdx+2] {
+			if len(s) > 0 && !math.IsNaN(s[0].Value) {
 				usage = append(usage, s[0].Value)
 			}
 		}

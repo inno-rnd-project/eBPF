@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"sort"
@@ -136,31 +137,61 @@ func (h *SynthesisHandler) GetGpuIdle(w http.ResponseWriter, r *http.Request) {
 			nodeSelector = fmt.Sprintf("{node=%q}", node)
 		}
 
-		if s, err := h.querier.Query(ctx, "node:gpu_idle:5m"+nodeSelector); err == nil {
-			for _, sm := range s {
-				if math.IsNaN(sm.Value) {
-					continue
-				}
-				resp.Nodes = append(resp.Nodes, GpuNodeIdle{
-					Node:     sm.Labels["node"],
-					Idle:     sm.Value,
-					Severity: correlation.PressureSeverity(sm.Value),
-				})
-			}
-			sort.Slice(resp.Nodes, func(i, j int) bool {
-				if resp.Nodes[i].Idle != resp.Nodes[j].Idle {
-					return resp.Nodes[i].Idle > resp.Nodes[j].Idle
-				}
-				return resp.Nodes[i].Node < resp.Nodes[j].Node
-			})
-		}
-
-		resp.Cluster = h.clusterIdleAttribution(ctx)
+		// #404 필수/부가 분리. 종전에는 전 쿼리를 err == nil 조건에 흡수해 백엔드 전면 장애가 200 과
+		// 빈 응답으로 숨었다. 유휴 판정 (node:gpu_idle:5m) 과 요청 scope 의 cause weight 는 응답의
+		// 본체라 필수 (실패 시 500 query_failed) 고, dominant cause 조회는 weight 1위 fallback 이
+		// 있어 부가 (queryParallelOptional, 실패 시 log degrade) 다.
+		reqQueries := []string{"node:gpu_idle:5m" + nodeSelector, "gpu_idle_cause_weight:5m"}
+		scopeWeightIdx := -1
 		switch scope {
 		case "node":
-			resp.NodeAttributions = h.nodeIdleAttribution(ctx, nodeSelector)
+			scopeWeightIdx = len(reqQueries)
+			reqQueries = append(reqQueries, "node:gpu_idle_cause_weight:5m"+nodeSelector)
 		case "pod":
-			resp.Victims = h.victimIdleAttribution(ctx, limit)
+			scopeWeightIdx = len(reqQueries)
+			reqQueries = append(reqQueries, "pod:gpu_idle_cause_weight:5m")
+		}
+		reqRes, qerr := h.queryParallel(ctx, reqQueries...)
+		if qerr != nil {
+			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+			return
+		}
+
+		optQueries := []string{"cluster:gpu_idle_dominant_cause:5m"}
+		switch scope {
+		case "node":
+			optQueries = append(optQueries, "node:gpu_idle_dominant_cause:5m"+nodeSelector)
+		case "pod":
+			optQueries = append(optQueries, "victim:gpu_idle_dominant_cause:5m")
+		}
+		optRes, optFailed := h.queryParallelOptional(ctx, optQueries...)
+		if optFailed > 0 {
+			log.Printf("gpu-idle: dominant 조회 %d개 실패, weight 1위 fallback 으로 degrade", optFailed)
+		}
+
+		for _, sm := range reqRes[0] {
+			if math.IsNaN(sm.Value) {
+				continue
+			}
+			resp.Nodes = append(resp.Nodes, GpuNodeIdle{
+				Node:     sm.Labels["node"],
+				Idle:     sm.Value,
+				Severity: correlation.PressureSeverity(sm.Value),
+			})
+		}
+		sort.Slice(resp.Nodes, func(i, j int) bool {
+			if resp.Nodes[i].Idle != resp.Nodes[j].Idle {
+				return resp.Nodes[i].Idle > resp.Nodes[j].Idle
+			}
+			return resp.Nodes[i].Node < resp.Nodes[j].Node
+		})
+
+		resp.Cluster = clusterIdleAttributionFrom(reqRes[1], optRes[0])
+		switch scope {
+		case "node":
+			resp.NodeAttributions = nodeIdleAttributionFrom(reqRes[scopeWeightIdx], optRes[1])
+		case "pod":
+			resp.Victims = victimIdleAttributionFrom(reqRes[scopeWeightIdx], optRes[1], limit)
 		}
 	}
 
@@ -168,28 +199,25 @@ func (h *SynthesisHandler) GetGpuIdle(w http.ResponseWriter, r *http.Request) {
 	apicommon.WriteJSON(w, resp)
 }
 
-// clusterIdleAttribution 은 cluster 단위 원인 가중치 순위와 dominant cause 를 구한다. cause weight 가
-// 없으면 (idle 게이팅 미충족) nil 을 돌려준다.
-func (h *SynthesisHandler) clusterIdleAttribution(ctx context.Context) *GpuIdleAttribution {
-	causes := h.causeWeights(ctx, "gpu_idle_cause_weight:5m")
+// clusterIdleAttributionFrom 은 cluster 단위 원인 가중치 순위와 dominant cause 를 사전 조회된
+// 샘플에서 구한다 (#404, 쿼리는 핸들러의 필수/부가 라운드가 수행). cause weight 가 없으면 (idle
+// 게이팅 미충족) nil 을 돌려준다.
+func clusterIdleAttributionFrom(weights, dom []correlation.InstantSample) *GpuIdleAttribution {
+	causes := causeWeightsFrom(weights)
 	if len(causes) == 0 {
 		return nil
 	}
 	att := &GpuIdleAttribution{Causes: causes, DominantCause: causes[0].Cause}
-	if s, err := h.querier.Query(ctx, "cluster:gpu_idle_dominant_cause:5m"); err == nil && len(s) > 0 {
-		if c := s[0].Labels["cause"]; c != "" {
+	if len(dom) > 0 {
+		if c := dom[0].Labels["cause"]; c != "" {
 			att.DominantCause = c
 		}
 	}
 	return att
 }
 
-// causeWeights 는 cause 라벨이 붙은 weight 시리즈를 NaN 제외 후 weight 내림차순으로 정렬해 돌려준다.
-func (h *SynthesisHandler) causeWeights(ctx context.Context, query string) []GpuCauseWeight {
-	s, err := h.querier.Query(ctx, query)
-	if err != nil {
-		return nil
-	}
+// causeWeightsFrom 은 cause 라벨이 붙은 weight 시리즈를 NaN 제외 후 weight 내림차순으로 정렬해 돌려준다.
+func causeWeightsFrom(s []correlation.InstantSample) []GpuCauseWeight {
 	out := make([]GpuCauseWeight, 0, len(s))
 	for _, sm := range s {
 		if math.IsNaN(sm.Value) {
@@ -203,11 +231,11 @@ func (h *SynthesisHandler) causeWeights(ctx context.Context, query string) []Gpu
 	return out
 }
 
-// victimIdleAttribution 은 victim Pod 단위 원인 가중치를 (node, victim_namespace, victim_pod) 로 묶어
-// dominant cause 와 함께 돌려준다. top cause weight 내림차순으로 정렬 후 limit 으로 자른다.
-func (h *SynthesisHandler) victimIdleAttribution(ctx context.Context, limit int) []GpuVictimIdle {
-	s, err := h.querier.Query(ctx, "pod:gpu_idle_cause_weight:5m")
-	if err != nil || len(s) == 0 {
+// victimIdleAttributionFrom 은 victim Pod 단위 원인 가중치를 (node, victim_namespace, victim_pod) 로
+// 묶어 dominant cause 와 함께 사전 조회된 샘플에서 구한다 (#404). top cause weight 내림차순으로 정렬
+// 후 limit 으로 자른다.
+func victimIdleAttributionFrom(s, ds []correlation.InstantSample, limit int) []GpuVictimIdle {
+	if len(s) == 0 {
 		return nil
 	}
 	type key struct{ node, ns, pod string }
@@ -232,11 +260,9 @@ func (h *SynthesisHandler) victimIdleAttribution(ctx context.Context, limit int)
 	}
 
 	dom := map[key]string{}
-	if ds, err := h.querier.Query(ctx, "victim:gpu_idle_dominant_cause:5m"); err == nil {
-		for _, sm := range ds {
-			if c := sm.Labels["cause"]; c != "" {
-				dom[key{sm.Labels["node"], sm.Labels["victim_namespace"], sm.Labels["victim_pod"]}] = c
-			}
+	for _, sm := range ds {
+		if c := sm.Labels["cause"]; c != "" {
+			dom[key{sm.Labels["node"], sm.Labels["victim_namespace"], sm.Labels["victim_pod"]}] = c
 		}
 	}
 
@@ -267,12 +293,12 @@ func (h *SynthesisHandler) victimIdleAttribution(ctx context.Context, limit int)
 	return out
 }
 
-// nodeIdleAttribution 은 node 단위 원인 가중치를 node 별로 묶어 dominant cause 와 함께 돌려준다
+// nodeIdleAttributionFrom 은 node 단위 원인 가중치를 node 별로 묶어 dominant cause 와 함께 사전
+// 조회된 샘플에서 구한다 (#404)
 // (#256 rule, #257 노출). nodeSelector 는 parseNodeParam 검증을 통과한 exact 매처 (또는 빈 문자열)
 // 라 안전하다. top cause weight 내림차순, 동률은 node 이름 사전순으로 정렬한다.
-func (h *SynthesisHandler) nodeIdleAttribution(ctx context.Context, nodeSelector string) []GpuNodeAttribution {
-	s, err := h.querier.Query(ctx, "node:gpu_idle_cause_weight:5m"+nodeSelector)
-	if err != nil || len(s) == 0 {
+func nodeIdleAttributionFrom(s, ds []correlation.InstantSample) []GpuNodeAttribution {
+	if len(s) == 0 {
 		return nil
 	}
 	groups := map[string]*GpuNodeAttribution{}
@@ -296,11 +322,9 @@ func (h *SynthesisHandler) nodeIdleAttribution(ctx context.Context, nodeSelector
 	}
 
 	dom := map[string]string{}
-	if ds, err := h.querier.Query(ctx, "node:gpu_idle_dominant_cause:5m"+nodeSelector); err == nil {
-		for _, sm := range ds {
-			if c := sm.Labels["cause"]; c != "" {
-				dom[sm.Labels["node"]] = c
-			}
+	for _, sm := range ds {
+		if c := sm.Labels["cause"]; c != "" {
+			dom[sm.Labels["node"]] = c
 		}
 	}
 

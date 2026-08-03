@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"net/http"
@@ -79,6 +80,10 @@ func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 		apicommon.WriteJSON(w, resp)
 		return
 	}
+
+	// #404 다른 핸들러와 동일한 5s 상한 (overview 와 함께 전 API 중 유일하게 timeout 이 없던 2곳).
+	evalCtx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
+	defer cancel()
 
 	res, qerr := h.queryParallel(evalCtx,
 		"kube_node_info",
