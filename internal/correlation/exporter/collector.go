@@ -581,6 +581,10 @@ type Health struct {
 	// 문자열 (활성 layer 기준 수십 개) 이라 카디널리티가 통제된다. 종전에는 부분 실패가 전량 실패가
 	// 아니면 어떤 신호도 남기지 않았다.
 	FetchErrors *prometheus.CounterVec
+	// PairsTruncated 는 #406 의 레이어별 maxPairs 캡 절단 카운터다. layer 라벨은 pod / cross_node /
+	// service_impact / cross_level 4종 고정이다. 종전에는 캡 절단이 어떤 신호도 남기지 않아 상위
+	// 페어만 남는 silent 커버리지 축소를 운영자가 알 수 없었다.
+	PairsTruncated *prometheus.CounterVec
 }
 
 // NewHealth 는 self-health 메트릭들을 생성해 reg 에 등록한 뒤 반환한다.
@@ -626,6 +630,10 @@ func NewHealth(reg prometheus.Registerer) *Health {
 			Name: "correlation_fetch_errors_total",
 			Help: "reconcile cycle 의 per-query fetch 실패 누적 (#405). query 라벨은 실패한 PromQL 문자열이다. 부분 실패는 산출을 계속하되 본 카운터와 로그로 가시화되고, 실패가 있는 cycle 은 last_success_timestamp 를 갱신하지 않는다.",
 		}, []string{"query"}),
+		PairsTruncated: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "correlation_pairs_truncated_total",
+			Help: "레이어별 maxPairs 캡으로 잘려 나간 페어 수의 누적 (#406). 절단은 |corr| 하위 페어부터 적용되어 상위 상관은 보존되나, 본 카운터가 증가하면 해당 레이어의 커버리지가 캡으로 축소되고 있다는 신호라 maxPairs 상향 또는 입력 축소 (allow-list) 를 검토한다.",
+		}, []string{"layer"}),
 	}
 	reg.MustRegister(
 		h.ReconcileDuration,
@@ -638,6 +646,7 @@ func NewHealth(reg prometheus.Registerer) *Health {
 		h.LastSuccessTimestamp,
 		h.ReconcileErrors,
 		h.FetchErrors,
+		h.PairsTruncated,
 	)
 	return h
 }
@@ -673,6 +682,11 @@ func (h *Health) RecordCycle(duration time.Duration, results []correlation.Corre
 	failed := len(stats.FailedQueries)
 	for _, q := range stats.FailedQueries {
 		h.FetchErrors.WithLabelValues(q).Inc()
+	}
+	// #406 레이어별 페어 캡 절단. 절단이 없는 cycle 은 TruncatedPairs 가 비어 있어 시리즈가 생기지
+	// 않는다 (발동 전 0 시리즈 노이즈 회피).
+	for layer, dropped := range stats.TruncatedPairs {
+		h.PairsTruncated.WithLabelValues(layer).Add(float64(dropped))
 	}
 	h.ReconcileMetricsExpected.Set(float64(stats.Attempted))
 	h.ReconcileMetricsObserved.Set(float64(stats.Attempted - failed))

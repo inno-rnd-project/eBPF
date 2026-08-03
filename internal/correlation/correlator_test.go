@@ -444,18 +444,78 @@ func TestCorrelator_CrossNodeGrangerUsesSelectedLag(t *testing.T) {
 // 남고 반환 순서는 원래 enumerate 순서이며, 동률은 앞선 인덱스가 우선 (결정적) 이고, 캡 이하는
 // 전 인덱스 통과다.
 func TestCapIndicesByScore(t *testing.T) {
-	rs := []CorrelationResult{
-		{MaxAbsValue: 0.2},
-		{MaxAbsValue: 0.9},
-		{MaxAbsValue: 0.5},
-		{MaxAbsValue: 0.9},
-	}
+	rs := []float64{0.2, 0.9, 0.5, 0.9}
 	got := capIndicesByScore(rs, 2)
 	if len(got) != 2 || got[0] != 1 || got[1] != 3 {
 		t.Errorf("capIndicesByScore=%v want [1 3] (0.9 동률 2건, 원래 순서)", got)
 	}
 	if got := capIndicesByScore(rs, 10); len(got) != 4 {
 		t.Errorf("캡 이하 전체 통과 실패: %v", got)
+	}
+}
+
+// TestCorrelator_PodPairCapKeepsStrongPairs 는 #406 의 pod 레이어 페어 캡을 검증한다. 페어 수가
+// PodMaxPairs 를 넘으면 |corr| 상위 페어만 전체 산정 (Granger / EffectSize) 과 결과 보유로 넘어가고,
+// 절단 수가 stats.TruncatedPairs["pod"] 로 보고된다. 캡 이하 (기본 구성) 는 종전과 완전 동일한
+// single pass 라 별도 회귀는 pin 테스트가 담당한다.
+func TestCorrelator_PodPairCapKeepsStrongPairs(t *testing.T) {
+	const n = 40
+	vals := pseudoNoise(n)
+	weak := make([]float64, n)
+	for i := 0; i < n; i++ {
+		weak[i] = math.Cos(float64(i) * 2.3)
+	}
+	suspectMetric := "pod:cpu_throttle_score:5m"
+	victimMetric := "pod:stage_latency_p99:5m"
+	podLabels := func(pod string) map[string]string {
+		return map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": pod, "src_pod_uid": "uid-" + pod}
+	}
+	// suspect 3개 (강상관 s-strong, 약상관 s-weak1/s-weak2) x victim 1개 = 페어 3, 캡 2.
+	fetcher := &mockFetcher{responses: map[string][]LabeledSeries{
+		suspectMetric: {
+			valSeries(podLabels("s-weak1"), suspectMetric, weak),
+			valSeries(podLabels("s-strong"), suspectMetric, vals),
+			valSeries(podLabels("s-weak2"), suspectMetric, weak),
+		},
+		victimMetric: {valSeries(podLabels("victim"), victimMetric, vals)},
+	}}
+	cfg := Config{
+		Window: 40 * time.Second, Step: 1 * time.Second,
+		MinSamples: 10, GrangerMinSamples: 10,
+		LagSteps: []int{0}, DefaultMetrics: []string{suspectMetric, victimMetric},
+		PodMaxPairs: 2,
+	}
+	results, stats, err := New(fetcher, cfg).CorrelateWithStats(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("CorrelateWithStats: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results=%d want 2 (캡 적용)", len(results))
+	}
+	var strongKept bool
+	for _, r := range results {
+		if r.Pair.SrcPod == "s-strong" {
+			strongKept = true
+			if r.MaxAbsValue < 0.99 {
+				t.Errorf("s-strong max_abs=%v want ~1.0", r.MaxAbsValue)
+			}
+		}
+	}
+	if !strongKept {
+		t.Error("강상관 s-strong 페어가 캡에서 탈락 (score 기준 캡 실패)")
+	}
+	if got := stats.TruncatedPairs["pod"]; got != 1 {
+		t.Errorf("TruncatedPairs[pod]=%d want 1", got)
+	}
+
+	// 캡 이하면 절단 보고가 없어야 한다.
+	cfg.PodMaxPairs = 10
+	_, stats2, err := New(fetcher, cfg).CorrelateWithStats(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("CorrelateWithStats(cap 미발동): %v", err)
+	}
+	if len(stats2.TruncatedPairs) != 0 {
+		t.Errorf("TruncatedPairs=%v want empty (캡 미발동)", stats2.TruncatedPairs)
 	}
 }
 

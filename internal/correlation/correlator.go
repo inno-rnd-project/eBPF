@@ -50,12 +50,16 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 	return results, err
 }
 
-// FetchStats 는 한 cycle 의 per-query fetch 결과 요약이다 (#405). FailedQueries 는 실패한 query
-// 문자열 목록으로, 호출자가 per-query 카운터와 로그에 쓴다. 종전에는 부분 실패가 로그도 카운터도
-// 없이 성공 경로에 흡수되어 fetch 16개 중 15개가 실패해도 침묵했다.
+// FetchStats 는 한 cycle 의 per-query fetch 결과와 페어 절단 요약이다 (#405, #406). FailedQueries
+// 는 실패한 query 문자열 목록으로, 호출자가 per-query 카운터와 로그에 쓴다. 종전에는 부분 실패가
+// 로그도 카운터도 없이 성공 경로에 흡수되어 fetch 16개 중 15개가 실패해도 침묵했다. TruncatedPairs
+// 는 레이어별 (pod / cross_node / service_impact / cross_level) maxPairs 캡으로 잘려 나간 페어 수로,
+// 캡이 발동하지 않은 레이어는 항목이 없다. exporter 가 correlation_pairs_truncated_total{layer}
+// 카운터로 노출한다.
 type FetchStats struct {
-	Attempted     int
-	FailedQueries []string
+	Attempted      int
+	FailedQueries  []string
+	TruncatedPairs map[string]int
 }
 
 // CorrelateWithStats 는 Correlate 와 동일 산출에 fetch 통계를 더해 돌려준다 (#405).
@@ -135,41 +139,41 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 		return v
 	}
 
-	results := make([]CorrelationResult, 0, len(pairs))
-	for _, p := range pairs {
+	// computePodPair 는 pod 페어 1개의 전체 산정 (Pearson + Granger + EffectSize) 이다.
+	//
+	// #69 Granger causality 산정. src 의 과거 값이 dst 의 현재 값을 예측하는 데 통계적으로 유의한
+	// 추가 정보를 제공하는지의 F-statistic 과 p-value 를 추가 첨부한다. #353 Pearson 이 선택한 lag
+	// (r.MaxAbsLag) 을 그대로 쓴다: lag_seconds (Pearson 선택 lag) 와 pvalue (Granger) 가 동일 lag 을
+	// 가리켜 "suspect 가 victim 을 N 초 선행하며 그 인과가 유의하다" 가 한 lag 구조로 정합한다.
+	// MaxAbsLag < 1 (contemporaneous 또는 victim 선행) 이면 granger.Test 가 빈 Result 를 돌려
+	// GrangerOK=false 가 되어 인과 주장을 억제한다 (collector 가 GrangerOK 일 때만 pvalue emit).
+	// 표본 부족 또는 행렬 singular 케이스도 GrangerOK=false 로 자연 skip 된다.
+	//
+	// #146 / #175 effect size 산정. src (suspect 압박) high / low 구간의 dst (victim) 차이를 victim
+	// 신호별 native 단위 절대 영향 크기로, 그 차이의 Welch t-test 유의성을 함께 산출한다. #406 방향
+	// 사전필터로 dst 는 항상 victim 이라 classifyVictimSignal 이 SignalNone 이 아니다. EffectSize 는
+	// high / low 각 구간에 minSamples 이상을 요구하므로 Pearson 전체 표본 임계 (MinSamples) 의 1/4
+	// 을 쓴다. 같은 값을 그대로 넘기면 window / step 으로 정해진 전체 표본 (예: 30m / 30s = 60) 을
+	// 양분한 각 구간이 임계 미만이 되어 거의 모든 페어가 skip 된다. 최소 2 는 보장한다.
+	//
+	// #363 EffectSize 를 Pearson 이 선택한 lag (r.MaxAbsLag) 에서 산정한다. suspect 가 victim 을 k
+	// step 선행하면 압박 구간의 victim degradation 이 k step 뒤에 나타나므로, lag 0 원계열로 high /
+	// low 를 분할하면 magnitude 와 p-value 가 희석·편향된다. Granger 와 동일 lag 으로 정렬해 Pearson
+	// (lag_seconds) 과 Granger (pvalue) 와 effect 세 신호가 같은 lag 구조를 가리키게 한다.
+	computePodPair := func(p Pair) CorrelationResult {
 		r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
 		r.Pair = p.Key
-		// #69 Granger causality 산정. src 의 과거 값이 dst 의 현재 값을 예측하는 데 통계적으로 유의한
-		// 추가 정보를 제공하는지의 F-statistic 과 p-value 를 추가 첨부한다. #353 Pearson 이 선택한 lag
-		// (r.MaxAbsLag) 을 그대로 쓴다: lag_seconds (Pearson 선택 lag) 와 pvalue (Granger) 가 동일 lag 을
-		// 가리켜 "suspect 가 victim 을 N 초 선행하며 그 인과가 유의하다" 가 한 lag 구조로 정합한다.
-		// MaxAbsLag < 1 (contemporaneous 또는 victim 선행) 이면 granger.Test 가 빈 Result 를 돌려
-		// GrangerOK=false 가 되어 인과 주장을 억제한다 (collector 가 GrangerOK 일 때만 pvalue emit).
-		// 표본 부족 또는 행렬 singular 케이스도 GrangerOK=false 로 자연 skip 된다.
 		srcVals := getValues(p.Src)
 		dstVals := getValues(p.Dst)
 		g := granger.Test(srcVals, dstVals, r.MaxAbsLag, c.config.GrangerMinSamples)
 		r.FStatistic = g.F
 		r.PValue = g.PValue
 		r.GrangerOK = g.OK
-		// #146 / #175 effect size 산정. src (suspect 압박) high / low 구간의 dst (victim) 차이를 victim
-		// 신호별 native 단위 절대 영향 크기로, 그 차이의 Welch t-test 유의성을 함께 산출한다. SelectTopN
-		// 이 src=suspect, dst=victim 방향 페어만 채택하므로 dst 메트릭으로 victim 신호를 분류해 degradation
-		// 방향을 결정한다. reverse 페어 (dst 가 suspect) 는 SignalNone 으로 분류되어 EffectSize 가 자연
-		// skip 한다. EffectSize 는 high / low 각 구간에 minSamples 이상을 요구하므로 Pearson 전체 표본
-		// 임계 (MinSamples) 의 1/4 을 쓴다. 같은 값을 그대로 넘기면 window / step 으로 정해진 전체 표본
-		// (예: 30m / 30s = 60) 을 양분한 각 구간이 임계 미만이 되어 거의 모든 페어가 skip 된다. 최소 2 는
-		// 보장한다.
 		impactMin := c.config.MinSamples / 4
 		if impactMin < 2 {
 			impactMin = 2
 		}
 		victimSignal := classifyVictimSignal(p.Key.DstMetric)
-		// #363 EffectSize 를 Pearson 이 선택한 lag (r.MaxAbsLag) 에서 산정한다. suspect 가 victim 을 k
-		// step 선행하면 압박 구간의 victim degradation 이 k step 뒤에 나타나므로, lag 0 원계열로 high /
-		// low 를 분할하면 magnitude 와 p-value 가 희석·편향된다. Granger 와 동일 lag 으로 정렬해 Pearson
-		// (lag_seconds) 과 Granger (pvalue) 와 effect 세 신호가 같은 lag 구조를 가리키게 한다. reverse
-		// 페어는 victimSignal=SignalNone 으로 EffectSize 가 자연 skip 하는 규약을 유지한다.
 		alignedSrc, alignedDst := alignByLag(srcVals, dstVals, r.MaxAbsLag)
 		es := EffectSize(alignedSrc, alignedDst, victimSignal, impactMin)
 		r.ImpactMagnitude = es.Magnitude
@@ -181,7 +185,37 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 			r.Impact = es.Magnitude
 			r.ImpactOK = es.OK
 		}
-		results = append(results, r)
+		return r
+	}
+
+	// #406 pod 레이어 페어 캡. 타 3레이어와 동일하게 전 페어 Pearson 산정 후 |corr| 상위로 적용한다
+	// (#372 규약). 캡 이하면 종전과 완전 동일한 single pass 다. 캡 초과 시에만 경량 scoring pass
+	// (score 8B/페어) 로 상위 인덱스를 고른 뒤 생존 페어만 전체 산정 (Granger / EffectSize + 결과
+	// 슬라이스 보유) 을 수행해, 페어 수 제곱 성장이 결과 슬라이스 메모리로 직결되던 경로를 차단한다.
+	// 생존 페어의 Pearson 이 두 번 산정되는 비용은 캡 초과 대형 클러스터에서만 발생하며 Granger /
+	// EffectSize 절감 대비 미미하다.
+	podMaxPairs := c.config.PodMaxPairs
+	if podMaxPairs <= 0 {
+		podMaxPairs = 32768
+	}
+	var results []CorrelationResult
+	if len(pairs) <= podMaxPairs {
+		results = make([]CorrelationResult, 0, len(pairs))
+		for _, p := range pairs {
+			results = append(results, computePodPair(p))
+		}
+	} else {
+		scores := make([]float64, len(pairs))
+		for i, p := range pairs {
+			r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
+			scores[i] = r.MaxAbsValue
+		}
+		kept := capIndicesByScore(scores, podMaxPairs)
+		c.recordTruncation(&stats, "pod", len(pairs)-len(kept))
+		results = make([]CorrelationResult, 0, len(kept))
+		for _, i := range kept {
+			results = append(results, computePodPair(pairs[i]))
+		}
 	}
 
 	// #84 cross-node interference layer. CrossNodeEnabled opt-in 시 node 단위 시계열 의 페어 를
@@ -204,7 +238,9 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 			r.IsCrossNode = true
 			layer[i] = r
 		}
-		for _, i := range capIndicesByScore(layer, maxPairs) {
+		kept := capIndicesByScore(layerScores(layer), maxPairs)
+		c.recordTruncation(&stats, "cross_node", len(layer)-len(kept))
+		for _, i := range kept {
 			r := layer[i]
 			p := nodePairs[i]
 			g := granger.Test(getValues(p.Src), getValues(p.Dst), r.MaxAbsLag, c.config.GrangerMinSamples)
@@ -233,7 +269,9 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 			r.IsServiceImpact = true
 			layer[i] = r
 		}
-		for _, i := range capIndicesByScore(layer, maxPairs) {
+		kept := capIndicesByScore(layerScores(layer), maxPairs)
+		c.recordTruncation(&stats, "service_impact", len(layer)-len(kept))
+		for _, i := range kept {
 			r := layer[i]
 			p := servicePairs[i]
 			g := granger.Test(getValues(p.Src), getValues(p.Dst), r.MaxAbsLag, c.config.GrangerMinSamples)
@@ -262,7 +300,9 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 			r.IsCrossLevel = true
 			layer[i] = r
 		}
-		for _, i := range capIndicesByScore(layer, maxPairs) {
+		kept := capIndicesByScore(layerScores(layer), maxPairs)
+		c.recordTruncation(&stats, "cross_level", len(layer)-len(kept))
+		for _, i := range kept {
 			r := layer[i]
 			p := crossLevelPairs[i]
 			g := granger.Test(getValues(p.Src), getValues(p.Dst), r.MaxAbsLag, c.config.GrangerMinSamples)
@@ -281,20 +321,41 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 // 선두 절단은 캡 초과 시 강상관 페어를 순서 때문에 탈락시켰다. 동률은 SliceStable 로 enumerate
 // 순서 (사전순) 를 유지해 결정적이고, 반환 인덱스를 오름차순 복원해 emit 순서도 종전과 같은
 // enumerate 순서다. 캡 이하면 전 인덱스를 그대로 돌려줘 종전과 완전 동일 동작이다.
-func capIndicesByScore(results []CorrelationResult, maxPairs int) []int {
-	idx := make([]int, len(results))
+func capIndicesByScore(scores []float64, maxPairs int) []int {
+	idx := make([]int, len(scores))
 	for i := range idx {
 		idx[i] = i
 	}
-	if len(results) <= maxPairs {
+	if len(scores) <= maxPairs {
 		return idx
 	}
 	sort.SliceStable(idx, func(a, b int) bool {
-		return results[idx[a]].MaxAbsValue > results[idx[b]].MaxAbsValue
+		return scores[idx[a]] > scores[idx[b]]
 	})
 	idx = idx[:maxPairs]
 	sort.Ints(idx)
 	return idx
+}
+
+// recordTruncation 은 레이어 캡 절단 발생을 stats 에 기록한다 (#406). dropped 가 0 이하면 캡 미발동
+// 이라 기록하지 않아, TruncatedPairs 는 실제 절단이 있는 레이어만 담는다.
+func (c *Correlator) recordTruncation(stats *FetchStats, layer string, dropped int) {
+	if dropped <= 0 {
+		return
+	}
+	if stats.TruncatedPairs == nil {
+		stats.TruncatedPairs = make(map[string]int)
+	}
+	stats.TruncatedPairs[layer] += dropped
+}
+
+// layerScores 는 레이어 결과 슬라이스에서 capIndicesByScore 입력용 |corr| score 를 추출한다.
+func layerScores(layer []CorrelationResult) []float64 {
+	scores := make([]float64, len(layer))
+	for i, r := range layer {
+		scores[i] = r.MaxAbsValue
+	}
+	return scores
 }
 
 // filterWeakSuspects 는 #245 의 무부하 노이즈 게이트다. suspect (victim 신호가 아닌 cause score)
