@@ -12,6 +12,12 @@ import (
 	"netobs/internal/correlation/granger"
 )
 
+// maxConcurrentFetches 는 한 cycle 의 동시 fetch goroutine 상한이다 (#406). query 당 응답 상한이
+// maxFetchResponseBytes (100MiB) 라 무제한 병렬은 이상 응답 시 query 수 x 100MiB 가 동시 상주해
+// 컨테이너 memory limit (512Mi/1Gi) 을 넘을 수 있다. 4 lane 이면 최악 동시 상주가 400MiB 로 눌리고
+// 정상 응답 (수 MB) 에서는 병렬성 손실이 체감되지 않는다.
+const maxConcurrentFetches = 4
+
 // Correlator 는 fetcher 로 시계열을 가져와 pair enumerate 후 Pearson 으로 상관계수를 산출하는
 // orchestrator 다. 상태 없이 매 호출이 독립적이라 동일 인스턴스가 여러 호출 간 reuse 가능하다.
 type Correlator struct {
@@ -75,17 +81,23 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 
 	// 각 query 를 goroutine 으로 병렬 fetch 한다. 표준 라이브러리 sync.WaitGroup + 인덱스 기반
 	// 사전 할당 슬라이스로 query 순서를 보존하고 비결정성을 차단한다. 모든 query 가 독립적이고
-	// fetcher 의 http.Client 가 concurrent 안전하므로 추가 동기화는 불필요하다.
+	// fetcher 의 http.Client 가 concurrent 안전하므로 추가 동기화는 불필요하다. #406 동시성은
+	// maxConcurrentFetches 세마포어로 상한을 둔다. 종전 무제한 병렬은 query 수 x 응답 상한
+	// (100MiB) 이 동시 상주 가능해 이상 응답 시 컨테이너 limit 을 넘을 수 있었다. cycleTimeout
+	// 은 FetchTimeout x (query 수 + 1) 이라 4-lane 직렬화 여유가 충분하다.
 	type fetchResult struct {
 		series []LabeledSeries
 		err    error
 	}
 	fetched := make([]fetchResult, len(queries))
+	sem := make(chan struct{}, maxConcurrentFetches)
 	var wg sync.WaitGroup
 	for i, q := range queries {
 		wg.Add(1)
 		go func(i int, q string) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			series, err := c.fetcher.Fetch(ctx, q, start, end, c.config.Step)
 			fetched[i] = fetchResult{series: series, err: err}
 		}(i, q)

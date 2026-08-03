@@ -3,7 +3,9 @@ package correlation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
+	"sync"
 	"testing"
 	"time"
 )
@@ -437,6 +439,47 @@ func TestCorrelator_CrossNodeGrangerUsesSelectedLag(t *testing.T) {
 	}
 	if !crossFound {
 		t.Fatal("cross-node 결과 없음 (CrossNodeEnabled/페어 enumerate 확인)")
+	}
+}
+
+// concurrencyTrackingFetcher 는 동시 Fetch 호출 수의 최대값을 기록한다 (#406 세마포어 검증용).
+type concurrencyTrackingFetcher struct {
+	mu      sync.Mutex
+	current int
+	peak    int
+}
+
+func (f *concurrencyTrackingFetcher) Fetch(ctx context.Context, query string, start, end time.Time, step time.Duration) ([]LabeledSeries, error) {
+	f.mu.Lock()
+	f.current++
+	if f.current > f.peak {
+		f.peak = f.current
+	}
+	f.mu.Unlock()
+	time.Sleep(5 * time.Millisecond)
+	f.mu.Lock()
+	f.current--
+	f.mu.Unlock()
+	return nil, nil
+}
+
+// TestCorrelator_FetchConcurrencyBounded 는 fetch 동시성이 maxConcurrentFetches 를 넘지 않는지
+// 검증한다 (#406). 종전 무제한 병렬은 query 수 x 응답 상한이 동시 상주 가능했다.
+func TestCorrelator_FetchConcurrencyBounded(t *testing.T) {
+	queries := make([]string, 16)
+	for i := range queries {
+		queries[i] = fmt.Sprintf("metric_%d", i)
+	}
+	fetcher := &concurrencyTrackingFetcher{}
+	cfg := Config{LagSteps: []int{0}, MinSamples: 5, DefaultMetrics: queries}
+	if _, err := New(fetcher, cfg).Correlate(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Correlate: %v", err)
+	}
+	if fetcher.peak > maxConcurrentFetches {
+		t.Errorf("peak concurrency=%d want <= %d", fetcher.peak, maxConcurrentFetches)
+	}
+	if fetcher.peak == 0 {
+		t.Error("fetch 가 호출되지 않음")
 	}
 }
 
