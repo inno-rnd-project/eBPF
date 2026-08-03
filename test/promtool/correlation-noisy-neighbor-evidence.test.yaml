@@ -89,7 +89,7 @@ tests:
             exp_annotations:
               summary: "correlation-exporter self-health metrics absent"
               description: "correlation_reconcile_last_success_timestamp_seconds 시리즈가 5 분 이상 부재하다. exporter 미기동, 첫 reconcile 실패로 인한 NotReady (Endpoints 이탈), scrape 설정 문제 중 하나로 self-health 관측 자체가 끊긴 상태다. correlation-exporter pod 상태와 readyz, ServiceMonitor 대상 등록을 점검한다."
-              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationexporterstalled"
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationexportermetricsabsent"
 
   - interval: 30s
     input_series:
