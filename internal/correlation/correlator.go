@@ -3,6 +3,7 @@ package correlation
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"sort"
 	"sync"
@@ -43,7 +44,22 @@ func (c *Correlator) Config() Config { return c.config }
 //
 // 일부 query 가 fetch 실패해도 나머지로 산출을 계속한다. 모든 query 가 실패할 때만 wrapped error 를
 // 반환한다. fetch 결과가 비어 있는 (시계열 0개) query 는 정상으로 보고 페어 산출에서 자연 제외된다.
+// per-query 실패 내역이 필요한 호출자 (exporter 의 self-health, #405) 는 CorrelateWithStats 를 쓴다.
 func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]CorrelationResult, error) {
+	results, _, err := c.CorrelateWithStats(ctx, endTime)
+	return results, err
+}
+
+// FetchStats 는 한 cycle 의 per-query fetch 결과 요약이다 (#405). FailedQueries 는 실패한 query
+// 문자열 목록으로, 호출자가 per-query 카운터와 로그에 쓴다. 종전에는 부분 실패가 로그도 카운터도
+// 없이 성공 경로에 흡수되어 fetch 16개 중 15개가 실패해도 침묵했다.
+type FetchStats struct {
+	Attempted     int
+	FailedQueries []string
+}
+
+// CorrelateWithStats 는 Correlate 와 동일 산출에 fetch 통계를 더해 돌려준다 (#405).
+func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) ([]CorrelationResult, FetchStats, error) {
 	end := endTime
 	start := end.Add(-c.config.Window)
 
@@ -73,10 +89,14 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 	wg.Wait()
 
 	all := make([]LabeledSeries, 0)
+	stats := FetchStats{Attempted: len(queries)}
 	var fetchErrors []string
 	for i, r := range fetched {
 		if r.err != nil {
 			fetchErrors = append(fetchErrors, fmt.Sprintf("query %q: %v", queries[i], r.err))
+			stats.FailedQueries = append(stats.FailedQueries, queries[i])
+			// #405 부분 실패 가시화. 종전에는 전량 실패가 아니면 개별 실패가 로그조차 없었다.
+			log.Printf("correlate: fetch failed for query %q: %v", queries[i], r.err)
 			continue
 		}
 		all = append(all, r.series...)
@@ -84,7 +104,7 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 	// 모든 query 가 실패했을 때만 error 로 격상한다. 일부 성공 + 일부 실패 (예: 한 query 가 syntax
 	// 오류 인데 다른 query 들이 정상) 는 부분 결과로 산출을 계속한다.
 	if len(queries) > 0 && len(fetchErrors) == len(queries) {
-		return nil, fmt.Errorf("all %d queries failed: %v", len(queries), fetchErrors)
+		return nil, stats, fmt.Errorf("all %d queries failed: %v", len(queries), fetchErrors)
 	}
 
 	// #245 무부하 노이즈 게이트. 아래 4개 layer (pod / cross-node / service-impact / cross-level) 가
@@ -253,7 +273,7 @@ func (c *Correlator) Correlate(ctx context.Context, endTime time.Time) ([]Correl
 		}
 	}
 
-	return results, nil
+	return results, stats, nil
 }
 
 // capIndicesByScore 는 #372 의 score 기준 페어 캡이다. 레이어의 전 페어 Pearson 결과에서 |corr|
