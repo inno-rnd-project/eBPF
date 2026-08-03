@@ -738,33 +738,68 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
-		domDim, domVal := "", math.Inf(-1)
+		// #404 17개 쿼리는 전부 상호 독립이라 단일 queryParallel 라운드로 실행한다. 종전 완전 순차
+		// 실행은 쿼리당 300ms 면 5s 예산을 초과했고, 초과 시점 이후 쿼리가 조용히 버려져 응답 내용이
+		// Prometheus 지연에 따라 요청마다 달라졌다. 모든 쿼리가 status worst-of 합성의 입력이라 어느
+		// 하나의 실패도 응답을 왜곡하므로 전부 필수이며, 실패는 inventory.go 규약대로 500 query_failed
+		// 다 (데이터 부재로 결과가 빈 것은 종전대로 graceful 생략). ALERTS_FOR_STATE 는 종전에 firing
+		// 존재 시에만 2차 조회했으나 병렬화로 무조건 조회하고 결과만 조건부 사용한다 (동일 의미).
+		nDims := len(synthDimensions)
+		queries := make([]string, 0, nDims*3+5)
 		for _, d := range synthDimensions {
-			if s, err := h.querier.Query(ctx, fmt.Sprintf("%s{node=%q}", d.nodePressure, node)); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
+			queries = append(queries, fmt.Sprintf("%s{node=%q}", d.nodePressure, node))
+		}
+		for _, d := range synthDimensions {
+			// #264 노드 차원 health. node:{dim}_health_score:5m 룰을 노드로 좁혀 읽는다.
+			queries = append(queries, fmt.Sprintf("node:%s_health_score:5m{node=%q}", d.name, node))
+		}
+		for _, d := range synthDimensions {
+			queries = append(queries, fmt.Sprintf("topk(3, %s{node=%q})", d.podPressure, node))
+		}
+		overallIdx := len(queries)
+		queries = append(queries, fmt.Sprintf("node:pressure_score:5m{node=%q}", node))
+		alertsIdx := len(queries)
+		queries = append(queries, fmt.Sprintf(`ALERTS{alertstate="firing",node=%q}`, node))
+		alertAgeIdx := len(queries)
+		queries = append(queries, fmt.Sprintf(`time() - ALERTS_FOR_STATE{node=%q}`, node))
+		usageIdx := len(queries)
+		// #325 노드 사용량 점유율. node-vitals (#313) 와 동일한 allocatable 분모 산식 (pod-level
+		// cgroup 행 한정, 분모 max 집계) 을 비율 (0~1) 로 읽는다. GPU 사용률은 포화가 정상 활용일
+		// 수 있어 등급 입력에서 제외한다 (GPU 이상은 health 의 gpu 차원이 담당).
+		queries = append(queries,
+			fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total{node=%q,container="",pod!=""}[5m])) / max(kube_node_status_allocatable{node=%q, resource="cpu"})`, node, node),
+			fmt.Sprintf(`sum(container_memory_working_set_bytes{node=%q,container="",pod!=""}) / max(kube_node_status_allocatable{node=%q, resource="memory"})`, node, node),
+		)
+		res, qerr := h.queryParallel(ctx, queries...)
+		if qerr != nil {
+			apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
+			return
+		}
+
+		domDim, domVal := "", math.Inf(-1)
+		for i, d := range synthDimensions {
+			if s := res[i]; len(s) > 0 && !math.IsNaN(s[0].Value) {
 				resp.Pressure[d.name] = s[0].Value
 				if s[0].Value > domVal {
 					domVal = s[0].Value
 					domDim = d.name
 				}
 			}
-			// #264 노드 차원 health. node:{dim}_health_score:5m 룰을 노드로 좁혀 읽는다.
-			if s, err := h.querier.Query(ctx, fmt.Sprintf("node:%s_health_score:5m{node=%q}", d.name, node)); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
+			if s := res[nDims+i]; len(s) > 0 && !math.IsNaN(s[0].Value) {
 				resp.Health[d.name] = s[0].Value
 			}
-			if ps, err := h.querier.Query(ctx, fmt.Sprintf("topk(3, %s{node=%q})", d.podPressure, node)); err == nil {
-				for _, p := range ps {
-					if math.IsNaN(p.Value) {
-						continue
-					}
-					if pod := podLabel(p.Labels); pod != "" {
-						ns, name := podFields(p.Labels)
-						resp.TopPods = append(resp.TopPods, NodePodPressure{Pod: pod, Namespace: ns, PodName: name, Dimension: d.name, Pressure: p.Value})
-					}
+			for _, p := range res[nDims*2+i] {
+				if math.IsNaN(p.Value) {
+					continue
+				}
+				if pod := podLabel(p.Labels); pod != "" {
+					ns, name := podFields(p.Labels)
+					resp.TopPods = append(resp.TopPods, NodePodPressure{Pod: pod, Namespace: ns, PodName: name, Dimension: d.name, Pressure: p.Value})
 				}
 			}
 		}
 		resp.Confidence = pressureConfidence(resp.Pressure)
-		if s, err := h.querier.Query(ctx, fmt.Sprintf("node:pressure_score:5m{node=%q}", node)); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
+		if s := res[overallIdx]; len(s) > 0 && !math.IsNaN(s[0].Value) {
 			v := s[0].Value
 			resp.Overall = &v
 		}
@@ -777,14 +812,12 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 		// (Prometheus 재시작 등) 지속성 확인 불가라 보수적으로 반영해 실제 alert 를 놓치지 않는다. 반영된
 		// alertname 은 status_basis=alert 의 근거로 StatusAlerts 에 노출한다.
 		alertGrade := ""
-		if firing, ferr := h.querier.Query(ctx, fmt.Sprintf(`ALERTS{alertstate="firing",node=%q}`, node)); ferr == nil && len(firing) > 0 {
+		if firing := res[alertsIdx]; len(firing) > 0 {
 			// active-age (초) = time() - ALERTS_FOR_STATE. time() 은 query eval 시각이라 별도 wall-clock
 			// 읽기 없이 지속 시간을 얻고, 인스턴스 단위 join 은 alertSignature 로 맞춘다.
 			ageBySig := map[string]float64{}
-			if fs, err := h.querier.Query(ctx, fmt.Sprintf(`time() - ALERTS_FOR_STATE{node=%q}`, node)); err == nil {
-				for _, sm := range fs {
-					ageBySig[alertSignature(sm.Labels)] = sm.Value
-				}
+			for _, sm := range res[alertAgeIdx] {
+				ageBySig[alertSignature(sm.Labels)] = sm.Value
 			}
 			names := map[string]bool{}
 			for _, sm := range firing {
@@ -808,15 +841,9 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 			sort.Strings(resp.StatusAlerts)
 		}
 
-		// #325 노드 사용량 점유율. node-vitals (#313) 와 동일한 allocatable 분모 산식 (pod-level
-		// cgroup 행 한정, 분모 max 집계) 을 비율 (0~1) 로 읽는다. GPU 사용률은 포화가 정상 활용일
-		// 수 있어 등급 입력에서 제외한다 (GPU 이상은 health 의 gpu 차원이 담당).
 		usage := []float64{}
-		for _, q := range []string{
-			fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total{node=%q,container="",pod!=""}[5m])) / max(kube_node_status_allocatable{node=%q, resource="cpu"})`, node, node),
-			fmt.Sprintf(`sum(container_memory_working_set_bytes{node=%q,container="",pod!=""}) / max(kube_node_status_allocatable{node=%q, resource="memory"})`, node, node),
-		} {
-			if s, err := h.querier.Query(ctx, q); err == nil && len(s) > 0 && !math.IsNaN(s[0].Value) {
+		for _, s := range res[usageIdx : usageIdx+2] {
+			if len(s) > 0 && !math.IsNaN(s[0].Value) {
 				usage = append(usage, s[0].Value)
 			}
 		}
