@@ -24,6 +24,7 @@ import (
 	"netobs/internal/netobs/selfhealth"
 	"netobs/internal/netobs/symbols"
 	"netobs/internal/netobs/types"
+	"netobs/internal/selfobs"
 	"netobs/internal/server"
 )
 
@@ -37,6 +38,9 @@ func main() {
 	defer stop()
 
 	reg := prometheus.NewRegistry()
+	// #405 프로세스 자기계측. Go runtime / process 표준 collector 와 cgroup limit 기반 GOMEMLIMIT.
+	selfobs.RegisterProcessCollectors(reg)
+	selfobs.ApplyMemoryLimit()
 	metrics.Register(reg)
 	metrics.SetPodMetricsEnabled(cfg.PodMetricsEnabled)
 	// dst 라벨 정책 단일 진입점. master switch off / allow-list 비어 있으면 dst_namespace, dst_workload,

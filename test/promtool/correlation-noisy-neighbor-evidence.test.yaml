@@ -74,3 +74,55 @@ tests:
               summary: "noisy neighbor detected (victim=ns/v1 suspect=ns/s1 dimension=cpu)"
               description: "victim ns/v1 의 latency 가 suspect ns/s1 의 cpu 자원 변동과 max |corr| 0.9 로 10분 이상 동조하고 있다. causal_strength 0.6 초과 또는 Granger pvalue 0.05 미만의 인과 증거 게이트를 함께 통과했다 (#366). internal/correlation/README.md 의 runbook 절차를 따른다."
               runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationstrongnoisyneighbor"
+
+  # #405 CorrelationExporterMetricsAbsent. self-health 시리즈가 전혀 없으면 (exporter 미기동 또는
+  # NotReady 로 scrape 대상 이탈) 5분 뒤 발화하고, 시리즈가 존재하면 발화하지 않는다.
+  - interval: 30s
+    input_series: []
+    alert_rule_test:
+      - alertname: CorrelationExporterMetricsAbsent
+        eval_time: 10m
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: correlation
+            exp_annotations:
+              summary: "correlation-exporter self-health metrics absent"
+              description: "correlation_reconcile_last_success_timestamp_seconds 시리즈가 5 분 이상 부재하다. exporter 미기동, 첫 reconcile 실패로 인한 NotReady (Endpoints 이탈), scrape 설정 문제 중 하나로 self-health 관측 자체가 끊긴 상태다. correlation-exporter pod 상태와 readyz, ServiceMonitor 대상 등록을 점검한다."
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationexportermetricsabsent"
+
+  - interval: 30s
+    input_series:
+      - series: 'correlation_reconcile_last_success_timestamp_seconds'
+        values: '1000x40'
+    alert_rule_test:
+      - alertname: CorrelationExporterMetricsAbsent
+        eval_time: 10m
+        exp_alerts: []
+
+  # #405 CorrelationExporterPartialFetch. 부분 fetch 실패가 30분 창에서 3회 이상 누적되면 warning
+  # 으로 발화하고 (지속 실패의 조기 신호), 단발 blip 1회는 임계를 넘지 않아 발화하지 않는다.
+  - interval: 30s
+    input_series:
+      - series: 'correlation_reconcile_partial_total'
+        values: '0+1x80'
+    alert_rule_test:
+      - alertname: CorrelationExporterPartialFetch
+        eval_time: 25m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: correlation
+            exp_annotations:
+              summary: "correlation-exporter partial fetch failures accumulating"
+              description: "correlation-exporter 의 reconcile cycle 이 30 분 윈도우에서 3 회 이상 부분 fetch 실패로 진행됐다. 산출은 부분 입력으로 계속되지만 실패가 이어지면 last_success 동결로 CorrelationExporterStalled 가 뒤따른다. correlation_fetch_errors_total 의 query 라벨로 실패 지점을 특정한다."
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationexporterpartialfetch"
+
+  - interval: 30s
+    input_series:
+      - series: 'correlation_reconcile_partial_total'
+        values: '0x9 1x70'
+    alert_rule_test:
+      - alertname: CorrelationExporterPartialFetch
+        eval_time: 25m
+        exp_alerts: []

@@ -58,6 +58,7 @@ import (
 	"netobs/internal/correlation/api"
 	correlationdocs "netobs/internal/correlation/api/docs"
 	"netobs/internal/correlation/exporter"
+	"netobs/internal/selfobs"
 )
 
 // maxTopN 은 -top-n flag 의 상한이다. victim 1k * dimension 4 * rank 100 = gauge 당 400k series
@@ -253,7 +254,13 @@ func main() {
 	corr := correlation.New(fetcher, cfg)
 
 	reg := prometheus.NewRegistry()
+	// #405 프로세스 자기계측. Go runtime / process 표준 collector 와 cgroup limit 기반 GOMEMLIMIT.
+	selfobs.RegisterProcessCollectors(reg)
+	selfobs.ApplyMemoryLimit()
 	collector := exporter.NewCollector(cfg.Step)
+	// #405 snapshot stale 판정 임계. reconcile interval 의 3배를 넘긴 snapshot 은 실패 cycle 누적
+	// 상태라 API 신선도 필드 (snapshot_stale) 가 true 로 노출된다.
+	collector.SetStaleAfter(3 * reconcileInterval)
 	reg.MustRegister(collector)
 	health := exporter.NewHealth(reg)
 
@@ -398,7 +405,7 @@ func reconcileOnce(
 	cycleCtx, cancel := context.WithTimeout(ctx, cycleTimeout)
 	defer cancel()
 
-	results, err := corr.Correlate(cycleCtx, time.Now())
+	results, fetchStats, err := corr.CorrelateWithStats(cycleCtx, time.Now())
 	if err != nil {
 		log.Printf("reconcile error: %v", err)
 		health.RecordError()
@@ -435,11 +442,9 @@ func reconcileOnce(
 	}
 	collector.ReplaceImpactGraph(impactGraph)
 	collector.ReplaceImpactPaths(impactPaths)
-	// expectedMetrics 는 활성 layer 가 fetch 하는 distinct query 수다. PlannedQueries 가 layer 간 공유
-	// query (node 압박 score) 를 dedup 하므로 RecordCycle 의 observed distinct metric 수와 정합해
-	// ReconcilePartial 이 거짓 증가하지 않는다.
-	expectedMetrics := len(cfg.PlannedQueries())
-	health.RecordCycle(duration, results, neighbors, expectedMetrics)
+	// #405 partial 판정은 fetch 성공 기준이다. fetchStats 가 시도/실패 query 를 직접 담아,
+	// 정상적으로 빈 쿼리를 결측으로 세던 종전 오탐이 없다.
+	health.RecordCycle(duration, results, neighbors, fetchStats)
 	ready.Store(true)
 	log.Printf("reconcile ok: pairs=%d neighbors=%d cross_node=%d service_impact=%d cross_level=%d graph_nodes=%d graph_edges=%d impact_paths=%d impact_paths_truncated=%v duration=%s", len(results), len(neighbors), len(crossNode), len(serviceImpact), len(crossLevel), len(impactGraph.Nodes), len(impactGraph.Edges), len(impactPaths), pathsTruncated, duration)
 }

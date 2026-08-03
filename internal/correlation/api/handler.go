@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"netobs/internal/apicommon"
 	"netobs/internal/correlation"
@@ -70,6 +71,28 @@ func NewHandler(source SnapshotSource, crossNodeSource CrossNodeSnapshotSource, 
 // Register 는 ServeMux 에 /api/v1/noisy-neighbor 와 /api/v1/cross-node-interference 두 라우트 를 등록
 // 한다. 호출 측은 mux 를 그대로 전달 하면 된다. 본 함수는 미들웨어 적용 (Logging, Recover, CORS) 도
 // 함께 처리 한다.
+// SnapshotFreshnessSource 는 #405 의 snapshot 신선도 선택 인터페이스다. exporter.Collector 가
+// 만족하며, 미구현 source (테스트 fake 등) 에서는 신선도 필드가 생략된다 (additive omitempty).
+type SnapshotFreshnessSource interface {
+	SnapshotGeneratedAt() time.Time
+	SnapshotStale() bool
+}
+
+// freshness 는 source 가 신선도를 제공하면 (snapshot_generated_at RFC3339, snapshot_stale) 값을
+// 돌려준다 (#405). 첫 reconcile 전 (zero time) 에는 생략과 동일하게 빈 값을 돌려준다.
+func (h *Handler) freshness() (string, *bool) {
+	fs, ok := h.source.(SnapshotFreshnessSource)
+	if !ok {
+		return "", nil
+	}
+	at := fs.SnapshotGeneratedAt()
+	if at.IsZero() {
+		return "", nil
+	}
+	stale := fs.SnapshotStale()
+	return at.UTC().Format(time.RFC3339), &stale
+}
+
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("/api/v1/noisy-neighbor", apicommon.Chain(
 		http.HandlerFunc(h.ListNoisyNeighbors),
@@ -115,6 +138,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 type NoisyNeighborListResponse struct {
 	Items []correlation.NoisyNeighbor `json:"items"`
 	Page  apicommon.Page              `json:"page"`
+	// SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인
+	// snapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패
+	// cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
+	SnapshotGeneratedAt string `json:"snapshot_generated_at,omitempty"`
+	SnapshotStale       *bool  `json:"snapshot_stale,omitempty"`
 }
 
 // CrossNodeListResponse 는 /api/v1/cross-node-interference 응답 의 typed 표현 이다 (#119). swaggo 가
@@ -123,6 +151,11 @@ type NoisyNeighborListResponse struct {
 type CrossNodeListResponse struct {
 	Items []correlation.NodeInterference `json:"items"`
 	Page  apicommon.Page                 `json:"page"`
+	// SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인
+	// snapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패
+	// cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
+	SnapshotGeneratedAt string `json:"snapshot_generated_at,omitempty"`
+	SnapshotStale       *bool  `json:"snapshot_stale,omitempty"`
 }
 
 // ServiceImpactListResponse 는 /api/v1/service-impact 응답의 typed 표현이다 (#148). swaggo 가 본
@@ -131,6 +164,11 @@ type CrossNodeListResponse struct {
 type ServiceImpactListResponse struct {
 	Items []correlation.ServiceImpact `json:"items"`
 	Page  apicommon.Page              `json:"page"`
+	// SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인
+	// snapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패
+	// cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
+	SnapshotGeneratedAt string `json:"snapshot_generated_at,omitempty"`
+	SnapshotStale       *bool  `json:"snapshot_stale,omitempty"`
 }
 
 // CrossLevelListResponse 는 /api/v1/cross-level 응답의 typed 표현이다 (#149). swaggo 가 본 구조체를
@@ -139,6 +177,11 @@ type ServiceImpactListResponse struct {
 type CrossLevelListResponse struct {
 	Items []correlation.CrossLevel `json:"items"`
 	Page  apicommon.Page           `json:"page"`
+	// SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인
+	// snapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패
+	// cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
+	SnapshotGeneratedAt string `json:"snapshot_generated_at,omitempty"`
+	SnapshotStale       *bool  `json:"snapshot_stale,omitempty"`
 }
 
 // ImpactGraphResponse 는 /api/v1/impact-graph 응답의 typed 표현이다 (#151 Phase 1). 그래프는 페어
@@ -149,6 +192,11 @@ type ImpactGraphResponse struct {
 	Nodes   []correlation.ImpactGraphNode `json:"nodes"`
 	Edges   []correlation.ImpactGraphEdge `json:"edges"`
 	Summary ImpactGraphSummary            `json:"summary"`
+	// SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인
+	// snapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패
+	// cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
+	SnapshotGeneratedAt string `json:"snapshot_generated_at,omitempty"`
+	SnapshotStale       *bool  `json:"snapshot_stale,omitempty"`
 }
 
 // ImpactGraphSummary 는 그래프 규모 요약이다. dashboard 가 정점 / 엣지 수를 빠르게 파악하게 한다.
@@ -163,6 +211,11 @@ type ImpactPathsResponse struct {
 	Paths   []correlation.ImpactPath  `json:"paths"`
 	Roots   []correlation.RootSuspect `json:"roots"`
 	Summary ImpactPathsSummary        `json:"summary"`
+	// SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인
+	// snapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패
+	// cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
+	SnapshotGeneratedAt string `json:"snapshot_generated_at,omitempty"`
+	SnapshotStale       *bool  `json:"snapshot_stale,omitempty"`
 }
 
 // ImpactPathsSummary 는 경로 / 근원 규모 요약이다.
@@ -275,6 +328,7 @@ func (h *Handler) ListNoisyNeighbors(w http.ResponseWriter, r *http.Request) {
 			Total:  len(filtered),
 		},
 	}
+	resp.SnapshotGeneratedAt, resp.SnapshotStale = h.freshness()
 	apicommon.WriteJSON(w, resp)
 }
 
@@ -375,6 +429,7 @@ func (h *Handler) ListCrossNode(w http.ResponseWriter, r *http.Request) {
 			Total:  len(filtered),
 		},
 	}
+	resp.SnapshotGeneratedAt, resp.SnapshotStale = h.freshness()
 	apicommon.WriteJSON(w, resp)
 }
 
@@ -461,6 +516,7 @@ func (h *Handler) ListServiceImpact(w http.ResponseWriter, r *http.Request) {
 			Total:  len(filtered),
 		},
 	}
+	resp.SnapshotGeneratedAt, resp.SnapshotStale = h.freshness()
 	apicommon.WriteJSON(w, resp)
 }
 
@@ -565,6 +621,7 @@ func (h *Handler) ListCrossLevel(w http.ResponseWriter, r *http.Request) {
 			Total:  len(filtered),
 		},
 	}
+	resp.SnapshotGeneratedAt, resp.SnapshotStale = h.freshness()
 	apicommon.WriteJSON(w, resp)
 }
 
@@ -611,14 +668,16 @@ func (h *Handler) GetImpactGraph(w http.ResponseWriter, r *http.Request) {
 	if g.Edges == nil {
 		g.Edges = []correlation.ImpactGraphEdge{}
 	}
-	apicommon.WriteJSON(w, ImpactGraphResponse{
+	resp := ImpactGraphResponse{
 		Nodes: g.Nodes,
 		Edges: g.Edges,
 		Summary: ImpactGraphSummary{
 			NodeCount: len(g.Nodes),
 			EdgeCount: len(g.Edges),
 		},
-	})
+	}
+	resp.SnapshotGeneratedAt, resp.SnapshotStale = h.freshness()
+	apicommon.WriteJSON(w, resp)
 }
 
 // ListImpactPaths 는 /api/v1/impact-paths 의 GET 핸들러다 (#151 Phase 2). 근원 suspect 에서 종착
@@ -683,12 +742,14 @@ func (h *Handler) ListImpactPaths(w http.ResponseWriter, r *http.Request) {
 		roots = []correlation.RootSuspect{}
 	}
 
-	apicommon.WriteJSON(w, ImpactPathsResponse{
+	resp := ImpactPathsResponse{
 		Paths: filtered,
 		Roots: roots,
 		Summary: ImpactPathsSummary{
 			PathCount: len(filtered),
 			RootCount: len(roots),
 		},
-	})
+	}
+	resp.SnapshotGeneratedAt, resp.SnapshotStale = h.freshness()
+	apicommon.WriteJSON(w, resp)
 }

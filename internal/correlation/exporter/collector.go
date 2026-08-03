@@ -117,6 +117,12 @@ type Collector struct {
 	// step 은 LagSteps 를 초 단위로 변환할 때 곱해진다. exporter 가 Correlator 의 Config.Step 과
 	// 동일 값을 받아 lag step 의 시간 의미를 보존한다.
 	step time.Duration
+	// snapshotAt 은 마지막 Replace (reconcile cycle 성공) 시각이다 (#405). 실패 cycle 후 마지막 성공
+	// snapshot 이 산출 시각 없이 무기한 노출되던 것을, age gauge 와 API 신선도 필드로 판별 가능하게
+	// 한다. staleAfter 는 stale 판정 임계 (0 이면 stale 판정 비활성) 로 main 이 reconcile interval
+	// 의 배수로 설정한다.
+	snapshotAt time.Time
+	staleAfter time.Duration
 
 	scoreDesc              *prometheus.Desc
 	lagDesc                *prometheus.Desc
@@ -131,6 +137,7 @@ type Collector struct {
 	crossLevelScoreDesc    *prometheus.Desc
 	impactGraphDegreeDesc  *prometheus.Desc
 	impactRootReachDesc    *prometheus.Desc
+	snapshotAgeDesc        *prometheus.Desc
 }
 
 // NewCollector 는 Prometheus scrape 시 emit 할 metric desc 두 개를 미리 만들어 두는 Collector 를
@@ -204,6 +211,11 @@ func NewCollector(step time.Duration) *Collector {
 			"#151 Phase 2 근원 suspect (in-degree 0 정점) 의 영향 범위. 본 root 에서 다단계 전파 경로로 도달 가능한 distinct 종착 victim 수다. 값이 클수록 가장 넓게 영향을 퍼뜨리는 근본 원인 후보다. ImpactGraphEnabled opt-in 시 경로 추출과 함께 emit 된다.",
 			impactRootReachLabels, nil,
 		),
+		snapshotAgeDesc: prometheus.NewDesc(
+			"correlation_snapshot_age_seconds",
+			"#405 마지막 reconcile snapshot 의 나이 (초). 전면 실패 cycle 이 이어지면 단조 증가해 소비자 (rca-summarizer, alert) 가 snapshot 신선도를 판별한다 (부분 실패 cycle 은 부분 입력으로 snapshot 을 재산출하므로 나이가 초기화된다). 첫 reconcile 전에는 emit 되지 않는다.",
+			nil, nil,
+		),
 	}
 }
 
@@ -229,7 +241,37 @@ func (c *Collector) Replace(neighbors []correlation.NoisyNeighbor) {
 	c.mu.Lock()
 	c.snapshot = copied
 	c.dominant = dominant
+	// #405 snapshot 산출 시각. Replace 는 reconcile 성공 cycle 의 첫 갱신 지점이라 cycle 당 1회
+	// 갱신되고, 실패 cycle 은 Replace 미호출로 시각이 남아 age 가 자란다.
+	c.snapshotAt = time.Now()
 	c.mu.Unlock()
+}
+
+// SetStaleAfter 는 stale 판정 임계를 설정한다 (#405). main 이 reconcile interval 의 배수 (기본
+// 3배) 로 설정하며, 0 이하면 stale 판정이 비활성된다.
+func (c *Collector) SetStaleAfter(d time.Duration) {
+	c.mu.Lock()
+	c.staleAfter = d
+	c.mu.Unlock()
+}
+
+// SnapshotGeneratedAt 은 마지막 성공 reconcile 의 snapshot 산출 시각이다 (#405). 첫 reconcile 전에는
+// zero time 이다. api.SnapshotFreshnessSource 를 만족한다.
+func (c *Collector) SnapshotGeneratedAt() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.snapshotAt
+}
+
+// SnapshotStale 은 snapshot 나이가 staleAfter 를 넘었는지다 (#405). staleAfter 미설정 (0) 또는 첫
+// reconcile 전에는 false 다.
+func (c *Collector) SnapshotStale() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.staleAfter <= 0 || c.snapshotAt.IsZero() {
+		return false
+	}
+	return time.Since(c.snapshotAt) > c.staleAfter
 }
 
 // ReplaceCrossNode 는 #84 cross-node interference의 snapshot을 교체한다. main 의 reconcileOnce 가
@@ -365,6 +407,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.crossLevelScoreDesc
 	ch <- c.impactGraphDegreeDesc
 	ch <- c.impactRootReachDesc
+	ch <- c.snapshotAgeDesc
 }
 
 // Collect 는 현재 snapshot 의 모든 NoisyNeighbor 를 score / lag 두 메트릭으로 emit 한다. snapshot
@@ -381,7 +424,13 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	impactGraph := c.impactGraph
 	rootSuspects := c.rootSuspects
 	step := c.step
+	snapshotAt := c.snapshotAt
 	c.mu.RUnlock()
+
+	// #405 snapshot 나이. 첫 reconcile 전 (zero time) 에는 emit 하지 않아 의미 없는 거대 값을 피한다.
+	if !snapshotAt.IsZero() {
+		ch <- prometheus.MustNewConstMetric(c.snapshotAgeDesc, prometheus.GaugeValue, time.Since(snapshotAt).Seconds())
+	}
 
 	stepSeconds := step.Seconds()
 	for _, n := range snapshot {
@@ -461,16 +510,36 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	// #149 cross-level. CrossLevel 슬라이스의 각 항목을 correlation_cross_level_score gauge 로 emit
 	// 한다. SelectTopNCrossLevel 단계에서 방향 / dimension 미분류 제외와 (node, direction, dimension)
 	// 그룹별 top-N 이 이미 적용되어 본 자리에서 추가 가드가 필요 없다.
+	// #405 emit 전 라벨 기준 재dedup. SelectTopNCrossLevel 의 dedup 키는 podUID 를 포함하지만 emit
+	// 라벨 셋에는 없어, 동명 pod 재생성 (다른 UID) 이 한 snapshot 에 공존하면 동일 라벨 시리즈가
+	// 중복 emit 되어 /metrics 전체가 500 이 된다. 라벨 축 (node, namespace, pod, direction,
+	// dimension) 으로 접어 최고 score 만 남긴다. 라벨 스키마는 불변이다.
+	type crossLevelEmitKey struct {
+		node, ns, pod, direction, dimension string
+	}
+	clBest := make(map[crossLevelEmitKey]float64, len(crossLevel))
+	clOrder := make([]crossLevelEmitKey, 0, len(crossLevel))
 	for _, cl := range crossLevel {
+		k := crossLevelEmitKey{cl.Node, cl.PodNamespace, cl.Pod, string(cl.Direction), string(cl.Dimension)}
+		if prev, ok := clBest[k]; ok {
+			if cl.Score > prev {
+				clBest[k] = cl.Score
+			}
+			continue
+		}
+		clBest[k] = cl.Score
+		clOrder = append(clOrder, k)
+	}
+	for _, k := range clOrder {
 		ch <- prometheus.MustNewConstMetric(
 			c.crossLevelScoreDesc,
 			prometheus.GaugeValue,
-			cl.Score,
-			cl.Node,
-			cl.PodNamespace,
-			cl.Pod,
-			string(cl.Direction),
-			string(cl.Dimension),
+			clBest[k],
+			k.node,
+			k.ns,
+			k.pod,
+			k.direction,
+			k.dimension,
 		)
 	}
 	// #151 Phase 1 영향 전파 그래프. 각 정점의 out / in degree 를 correlation_impact_graph_node_degree
@@ -508,6 +577,10 @@ type Health struct {
 	ReconcileMetricsObserved prometheus.Gauge
 	LastSuccessTimestamp     prometheus.Gauge
 	ReconcileErrors          prometheus.Counter
+	// FetchErrors 는 #405 의 per-query fetch 실패 카운터다. query 라벨은 PlannedQueries 의 고정
+	// 문자열 (활성 layer 기준 수십 개) 이라 카디널리티가 통제된다. 종전에는 부분 실패가 전량 실패가
+	// 아니면 어떤 신호도 남기지 않았다.
+	FetchErrors *prometheus.CounterVec
 }
 
 // NewHealth 는 self-health 메트릭들을 생성해 reg 에 등록한 뒤 반환한다.
@@ -531,24 +604,28 @@ func NewHealth(reg prometheus.Registerer) *Health {
 		}, []string{"reason"}),
 		ReconcilePartial: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "correlation_reconcile_partial_total",
-			Help: "reconcile cycle 의 산출 결과에 등장한 distinct metric 수가 expected query 수보다 작아 일부 query 가 데이터를 만들지 못한 cycle 의 누적. 운영자는 본 카운터가 증가하면 PrometheusURL / query 문법 / 입력 recording rule 가용성을 점검한다.",
+			Help: "일부 query 의 fetch 가 실패한 cycle 의 누적 (#405). 종전의 결과 기반 결측 판정은 allow-list 미설정 victim 처럼 정상적으로 빈 쿼리를 결측으로 세어 상시 오탐이었다. 운영자는 본 카운터가 증가하면 correlation_fetch_errors_total 의 query 라벨로 실패 지점을 특정한다.",
 		}),
 		ReconcileMetricsExpected: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "correlation_reconcile_metrics_expected",
-			Help: "마지막 reconcile cycle 의 DefaultMetrics + ExtraMetrics 총 query 수.",
+			Help: "마지막 reconcile cycle 이 fetch 를 시도한 활성 query 수 (PlannedQueries, allow-list 와 layer 활성화 반영).",
 		}),
 		ReconcileMetricsObserved: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "correlation_reconcile_metrics_observed",
-			Help: "마지막 reconcile cycle 의 결과에 등장한 distinct src/dst metric 수. expected 와 같지 않으면 일부 query 가 데이터를 만들지 못한 상태.",
+			Help: "마지막 reconcile cycle 에서 fetch 에 성공한 query 수 (#405). expected 와 다르면 그 차이만큼 fetch 실패가 있었던 상태다 (정상적으로 빈 쿼리는 성공으로 센다).",
 		}),
 		LastSuccessTimestamp: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "correlation_reconcile_last_success_timestamp_seconds",
-			Help: "마지막 성공 reconcile 의 Unix epoch 초. CorrelationExporterStalled alert 의 입력.",
+			Help: "마지막 완전 성공 (fetch 실패 0건) reconcile 의 Unix epoch 초 (#405). CorrelationExporterStalled alert 의 입력이며, 부분 실패 cycle 은 갱신하지 않아 지속 부분 실패가 stalled 로 드러난다.",
 		}),
 		ReconcileErrors: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "correlation_reconcile_errors_total",
 			Help: "reconcile cycle 이 wrapped error 로 종료된 횟수의 누적 합계.",
 		}),
+		FetchErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "correlation_fetch_errors_total",
+			Help: "reconcile cycle 의 per-query fetch 실패 누적 (#405). query 라벨은 실패한 PromQL 문자열이다. 부분 실패는 산출을 계속하되 본 카운터와 로그로 가시화되고, 실패가 있는 cycle 은 last_success_timestamp 를 갱신하지 않는다.",
+		}, []string{"query"}),
 	}
 	reg.MustRegister(
 		h.ReconcileDuration,
@@ -560,6 +637,7 @@ func NewHealth(reg prometheus.Registerer) *Health {
 		h.ReconcileMetricsObserved,
 		h.LastSuccessTimestamp,
 		h.ReconcileErrors,
+		h.FetchErrors,
 	)
 	return h
 }
@@ -567,10 +645,15 @@ func NewHealth(reg prometheus.Registerer) *Health {
 // RecordCycle 은 reconcile cycle 1 회의 결과를 self-health 메트릭에 반영한다. results 와 neighbors
 // 의 길이 차이는 SelectTopN 의 필터링 (latency 페어 외 dedup, dimension 미분류, topN 컷) 으로 발생
 // 하며 RecordCycle 은 결과 길이만 기록하고 필터별 분해는 하지 않는다 (운영자는 pairs_total 과
-// neighbors_total 의 비로 필터링 비율을 관측한다). expectedMetrics 는 Correlator 가 fetch 시도한
-// query 총 수 (DefaultMetrics + ExtraMetrics) 다. 본 cycle 의 results 에 등장한 distinct metric
-// 수와 비교해 partial fetch (일부 query 가 데이터를 만들지 못한 cycle) 여부를 판정한다.
-func (h *Health) RecordCycle(duration time.Duration, results []correlation.CorrelationResult, neighbors []correlation.NoisyNeighbor, expectedMetrics int) {
+// neighbors_total 의 비로 필터링 비율을 관측한다).
+//
+// #405 partial 판정을 fetch 성공 기준으로 전환한다. 종전의 "결과에 등장한 distinct metric 수"
+// 기반 판정은 allow-list 미설정 victim 처럼 정상적으로 빈 쿼리 (fetch 성공, 시리즈 0개 또는 페어
+// 미생성) 를 결측으로 세어 매 cycle 오탐 증가로 신호 가치가 죽어 있었다. fetch 는 stats 로 직접
+// 관측되므로 expected 는 시도한 활성 query 수, observed 는 fetch 성공 수, partial 은 실패 존재다.
+// LastSuccessTimestamp 는 완전 성공 (실패 0건) cycle 만 갱신해, 지속 부분 실패가
+// CorrelationExporterStalled 로 드러난다. 실패 query 별 카운터는 FetchErrors 가 담당한다.
+func (h *Health) RecordCycle(duration time.Duration, results []correlation.CorrelationResult, neighbors []correlation.NoisyNeighbor, stats correlation.FetchStats) {
 	h.ReconcileDuration.Set(duration.Seconds())
 	h.ReconcilePairs.Add(float64(len(results)))
 	h.ReconcileNeighbors.Add(float64(len(neighbors)))
@@ -579,7 +662,6 @@ func (h *Health) RecordCycle(duration time.Duration, results []correlation.Corre
 	// 으로 고정이라 루프 진입 전에 한 번 lookup 해 캐시한다.
 	lowSamples := h.ReconcileSkipped.WithLabelValues("low_samples")
 	constant := h.ReconcileSkipped.WithLabelValues("constant")
-	observedMetrics := make(map[string]struct{})
 	for _, r := range results {
 		switch r.Status {
 		case correlation.StatusSkippedLowSamples:
@@ -587,37 +669,16 @@ func (h *Health) RecordCycle(duration time.Duration, results []correlation.Corre
 		case correlation.StatusSkippedConstant:
 			constant.Inc()
 		}
-		// distinct metric 수 산출. EnumeratePairs 가 만든 양방향 페어이므로 Src 와 Dst 양측 모두
-		// 집합에 넣어 dataset 가 emit 한 모든 unique query 를 셋다. #84 의 cross-node 결과 는 Pair 가
-		// 비어 있고 NodePair 에 metric 이 담기므로 IsCrossNode 분기 로 NodePair 측 metric 을 누락 없이
-		// 누적 한다 (본 분기 가 없으면 cross-node DefaultMetrics 5종 이 observed 에서 누락 되어
-		// ReconcilePartial 카운터 가 매 cycle 거짓 증가 한다).
-		switch {
-		case r.IsCrossNode:
-			observedMetrics[r.NodePair.SrcMetric] = struct{}{}
-			observedMetrics[r.NodePair.DstMetric] = struct{}{}
-		case r.IsServiceImpact:
-			// #148 service-impact 결과는 Pair / NodePair 가 비어 있고 ServiceImpactPair 에 metric 이
-			// 담긴다. 본 분기가 없으면 workload latency rule 이 observed 에서 누락되고 빈 r.Pair metric
-			// ("") 이 끼어 들어 ReconcilePartial 카운터가 매 cycle 거짓 증가한다.
-			observedMetrics[r.ServiceImpactPair.SuspectMetric] = struct{}{}
-			observedMetrics[r.ServiceImpactPair.VictimMetric] = struct{}{}
-		case r.IsCrossLevel:
-			// #149 cross-level 결과는 CrossLevelPair 에 metric 이 담긴다. src/dst metric 은 모두 기존
-			// layer 의 입력 (pod 압박/latency, node 압박/latency) 과 동일해 observed 집합에 새로 더하는
-			// 것은 없으나, 본 분기가 없으면 빈 r.Pair metric ("") 이 끼어 들어 observed 가 왜곡된다.
-			observedMetrics[r.CrossLevelPair.SrcMetric] = struct{}{}
-			observedMetrics[r.CrossLevelPair.DstMetric] = struct{}{}
-		default:
-			observedMetrics[r.Pair.SrcMetric] = struct{}{}
-			observedMetrics[r.Pair.DstMetric] = struct{}{}
-		}
 	}
-	observed := len(observedMetrics)
-	h.ReconcileMetricsExpected.Set(float64(expectedMetrics))
-	h.ReconcileMetricsObserved.Set(float64(observed))
-	if expectedMetrics > 0 && observed < expectedMetrics {
+	failed := len(stats.FailedQueries)
+	for _, q := range stats.FailedQueries {
+		h.FetchErrors.WithLabelValues(q).Inc()
+	}
+	h.ReconcileMetricsExpected.Set(float64(stats.Attempted))
+	h.ReconcileMetricsObserved.Set(float64(stats.Attempted - failed))
+	if failed > 0 {
 		h.ReconcilePartial.Inc()
+		return
 	}
 	h.LastSuccessTimestamp.SetToCurrentTime()
 }

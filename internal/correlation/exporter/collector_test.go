@@ -395,7 +395,7 @@ func TestHealth_RecordCycleAccumulates(t *testing.T) {
 		neighbor("v1", "s2", correlation.DimensionCPU, 2, 0.6, 0),
 	}
 
-	h.RecordCycle(150*time.Millisecond, results, neighbors, 7)
+	h.RecordCycle(150*time.Millisecond, results, neighbors, correlation.FetchStats{Attempted: 7})
 
 	if v := testutil.ToFloat64(h.ReconcilePairs); v != 5 {
 		t.Errorf("pairs_total=%v want 5", v)
@@ -416,7 +416,7 @@ func TestHealth_RecordCycleAccumulates(t *testing.T) {
 		t.Errorf("last_success_timestamp=0 want >0 after RecordCycle")
 	}
 
-	h.RecordCycle(200*time.Millisecond, results, neighbors, 7)
+	h.RecordCycle(200*time.Millisecond, results, neighbors, correlation.FetchStats{Attempted: 7})
 	if v := testutil.ToFloat64(h.ReconcilePairs); v != 10 {
 		t.Errorf("pairs_total after second cycle=%v want 10 (누적)", v)
 	}
@@ -638,39 +638,45 @@ func TestCollector_ServiceImpactEmptySnapshot(t *testing.T) {
 	}
 }
 
-// TestHealth_RecordCycleServiceImpactObserved 는 IsServiceImpact 결과의 ServiceImpactPair metric 이
-// observed distinct metric 집계에 정확히 반영되어 ReconcilePartial 이 거짓 증가하지 않는지 검증한다.
-// 분기가 빠지면 빈 r.Pair metric ("") 이 끼어 observed 가 왜곡된다.
-func TestHealth_RecordCycleServiceImpactObserved(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	h := NewHealth(reg)
-
-	// suspect node 압박 2종 + victim workload latency 1종 = distinct 3종.
-	results := []correlation.CorrelationResult{
-		{
-			Status:          correlation.StatusOK,
-			IsServiceImpact: true,
-			ServiceImpactPair: correlation.ServiceImpactPairKey{
-				SuspectMetric: "node:cpu_pressure_score:5m",
-				VictimMetric:  "workload:netobs_stage_latency_p99:5m",
-			},
-		},
-		{
-			Status:          correlation.StatusOK,
-			IsServiceImpact: true,
-			ServiceImpactPair: correlation.ServiceImpactPairKey{
-				SuspectMetric: "node:memory_pressure_score:5m",
-				VictimMetric:  "workload:netobs_stage_latency_p99:5m",
-			},
-		},
+// TestHealth_RecordCyclePartialFetch 는 #405 의 fetch 기준 partial 판정을 검증한다. 실패 query 가
+// 있는 cycle 은 partial 이 증가하고 observed 가 성공 수로 기록되며 per-query 카운터가 오르고
+// last_success_timestamp 는 갱신되지 않는다. 종전 결과 기반 판정은 정상 빈 쿼리를 결측으로 세어
+// 상시 오탐이었다.
+func TestHealth_RecordCyclePartialFetch(t *testing.T) {
+	h := NewHealth(prometheus.NewRegistry())
+	stats := correlation.FetchStats{Attempted: 5, FailedQueries: []string{"q1", "q2"}}
+	h.RecordCycle(10*time.Millisecond, nil, nil, stats)
+	if v := testutil.ToFloat64(h.ReconcilePartial); v != 1 {
+		t.Errorf("partial=%v want 1", v)
 	}
-	// expected=3 (distinct) 이면 observed=3 과 일치해 partial 이 증가하지 않아야 한다.
-	h.RecordCycle(10*time.Millisecond, results, nil, 3)
+	if v := testutil.ToFloat64(h.ReconcileMetricsExpected); v != 5 {
+		t.Errorf("expected=%v want 5", v)
+	}
 	if v := testutil.ToFloat64(h.ReconcileMetricsObserved); v != 3 {
-		t.Errorf("observed=%v want 3 (service-impact 분기 미반영)", v)
+		t.Errorf("observed=%v want 3 (성공 수)", v)
 	}
+	if v := testutil.ToFloat64(h.FetchErrors.WithLabelValues("q1")); v != 1 {
+		t.Errorf("fetch_errors{q1}=%v want 1", v)
+	}
+	if v := testutil.ToFloat64(h.LastSuccessTimestamp); v != 0 {
+		t.Errorf("last_success=%v want 0 (부분 실패 cycle 은 미갱신)", v)
+	}
+}
+
+// TestHealth_RecordCycleEmptyResultsNotPartial 은 fetch 전량 성공이면 결과 (페어) 가 하나도 없어도
+// partial 이 증가하지 않고 last_success 가 갱신되는지 검증한다 (#405). allow-list 미설정 등으로
+// 정상적으로 빈 쿼리를 결측으로 세던 종전 오탐의 직접 회귀다.
+func TestHealth_RecordCycleEmptyResultsNotPartial(t *testing.T) {
+	h := NewHealth(prometheus.NewRegistry())
+	h.RecordCycle(10*time.Millisecond, nil, nil, correlation.FetchStats{Attempted: 16})
 	if v := testutil.ToFloat64(h.ReconcilePartial); v != 0 {
-		t.Errorf("partial=%v want 0 (observed==expected 인데 거짓 증가)", v)
+		t.Errorf("partial=%v want 0 (빈 결과는 결측이 아님)", v)
+	}
+	if v := testutil.ToFloat64(h.ReconcileMetricsObserved); v != 16 {
+		t.Errorf("observed=%v want 16", v)
+	}
+	if v := testutil.ToFloat64(h.LastSuccessTimestamp); v == 0 {
+		t.Errorf("last_success=0 want >0 (완전 성공 cycle)")
 	}
 }
 
@@ -718,37 +724,47 @@ func TestCollector_CrossLevelEmptySnapshot(t *testing.T) {
 	}
 }
 
-// TestHealth_RecordCycleCrossLevelObserved 는 IsCrossLevel 결과의 CrossLevelPair metric 이 observed
-// distinct metric 집계에 정확히 반영되어 ReconcilePartial 이 거짓 증가하지 않는지 검증한다. 분기가
-// 빠지면 빈 r.Pair metric ("") 이 끼어 observed 가 왜곡된다.
-func TestHealth_RecordCycleCrossLevelObserved(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	h := NewHealth(reg)
+// TestCollector_SnapshotFreshness 는 #405 의 snapshot 신선도 신호를 검증한다. Replace 가 산출 시각을
+// 기록해 age gauge 가 emit 되고, staleAfter 초과 시 SnapshotStale 이 true 가 된다. 첫 reconcile 전
+// (zero time) 에는 age 미emit 과 stale false 다.
+func TestCollector_SnapshotFreshness(t *testing.T) {
+	c := NewCollector(time.Second)
+	if got := testutil.CollectAndCount(c, "correlation_snapshot_age_seconds"); got != 0 {
+		t.Errorf("첫 reconcile 전 age series=%d want 0", got)
+	}
+	if c.SnapshotStale() {
+		t.Errorf("첫 reconcile 전 stale=true want false")
+	}
 
-	// node 압박 + pod latency + pod 압박 + node latency = distinct 4종.
-	results := []correlation.CorrelationResult{
-		{
-			Status:       correlation.StatusOK,
-			IsCrossLevel: true,
-			CrossLevelPair: correlation.CrossLevelPairKey{
-				SrcMetric: "node:cpu_pressure_score:5m",
-				DstMetric: "pod_latency_q99",
-			},
-		},
-		{
-			Status:       correlation.StatusOK,
-			IsCrossLevel: true,
-			CrossLevelPair: correlation.CrossLevelPairKey{
-				SrcMetric: "pod:cpu_throttle_score:5m",
-				DstMetric: "node:netobs_pod_stage_latency_p99:5m",
-			},
-		},
+	c.SetStaleAfter(time.Millisecond)
+	c.Replace(nil)
+	if c.SnapshotGeneratedAt().IsZero() {
+		t.Fatalf("Replace 후 GeneratedAt 이 zero")
 	}
-	h.RecordCycle(10*time.Millisecond, results, nil, 4)
-	if v := testutil.ToFloat64(h.ReconcileMetricsObserved); v != 4 {
-		t.Errorf("observed=%v want 4 (cross-level 분기 미반영)", v)
+	if got := testutil.CollectAndCount(c, "correlation_snapshot_age_seconds"); got != 1 {
+		t.Errorf("age series=%d want 1", got)
 	}
-	if v := testutil.ToFloat64(h.ReconcilePartial); v != 0 {
-		t.Errorf("partial=%v want 0 (observed==expected 인데 거짓 증가)", v)
+	if c.SnapshotStale() {
+		t.Errorf("갱신 직후 stale=true want false")
+	}
+	time.Sleep(5 * time.Millisecond)
+	if !c.SnapshotStale() {
+		t.Errorf("staleAfter 초과 후 stale=false want true")
+	}
+}
+
+// TestCollector_CrossLevelDuplicateLabelDedup 은 #405 의 emit 전 재dedup 을 검증한다. dedup 키에는
+// 있는 podUID 가 emit 라벨에는 없어, 동명 pod 재생성 (다른 UID) 이 한 snapshot 에 공존하면 종전에는
+// 동일 라벨 시리즈 중복으로 scrape 전체가 실패했다. 재dedup 후에는 최고 score 1 시리즈만 emit 된다.
+func TestCollector_CrossLevelDuplicateLabelDedup(t *testing.T) {
+	c := NewCollector(time.Second)
+	c.ReplaceCrossLevel([]correlation.CrossLevel{
+		{Node: "n1", PodNamespace: "ns", Pod: "p", PodUID: "uid-old", Direction: correlation.DirectionNodeToPod, Dimension: correlation.DimensionCPU, Score: 0.5},
+		{Node: "n1", PodNamespace: "ns", Pod: "p", PodUID: "uid-new", Direction: correlation.DirectionNodeToPod, Dimension: correlation.DimensionCPU, Score: 0.8},
+	})
+	// 종전이면 MustNewConstMetric 중복 라벨로 scrape error. CollectAndCount 는 등록 후 Gather 하므로
+	// 중복이면 실패한다.
+	if got := testutil.CollectAndCount(c, "correlation_cross_level_score"); got != 1 {
+		t.Errorf("cross_level series=%d want 1 (라벨 기준 재dedup)", got)
 	}
 }

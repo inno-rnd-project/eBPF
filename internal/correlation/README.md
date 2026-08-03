@@ -313,10 +313,11 @@ kubectl rollout restart deployment -n ebpf-project correlation-exporter
 
 #### CorrelationExporterStalled
 
-마지막 reconcile 성공이 10 분 이상 지났다. 다음을 점검한다.
+마지막 완전 성공 reconcile 이 10 분 이상 지났다. #405 부터 `correlation_reconcile_last_success_timestamp_seconds` 는 fetch 실패 0 건 cycle 만 갱신하므로, 전면 정체뿐 아니라 일부 query 의 지속 fetch 실패로도 발화한다. 다음을 점검한다.
 
 - `kubectl -n ebpf-project get pods -l app.kubernetes.io/name=correlation-exporter` 로 Pod 상태와 restart count 확인
-- Pod 가 정상이면 `kubectl logs` 로 reconcile error 메시지 확인 (Prometheus 응답 코드, query 문법, timeout)
+- `correlation_reconcile_partial_total` 이 함께 증가 중이면 부분 실패 경로다. `correlation_fetch_errors_total` 의 `query` 라벨로 실패 query 를 특정하고 해당 recording rule 가용성 점검
+- Pod 가 정상이고 partial 증가가 없으면 `kubectl logs` 로 reconcile error 메시지 확인 (Prometheus 응답 코드, query 문법, timeout)
 - Prometheus 서비스 도달성 확인. ConfigMap 의 `PROMETHEUS_URL` 이 cluster 내 도달 가능한 svc 를 가리키는지 점검
 
 #### CorrelationExporterReconcileErrors
@@ -326,6 +327,22 @@ reconcile cycle 이 10 분 윈도우에서 3 회 이상 에러로 종료됐다.
 - `kubectl logs` 로 에러 메시지 확인
 - Prometheus 응답이 5xx 면 cluster Prometheus 의 load 와 query 성능 점검
 - query 문법 에러면 `DefaultMetrics` 의 recording rule 이 변경됐는지 확인
+
+#### CorrelationExporterPartialFetch
+
+reconcile cycle 이 30 분 윈도우에서 3 회 이상 부분 fetch 실패로 진행됐다 (#405). 산출은 부분 입력으로 계속되지만 실패가 이어지면 last_success 동결로 `CorrelationExporterStalled` 가 뒤따르므로, 본 warning 단계에서 원인을 제거한다.
+
+- `correlation_fetch_errors_total` 의 `query` 라벨로 실패 query 특정
+- 실패 query 가 recording rule 이면 해당 rule 의 존재와 산출 여부를 Prometheus 에서 확인
+- `kubectl logs` 의 `correlate: fetch failed for query` 라인으로 실패 원인 (응답 코드, timeout) 확인
+
+#### CorrelationExporterMetricsAbsent
+
+`correlation_reconcile_last_success_timestamp_seconds` 시리즈가 5 분 이상 부재하다 (#405). exporter 미기동, 첫 reconcile 실패로 인한 NotReady (Endpoints 이탈), scrape 설정 문제 중 하나로 self-health 관측 자체가 끊긴 상태다. Stalled 계열은 시리즈가 존재해야 발화하므로 본 alert 만이 이 구간을 감지한다.
+
+- `kubectl -n ebpf-project get pods -l app.kubernetes.io/name=correlation-exporter` 로 Pod 존재와 상태 확인
+- Pod 가 Running 인데 NotReady 면 `kubectl logs` 로 첫 reconcile 실패 원인 확인 (readyz 는 첫 성공 전까지 503)
+- Pod 가 Ready 면 ServiceMonitor 의 scrape 대상 등록 여부를 Prometheus targets 에서 확인
 
 ### 운영자 drill-down 절차
 

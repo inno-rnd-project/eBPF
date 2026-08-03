@@ -109,6 +109,22 @@ spec:
             description: "victim {{ $labels.victim_namespace }}/{{ $labels.victim_pod }} 의 latency 가 suspect {{ $labels.suspect_namespace }}/{{ $labels.suspect_pod }} 의 {{ $labels.resource_dimension }} 자원 변동과 max |corr| {{ $value }} 로 10분 이상 동조하고 있다. causal_strength 0.6 초과 또는 Granger pvalue 0.05 미만의 인과 증거 게이트를 함께 통과했다 (#366). internal/correlation/README.md 의 runbook 절차를 따른다."
             runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationstrongnoisyneighbor"
 
+        # CorrelationExporterMetricsAbsent
+        # #405 exporter 자기관측의 마지막 공백 커버. 첫 reconcile 실패 시 /readyz 가 영구 503 이라
+        # Service Endpoints 에서 빠져 self-health 메트릭 자체가 수집되지 않는데, Stalled 계열은
+        # 시리즈가 존재해야 발화하므로 이 NotReady 침묵 구간을 아무도 감지하지 못했다. absent() 는
+        # 시리즈 부재 자체를 잡아 미수집 (scrape 대상 이탈, exporter 미기동 포함) 을 커버한다.
+        - alert: CorrelationExporterMetricsAbsent
+          expr: absent(correlation_reconcile_last_success_timestamp_seconds)
+          for: 5m
+          labels:
+            severity: critical
+            component: correlation
+          annotations:
+            summary: "correlation-exporter self-health metrics absent"
+            description: "correlation_reconcile_last_success_timestamp_seconds 시리즈가 5 분 이상 부재하다. exporter 미기동, 첫 reconcile 실패로 인한 NotReady (Endpoints 이탈), scrape 설정 문제 중 하나로 self-health 관측 자체가 끊긴 상태다. correlation-exporter pod 상태와 readyz, ServiceMonitor 대상 등록을 점검한다."
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationexportermetricsabsent"
+
         # CorrelationExporterStalled
         # exporter 가 reconcile 을 10분 이상 성공시키지 못하면 발화한다. last_success_timestamp 가
         # 0 인 첫 reconcile 전 상태는 NewGauge default 0 으로 emit 되어 time() 과의 차이가 매우 커
@@ -141,3 +157,20 @@ spec:
             summary: "correlation-exporter reconcile errors accumulating"
             description: "correlation-exporter 의 reconcile cycle 이 10 분 윈도우에서 3 회 이상 에러로 종료됐다. Prometheus 응답, query 문법, network 경로를 점검한다."
             runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationexporterreconcileerrors"
+
+        # CorrelationExporterPartialFetch
+        # #405 부분 fetch 실패의 warning 단계. 지속 부분 실패는 last_success 동결로 결국 Stalled 를
+        # 발화시키지만 (10분+), 그 전에 query 단위 원인 특정이 가능한 조기 신호를 둔다. 운영 기본
+        # reconcile interval 이 5m 이라 30m 창에 cycle 이 최대 6개이고, 임계 3은 지속 실패만 넘는다
+        # (단발 blip 1~2회는 걸러진다).
+        - alert: CorrelationExporterPartialFetch
+          expr: |
+            increase(correlation_reconcile_partial_total[30m]) >= 3
+          for: 10m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "correlation-exporter partial fetch failures accumulating"
+            description: "correlation-exporter 의 reconcile cycle 이 30 분 윈도우에서 3 회 이상 부분 fetch 실패로 진행됐다. 산출은 부분 입력으로 계속되지만 실패가 이어지면 last_success 동결로 CorrelationExporterStalled 가 뒤따른다. correlation_fetch_errors_total 의 query 라벨로 실패 지점을 특정한다."
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationexporterpartialfetch"

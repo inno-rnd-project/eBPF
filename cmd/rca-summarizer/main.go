@@ -30,6 +30,7 @@ import (
 	"netobs/internal/rca/server"
 	"netobs/internal/rca/sources"
 	"netobs/internal/rca/store"
+	"netobs/internal/selfobs"
 )
 
 // config 는 -listen 등 binary 의 모든 운영 toggle 을 모은다. env fallback 은 flag 보다 후순위라
@@ -107,6 +108,9 @@ func main() {
 	}
 
 	reg := prometheus.NewRegistry()
+	// #405 프로세스 자기계측. Go runtime / process 표준 collector 와 cgroup limit 기반 GOMEMLIMIT.
+	selfobs.RegisterProcessCollectors(reg)
+	selfobs.ApplyMemoryLimit()
 	var ready atomic.Bool
 
 	rcaRegistry := registry.New()
