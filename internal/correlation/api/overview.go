@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math"
@@ -141,6 +142,12 @@ func (h *SynthesisHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 		apicommon.WriteJSON(w, resp)
 		return
 	}
+
+	// #404 다른 핸들러와 동일한 5s 상한. 종전에는 본 핸들러만 timeout 이 없어 유효 상한이 querier
+	// 의 30s 였고, Prometheus 지연 시 랜딩 폴링 요청이 30 초씩 goroutine 을 붙잡아 in-flight 가
+	// 단조 증가했다.
+	evalCtx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
+	defer cancel()
 
 	queries := []string{
 		"kube_node_info",
