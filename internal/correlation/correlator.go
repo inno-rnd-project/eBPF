@@ -121,11 +121,14 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 	// Samples slice 의 첫 element pointer 와 length 의 합성이라 같은 underlying array 를 다른 길이
 	// 의 슬라이스가 공유하는 (prefix / 부분 슬라이스) 케이스에서 충돌이 일어나지 않는다. 페어 수가
 	// N 이면 변환은 unique 시리즈 수에 선형이라 매번 변환할 때의 O(N) 슬라이스 할당과 복사를 줄인다.
+	// #406 hint 는 cache 에 실제로 담기는 최대 entry 수인 unique 시계열 수 (len(all)) 다. 종전의
+	// 페어 수 x2 는 페어 수 제곱 성장을 그대로 hint 로 옮겨 대형 클러스터에서 map bucket 사전 할당
+	// 만으로 수십 MB 를 잡았다.
 	type cacheKey struct {
 		ptr *Sample
 		len int
 	}
-	valuesCache := make(map[cacheKey][]float64, len(pairs)*2)
+	valuesCache := make(map[cacheKey][]float64, len(all))
 	getValues := func(s TimeSeries) []float64 {
 		if len(s.Samples) == 0 {
 			return nil

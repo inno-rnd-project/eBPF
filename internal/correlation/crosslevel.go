@@ -261,7 +261,9 @@ func SelectTopNCrossLevel(results []CorrelationResult, topN int) []CrossLevel {
 		grangerOK     bool
 	}
 
-	candidates := make([]candidate, 0, len(results))
+	// #406 results 는 4개 레이어 전체 결과라 len(results) cap 사전 할당은 본 레이어 후보의 실제
+	// 규모 (필터 통과분) 를 크게 웃돈다. append 의 상환 성장에 맡긴다.
+	var candidates []candidate
 	for _, r := range results {
 		if !r.IsCrossLevel {
 			continue
