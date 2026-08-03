@@ -117,6 +117,12 @@ type Collector struct {
 	// step 은 LagSteps 를 초 단위로 변환할 때 곱해진다. exporter 가 Correlator 의 Config.Step 과
 	// 동일 값을 받아 lag step 의 시간 의미를 보존한다.
 	step time.Duration
+	// snapshotAt 은 마지막 Replace (reconcile cycle 성공) 시각이다 (#405). 실패 cycle 후 마지막 성공
+	// snapshot 이 산출 시각 없이 무기한 노출되던 것을, age gauge 와 API 신선도 필드로 판별 가능하게
+	// 한다. staleAfter 는 stale 판정 임계 (0 이면 stale 판정 비활성) 로 main 이 reconcile interval
+	// 의 배수로 설정한다.
+	snapshotAt time.Time
+	staleAfter time.Duration
 
 	scoreDesc              *prometheus.Desc
 	lagDesc                *prometheus.Desc
@@ -131,6 +137,7 @@ type Collector struct {
 	crossLevelScoreDesc    *prometheus.Desc
 	impactGraphDegreeDesc  *prometheus.Desc
 	impactRootReachDesc    *prometheus.Desc
+	snapshotAgeDesc        *prometheus.Desc
 }
 
 // NewCollector 는 Prometheus scrape 시 emit 할 metric desc 두 개를 미리 만들어 두는 Collector 를
@@ -204,6 +211,11 @@ func NewCollector(step time.Duration) *Collector {
 			"#151 Phase 2 근원 suspect (in-degree 0 정점) 의 영향 범위. 본 root 에서 다단계 전파 경로로 도달 가능한 distinct 종착 victim 수다. 값이 클수록 가장 넓게 영향을 퍼뜨리는 근본 원인 후보다. ImpactGraphEnabled opt-in 시 경로 추출과 함께 emit 된다.",
 			impactRootReachLabels, nil,
 		),
+		snapshotAgeDesc: prometheus.NewDesc(
+			"correlation_snapshot_age_seconds",
+			"#405 마지막 성공 reconcile snapshot 의 나이 (초). 실패 cycle 이 이어지면 단조 증가해 소비자 (rca-summarizer, alert) 가 snapshot 신선도를 판별한다. 첫 reconcile 전에는 emit 되지 않는다.",
+			nil, nil,
+		),
 	}
 }
 
@@ -229,7 +241,37 @@ func (c *Collector) Replace(neighbors []correlation.NoisyNeighbor) {
 	c.mu.Lock()
 	c.snapshot = copied
 	c.dominant = dominant
+	// #405 snapshot 산출 시각. Replace 는 reconcile 성공 cycle 의 첫 갱신 지점이라 cycle 당 1회
+	// 갱신되고, 실패 cycle 은 Replace 미호출로 시각이 남아 age 가 자란다.
+	c.snapshotAt = time.Now()
 	c.mu.Unlock()
+}
+
+// SetStaleAfter 는 stale 판정 임계를 설정한다 (#405). main 이 reconcile interval 의 배수 (기본
+// 3배) 로 설정하며, 0 이하면 stale 판정이 비활성된다.
+func (c *Collector) SetStaleAfter(d time.Duration) {
+	c.mu.Lock()
+	c.staleAfter = d
+	c.mu.Unlock()
+}
+
+// SnapshotGeneratedAt 은 마지막 성공 reconcile 의 snapshot 산출 시각이다 (#405). 첫 reconcile 전에는
+// zero time 이다. api.SnapshotFreshnessSource 를 만족한다.
+func (c *Collector) SnapshotGeneratedAt() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.snapshotAt
+}
+
+// SnapshotStale 은 snapshot 나이가 staleAfter 를 넘었는지다 (#405). staleAfter 미설정 (0) 또는 첫
+// reconcile 전에는 false 다.
+func (c *Collector) SnapshotStale() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.staleAfter <= 0 || c.snapshotAt.IsZero() {
+		return false
+	}
+	return time.Since(c.snapshotAt) > c.staleAfter
 }
 
 // ReplaceCrossNode 는 #84 cross-node interference의 snapshot을 교체한다. main 의 reconcileOnce 가
@@ -365,6 +407,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.crossLevelScoreDesc
 	ch <- c.impactGraphDegreeDesc
 	ch <- c.impactRootReachDesc
+	ch <- c.snapshotAgeDesc
 }
 
 // Collect 는 현재 snapshot 의 모든 NoisyNeighbor 를 score / lag 두 메트릭으로 emit 한다. snapshot
@@ -381,7 +424,13 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	impactGraph := c.impactGraph
 	rootSuspects := c.rootSuspects
 	step := c.step
+	snapshotAt := c.snapshotAt
 	c.mu.RUnlock()
+
+	// #405 snapshot 나이. 첫 reconcile 전 (zero time) 에는 emit 하지 않아 의미 없는 거대 값을 피한다.
+	if !snapshotAt.IsZero() {
+		ch <- prometheus.MustNewConstMetric(c.snapshotAgeDesc, prometheus.GaugeValue, time.Since(snapshotAt).Seconds())
+	}
 
 	stepSeconds := step.Seconds()
 	for _, n := range snapshot {

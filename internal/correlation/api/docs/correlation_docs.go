@@ -1917,6 +1917,13 @@ const docTemplatecorrelation = `{
                 },
                 "page": {
                     "$ref": "#/definitions/netobs_internal_apicommon.Page"
+                },
+                "snapshot_generated_at": {
+                    "description": "SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인\nsnapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패\ncycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.",
+                    "type": "string"
+                },
+                "snapshot_stale": {
+                    "type": "boolean"
                 }
             }
         },
@@ -1931,6 +1938,13 @@ const docTemplatecorrelation = `{
                 },
                 "page": {
                     "$ref": "#/definitions/netobs_internal_apicommon.Page"
+                },
+                "snapshot_generated_at": {
+                    "description": "SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인\nsnapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패\ncycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.",
+                    "type": "string"
+                },
+                "snapshot_stale": {
+                    "type": "boolean"
                 }
             }
         },
@@ -2685,6 +2699,13 @@ const docTemplatecorrelation = `{
                         "$ref": "#/definitions/netobs_internal_correlation.ImpactGraphNode"
                     }
                 },
+                "snapshot_generated_at": {
+                    "description": "SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인\nsnapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패\ncycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.",
+                    "type": "string"
+                },
+                "snapshot_stale": {
+                    "type": "boolean"
+                },
                 "summary": {
                     "$ref": "#/definitions/internal_correlation_api.ImpactGraphSummary"
                 }
@@ -3334,6 +3355,13 @@ const docTemplatecorrelation = `{
                 },
                 "page": {
                     "$ref": "#/definitions/netobs_internal_apicommon.Page"
+                },
+                "snapshot_generated_at": {
+                    "description": "SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인\nsnapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패\ncycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.",
+                    "type": "string"
+                },
+                "snapshot_stale": {
+                    "type": "boolean"
                 }
             }
         },
@@ -3896,6 +3924,13 @@ const docTemplatecorrelation = `{
                 },
                 "page": {
                     "$ref": "#/definitions/netobs_internal_apicommon.Page"
+                },
+                "snapshot_generated_at": {
+                    "description": "SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인\nsnapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패\ncycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.",
+                    "type": "string"
+                },
+                "snapshot_stale": {
+                    "type": "boolean"
                 }
             }
         },

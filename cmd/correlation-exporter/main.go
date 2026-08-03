@@ -254,6 +254,9 @@ func main() {
 
 	reg := prometheus.NewRegistry()
 	collector := exporter.NewCollector(cfg.Step)
+	// #405 snapshot stale 판정 임계. reconcile interval 의 3배를 넘긴 snapshot 은 실패 cycle 누적
+	// 상태라 API 신선도 필드 (snapshot_stale) 가 true 로 노출된다.
+	collector.SetStaleAfter(3 * reconcileInterval)
 	reg.MustRegister(collector)
 	health := exporter.NewHealth(reg)
 

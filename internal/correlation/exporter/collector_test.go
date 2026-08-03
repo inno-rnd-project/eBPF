@@ -723,3 +723,32 @@ func TestCollector_CrossLevelEmptySnapshot(t *testing.T) {
 		t.Errorf("empty replace count=%d want 0", count)
 	}
 }
+
+// TestCollector_SnapshotFreshness 는 #405 의 snapshot 신선도 신호를 검증한다. Replace 가 산출 시각을
+// 기록해 age gauge 가 emit 되고, staleAfter 초과 시 SnapshotStale 이 true 가 된다. 첫 reconcile 전
+// (zero time) 에는 age 미emit 과 stale false 다.
+func TestCollector_SnapshotFreshness(t *testing.T) {
+	c := NewCollector(time.Second)
+	if got := testutil.CollectAndCount(c, "correlation_snapshot_age_seconds"); got != 0 {
+		t.Errorf("첫 reconcile 전 age series=%d want 0", got)
+	}
+	if c.SnapshotStale() {
+		t.Errorf("첫 reconcile 전 stale=true want false")
+	}
+
+	c.SetStaleAfter(time.Millisecond)
+	c.Replace(nil)
+	if c.SnapshotGeneratedAt().IsZero() {
+		t.Fatalf("Replace 후 GeneratedAt 이 zero")
+	}
+	if got := testutil.CollectAndCount(c, "correlation_snapshot_age_seconds"); got != 1 {
+		t.Errorf("age series=%d want 1", got)
+	}
+	if c.SnapshotStale() {
+		t.Errorf("갱신 직후 stale=true want false")
+	}
+	time.Sleep(5 * time.Millisecond)
+	if !c.SnapshotStale() {
+		t.Errorf("staleAfter 초과 후 stale=false want true")
+	}
+}
