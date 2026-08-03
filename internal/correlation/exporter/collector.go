@@ -510,16 +510,36 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	// #149 cross-level. CrossLevel 슬라이스의 각 항목을 correlation_cross_level_score gauge 로 emit
 	// 한다. SelectTopNCrossLevel 단계에서 방향 / dimension 미분류 제외와 (node, direction, dimension)
 	// 그룹별 top-N 이 이미 적용되어 본 자리에서 추가 가드가 필요 없다.
+	// #405 emit 전 라벨 기준 재dedup. SelectTopNCrossLevel 의 dedup 키는 podUID 를 포함하지만 emit
+	// 라벨 셋에는 없어, 동명 pod 재생성 (다른 UID) 이 한 snapshot 에 공존하면 동일 라벨 시리즈가
+	// 중복 emit 되어 /metrics 전체가 500 이 된다. 라벨 축 (node, namespace, pod, direction,
+	// dimension) 으로 접어 최고 score 만 남긴다. 라벨 스키마는 불변이다.
+	type crossLevelEmitKey struct {
+		node, ns, pod, direction, dimension string
+	}
+	clBest := make(map[crossLevelEmitKey]float64, len(crossLevel))
+	clOrder := make([]crossLevelEmitKey, 0, len(crossLevel))
 	for _, cl := range crossLevel {
+		k := crossLevelEmitKey{cl.Node, cl.PodNamespace, cl.Pod, string(cl.Direction), string(cl.Dimension)}
+		if prev, ok := clBest[k]; ok {
+			if cl.Score > prev {
+				clBest[k] = cl.Score
+			}
+			continue
+		}
+		clBest[k] = cl.Score
+		clOrder = append(clOrder, k)
+	}
+	for _, k := range clOrder {
 		ch <- prometheus.MustNewConstMetric(
 			c.crossLevelScoreDesc,
 			prometheus.GaugeValue,
-			cl.Score,
-			cl.Node,
-			cl.PodNamespace,
-			cl.Pod,
-			string(cl.Direction),
-			string(cl.Dimension),
+			clBest[k],
+			k.node,
+			k.ns,
+			k.pod,
+			k.direction,
+			k.dimension,
 		)
 	}
 	// #151 Phase 1 영향 전파 그래프. 각 정점의 out / in degree 를 correlation_impact_graph_node_degree

@@ -752,3 +752,19 @@ func TestCollector_SnapshotFreshness(t *testing.T) {
 		t.Errorf("staleAfter 초과 후 stale=false want true")
 	}
 }
+
+// TestCollector_CrossLevelDuplicateLabelDedup 은 #405 의 emit 전 재dedup 을 검증한다. dedup 키에는
+// 있는 podUID 가 emit 라벨에는 없어, 동명 pod 재생성 (다른 UID) 이 한 snapshot 에 공존하면 종전에는
+// 동일 라벨 시리즈 중복으로 scrape 전체가 실패했다. 재dedup 후에는 최고 score 1 시리즈만 emit 된다.
+func TestCollector_CrossLevelDuplicateLabelDedup(t *testing.T) {
+	c := NewCollector(time.Second)
+	c.ReplaceCrossLevel([]correlation.CrossLevel{
+		{Node: "n1", PodNamespace: "ns", Pod: "p", PodUID: "uid-old", Direction: correlation.DirectionNodeToPod, Dimension: correlation.DimensionCPU, Score: 0.5},
+		{Node: "n1", PodNamespace: "ns", Pod: "p", PodUID: "uid-new", Direction: correlation.DirectionNodeToPod, Dimension: correlation.DimensionCPU, Score: 0.8},
+	})
+	// 종전이면 MustNewConstMetric 중복 라벨로 scrape error. CollectAndCount 는 등록 후 Gather 하므로
+	// 중복이면 실패한다.
+	if got := testutil.CollectAndCount(c, "correlation_cross_level_score"); got != 1 {
+		t.Errorf("cross_level series=%d want 1 (라벨 기준 재dedup)", got)
+	}
+}
