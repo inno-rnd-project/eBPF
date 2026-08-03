@@ -67,14 +67,18 @@ const (
 // 와 NodePair 가 추가 첨부되어 caller 가 pod-level 결과와 node-level 결과를 단일 키로 분기 식별 가능
 // 하다. IsCrossNode=false 일 때 Pair 가, IsCrossNode=true 일 때 NodePair 가 유효하다.
 type CorrelationResult struct {
-	Pair             PairKey         `json:"pair"`
-	NodePair         NodePairKey     `json:"node_pair,omitempty"`
-	IsCrossNode      bool            `json:"is_cross_node,omitempty"`
-	CorrelationByLag map[int]float64 `json:"correlation_by_lag"`
-	MaxAbsLag        int             `json:"max_abs_lag"`
-	MaxAbsValue      float64         `json:"max_abs_value"`
-	SampleCount      int             `json:"sample_count"`
-	Status           Status          `json:"status"`
+	Pair        PairKey     `json:"pair"`
+	NodePair    NodePairKey `json:"node_pair,omitempty"`
+	IsCrossNode bool        `json:"is_cross_node,omitempty"`
+	// MaxAbsSignedValue 는 채택 lag (MaxAbsLag) 의 부호 있는 상관값이다 (#406). 종전의 lag 별 전체
+	// map (CorrelationByLag) 은 소비자가 SelectTopN 방향 게이트의 채택 lag 부호 조회 1곳뿐인데
+	// 페어마다 map 을 힙 할당해 대형 클러스터에서 페어 수만큼의 불필요한 할당원이었다. |corr| 는
+	// MaxAbsValue 가, 부호는 본 필드가 담당한다.
+	MaxAbsSignedValue float64 `json:"max_abs_signed_value"`
+	MaxAbsLag         int     `json:"max_abs_lag"`
+	MaxAbsValue       float64 `json:"max_abs_value"`
+	SampleCount       int     `json:"sample_count"`
+	Status            Status  `json:"status"`
 	// FStatistic 과 PValue 는 #69 의 Granger causality 산정 결과다. src 가 dst 를 Granger-cause 하는지
 	// 의 통계적 유의성을 노출한다. GrangerOK 가 false 면 표본 부족 또는 행렬 singular 로 산정이 자연
 	// skip 된 상태이며 FStatistic 과 PValue 모두 0 으로 둔다.

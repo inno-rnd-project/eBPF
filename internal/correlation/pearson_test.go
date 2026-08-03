@@ -200,11 +200,8 @@ func TestPearsonWithLagPartialStatus(t *testing.T) {
 	if got.Status != StatusPartial {
 		t.Errorf("status=%q want %q (lag 0 산출 가능 + lag +1 표본 부족)", got.Status, StatusPartial)
 	}
-	if _, ok := got.CorrelationByLag[0]; !ok {
-		t.Errorf("lag 0 should be in CorrelationByLag")
-	}
-	if _, ok := got.CorrelationByLag[1]; ok {
-		t.Errorf("lag +1 should NOT be in CorrelationByLag (skipped low samples)")
+	if got.MaxAbsLag != 0 {
+		t.Errorf("MaxAbsLag=%d want 0 (산출 가능한 lag 는 0 뿐)", got.MaxAbsLag)
 	}
 }
 
@@ -262,5 +259,23 @@ func TestPearsonWithLagSelectsMaxAbs(t *testing.T) {
 	}
 	if !approxEqual(got.MaxAbsValue, 1.0, 1e-9) {
 		t.Errorf("MaxAbsValue=%v want ~1.0 at lag=+1", got.MaxAbsValue)
+	}
+}
+
+// TestPearsonWithLagSignedValuePreservesSign 은 채택 lag 의 부호 있는 상관이 MaxAbsSignedValue 에
+// 보존되는지 검증한다 (#406, 종전 CorrelationByLag map 대체). SelectTopN 방향 게이트 (#367) 가 본
+// 필드의 부호를 소비하므로 음의 상관에서 부호 소실은 역방향 페어 승격 회귀로 직결된다.
+func TestPearsonWithLagSignedValuePreservesSign(t *testing.T) {
+	a := TimeSeries{Samples: samples(1, 2, 3, 4, 5, 6, 7, 8)}
+	b := TimeSeries{Samples: samples(8, 7, 6, 5, 4, 3, 2, 1)}
+	got := PearsonWithLag(a, b, []int{0}, 3)
+	if got.Status != StatusOK {
+		t.Fatalf("status=%q want %q", got.Status, StatusOK)
+	}
+	if !approxEqual(got.MaxAbsValue, 1.0, 1e-9) {
+		t.Errorf("MaxAbsValue=%v want ~1.0", got.MaxAbsValue)
+	}
+	if !approxEqual(got.MaxAbsSignedValue, -1.0, 1e-9) {
+		t.Errorf("MaxAbsSignedValue=%v want ~-1.0 (완전 역상관의 부호 보존)", got.MaxAbsSignedValue)
 	}
 }
