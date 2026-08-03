@@ -442,6 +442,32 @@ func TestCorrelator_CrossNodeGrangerUsesSelectedLag(t *testing.T) {
 	}
 }
 
+// TestCorrelator_CanceledContextAbortsCompute 는 계산 루프의 주기적 ctx 확인을 검증한다 (#406).
+// fetch 가 데이터를 돌려줘도 (mock 은 ctx 를 무시) 취소된 ctx 면 페어 계산 진입 시점에 중단되어
+// 에러가 반환된다. SIGTERM graceful shutdown 과 cycleTimeout 초과가 이 경로를 탄다.
+func TestCorrelator_CanceledContextAbortsCompute(t *testing.T) {
+	a := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, 60, 0, 1)
+	a.Metric = "pod:cpu_throttle_score:5m"
+	b := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, 60, 0, 2)
+	b.Metric = "pod:stage_latency_p99:5m"
+	fetcher := &mockFetcher{
+		responses: map[string][]LabeledSeries{
+			"pod:cpu_throttle_score:5m": {a},
+			"pod:stage_latency_p99:5m":  {b},
+		},
+	}
+	cfg := Config{
+		Step: 1 * time.Second, MinSamples: 5, LagSteps: []int{0},
+		DefaultMetrics: []string{"pod:cpu_throttle_score:5m", "pod:stage_latency_p99:5m"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := New(fetcher, cfg).Correlate(ctx, time.Now())
+	if err == nil {
+		t.Error("err=nil want canceled error (계산 루프가 취소를 무시하고 완주)")
+	}
+}
+
 // concurrencyTrackingFetcher 는 동시 Fetch 호출 수의 최대값을 기록한다 (#406 세마포어 검증용).
 type concurrencyTrackingFetcher struct {
 	mu      sync.Mutex

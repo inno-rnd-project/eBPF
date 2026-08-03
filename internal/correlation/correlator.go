@@ -209,6 +209,19 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 	// 슬라이스 보유) 을 수행해, 페어 수 제곱 성장이 결과 슬라이스 메모리로 직결되던 경로를 차단한다.
 	// 생존 페어의 Pearson 이 두 번 산정되는 비용은 캡 초과 대형 클러스터에서만 발생하며 Granger /
 	// EffectSize 절감 대비 미미하다.
+	// #406 계산 루프 주기적 취소 확인. 페어 수 제곱으로 커지는 계산 구간은 수십 초를 점유할 수
+	// 있는데 종전에는 ctx 를 보지 않아 SIGTERM (graceful shutdown) 과 cycle 예산 (cycleTimeout)
+	// 초과 시에도 완주했다. 1024 페어마다 확인해 오버헤드 없이 중단 지점을 제공한다.
+	checkCtx := func(i int) error {
+		if i&1023 == 0 {
+			return ctx.Err()
+		}
+		return nil
+	}
+	cancelErr := func(err error) ([]CorrelationResult, FetchStats, error) {
+		return nil, stats, fmt.Errorf("correlate canceled: %w", err)
+	}
+
 	podMaxPairs := c.config.PodMaxPairs
 	if podMaxPairs <= 0 {
 		podMaxPairs = 32768
@@ -216,19 +229,28 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 	var results []CorrelationResult
 	if len(pairs) <= podMaxPairs {
 		results = make([]CorrelationResult, 0, len(pairs))
-		for _, p := range pairs {
+		for i, p := range pairs {
+			if err := checkCtx(i); err != nil {
+				return cancelErr(err)
+			}
 			results = append(results, computePodPair(p))
 		}
 	} else {
 		scores := make([]float64, len(pairs))
 		for i, p := range pairs {
+			if err := checkCtx(i); err != nil {
+				return cancelErr(err)
+			}
 			r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
 			scores[i] = r.MaxAbsValue
 		}
 		kept := capIndicesByScore(scores, podMaxPairs)
 		c.recordTruncation(&stats, "pod", len(pairs)-len(kept))
 		results = make([]CorrelationResult, 0, len(kept))
-		for _, i := range kept {
+		for n, i := range kept {
+			if err := checkCtx(n); err != nil {
+				return cancelErr(err)
+			}
 			results = append(results, computePodPair(pairs[i]))
 		}
 	}
@@ -248,6 +270,9 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 		}
 		layer := make([]CorrelationResult, len(nodePairs))
 		for i, p := range nodePairs {
+			if err := checkCtx(i); err != nil {
+				return cancelErr(err)
+			}
 			r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
 			r.NodePair = p.Key
 			r.IsCrossNode = true
@@ -279,6 +304,9 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 		// #372 캡은 Pearson 산정 후 |corr| 상위 적용 (cross-node 와 동일 규약).
 		layer := make([]CorrelationResult, len(servicePairs))
 		for i, p := range servicePairs {
+			if err := checkCtx(i); err != nil {
+				return cancelErr(err)
+			}
 			r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
 			r.ServiceImpactPair = p.Key
 			r.IsServiceImpact = true
@@ -310,6 +338,9 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 		// #372 캡은 Pearson 산정 후 |corr| 상위 적용 (cross-node 와 동일 규약).
 		layer := make([]CorrelationResult, len(crossLevelPairs))
 		for i, p := range crossLevelPairs {
+			if err := checkCtx(i); err != nil {
+				return cancelErr(err)
+			}
 			r := PearsonWithLag(p.Src, p.Dst, c.config.LagSteps, c.config.MinSamples)
 			r.CrossLevelPair = p.Key
 			r.IsCrossLevel = true
