@@ -211,6 +211,11 @@ type ImpactPathsResponse struct {
 	Paths   []correlation.ImpactPath  `json:"paths"`
 	Roots   []correlation.RootSuspect `json:"roots"`
 	Summary ImpactPathsSummary        `json:"summary"`
+	// SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인
+	// snapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패
+	// cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
+	SnapshotGeneratedAt string `json:"snapshot_generated_at,omitempty"`
+	SnapshotStale       *bool  `json:"snapshot_stale,omitempty"`
 }
 
 // ImpactPathsSummary 는 경로 / 근원 규모 요약이다.
@@ -737,12 +742,14 @@ func (h *Handler) ListImpactPaths(w http.ResponseWriter, r *http.Request) {
 		roots = []correlation.RootSuspect{}
 	}
 
-	apicommon.WriteJSON(w, ImpactPathsResponse{
+	resp := ImpactPathsResponse{
 		Paths: filtered,
 		Roots: roots,
 		Summary: ImpactPathsSummary{
 			PathCount: len(filtered),
 			RootCount: len(roots),
 		},
-	})
+	}
+	resp.SnapshotGeneratedAt, resp.SnapshotStale = h.freshness()
+	apicommon.WriteJSON(w, resp)
 }

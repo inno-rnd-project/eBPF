@@ -213,7 +213,7 @@ func NewCollector(step time.Duration) *Collector {
 		),
 		snapshotAgeDesc: prometheus.NewDesc(
 			"correlation_snapshot_age_seconds",
-			"#405 마지막 성공 reconcile snapshot 의 나이 (초). 실패 cycle 이 이어지면 단조 증가해 소비자 (rca-summarizer, alert) 가 snapshot 신선도를 판별한다. 첫 reconcile 전에는 emit 되지 않는다.",
+			"#405 마지막 reconcile snapshot 의 나이 (초). 전면 실패 cycle 이 이어지면 단조 증가해 소비자 (rca-summarizer, alert) 가 snapshot 신선도를 판별한다 (부분 실패 cycle 은 부분 입력으로 snapshot 을 재산출하므로 나이가 초기화된다). 첫 reconcile 전에는 emit 되지 않는다.",
 			nil, nil,
 		),
 	}
