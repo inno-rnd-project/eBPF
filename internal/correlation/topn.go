@@ -208,7 +208,9 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		impactPValueOK    bool
 	}
 
-	candidates := make([]candidate, 0, len(results))
+	// #406 results 는 4개 레이어 전체 결과라 len(results) cap 사전 할당은 본 레이어 후보의 실제
+	// 규모 (필터 통과분) 를 크게 웃돈다. append 의 상환 성장에 맡긴다.
+	var candidates []candidate
 	for _, r := range results {
 		if r.Status != StatusOK && r.Status != StatusPartial {
 			continue
@@ -232,7 +234,7 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		// #367 방향 게이트. 간섭은 suspect 압박 증가가 victim 악화와 동조하는 방향의 상관이다.
 		// latency / error 는 악화가 값 증가 (victimDegradesUp) 라 양의 상관만, throughput / gpu 는
 		// 악화가 값 감소라 음의 상관만 간섭 후보다 (GPU 음의 상관 의도 유지, #174). MaxAbsValue 는
-		// 부호 무관 |corr| 라 채택 lag 의 부호를 CorrelationByLag 에서 읽어, 역방향 강상관 (예:
+		// 부호 무관 |corr| 라 채택 lag 의 부호를 MaxAbsSignedValue 에서 읽어, 역방향 강상관 (예:
 		// suspect 압박 증가에 latency 감소) 이 rank 상위와 causal_strength 로 승격되는 것을 막는다
 		// (EffectSize 는 이미 방향을 거르나 score / Pearson·Granger 항은 부호를 안 봤다). 정확히 0
 		// 인 상관은 중립이라 통과하며 score 0 이라 순위 영향이 없다. 채택 lag 가 역방향인 페어는
@@ -240,7 +242,7 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		// 역방향과 정방향이 다른 lag 에 공존하는 혼합 부호 페어는 물리적으로 모호한 노이즈 패턴이라
 		// 보수적 제외가 타당하며, 정부호 lag 중 max|corr| 를 채택하는 대안은 모호 페어를 승격시킬
 		// 위험이 있어 취하지 않는다.
-		signed := r.CorrelationByLag[r.MaxAbsLag]
+		signed := r.MaxAbsSignedValue
 		if victimDegradesUp(victimSignal) {
 			if signed < 0 {
 				continue

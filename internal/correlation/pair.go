@@ -31,18 +31,27 @@ type Pair struct {
 //     차단한다
 //   - 양쪽 모두 동일 (src_namespace, src_pod, metric) 인 경우 self-pair 라 제외한다. 같은 Pod 의
 //     두 다른 metric 끼리는 self 가 아니라 metric pair 라 포함된다
-//   - (X, Y) 와 (Y, X) 를 별도 페어로 둘 다 생성한다. 비대칭 분석 (X 자원이 Y latency 를 예측 vs
-//     Y 자원이 X latency 를 예측) 을 위해서다
+//   - #406 suspect → victim 방향 사전필터. src 는 suspect (cause score, victim signal 없음), dst 는
+//     victim (latency / throughput / error / gpu) 인 페어만 생성한다. SelectTopN 이 이 방향만 채택
+//     하므로 (#150 정확히 한쪽 victim + reverse dedup), suspect↔suspect / victim↔victim / 역방향
+//     페어는 Pearson·Granger·EffectSize 를 전부 수행한 뒤 폐기되는 헛계산이었다. 타 3레이어
+//     (cross-node / service-impact / cross-level) 의 enumerate 가 suspect 와 victim 을 사전 분리하는
+//     패턴과 통일된다. 판정 함수 (classifyVictimSignal) 를 SelectTopN 과 공유해 정합이 보장된다
 //
-// 구현은 노드별 그룹화 후 각 그룹 내에서만 중첩 루프를 돌려 cross-product 비용을 O(N^2) 에서
-// Σ O(N_node^2) 로 감축한다. 노드 키는 정렬 순회해 출력 순서가 결정적이며 단위 테스트가 안정적
-// 으로 비교 가능하다.
+// 구현은 노드별 그룹화 후 suspect x victim 중첩 루프만 돌려 cross-product 비용을 O(N^2) 에서
+// Σ O(S_node x V_node) 로 감축한다. 노드 키는 정렬 순회해 출력 순서가 결정적이며 단위 테스트가
+// 안정적으로 비교 가능하다.
 //
 // 사전 할당 슬라이스 cap 은 두지 않는다 (입력 시계열 수의 제곱에 해당하는 cap 은 대형 cluster 에서
 // OOM 위험).
 func EnumeratePairs(items []LabeledSeries) []Pair {
-	// 1단계: node 키 기준으로 그룹화. 라벨 완비 가드도 같이 적용해 후보 시계열만 그룹에 모은다.
-	byNode := make(map[string][]LabeledSeries)
+	// 1단계: node 키 기준으로 suspect / victim 을 분리 그룹화. 라벨 완비 가드도 같이 적용해 후보
+	// 시계열만 그룹에 모은다.
+	type nodeGroup struct {
+		suspects []LabeledSeries
+		victims  []LabeledSeries
+	}
+	byNode := make(map[string]*nodeGroup)
 	for _, item := range items {
 		node := item.Series.Labels["node"]
 		ns := item.Series.Labels["src_namespace"]
@@ -50,7 +59,16 @@ func EnumeratePairs(items []LabeledSeries) []Pair {
 		if node == "" || ns == "" || pod == "" {
 			continue
 		}
-		byNode[node] = append(byNode[node], item)
+		g := byNode[node]
+		if g == nil {
+			g = &nodeGroup{}
+			byNode[node] = g
+		}
+		if isVictimMetric(item.Metric) {
+			g.victims = append(g.victims, item)
+		} else {
+			g.suspects = append(g.suspects, item)
+		}
 	}
 
 	// 노드 키 정렬 (Go map 순회는 비결정적이라 출력 순서 안정성 확보).
@@ -60,23 +78,18 @@ func EnumeratePairs(items []LabeledSeries) []Pair {
 	}
 	sort.Strings(nodeKeys)
 
-	// 2단계: 노드별 N_node^2 페어 enumerate.
+	// 2단계: 노드별 suspect x victim 페어 enumerate. self-pair 제외 규칙 (동일 pod + 동일 metric) 은
+	// suspect 와 victim 의 metric 이 항상 다르므로 (victim signal 유무로 분리됨) 자연 충족된다.
 	out := make([]Pair, 0)
 	for _, node := range nodeKeys {
 		group := byNode[node]
-		for i, src := range group {
+		for _, src := range group.suspects {
 			srcNS := src.Series.Labels["src_namespace"]
 			srcPod := src.Series.Labels["src_pod"]
 			srcUID := src.Series.Labels["src_pod_uid"]
-			for j, dst := range group {
-				if i == j {
-					continue
-				}
+			for _, dst := range group.victims {
 				dstNS := dst.Series.Labels["src_namespace"]
 				dstPod := dst.Series.Labels["src_pod"]
-				if srcNS == dstNS && srcPod == dstPod && src.Metric == dst.Metric {
-					continue
-				}
 				out = append(out, Pair{
 					Key: PairKey{
 						SrcNamespace: srcNS,

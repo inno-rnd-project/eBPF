@@ -89,11 +89,10 @@ func Pearson(a, b TimeSeries, minSamples int) (float64, int, Status) {
 // 모든 lag 가 산출 불가면 SampleCount=0, MaxAbsValue=0, status=StatusSkippedLowSamples 를 반환한다.
 // 모든 lag 가 분산 0 으로 막히면 status=StatusSkippedConstant 다.
 func PearsonWithLag(a, b TimeSeries, lagSteps []int, minSamples int) CorrelationResult {
-	result := CorrelationResult{
-		CorrelationByLag: make(map[int]float64),
-	}
+	var result CorrelationResult
 
 	var maxAbs float64
+	var maxAbsSigned float64
 	var maxAbsLag int
 	var maxAbsSampleCount int
 	var anyOK, anyConstant, anyLowSamples bool
@@ -104,14 +103,15 @@ func PearsonWithLag(a, b TimeSeries, lagSteps []int, minSamples int) Correlation
 
 		switch status {
 		case StatusOK:
-			result.CorrelationByLag[lag] = corr
 			absVal := math.Abs(corr)
 			// 첫 OK lag 는 anyOK==false 인 시점이라 무조건 채택한다. 이후 lag 는 절대값이 더 큰 경우
 			// 갱신. 모든 lag 의 corr 이 정확히 0 인 케이스에서도 첫 OK lag 의 sample count 와 lag 가
 			// MaxAbsSampleCount / MaxAbsLag 에 기록되어 SampleCount=0 / MaxAbsLag=0 (lagSteps 에 0 이
-			// 없을 때) 같은 schema 거짓말을 차단한다.
+			// 없을 때) 같은 schema 거짓말을 차단한다. 채택 lag 의 부호 있는 상관은 MaxAbsSignedValue
+			// 로 함께 보존한다 (#406, 종전 lag 별 map 대체).
 			if !anyOK || absVal > maxAbs {
 				maxAbs = absVal
+				maxAbsSigned = corr
 				maxAbsLag = lag
 				maxAbsSampleCount = effective
 			}
@@ -125,6 +125,7 @@ func PearsonWithLag(a, b TimeSeries, lagSteps []int, minSamples int) Correlation
 
 	result.MaxAbsLag = maxAbsLag
 	result.MaxAbsValue = maxAbs
+	result.MaxAbsSignedValue = maxAbsSigned
 	result.SampleCount = maxAbsSampleCount
 
 	switch {

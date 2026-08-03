@@ -19,6 +19,12 @@ type InstantSample struct {
 	Value  float64
 }
 
+// maxInstantResponseBytes 는 단일 instant query 응답에 허용되는 최대 바이트 수다 (#406). instant
+// vector 는 시리즈당 한 점이라 정상 응답이 노드/pod 수천 시리즈여도 수백 KB 수준이고, 종전처럼
+// range 용 상한 (maxFetchResponseBytes, 100MiB) 을 재사용하면 이상 응답 시 용도 대비 과대한 메모리
+// 할당을 허용한다. 8MiB 는 정상 대비 열 배 이상의 안전 마진이다.
+const maxInstantResponseBytes = 8 << 20
+
 // InstantQuerier 는 Prometheus instant query (/api/v1/query) 를 수행하는 인터페이스다. range 시계열을
 // 다루는 Fetcher 와 분리해, synthesis API 가 recording rule 의 현재 스칼라 값만 가볍게 조회하고 테스트
 // 에서 mock 으로 대체할 수 있게 한다.
@@ -86,12 +92,12 @@ func (q *PrometheusInstantQuerier) Query(ctx context.Context, query string) ([]I
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchResponseBytes+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxInstantResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
-	if int64(len(body)) > maxFetchResponseBytes {
-		return nil, fmt.Errorf("response body exceeded %d bytes (limit reached)", maxFetchResponseBytes)
+	if int64(len(body)) > maxInstantResponseBytes {
+		return nil, fmt.Errorf("response body exceeded %d bytes (limit reached)", maxInstantResponseBytes)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("prometheus returned status %d: %s", resp.StatusCode, truncate(string(body), 200))

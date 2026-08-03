@@ -663,6 +663,27 @@ func TestHealth_RecordCyclePartialFetch(t *testing.T) {
 	}
 }
 
+// TestHealth_RecordCyclePairsTruncated 는 stats.TruncatedPairs 가 레이어 라벨 카운터로 반영되는지
+// 검증한다 (#406). 절단이 없는 레이어는 시리즈가 생기지 않는다.
+func TestHealth_RecordCyclePairsTruncated(t *testing.T) {
+	h := NewHealth(prometheus.NewRegistry())
+	stats := correlation.FetchStats{Attempted: 5, TruncatedPairs: map[string]int{"pod": 120, "cross_level": 3}}
+	h.RecordCycle(10*time.Millisecond, nil, nil, stats)
+	if v := testutil.ToFloat64(h.PairsTruncated.WithLabelValues("pod")); v != 120 {
+		t.Errorf("pairs_truncated{pod}=%v want 120", v)
+	}
+	if v := testutil.ToFloat64(h.PairsTruncated.WithLabelValues("cross_level")); v != 3 {
+		t.Errorf("pairs_truncated{cross_level}=%v want 3", v)
+	}
+	// 절단 없는 cycle 은 partial 도 last_success 미갱신도 아니어야 한다 (절단은 실패가 아님).
+	if v := testutil.ToFloat64(h.ReconcilePartial); v != 0 {
+		t.Errorf("partial=%v want 0 (절단은 partial 아님)", v)
+	}
+	if v := testutil.ToFloat64(h.LastSuccessTimestamp); v == 0 {
+		t.Errorf("last_success=0 want >0 (절단은 성공 cycle)")
+	}
+}
+
 // TestHealth_RecordCycleEmptyResultsNotPartial 은 fetch 전량 성공이면 결과 (페어) 가 하나도 없어도
 // partial 이 증가하지 않고 last_success 가 갱신되는지 검증한다 (#405). allow-list 미설정 등으로
 // 정상적으로 빈 쿼리를 결측으로 세던 종전 오탐의 직접 회귀다.

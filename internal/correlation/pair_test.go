@@ -39,14 +39,13 @@ func pairKeys(ps []Pair) []string {
 // 폭발을 막는다.
 func TestEnumeratePairsSameNodeOnly(t *testing.T) {
 	items := []LabeledSeries{
-		ls("m1", "node-a", "ns", "pod-1"),
-		ls("m1", "node-a", "ns", "pod-2"),
-		ls("m1", "node-b", "ns", "pod-3"),
+		ls("pod:cpu_throttle_score:5m", "node-a", "ns", "pod-1"),
+		ls("pod:stage_latency_p99:5m", "node-a", "ns", "pod-2"),
+		ls("pod:stage_latency_p99:5m", "node-b", "ns", "pod-3"),
 	}
 	got := pairKeys(EnumeratePairs(items))
 	want := []string{
-		"m1@ns/pod-1 -> m1@ns/pod-2",
-		"m1@ns/pod-2 -> m1@ns/pod-1",
+		"pod:cpu_throttle_score:5m@ns/pod-1 -> pod:stage_latency_p99:5m@ns/pod-2",
 	}
 	if !equalStringSlices(got, want) {
 		t.Errorf("\n got=%v\nwant=%v (node-b pod must be excluded)", got, want)
@@ -66,20 +65,25 @@ func TestEnumeratePairsExcludesSelf(t *testing.T) {
 	}
 }
 
-// TestEnumeratePairsAsymmetricBothDirections 는 (X, Y) 와 (Y, X) 가 별도 페어로 둘 다 생성되는지
-// 검증한다. 비대칭 분석 (src 자원 → dst latency vs dst 자원 → src latency) 의 기반.
-func TestEnumeratePairsAsymmetricBothDirections(t *testing.T) {
+// TestEnumeratePairsSuspectToVictimOnly 는 #406 의 방향 사전필터를 검증한다. suspect (cause score)
+// 에서 victim (latency) 으로 가는 페어만 생성되고, 역방향과 suspect↔suspect 와 victim↔victim 은
+// SelectTopN 이 채택하지 않는 헛계산이라 enumerate 단계에서 제외된다.
+func TestEnumeratePairsSuspectToVictimOnly(t *testing.T) {
 	items := []LabeledSeries{
-		ls("cpu", "node-a", "ns", "pod-1"),
-		ls("latency", "node-a", "ns", "pod-2"),
+		ls("pod:cpu_throttle_score:5m", "node-a", "ns", "pod-1"),
+		ls("pod:memory_pressure_score:5m", "node-a", "ns", "pod-2"),
+		ls("pod:stage_latency_p99:5m", "node-a", "ns", "pod-3"),
+		ls("pod:stage_latency_p99:5m", "node-a", "ns", "pod-4"),
 	}
 	got := pairKeys(EnumeratePairs(items))
 	want := []string{
-		"cpu@ns/pod-1 -> latency@ns/pod-2",
-		"latency@ns/pod-2 -> cpu@ns/pod-1",
+		"pod:cpu_throttle_score:5m@ns/pod-1 -> pod:stage_latency_p99:5m@ns/pod-3",
+		"pod:cpu_throttle_score:5m@ns/pod-1 -> pod:stage_latency_p99:5m@ns/pod-4",
+		"pod:memory_pressure_score:5m@ns/pod-2 -> pod:stage_latency_p99:5m@ns/pod-3",
+		"pod:memory_pressure_score:5m@ns/pod-2 -> pod:stage_latency_p99:5m@ns/pod-4",
 	}
 	if !equalStringSlices(got, want) {
-		t.Errorf("\n got=%v\nwant=%v (both directions must exist)", got, want)
+		t.Errorf("\n got=%v\nwant=%v (suspect→victim only)", got, want)
 	}
 }
 
@@ -88,13 +92,12 @@ func TestEnumeratePairsAsymmetricBothDirections(t *testing.T) {
 // 때만 self 로 보고 metric 이 다르면 정상 페어다.
 func TestEnumeratePairsSamePodCrossMetric(t *testing.T) {
 	items := []LabeledSeries{
-		ls("cpu_throttle_score", "node-a", "ns", "pod-1"),
-		ls("latency_p99", "node-a", "ns", "pod-1"),
+		ls("pod:cpu_throttle_score:5m", "node-a", "ns", "pod-1"),
+		ls("pod:stage_latency_p99:5m", "node-a", "ns", "pod-1"),
 	}
 	got := pairKeys(EnumeratePairs(items))
 	want := []string{
-		"cpu_throttle_score@ns/pod-1 -> latency_p99@ns/pod-1",
-		"latency_p99@ns/pod-1 -> cpu_throttle_score@ns/pod-1",
+		"pod:cpu_throttle_score:5m@ns/pod-1 -> pod:stage_latency_p99:5m@ns/pod-1",
 	}
 	if !equalStringSlices(got, want) {
 		t.Errorf("\n got=%v\nwant=%v (same-pod cross-metric must pair)", got, want)
@@ -106,8 +109,8 @@ func TestEnumeratePairsSamePodCrossMetric(t *testing.T) {
 // 적용할 수 없다.
 func TestEnumeratePairsEmptyNodeLabelExcluded(t *testing.T) {
 	items := []LabeledSeries{
-		{Metric: "m1", Series: TimeSeries{Labels: map[string]string{"src_namespace": "ns", "src_pod": "pod-1"}}},
-		ls("m1", "node-a", "ns", "pod-2"),
+		{Metric: "pod:stage_latency_p99:5m", Series: TimeSeries{Labels: map[string]string{"src_namespace": "ns", "src_pod": "pod-1"}}},
+		ls("pod:cpu_throttle_score:5m", "node-a", "ns", "pod-2"),
 	}
 	got := EnumeratePairs(items)
 	if len(got) != 0 {
@@ -122,8 +125,8 @@ func TestEnumeratePairsEmptyNodeLabelExcluded(t *testing.T) {
 func TestEnumeratePairsNodeLevelMetricExcluded(t *testing.T) {
 	items := []LabeledSeries{
 		// node-level series: node 만 있고 namespace / pod 라벨 없음
-		{Metric: "node:gpu_idle:5m", Series: TimeSeries{Labels: map[string]string{"node": "node-a"}}},
-		ls("pod:cpu:5m", "node-a", "ns", "pod-1"),
+		{Metric: "node:netobs_pod_stage_latency_p99:5m", Series: TimeSeries{Labels: map[string]string{"node": "node-a"}}},
+		ls("pod:cpu_throttle_score:5m", "node-a", "ns", "pod-1"),
 	}
 	got := EnumeratePairs(items)
 	if len(got) != 0 {
@@ -136,12 +139,12 @@ func TestEnumeratePairsNodeLevelMetricExcluded(t *testing.T) {
 // UID 가 누락되면 안 된다.
 func TestEnumeratePairsPreservesPodUID(t *testing.T) {
 	items := []LabeledSeries{
-		ls("m1", "node-a", "ns", "pod-1"), // uid-ns-pod-1
-		ls("m2", "node-a", "ns", "pod-2"), // uid-ns-pod-2
+		ls("pod:cpu_throttle_score:5m", "node-a", "ns", "pod-1"), // uid-ns-pod-1
+		ls("pod:stage_latency_p99:5m", "node-a", "ns", "pod-2"),  // uid-ns-pod-2
 	}
 	pairs := EnumeratePairs(items)
-	if len(pairs) != 2 {
-		t.Fatalf("pair count=%d want 2", len(pairs))
+	if len(pairs) != 1 {
+		t.Fatalf("pair count=%d want 1", len(pairs))
 	}
 	for _, p := range pairs {
 		if p.Key.SrcPodUID == "" || p.Key.DstPodUID == "" {

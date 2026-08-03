@@ -3,7 +3,9 @@ package correlation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
+	"sync"
 	"testing"
 	"time"
 )
@@ -38,18 +40,19 @@ func linearSeries(labels map[string]string, n int, base, slope float64) LabeledS
 	return out
 }
 
-// TestCorrelator_HappyPath 는 두 메트릭이 노드 단위 페어로 묶여 Pearson 산출까지 무사히 흘러가는지
-// 검증한다. 두 시계열이 동일 선형이므로 lag 0 에서 +1 상관이 잡힌다.
+// TestCorrelator_HappyPath 는 suspect / victim 두 메트릭이 노드 단위 페어로 묶여 Pearson 산출까지
+// 무사히 흘러가는지 검증한다. 두 시계열이 동일 선형이므로 lag 0 에서 +1 상관이 잡힌다. #406 방향
+// 사전필터로 suspect → victim 단방향 페어만 생성된다.
 func TestCorrelator_HappyPath(t *testing.T) {
 	a := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, 60, 0, 1)
-	a.Metric = "metric_a"
+	a.Metric = "pod:cpu_throttle_score:5m"
 	b := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, 60, 0, 2)
-	b.Metric = "metric_b"
+	b.Metric = "pod:stage_latency_p99:5m"
 
 	fetcher := &mockFetcher{
 		responses: map[string][]LabeledSeries{
-			"metric_a": {a},
-			"metric_b": {b},
+			"pod:cpu_throttle_score:5m": {a},
+			"pod:stage_latency_p99:5m":  {b},
 		},
 	}
 	cfg := Config{
@@ -57,23 +60,24 @@ func TestCorrelator_HappyPath(t *testing.T) {
 		Step:           1 * time.Second,
 		MinSamples:     5,
 		LagSteps:       []int{0},
-		DefaultMetrics: []string{"metric_a", "metric_b"},
+		DefaultMetrics: []string{"pod:cpu_throttle_score:5m", "pod:stage_latency_p99:5m"},
 	}
 	results, err := New(fetcher, cfg).Correlate(context.Background(), time.Now())
 	if err != nil {
 		t.Fatalf("Correlate: %v", err)
 	}
-	// (a→b) 와 (b→a) 두 페어가 생성되어야 한다.
-	if len(results) != 2 {
-		t.Fatalf("results=%d want 2", len(results))
+	if len(results) != 1 {
+		t.Fatalf("results=%d want 1 (suspect→victim 단방향)", len(results))
 	}
-	for _, r := range results {
-		if r.Status != StatusOK {
-			t.Errorf("pair %+v status=%q want ok", r.Pair, r.Status)
-		}
-		if r.MaxAbsValue < 0.99 {
-			t.Errorf("pair %+v max_abs=%v want ~1.0", r.Pair, r.MaxAbsValue)
-		}
+	r := results[0]
+	if r.Pair.SrcPod != "p1" || r.Pair.DstPod != "p2" {
+		t.Errorf("pair=%s→%s want p1→p2", r.Pair.SrcPod, r.Pair.DstPod)
+	}
+	if r.Status != StatusOK {
+		t.Errorf("pair %+v status=%q want ok", r.Pair, r.Status)
+	}
+	if r.MaxAbsValue < 0.99 {
+		t.Errorf("pair %+v max_abs=%v want ~1.0", r.Pair, r.MaxAbsValue)
 	}
 }
 
@@ -95,14 +99,14 @@ func TestCorrelator_EmptyInput(t *testing.T) {
 // 되는지 검증한다. 일부 실패는 partial 한 결과를 허용하고 모든 실패만 에러로 본다.
 func TestCorrelator_PartialFetchFailure(t *testing.T) {
 	a := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, 60, 0, 1)
-	a.Metric = "metric_a"
+	a.Metric = "pod:cpu_throttle_score:5m"
 	b := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, 60, 0, 1)
-	b.Metric = "metric_b"
+	b.Metric = "pod:stage_latency_p99:5m"
 
 	fetcher := &mockFetcher{
 		responses: map[string][]LabeledSeries{
-			"metric_a": {a},
-			"metric_b": {b},
+			"pod:cpu_throttle_score:5m": {a},
+			"pod:stage_latency_p99:5m":  {b},
 		},
 		errors: map[string]error{
 			"failing_metric": errors.New("simulated 500"),
@@ -110,14 +114,14 @@ func TestCorrelator_PartialFetchFailure(t *testing.T) {
 	}
 	cfg := Config{
 		Step: 1 * time.Second, MinSamples: 5, LagSteps: []int{0},
-		DefaultMetrics: []string{"metric_a", "metric_b", "failing_metric"},
+		DefaultMetrics: []string{"pod:cpu_throttle_score:5m", "pod:stage_latency_p99:5m", "failing_metric"},
 	}
 	results, err := New(fetcher, cfg).Correlate(context.Background(), time.Now())
 	if err != nil {
 		t.Fatalf("Correlate: %v (one failure should be tolerated)", err)
 	}
-	if len(results) != 2 {
-		t.Errorf("results=%d want 2 (only successful queries form pairs)", len(results))
+	if len(results) != 1 {
+		t.Errorf("results=%d want 1 (only successful queries form pairs)", len(results))
 	}
 }
 
@@ -356,13 +360,13 @@ func TestCorrelator_GrangerUsesSelectedLag(t *testing.T) {
 		lagged[i] = src[i-1] + 0.05*math.Cos(float64(i)*1.3)
 	}
 	fetcher := &mockFetcher{responses: map[string][]LabeledSeries{
-		"metric_a": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, "metric_a", src)},
-		"metric_b": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, "metric_b", lagged)},
+		"pod:cpu_throttle_score:5m": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, "pod:cpu_throttle_score:5m", src)},
+		"pod:stage_latency_p99:5m":  {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, "pod:stage_latency_p99:5m", lagged)},
 	}}
 	cfg := Config{
 		Window: 40 * time.Second, Step: 1 * time.Second,
 		MinSamples: 10, GrangerMinSamples: 10,
-		LagSteps: []int{-1, 0, 1}, DefaultMetrics: []string{"metric_a", "metric_b"},
+		LagSteps: []int{-1, 0, 1}, DefaultMetrics: []string{"pod:cpu_throttle_score:5m", "pod:stage_latency_p99:5m"},
 	}
 	results, err := New(fetcher, cfg).Correlate(context.Background(), time.Now())
 	if err != nil {
@@ -387,8 +391,8 @@ func TestCorrelator_GrangerUsesSelectedLag(t *testing.T) {
 
 	// contemporaneous: src=dst 동일 → MaxAbsLag=0 → granger.Test(lag<1) 빈 결과 → GrangerOK=false.
 	fetcher2 := &mockFetcher{responses: map[string][]LabeledSeries{
-		"metric_a": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, "metric_a", src)},
-		"metric_b": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, "metric_b", src)},
+		"pod:cpu_throttle_score:5m": {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, "pod:cpu_throttle_score:5m", src)},
+		"pod:stage_latency_p99:5m":  {valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, "pod:stage_latency_p99:5m", src)},
 	}}
 	results2, err := New(fetcher2, cfg).Correlate(context.Background(), time.Now())
 	if err != nil {
@@ -438,22 +442,149 @@ func TestCorrelator_CrossNodeGrangerUsesSelectedLag(t *testing.T) {
 	}
 }
 
+// TestCorrelator_CanceledContextAbortsCompute 는 계산 루프의 주기적 ctx 확인을 검증한다 (#406).
+// fetch 가 데이터를 돌려줘도 (mock 은 ctx 를 무시) 취소된 ctx 면 페어 계산 진입 시점에 중단되어
+// 에러가 반환된다. SIGTERM graceful shutdown 과 cycleTimeout 초과가 이 경로를 탄다.
+func TestCorrelator_CanceledContextAbortsCompute(t *testing.T) {
+	a := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, 60, 0, 1)
+	a.Metric = "pod:cpu_throttle_score:5m"
+	b := linearSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, 60, 0, 2)
+	b.Metric = "pod:stage_latency_p99:5m"
+	fetcher := &mockFetcher{
+		responses: map[string][]LabeledSeries{
+			"pod:cpu_throttle_score:5m": {a},
+			"pod:stage_latency_p99:5m":  {b},
+		},
+	}
+	cfg := Config{
+		Step: 1 * time.Second, MinSamples: 5, LagSteps: []int{0},
+		DefaultMetrics: []string{"pod:cpu_throttle_score:5m", "pod:stage_latency_p99:5m"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := New(fetcher, cfg).Correlate(ctx, time.Now())
+	if err == nil {
+		t.Error("err=nil want canceled error (계산 루프가 취소를 무시하고 완주)")
+	}
+}
+
+// concurrencyTrackingFetcher 는 동시 Fetch 호출 수의 최대값을 기록한다 (#406 세마포어 검증용).
+type concurrencyTrackingFetcher struct {
+	mu      sync.Mutex
+	current int
+	peak    int
+}
+
+func (f *concurrencyTrackingFetcher) Fetch(ctx context.Context, query string, start, end time.Time, step time.Duration) ([]LabeledSeries, error) {
+	f.mu.Lock()
+	f.current++
+	if f.current > f.peak {
+		f.peak = f.current
+	}
+	f.mu.Unlock()
+	time.Sleep(5 * time.Millisecond)
+	f.mu.Lock()
+	f.current--
+	f.mu.Unlock()
+	return nil, nil
+}
+
+// TestCorrelator_FetchConcurrencyBounded 는 fetch 동시성이 maxConcurrentFetches 를 넘지 않는지
+// 검증한다 (#406). 종전 무제한 병렬은 query 수 x 응답 상한이 동시 상주 가능했다.
+func TestCorrelator_FetchConcurrencyBounded(t *testing.T) {
+	queries := make([]string, 16)
+	for i := range queries {
+		queries[i] = fmt.Sprintf("metric_%d", i)
+	}
+	fetcher := &concurrencyTrackingFetcher{}
+	cfg := Config{LagSteps: []int{0}, MinSamples: 5, DefaultMetrics: queries}
+	if _, err := New(fetcher, cfg).Correlate(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Correlate: %v", err)
+	}
+	if fetcher.peak > maxConcurrentFetches {
+		t.Errorf("peak concurrency=%d want <= %d", fetcher.peak, maxConcurrentFetches)
+	}
+	if fetcher.peak == 0 {
+		t.Error("fetch 가 호출되지 않음")
+	}
+}
+
 // TestCapIndicesByScore 는 #372 의 score 기준 페어 캡 헬퍼를 검증한다. |corr| 상위 maxPairs 개가
 // 남고 반환 순서는 원래 enumerate 순서이며, 동률은 앞선 인덱스가 우선 (결정적) 이고, 캡 이하는
 // 전 인덱스 통과다.
 func TestCapIndicesByScore(t *testing.T) {
-	rs := []CorrelationResult{
-		{MaxAbsValue: 0.2},
-		{MaxAbsValue: 0.9},
-		{MaxAbsValue: 0.5},
-		{MaxAbsValue: 0.9},
-	}
+	rs := []float64{0.2, 0.9, 0.5, 0.9}
 	got := capIndicesByScore(rs, 2)
 	if len(got) != 2 || got[0] != 1 || got[1] != 3 {
 		t.Errorf("capIndicesByScore=%v want [1 3] (0.9 동률 2건, 원래 순서)", got)
 	}
 	if got := capIndicesByScore(rs, 10); len(got) != 4 {
 		t.Errorf("캡 이하 전체 통과 실패: %v", got)
+	}
+}
+
+// TestCorrelator_PodPairCapKeepsStrongPairs 는 #406 의 pod 레이어 페어 캡을 검증한다. 페어 수가
+// PodMaxPairs 를 넘으면 |corr| 상위 페어만 전체 산정 (Granger / EffectSize) 과 결과 보유로 넘어가고,
+// 절단 수가 stats.TruncatedPairs["pod"] 로 보고된다. 캡 이하 (기본 구성) 는 종전과 완전 동일한
+// single pass 라 별도 회귀는 pin 테스트가 담당한다.
+func TestCorrelator_PodPairCapKeepsStrongPairs(t *testing.T) {
+	const n = 40
+	vals := pseudoNoise(n)
+	weak := make([]float64, n)
+	for i := 0; i < n; i++ {
+		weak[i] = math.Cos(float64(i) * 2.3)
+	}
+	suspectMetric := "pod:cpu_throttle_score:5m"
+	victimMetric := "pod:stage_latency_p99:5m"
+	podLabels := func(pod string) map[string]string {
+		return map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": pod, "src_pod_uid": "uid-" + pod}
+	}
+	// suspect 3개 (강상관 s-strong, 약상관 s-weak1/s-weak2) x victim 1개 = 페어 3, 캡 2.
+	fetcher := &mockFetcher{responses: map[string][]LabeledSeries{
+		suspectMetric: {
+			valSeries(podLabels("s-weak1"), suspectMetric, weak),
+			valSeries(podLabels("s-strong"), suspectMetric, vals),
+			valSeries(podLabels("s-weak2"), suspectMetric, weak),
+		},
+		victimMetric: {valSeries(podLabels("victim"), victimMetric, vals)},
+	}}
+	cfg := Config{
+		Window: 40 * time.Second, Step: 1 * time.Second,
+		MinSamples: 10, GrangerMinSamples: 10,
+		LagSteps: []int{0}, DefaultMetrics: []string{suspectMetric, victimMetric},
+		PodMaxPairs: 2,
+	}
+	results, stats, err := New(fetcher, cfg).CorrelateWithStats(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("CorrelateWithStats: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results=%d want 2 (캡 적용)", len(results))
+	}
+	var strongKept bool
+	for _, r := range results {
+		if r.Pair.SrcPod == "s-strong" {
+			strongKept = true
+			if r.MaxAbsValue < 0.99 {
+				t.Errorf("s-strong max_abs=%v want ~1.0", r.MaxAbsValue)
+			}
+		}
+	}
+	if !strongKept {
+		t.Error("강상관 s-strong 페어가 캡에서 탈락 (score 기준 캡 실패)")
+	}
+	if got := stats.TruncatedPairs["pod"]; got != 1 {
+		t.Errorf("TruncatedPairs[pod]=%d want 1", got)
+	}
+
+	// 캡 이하면 절단 보고가 없어야 한다.
+	cfg.PodMaxPairs = 10
+	_, stats2, err := New(fetcher, cfg).CorrelateWithStats(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("CorrelateWithStats(cap 미발동): %v", err)
+	}
+	if len(stats2.TruncatedPairs) != 0 {
+		t.Errorf("TruncatedPairs=%v want empty (캡 미발동)", stats2.TruncatedPairs)
 	}
 }
 

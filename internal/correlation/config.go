@@ -46,6 +46,13 @@ type Config struct {
 	// 더 낮게 둔다. lag p 적용 후 표본 수 n - p 가 본 값 미만이면 GrangerOK=false 로 자연 skip 된다.
 	GrangerMinSamples int
 
+	// PodMaxPairs 는 #406 의 pod 레이어 페어 상한이다. 타 3레이어와 동일하게 전 페어 Pearson 산정
+	// 후 |corr| 상위로 적용되며 (#372 규약), 캡 초과분의 Granger / EffectSize 산정과 결과 보유 메모리
+	// 를 차단한다. 파드 수 제곱으로 커지는 유일한 레이어라 대형 클러스터의 OOM backstop 역할을 한다.
+	// 절단 발생은 correlation_pairs_truncated_total{layer="pod"} 카운터로 노출된다. 0 이하면 32768 로
+	// fallback 한다.
+	PodMaxPairs int
+
 	// CrossNodeEnabled 는 #84 의 cross-node interference layer 토글 이다. true 일 때 Correlate 가
 	// node 단위 시계열 페어 도 함께 산출 해 결과 슬라이스 에 IsCrossNode=true 항목 으로 append 한다.
 	// #147 부터 default true 로 두어 zero-config 에서도 node 단위 간섭 Top-N 이 emit 된다. emit
@@ -206,6 +213,9 @@ func DefaultConfig() Config {
 		},
 		FetchTimeout:      30 * time.Second,
 		GrangerMinSamples: 30,
+		// #406 pod 레이어 페어 상한. 방향 사전필터 후에도 파드 수 제곱으로 커지는 레이어의 OOM
+		// backstop 이다. dev/prod 실측 페어 수 (수천) 대비 충분히 커 기본 구성에서 발동하지 않는다.
+		PodMaxPairs:       32768,
 		CrossNodeEnabled:  true,
 		CrossNodeMaxPairs: 1024,
 		// #84 cross-node interference layer 의 node 단위 입력 시계열 5종. CrossNodeEnabled=true (#147

@@ -322,10 +322,10 @@ func TestSelectTopN_ImpactPropagation(t *testing.T) {
 	}
 }
 
-// withSignedCorr 는 채택 lag 의 부호 있는 상관을 CorrelationByLag 에 심는다 (#367 방향 게이트 검증용).
-// makeResult 기본형은 CorrelationByLag 가 비어 부호 미상 (0, 중립 통과) 케이스를 겸한다.
+// withSignedCorr 는 채택 lag 의 부호 있는 상관을 MaxAbsSignedValue 에 심는다 (#367 방향 게이트
+// 검증용). makeResult 기본형은 MaxAbsSignedValue 가 0 이라 부호 미상 (중립 통과) 케이스를 겸한다.
 func withSignedCorr(r CorrelationResult, signed float64) CorrelationResult {
-	r.CorrelationByLag = map[int]float64{r.MaxAbsLag: signed}
+	r.MaxAbsSignedValue = signed
 	return r
 }
 

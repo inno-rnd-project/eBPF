@@ -110,3 +110,19 @@ func TestPrometheusInstantQuerier_QueryTime(t *testing.T) {
 		t.Errorf("미지정인데 time 파라미터가 전송됨")
 	}
 }
+
+// TestPrometheusInstantQuerier_ResponseSizeLimit 은 instant 응답이 전용 상한 (maxInstantResponseBytes,
+// range 용 100MiB 와 분리) 을 넘으면 에러로 격상되는지 검증한다 (#406).
+func TestPrometheusInstantQuerier_ResponseSizeLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(make([]byte, maxInstantResponseBytes+1024))
+	}))
+	defer srv.Close()
+	q, err := NewPrometheusInstantQuerier(srv.URL, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Query(context.Background(), "up"); err == nil {
+		t.Error("err=nil want size limit error")
+	}
+}
