@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"regexp"
@@ -33,6 +34,14 @@ func validateNamespaceName(ns string) error {
 	return nil
 }
 
+// FlowSrcPortMode 값 도메인이다 (#403). full 은 현행 유지 (실제 포트), none 은 src_port 라벨 제거,
+// fold 는 well-known (0~1023) 외 포트를 "other" 로 접는다.
+const (
+	FlowSrcPortModeFull = "full"
+	FlowSrcPortModeNone = "none"
+	FlowSrcPortModeFold = "fold"
+)
+
 type Config struct {
 	TargetIP             string
 	ListenAddr           string
@@ -57,9 +66,11 @@ type Config struct {
 	// 운영자가 진단 대상 namespace 만 명시 등록해 series 폭주를 차단한다.
 	DropFlowAllowNamespaces []string
 
-	// DropFlowMaxActive 는 활성 5-tuple flow 의 동시 emit 상한이다. LRU sampling 으로 본 한도를 초과
-	// 하는 신규 flow 는 가장 오래된 flow 가 evict 된 후 등록된다. emit 되는 series 의 절대 상한은
-	// DropFlowMaxActive * (drop_reason 수 8 종) 으로 추정된다. 기본 1024.
+	// DropFlowMaxActive 는 netobs_drop_events_flow_total 의 (src_namespace, 5-tuple) 라벨셋 절대
+	// 상한이다 (#403 sticky 상한). 상한 도달 후 신규 flow 는 거부되고 netobs_flow_guard_rejected_
+	// total{guard="drop_flow"} 로 계수된다. CounterVec 시리즈는 evict 로 사라지지 않으므로 종전
+	// evict-후-admit 은 상한으로 동작하지 않았고, 신규 거부가 문서화된 절대 상한 (DropFlowMaxActive
+	// * drop_reason 종수) 을 실제로 이행한다. 기본 1024.
 	DropFlowMaxActive int
 
 	// DropStackAllowNamespaces 는 #83 의 netobs_drop_stack_total 메트릭이 emit 되는 src namespace
@@ -76,9 +87,21 @@ type Config struct {
 	// skip 해 cardinality 가 0 series 로 유지 된다.
 	FlowAllowNamespaces []string
 
-	// FlowMaxActive 는 정상 flow 메트릭 의 활성 5-tuple 동시 emit 상한 이다. DropFlowMaxActive 와
-	// admit 결과 가 독립 이라 별도 cap 으로 분리 한다. 기본 1024.
+	// FlowMaxActive 는 netobs_flow_bytes_total 의 스크레이프당 emit budget 이다 (#403). 한 scrape
+	// 에서 admit 되는 (5-tuple, direction) 키가 본 값 이하로 캡되어 노드당 시리즈 수가 FlowMaxActive
+	// 를 넘지 않는다. 종전 evict-후-admit 은 신규를 항상 admit 해 상한으로 동작하지 않았다 (실측
+	// 단일 스크레이프 41,654 시리즈). 이전 scrape 의 stale 키는 세대 교체로 evict 되어 flow 교체가
+	// 자연 반영되고, budget 소진 거부는 netobs_flow_guard_rejected_total{guard="flow"} 로 계수된다.
+	// DropFlowMaxActive 와 admit 결과 가 독립 이라 별도 cap 으로 분리 한다. 기본 1024.
 	FlowMaxActive int
+
+	// FlowSrcPortMode 는 #403 의 netobs_flow_bytes_total src_port 라벨 표현 모드다. ephemeral
+	// client port (실측 src_port 9,917 종) 가 연결마다 새 시리즈를 만들어 TSDB 신규 시리즈 생성률을
+	// 키우는 churn 을 opt-in 으로 줄인다. full (기본) 은 실제 포트로 현행 유지, none 은 src_port
+	// 라벨을 빈 값으로 제거, fold 는 well-known (0~1023) 만 유지하고 그 외를 "other" 단일 값으로
+	// 접는다. 라벨과 FlowGuard 키와 agg 키가 함께 접히므로 fold/none 에서 시리즈와 가드 슬롯
+	// churn 이 동시에 소멸한다. 기본이 full 이라 기존 소비자에 무영향이다 (opt-in).
+	FlowSrcPortMode string
 
 	// KallsymsPath 는 #83 의 userspace symbol resolver 가 파싱하는 /proc/kallsyms 경로다. 컨테이너
 	// hostPath 마운트의 위치가 변경되는 경우에 한해 override 한다. 기본은 /proc/kallsyms.
@@ -199,6 +222,15 @@ func Parse() (Config, error) {
 		flowMaxActive = 1024
 	}
 
+	// #403 src_port 라벨 표현 모드. 미지 값은 안전 기본 (full, 현행 유지) 으로 강등한다.
+	flowSrcPortMode := strings.ToLower(getenv("NETOBS_FLOW_SRC_PORT_MODE", FlowSrcPortModeFull))
+	switch flowSrcPortMode {
+	case FlowSrcPortModeFull, FlowSrcPortModeNone, FlowSrcPortModeFold:
+	default:
+		log.Printf("config: unknown NETOBS_FLOW_SRC_PORT_MODE %q, falling back to full", flowSrcPortMode)
+		flowSrcPortMode = FlowSrcPortModeFull
+	}
+
 	cfg := Config{
 		TargetIP:                     getenv("TARGET_IP", ""),
 		ListenAddr:                   getenv("LISTEN_ADDR", ":9810"),
@@ -216,6 +248,7 @@ func Parse() (Config, error) {
 		KallsymsPath:                 getenv("NETOBS_KALLSYMS_PATH", "/proc/kallsyms"),
 		FlowAllowNamespaces:          parseNamespaceList(getenv("NETOBS_FLOW_ALLOW_NAMESPACES", "")),
 		FlowMaxActive:                flowMaxActive,
+		FlowSrcPortMode:              flowSrcPortMode,
 		NICCapacityBytesPerSec:       nicCapacity,
 	}
 

@@ -65,6 +65,9 @@ type Collector struct {
 	dstClassifier *metadata.DstLabelClassifier
 	node          string
 	enabled       bool
+	// srcPortMode 는 #403 의 src_port 라벨 표현 모드 (full/none/fold) 다. config.FlowSrcPortMode 값
+	// 을 그대로 받으며 라벨 과 FlowGuard 키 와 agg 키 에 공통 적용 된다.
+	srcPortMode string
 
 	bytesDesc *prometheus.Desc
 
@@ -75,7 +78,8 @@ type Collector struct {
 // 시리즈 도 emit 하지 않는다. dstClassifier 가 nil 이면 dst 라벨 셋 이 모두 빈 문자열 로 emit 된다.
 // cgroup 은 cgroup_id → PodIdentity 매핑 을 (typically metadata.Enricher), ip 는 IP → PodIdentity
 // 매핑 을 (typically kube.Resolver) 담당 한다. ip 가 nil 이면 dst 라벨 두 칸 이 빈 문자열 로 채워진다.
-func New(cgroup CgroupResolver, ip IPResolver, guard *metrics.FlowGuard, dstClassifier *metadata.DstLabelClassifier, node string, enabled bool) *Collector {
+// srcPortMode 는 #403 의 src_port 라벨 표현 모드 (full/none/fold, 빈 값 은 full) 다.
+func New(cgroup CgroupResolver, ip IPResolver, guard *metrics.FlowGuard, dstClassifier *metadata.DstLabelClassifier, node string, enabled bool, srcPortMode string) *Collector {
 	labels := []string{
 		"node",
 		"src_namespace", "src_workload", "src_pod", "src_pod_uid",
@@ -95,9 +99,10 @@ func New(cgroup CgroupResolver, ip IPResolver, guard *metrics.FlowGuard, dstClas
 		dstClassifier: dstClassifier,
 		node:          node,
 		enabled:       enabled,
+		srcPortMode:   srcPortMode,
 		bytesDesc: prometheus.NewDesc(
 			"netobs_flow_bytes_total",
-			"#85 Pod 간 정상 flow 의 5-tuple RX/TX bytes counter. FlowGuard allow-list 통과 시에만 emit되며 namespace 와 LRU 1024 sampling 으로 cardinality 가 제한된다.",
+			"#85 Pod 간 정상 flow 의 5-tuple RX/TX bytes counter. FlowGuard allow-list 통과 시에만 emit되며 namespace allow-list 와 스크레이프당 emit budget (NETOBS_FLOW_MAX_ACTIVE, #403) 으로 cardinality 가 제한된다. budget 초과 거부는 netobs_flow_guard_rejected_total{guard=\"flow\"} 로 계수된다.",
 			labels, nil,
 		),
 	}
@@ -127,6 +132,10 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 
+	// #403 scrape 세대 시작. FlowGuard 의 스크레이프당 emit budget (FlowMaxActive) 이 이 시점 부터
+	// 리셋 되고, 이전 세대 의 stale entry 가 신규 flow 에 슬롯 을 내준다.
+	c.guard.BeginScrape()
+
 	var key ebpfx.NetObsNetobsFlowKey
 	var value ebpfx.NetObsNetobsFlowValue
 
@@ -154,7 +163,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			float64(v.bytes),
 			c.node,
 			v.srcNS, v.srcWorkload, v.srcPod, v.srcUID,
-			k.srcIP, formatPort(k.srcPort),
+			k.srcIP, k.srcPortLabel,
 			v.dstNS, v.dstUID,
 			k.dstIP, formatPort(k.dstPort),
 			k.protocol,
@@ -168,13 +177,16 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 // 동일 키 의 여러 BPF entry 는 bytes 합산 후 단일 시리즈로 emit 된다. #103 IPv6 확장 으로 ipVersion
 // 필드 추가.
 type aggKey struct {
-	srcIP     string
-	srcPort   uint16
-	dstIP     string
-	dstPort   uint16
-	protocol  string
-	direction string
-	ipVersion string
+	srcIP string
+	// srcPortLabel 은 emit 되는 src_port 라벨 문자열 이다 (#403 모드 적용 후). fold/none 모드 에서
+	// 서로 다른 실제 포트 가 같은 라벨 로 접히면 agg 단계 에서 bytes 가 합산 되어 단일 시리즈 로
+	// emit 된다 (동일 라벨 중복 시리즈 충돌 방지).
+	srcPortLabel string
+	dstIP        string
+	dstPort      uint16
+	protocol     string
+	direction    string
+	ipVersion    string
 	// dedupeUID 는 동일 키 의 multi-cgroup 케이스 에서 local pod UID 까지 같은 entry 만 합치도록 가드
 	// 한다. 다른 PodUID 면 별개 series (라벨 충돌은 없 으나 dedupe 의도 외) 가 된다.
 	dedupeUID string
@@ -251,14 +263,18 @@ func (c *Collector) mergeEntry(agg map[aggKey]*aggValue, key ebpfx.NetObsNetobsF
 		}
 	}
 
+	// #403 src_port 라벨 표현 모드 적용. 라벨 과 가드 키 와 agg 키 가 같은 표현 을 공유 해 fold/none
+	// 에서 시리즈 와 가드 슬롯 이 함께 접힌다.
+	srcPortLabel := c.srcPortLabel(srcPort)
+
 	// FlowGuard 의 namespace 가드 는 local pod 의 namespace 로 검사 한다. swap 과 무관 하게 본 노드
 	// 의 allow-list pod 의 양 방향 flow 가 capture 되도록 한다.
-	if !c.guard.Admit(localPod.NamespaceLabel(), srcIP, srcPort, dstIP, dstPort, protocol, direction) {
+	if !c.guard.Admit(localPod.NamespaceLabel(), srcIP, srcPortLabel, dstIP, dstPort, protocol, direction) {
 		return
 	}
 
 	ak := aggKey{
-		srcIP: srcIP, srcPort: srcPort,
+		srcIP: srcIP, srcPortLabel: srcPortLabel,
 		dstIP: dstIP, dstPort: dstPort,
 		protocol: protocol, direction: direction,
 		ipVersion: types.IPVersion(key.Family),
@@ -279,8 +295,26 @@ func (c *Collector) mergeEntry(agg map[aggKey]*aggValue, key ebpfx.NetObsNetobsF
 	}
 }
 
+// srcPortLabel 은 #403 의 src_port 라벨 표현 이다. full (기본, 빈 값 포함) 은 실제 포트, none 은
+// 라벨 제거 (빈 문자열), fold 는 well-known (0~1023) 만 유지 하고 그 외 (ephemeral 포함) 를 "other"
+// 단일 값 으로 접는다. ephemeral client port 는 연결 마다 새 시리즈 를 만들어 TSDB churn 의 주범
+// 이라 (실측 src_port 9,917 종), opt-in 모드 로 접어 신규 시리즈 생성률 을 낮춘다.
+func (c *Collector) srcPortLabel(p uint16) string {
+	switch c.srcPortMode {
+	case "none":
+		return ""
+	case "fold":
+		if p <= 1023 {
+			return formatPort(p)
+		}
+		return "other"
+	default:
+		return formatPort(p)
+	}
+}
+
 // formatPort 는 uint16 포트 를 라벨 string 으로 변환 한다. strconv.Itoa 는 string allocation 을 동반
-// 하나 scrape 주기 와 entry 수 (≤1024) 의 곱이 가벼워 성능 영향 무시 가능 하다.
+// 하나 scrape 주기 와 admit 상한 (FlowMaxActive, #403) 의 곱이 가벼워 성능 영향 무시 가능 하다.
 func formatPort(p uint16) string {
 	return uint16ToString(p)
 }

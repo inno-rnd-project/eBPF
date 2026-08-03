@@ -61,13 +61,13 @@ func TestCollector_DisabledOrNilGuardSkipsEmit(t *testing.T) {
 	cgroup := &fakeCgroup{}
 
 	// enabled=false
-	c1 := New(cgroup, nil, metrics.NewFlowGuard([]string{"ns"}, 100), nil, "node1", false)
+	c1 := New(cgroup, nil, metrics.NewFlowGuard([]string{"ns"}, 100), nil, "node1", false, "full")
 	if count := testutil.CollectAndCount(c1, "netobs_flow_bytes_total"); count != 0 {
 		t.Errorf("enabled=false count=%d want 0", count)
 	}
 
 	// guard nil
-	c2 := New(cgroup, nil, nil, nil, "node1", true)
+	c2 := New(cgroup, nil, nil, nil, "node1", true, "full")
 	if count := testutil.CollectAndCount(c2, "netobs_flow_bytes_total"); count != 0 {
 		t.Errorf("guard=nil count=%d want 0", count)
 	}
@@ -77,7 +77,7 @@ func TestCollector_DisabledOrNilGuardSkipsEmit(t *testing.T) {
 // 결과 를 반환 하는 회귀 가드 다. startup race 안전.
 func TestCollector_NoMapEmitsNothing(t *testing.T) {
 	cgroup := &fakeCgroup{}
-	c := New(cgroup, nil, metrics.NewFlowGuard([]string{"ns"}, 100), nil, "node1", true)
+	c := New(cgroup, nil, metrics.NewFlowGuard([]string{"ns"}, 100), nil, "node1", true, "full")
 	if count := testutil.CollectAndCount(c, "netobs_flow_bytes_total"); count != 0 {
 		t.Errorf("nil map count=%d want 0", count)
 	}
@@ -86,7 +86,7 @@ func TestCollector_NoMapEmitsNothing(t *testing.T) {
 // TestCollector_DescribeEmitsSingleDesc 는 본 collector 가 단일 desc 만 노출 하는지 회귀 가드 한다.
 // Describe 단계 의 prometheus.Registerer 충돌 방지 패턴.
 func TestCollector_DescribeEmitsSingleDesc(t *testing.T) {
-	c := New(&fakeCgroup{}, nil, metrics.NewFlowGuard(nil, 100), nil, "node1", true)
+	c := New(&fakeCgroup{}, nil, metrics.NewFlowGuard(nil, 100), nil, "node1", true, "full")
 	ch := make(chan *prometheus.Desc, 4)
 	c.Describe(ch)
 	close(ch)
@@ -105,7 +105,7 @@ func TestCollector_DescribeEmitsSingleDesc(t *testing.T) {
 // TestCollector_DstClassifierIntegration 는 dstClassifier nil 시 dst 라벨 셋 두 칸 이 빈 문자열 로
 // 채워 지는지 가드 한다. dst master switch 가 꺼진 운영 모드 의 회귀 가드.
 func TestCollector_DstClassifierIntegration(t *testing.T) {
-	c := New(&fakeCgroup{}, nil, metrics.NewFlowGuard(nil, 100), nil, "node1", true)
+	c := New(&fakeCgroup{}, nil, metrics.NewFlowGuard(nil, 100), nil, "node1", true, "full")
 	// classifier nil 이면 emitEntry 내부 분기 가 빈 문자열 두 칸 으로 채운다. 실제 emit 까지 가는
 	// 경로 는 BPF map 주입 이 필요해 단위 테스트 에서 직접 검증 어렵다. nil 분기 가 panic 없이 통과
 	// 하는 자리 만 확보 한다.
@@ -118,7 +118,7 @@ func TestCollector_DstClassifierIntegration(t *testing.T) {
 // classifier 가 호출 가능 한 상태인지 확인 하는 가드 다.
 func TestCollector_DstClassifierEnabled(t *testing.T) {
 	classifier := metadata.NewDstLabelClassifier(true, []string{"observability-test"})
-	c := New(&fakeCgroup{}, &fakeIP{}, metrics.NewFlowGuard([]string{"observability-test"}, 100), classifier, "node1", true)
+	c := New(&fakeCgroup{}, &fakeIP{}, metrics.NewFlowGuard([]string{"observability-test"}, 100), classifier, "node1", true, "full")
 	if c.dstClassifier == nil {
 		t.Errorf("dstClassifier=nil want non-nil")
 	}
@@ -172,7 +172,7 @@ func TestMergeEntry_EgressAssignsLocalAsSender(t *testing.T) {
 		"10.0.0.2": podOf("ns-b", "server-x", "uid-server", "server"),
 	}}
 	classifier := metadata.NewDstLabelClassifier(true, []string{"ns-a"})
-	c := New(cgroupResolver, ipResolver, metrics.NewFlowGuard([]string{"ns-a"}, 100), classifier, "node1", true)
+	c := New(cgroupResolver, ipResolver, metrics.NewFlowGuard([]string{"ns-a"}, 100), classifier, "node1", true, "full")
 
 	key := makeKey(111, ipBytes(10, 0, 0, 1), ipBytes(10, 0, 0, 2), 1234, 80, 0) // egress
 	agg := map[aggKey]*aggValue{}
@@ -205,7 +205,7 @@ func TestMergeEntry_IngressSwapsSrcDst(t *testing.T) {
 		"10.0.0.2": podOf("ns-b", "server-x", "uid-server", "server"),
 	}}
 	classifier := metadata.NewDstLabelClassifier(true, []string{"ns-a"})
-	c := New(cgroupResolver, ipResolver, metrics.NewFlowGuard([]string{"ns-a"}, 100), classifier, "node1", true)
+	c := New(cgroupResolver, ipResolver, metrics.NewFlowGuard([]string{"ns-a"}, 100), classifier, "node1", true, "full")
 
 	// BPF raw key (local=10.0.0.1, remote=10.0.0.2, direction=ingress).
 	key := makeKey(222, ipBytes(10, 0, 0, 1), ipBytes(10, 0, 0, 2), 1234, 80, 1)
@@ -224,8 +224,8 @@ func TestMergeEntry_IngressSwapsSrcDst(t *testing.T) {
 	if k.srcIP != "10.0.0.2" || k.dstIP != "10.0.0.1" {
 		t.Errorf("ingress swap (src,dst)=(%s,%s) want (10.0.0.2,10.0.0.1)", k.srcIP, k.dstIP)
 	}
-	if k.srcPort != 80 || k.dstPort != 1234 {
-		t.Errorf("ingress port swap (sport,dport)=(%d,%d) want (80,1234)", k.srcPort, k.dstPort)
+	if k.srcPortLabel != "80" || k.dstPort != 1234 {
+		t.Errorf("ingress port swap (sport,dport)=(%s,%d) want (80,1234)", k.srcPortLabel, k.dstPort)
 	}
 	// src 라벨 셋 은 IP resolve 로 server pod identity, dst 라벨 셋 은 cgroup 의 client pod identity
 	if v.srcUID != "uid-server" || v.srcPod != "server-x" {
@@ -245,7 +245,7 @@ func TestMergeEntry_EgressBackfillsUnspecifiedSrcWithPodIP(t *testing.T) {
 	local := podOf("ns-a", "client-x", "uid-client", "client")
 	local.PodIP = "172.16.9.9"
 	cgroupResolver := &fakeCgroup{byCgroup: map[uint64]kube.PodIdentity{111: local}}
-	c := New(cgroupResolver, &fakeIP{}, metrics.NewFlowGuard([]string{"ns-a"}, 100), nil, "node1", true)
+	c := New(cgroupResolver, &fakeIP{}, metrics.NewFlowGuard([]string{"ns-a"}, 100), nil, "node1", true, "full")
 
 	agg := map[aggKey]*aggValue{}
 
@@ -281,7 +281,7 @@ func TestMergeEntry_GuardChecksLocalNamespace(t *testing.T) {
 		"10.0.0.2": podOf("ns-b", "server-x", "uid-server", "server"),
 	}}
 	// guard allow-list = [ns-a]. local pod 는 ns-a → 양 방향 모두 admit 되어야 한다.
-	c := New(cgroupResolver, ipResolver, metrics.NewFlowGuard([]string{"ns-a"}, 100), nil, "node1", true)
+	c := New(cgroupResolver, ipResolver, metrics.NewFlowGuard([]string{"ns-a"}, 100), nil, "node1", true, "full")
 
 	keyEgress := makeKey(333, ipBytes(10, 0, 0, 1), ipBytes(10, 0, 0, 2), 1234, 80, 0)
 	keyIngress := makeKey(333, ipBytes(10, 0, 0, 1), ipBytes(10, 0, 0, 2), 1234, 80, 1)
@@ -303,7 +303,7 @@ func TestMergeEntry_DedupsMultiCgroupSamePodUID(t *testing.T) {
 		1001: podOf("ns-a", "client-x", "uid-client", "client"),
 		1002: podOf("ns-a", "client-x", "uid-client", "client"),
 	}}
-	c := New(cgroupResolver, &fakeIP{}, metrics.NewFlowGuard([]string{"ns-a"}, 100), nil, "node1", true)
+	c := New(cgroupResolver, &fakeIP{}, metrics.NewFlowGuard([]string{"ns-a"}, 100), nil, "node1", true, "full")
 
 	k1 := makeKey(1001, ipBytes(10, 0, 0, 1), ipBytes(10, 0, 0, 2), 1234, 80, 0)
 	k2 := makeKey(1002, ipBytes(10, 0, 0, 1), ipBytes(10, 0, 0, 2), 1234, 80, 0)
@@ -331,7 +331,7 @@ func TestMergeEntry_SkipsUnresolvedCgroup(t *testing.T) {
 		// IsPod() == false 인 entry
 		2002: {IdentityClass: kube.IdentityClassUnresolved},
 	}}
-	c := New(cgroupResolver, &fakeIP{}, metrics.NewFlowGuard([]string{"ns-a"}, 100), nil, "node1", true)
+	c := New(cgroupResolver, &fakeIP{}, metrics.NewFlowGuard([]string{"ns-a"}, 100), nil, "node1", true, "full")
 
 	// resolver 에 없는 cgroup
 	keyMissing := makeKey(9999, ipBytes(10, 0, 0, 1), ipBytes(10, 0, 0, 2), 1234, 80, 0)
@@ -352,7 +352,7 @@ func TestMergeEntry_SkipsUnresolvedCgroup(t *testing.T) {
 // detector 위반 없이 흐르는지 검증. nil map 케이스 만 활용 해 BPF runtime 의존 없이 핸들 갱신 경로 만
 // 격리 검증 한다.
 func TestCollector_ConcurrentSetMapAndCollectRace(t *testing.T) {
-	c := New(&fakeCgroup{}, &fakeIP{}, metrics.NewFlowGuard([]string{"ns-a"}, 100), nil, "node1", true)
+	c := New(&fakeCgroup{}, &fakeIP{}, metrics.NewFlowGuard([]string{"ns-a"}, 100), nil, "node1", true, "full")
 
 	const workers = 16
 	const iterations = 100
@@ -389,4 +389,85 @@ func TestCollector_ConcurrentSetMapAndCollectRace(t *testing.T) {
 	wg.Wait()
 	close(metricCh)
 	<-drainDone
+}
+
+// TestMergeEntry_SrcPortFoldCollapsesSeries 는 #403 의 fold 모드에서 well-known 외 src_port 가
+// "other" 로 접혀 서로 다른 ephemeral port 의 두 entry 가 단일 agg 키로 합산되는지, well-known
+// 포트는 유지되는지 검증한다. 라벨과 agg 키가 함께 접혀 동일 라벨 중복 시리즈 충돌도 없다.
+func TestMergeEntry_SrcPortFoldCollapsesSeries(t *testing.T) {
+	cgroupResolver := &fakeCgroup{byCgroup: map[uint64]kube.PodIdentity{
+		111: podOf("ns-a", "client-x", "uid-client", "client"),
+	}}
+	c := New(cgroupResolver, nil, metrics.NewFlowGuard([]string{"ns-a"}, 100), nil, "node1", true, "fold")
+
+	agg := map[aggKey]*aggValue{}
+	// ephemeral src_port 34001 과 34002: fold 로 "other" 에 접힌다.
+	c.mergeEntry(agg, makeKey(111, ipBytes(10, 0, 0, 1), ipBytes(10, 0, 0, 2), 34001, 80, 0), ebpfx.NetObsNetobsFlowValue{Bytes: 100})
+	c.mergeEntry(agg, makeKey(111, ipBytes(10, 0, 0, 1), ipBytes(10, 0, 0, 2), 34002, 80, 0), ebpfx.NetObsNetobsFlowValue{Bytes: 200})
+	// well-known src_port 443 은 유지된다.
+	c.mergeEntry(agg, makeKey(111, ipBytes(10, 0, 0, 1), ipBytes(10, 0, 0, 2), 443, 80, 0), ebpfx.NetObsNetobsFlowValue{Bytes: 7})
+
+	if len(agg) != 2 {
+		t.Fatalf("agg=%d want 2 (ephemeral 2건 접힘 + well-known 1건)", len(agg))
+	}
+	var folded, wellKnown *aggValue
+	for k, v := range agg {
+		switch k.srcPortLabel {
+		case "other":
+			folded = v
+		case "443":
+			wellKnown = v
+		default:
+			t.Errorf("예상 밖 src_port 라벨 %q", k.srcPortLabel)
+		}
+	}
+	if folded == nil || folded.bytes != 300 {
+		t.Errorf("folded bytes=%+v want 300 (100+200 합산)", folded)
+	}
+	if wellKnown == nil || wellKnown.bytes != 7 {
+		t.Errorf("well-known bytes=%+v want 7", wellKnown)
+	}
+}
+
+// TestMergeEntry_SrcPortNoneRemovesLabel 은 #403 의 none 모드에서 src_port 라벨이 빈 값으로
+// 제거되고 서로 다른 포트의 entry 가 단일 시리즈로 합산되는지 검증한다.
+func TestMergeEntry_SrcPortNoneRemovesLabel(t *testing.T) {
+	cgroupResolver := &fakeCgroup{byCgroup: map[uint64]kube.PodIdentity{
+		111: podOf("ns-a", "client-x", "uid-client", "client"),
+	}}
+	c := New(cgroupResolver, nil, metrics.NewFlowGuard([]string{"ns-a"}, 100), nil, "node1", true, "none")
+
+	agg := map[aggKey]*aggValue{}
+	c.mergeEntry(agg, makeKey(111, ipBytes(10, 0, 0, 1), ipBytes(10, 0, 0, 2), 443, 80, 0), ebpfx.NetObsNetobsFlowValue{Bytes: 5})
+	c.mergeEntry(agg, makeKey(111, ipBytes(10, 0, 0, 1), ipBytes(10, 0, 0, 2), 34001, 80, 0), ebpfx.NetObsNetobsFlowValue{Bytes: 6})
+
+	if len(agg) != 1 {
+		t.Fatalf("agg=%d want 1 (none 모드 전 포트 합산)", len(agg))
+	}
+	for k, v := range agg {
+		if k.srcPortLabel != "" {
+			t.Errorf("src_port 라벨=%q want 빈 값", k.srcPortLabel)
+		}
+		if v.bytes != 11 {
+			t.Errorf("bytes=%d want 11", v.bytes)
+		}
+	}
+}
+
+// TestMergeEntry_SrcPortFullKeepsCurrentBehavior 는 기본 full 모드 (및 빈 값) 가 실제 포트를
+// 그대로 유지해 기존 소비자에 무영향인지 검증한다 (#403 opt-in 비목표).
+func TestMergeEntry_SrcPortFullKeepsCurrentBehavior(t *testing.T) {
+	cgroupResolver := &fakeCgroup{byCgroup: map[uint64]kube.PodIdentity{
+		111: podOf("ns-a", "client-x", "uid-client", "client"),
+	}}
+	for _, mode := range []string{"full", ""} {
+		c := New(cgroupResolver, nil, metrics.NewFlowGuard([]string{"ns-a"}, 100), nil, "node1", true, mode)
+		agg := map[aggKey]*aggValue{}
+		c.mergeEntry(agg, makeKey(111, ipBytes(10, 0, 0, 1), ipBytes(10, 0, 0, 2), 34001, 80, 0), ebpfx.NetObsNetobsFlowValue{Bytes: 5})
+		for k := range agg {
+			if k.srcPortLabel != "34001" {
+				t.Errorf("mode=%q src_port=%q want 34001 (현행 유지)", mode, k.srcPortLabel)
+			}
+		}
+	}
 }

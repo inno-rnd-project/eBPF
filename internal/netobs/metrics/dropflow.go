@@ -50,9 +50,13 @@ func NewDropFlowGuard(allowList []string, maxActive int) *DropFlowGuard {
 }
 
 // Admit 은 (src_namespace, 5-tuple) 페어가 emit 자격이 있는지 판정하고 LRU 에 등록한다.
-// namespace 가 allow-list 에 없으면 false 반환. LRU 상한 초과 시 가장 오래된 entry 가 evict 된 후
-// 신규 entry 가 등록되며 신규는 admit 된다. 빈 IP 또는 0.0.0.0 의 5-tuple 은 socket bind 전 drop
-// 으로 정확한 connection 식별이 불가하므로 LRU 등록 자체를 거부해 cache 공간이 낭비되지 않게 한다.
+// namespace 가 allow-list 에 없으면 false 반환. #403 상한 의미론: 상한 도달 시 신규 flow 는 거부
+// 되고 netobs_flow_guard_rejected_total{guard="drop_flow"} 로 계수된다 (sticky 상한). 종전 evict-
+// 후-admit 은 신규 라벨셋을 무한 생성해 문서화된 절대 상한 (maxActive * drop_reason 종수) 이
+// 동작하지 않았고, CounterVec 시리즈는 evict 로 사라지지 않으므로 신규 거부가 상한을 이행하는
+// 유일한 방식이다. 이미 등록된 flow 는 계속 admit 되어 카운터 누적이 이어진다. 빈 IP 또는
+// 0.0.0.0 의 5-tuple 은 socket bind 전 drop 으로 정확한 connection 식별이 불가하므로 LRU 등록
+// 자체를 거부해 cache 공간이 낭비되지 않게 한다.
 func (g *DropFlowGuard) Admit(srcNamespace, srcIP string, srcPort uint16, dstIP string, dstPort uint16, protocol string) bool {
 	if _, ok := g.allowSet[srcNamespace]; !ok {
 		return false
@@ -68,11 +72,8 @@ func (g *DropFlowGuard) Admit(srcNamespace, srcIP string, srcPort uint16, dstIP 
 		return true
 	}
 	if g.lru.Len() >= g.maxN {
-		oldest := g.lru.Back()
-		if oldest != nil {
-			delete(g.index, oldest.Value.(flowKey))
-			g.lru.Remove(oldest)
-		}
+		AddFlowGuardRejected("drop_flow")
+		return false
 	}
 	e := g.lru.PushFront(k)
 	g.index[k] = e

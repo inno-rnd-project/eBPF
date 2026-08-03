@@ -212,7 +212,7 @@ type Runtime struct {
 	// carry 한다. userspace symbol resolver 가 본 맵을 Lookup(stack_id) 으로 조회해 IP 배열을 얻고
 	// kallsyms 로 frame 별 함수명을 산정한다.
 	DropStacks *cebpf.Map
-	// FlowBytes 는 #85 의 BPF_MAP_TYPE_LRU_HASH 맵 (max_entries=1024) 이다. tcp_sendmsg_ret 과
+	// FlowBytes 는 #85 의 BPF_MAP_TYPE_LRU_HASH 맵 (max_entries=131072, #351/#403 실측 기반 상향) 이다. tcp_sendmsg_ret 과
 	// tcp_cleanup_rbuf 의 inc_flow_bytes 호출 이 5-tuple key 로 본 맵 에 누적 한다. userspace flow.
 	// Collector 가 scrape 시점 에 본 맵 을 iterate 해 netobs_flow_bytes_total counter 로 emit 한다.
 	FlowBytes *cebpf.Map

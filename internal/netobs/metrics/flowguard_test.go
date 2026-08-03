@@ -1,15 +1,18 @@
 package metrics
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 // TestFlowGuard_AllowList 는 namespace 가 allow-list 에 없으면 Admit 이 false 반환 하는 회귀 가드 다.
 // cardinality 안전 default 의 핵심 정책.
 func TestFlowGuard_AllowList(t *testing.T) {
 	g := NewFlowGuard([]string{"observability-test"}, 100)
-	if !g.Admit("observability-test", "10.0.0.1", 1234, "10.0.0.2", 80, "TCP", "egress") {
+	if !g.Admit("observability-test", "10.0.0.1", "1234", "10.0.0.2", 80, "TCP", "egress") {
 		t.Errorf("allow-list namespace 가 거부됨")
 	}
-	if g.Admit("other-ns", "10.0.0.1", 1234, "10.0.0.2", 80, "TCP", "egress") {
+	if g.Admit("other-ns", "10.0.0.1", "1234", "10.0.0.2", 80, "TCP", "egress") {
 		t.Errorf("allow-list 외 namespace 가 admit 됨")
 	}
 }
@@ -18,7 +21,7 @@ func TestFlowGuard_AllowList(t *testing.T) {
 // cardinality 안전 default.
 func TestFlowGuard_EmptyAllowListRejects(t *testing.T) {
 	g := NewFlowGuard(nil, 100)
-	if g.Admit("ns", "10.0.0.1", 1234, "10.0.0.2", 80, "TCP", "egress") {
+	if g.Admit("ns", "10.0.0.1", "1234", "10.0.0.2", 80, "TCP", "egress") {
 		t.Errorf("empty allow-list 가 admit 함 (cardinality 위험)")
 	}
 }
@@ -27,10 +30,10 @@ func TestFlowGuard_EmptyAllowListRejects(t *testing.T) {
 // 거부 당하는지 확인 해 cache 공간 낭비 를 막는 가드 다.
 func TestFlowGuard_RejectsZeroIP(t *testing.T) {
 	g := NewFlowGuard([]string{"ns"}, 100)
-	if g.Admit("ns", "0.0.0.0", 0, "10.0.0.2", 80, "TCP", "egress") {
+	if g.Admit("ns", "0.0.0.0", "0", "10.0.0.2", 80, "TCP", "egress") {
 		t.Errorf("0.0.0.0 src 가 admit 됨")
 	}
-	if g.Admit("ns", "10.0.0.1", 1234, "", 80, "TCP", "egress") {
+	if g.Admit("ns", "10.0.0.1", "1234", "", 80, "TCP", "egress") {
 		t.Errorf("빈 dst 가 admit 됨")
 	}
 	if g.Size() != 0 {
@@ -38,15 +41,52 @@ func TestFlowGuard_RejectsZeroIP(t *testing.T) {
 	}
 }
 
-// TestFlowGuard_LRUEvicts 는 maxActive 초과 시 가장 오래된 flow 가 evict 되고 신규 가 admit 되는지
-// 검증 한다.
-func TestFlowGuard_LRUEvicts(t *testing.T) {
+// TestFlowGuard_ScrapeBudget 은 #403 의 스크레이프당 emit budget 계약을 검증한다. 한 세대에서
+// admit 되는 신규 키가 maxActive 를 넘지 않고 (종전 evict-후-admit 은 전부 admit 했다), budget
+// 소진 후 신규는 거부된다.
+func TestFlowGuard_ScrapeBudget(t *testing.T) {
 	g := NewFlowGuard([]string{"ns"}, 2)
-	g.Admit("ns", "10.0.0.1", 1, "10.0.0.2", 80, "TCP", "egress")
-	g.Admit("ns", "10.0.0.1", 2, "10.0.0.2", 80, "TCP", "egress")
-	g.Admit("ns", "10.0.0.1", 3, "10.0.0.2", 80, "TCP", "egress")
+	g.BeginScrape()
+	admitted := 0
+	for p := 1; p <= 6; p++ {
+		if g.Admit("ns", "10.0.0.1", strconv.Itoa(p), "10.0.0.2", 80, "TCP", "egress") {
+			admitted++
+		}
+	}
+	if admitted != 2 {
+		t.Errorf("admitted=%d want 2 (스크레이프당 budget)", admitted)
+	}
 	if g.Size() != 2 {
 		t.Errorf("size=%d want 2 (LRU cap 유지)", g.Size())
+	}
+	// 동일 세대에서 이미 등록된 키의 재방문은 budget 소진과 무관하게 admit 된다.
+	if !g.Admit("ns", "10.0.0.1", "1", "10.0.0.2", 80, "TCP", "egress") {
+		t.Errorf("기존 키 재방문이 거부됨")
+	}
+}
+
+// TestFlowGuard_StaleEvictedNextScrape 는 다음 세대 (BeginScrape) 에서 이전 세대의 stale entry 가
+// 신규 flow 에 슬롯을 내주는지 검증한다 (#403). 죽은 flow 가 슬롯을 영구 점유하지 않는다.
+func TestFlowGuard_StaleEvictedNextScrape(t *testing.T) {
+	g := NewFlowGuard([]string{"ns"}, 2)
+	g.BeginScrape()
+	g.Admit("ns", "10.0.0.1", "1", "10.0.0.2", 80, "TCP", "egress")
+	g.Admit("ns", "10.0.0.1", "2", "10.0.0.2", 80, "TCP", "egress")
+
+	g.BeginScrape()
+	// 신규 2건: 이전 세대 stale 2건을 evict 하고 admit 된다.
+	if !g.Admit("ns", "10.0.0.9", "3", "10.0.0.2", 80, "TCP", "egress") {
+		t.Errorf("stale evict 후 신규 admit 실패")
+	}
+	if !g.Admit("ns", "10.0.0.9", "4", "10.0.0.2", 80, "TCP", "egress") {
+		t.Errorf("stale evict 후 두 번째 신규 admit 실패")
+	}
+	// budget 소진: 세 번째 신규는 거부.
+	if g.Admit("ns", "10.0.0.9", "5", "10.0.0.2", 80, "TCP", "egress") {
+		t.Errorf("budget 소진 후 신규가 admit 됨 (#403 상한 계약 위반)")
+	}
+	if g.Size() != 2 {
+		t.Errorf("size=%d want 2", g.Size())
 	}
 }
 
@@ -54,8 +94,8 @@ func TestFlowGuard_LRUEvicts(t *testing.T) {
 // 등록 되는지 확인 한다. direction 을 key 에 포함 한 정책 의 회귀 가드.
 func TestFlowGuard_DirectionSeparate(t *testing.T) {
 	g := NewFlowGuard([]string{"ns"}, 100)
-	g.Admit("ns", "10.0.0.1", 1234, "10.0.0.2", 80, "TCP", "egress")
-	g.Admit("ns", "10.0.0.1", 1234, "10.0.0.2", 80, "TCP", "ingress")
+	g.Admit("ns", "10.0.0.1", "1234", "10.0.0.2", 80, "TCP", "egress")
+	g.Admit("ns", "10.0.0.1", "1234", "10.0.0.2", 80, "TCP", "ingress")
 	if g.Size() != 2 {
 		t.Errorf("size=%d want 2 (direction 별 별개 entry)", g.Size())
 	}
