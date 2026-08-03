@@ -99,3 +99,30 @@ tests:
       - alertname: CorrelationExporterMetricsAbsent
         eval_time: 10m
         exp_alerts: []
+
+  # #405 CorrelationExporterPartialFetch. 부분 fetch 실패가 30분 창에서 3회 이상 누적되면 warning
+  # 으로 발화하고 (지속 실패의 조기 신호), 단발 blip 1회는 임계를 넘지 않아 발화하지 않는다.
+  - interval: 30s
+    input_series:
+      - series: 'correlation_reconcile_partial_total'
+        values: '0+1x80'
+    alert_rule_test:
+      - alertname: CorrelationExporterPartialFetch
+        eval_time: 25m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: correlation
+            exp_annotations:
+              summary: "correlation-exporter partial fetch failures accumulating"
+              description: "correlation-exporter 의 reconcile cycle 이 30 분 윈도우에서 3 회 이상 부분 fetch 실패로 진행됐다. 산출은 부분 입력으로 계속되지만 실패가 이어지면 last_success 동결로 CorrelationExporterStalled 가 뒤따른다. correlation_fetch_errors_total 의 query 라벨로 실패 지점을 특정한다."
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationexporterpartialfetch"
+
+  - interval: 30s
+    input_series:
+      - series: 'correlation_reconcile_partial_total'
+        values: '0x9 1x70'
+    alert_rule_test:
+      - alertname: CorrelationExporterPartialFetch
+        eval_time: 25m
+        exp_alerts: []

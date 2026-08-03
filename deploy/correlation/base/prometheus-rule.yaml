@@ -157,3 +157,20 @@ spec:
             summary: "correlation-exporter reconcile errors accumulating"
             description: "correlation-exporter 의 reconcile cycle 이 10 분 윈도우에서 3 회 이상 에러로 종료됐다. Prometheus 응답, query 문법, network 경로를 점검한다."
             runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationexporterreconcileerrors"
+
+        # CorrelationExporterPartialFetch
+        # #405 부분 fetch 실패의 warning 단계. 지속 부분 실패는 last_success 동결로 결국 Stalled 를
+        # 발화시키지만 (10분+), 그 전에 query 단위 원인 특정이 가능한 조기 신호를 둔다. 운영 기본
+        # reconcile interval 이 5m 이라 30m 창에 cycle 이 최대 6개이고, 임계 3은 지속 실패만 넘는다
+        # (단발 blip 1~2회는 걸러진다).
+        - alert: CorrelationExporterPartialFetch
+          expr: |
+            increase(correlation_reconcile_partial_total[30m]) >= 3
+          for: 10m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "correlation-exporter partial fetch failures accumulating"
+            description: "correlation-exporter 의 reconcile cycle 이 30 분 윈도우에서 3 회 이상 부분 fetch 실패로 진행됐다. 산출은 부분 입력으로 계속되지만 실패가 이어지면 last_success 동결로 CorrelationExporterStalled 가 뒤따른다. correlation_fetch_errors_total 의 query 라벨로 실패 지점을 특정한다."
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationexporterpartialfetch"
