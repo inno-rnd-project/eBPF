@@ -32,6 +32,7 @@ import (
 	"netobs/internal/injector/exporter"
 	"netobs/internal/injector/loadgen"
 	"netobs/internal/injector/safety"
+	"netobs/internal/selfobs"
 )
 
 // lingerAfterStop 은 injector_active=0 으로 reset 한 후 시계열을 유지하는 시간이다. PodMonitor 의
@@ -50,6 +51,9 @@ func runMain() int {
 	// #102 controller mode 분기. CLI mode 와 controller mode 가 동일 binary 안에서 -mode 플래그로
 	// 라우팅된다. 본 분기는 loadConfig 의 flag 파싱 전에 일찍 처리해 CLI 전용 flag (target-pod 필수
 	// 검증 등) 의 fatal exit 가 controller mode 진입을 막지 않게 한다.
+	// #405 cgroup limit 기반 GOMEMLIMIT. mode 분기 전에 적용해 controller / CLI 양쪽을 커버한다.
+	// controller mode 의 go / process collector 는 controller-runtime 기본 registry 가 이미 포함한다.
+	selfobs.ApplyMemoryLimit()
 	mode := parseModeFlag(os.Args[1:])
 	if mode == "controller" {
 		return runControllerMode()
@@ -64,6 +68,9 @@ func runMain() int {
 	}
 
 	reg := prometheus.NewRegistry()
+	// #405 프로세스 자기계측. CLI mode 의 자체 registry 에도 표준 collector 를 실어 다른 서비스와
+	// 관측 축을 정합시킨다.
+	selfobs.RegisterProcessCollectors(reg)
 	collector := exporter.NewCollector()
 	reg.MustRegister(collector)
 	health := exporter.NewHealth(reg)
