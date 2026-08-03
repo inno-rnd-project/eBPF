@@ -20,6 +20,7 @@ import (
 	"netobs/internal/gpuobs/nccl"
 	"netobs/internal/gpuobs/nvml"
 	"netobs/internal/kube"
+	"netobs/internal/selfobs"
 	"netobs/internal/server"
 )
 
@@ -33,6 +34,9 @@ func main() {
 	defer stop()
 
 	reg := prometheus.NewRegistry()
+	// #405 프로세스 자기계측. Go runtime / process 표준 collector 와 cgroup limit 기반 GOMEMLIMIT.
+	selfobs.RegisterProcessCollectors(reg)
+	selfobs.ApplyMemoryLimit()
 	metrics.Register(reg)
 	metrics.SetPodMetricsEnabled(cfg.PodMetricsEnabled)
 	// #104 gpuobs_pod_utilization_percent 의 namespace allow-list 통제 startup 적용. 빈 슬라이스 이면

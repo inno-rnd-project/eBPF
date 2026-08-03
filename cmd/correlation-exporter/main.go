@@ -58,6 +58,7 @@ import (
 	"netobs/internal/correlation/api"
 	correlationdocs "netobs/internal/correlation/api/docs"
 	"netobs/internal/correlation/exporter"
+	"netobs/internal/selfobs"
 )
 
 // maxTopN 은 -top-n flag 의 상한이다. victim 1k * dimension 4 * rank 100 = gauge 당 400k series
@@ -253,6 +254,9 @@ func main() {
 	corr := correlation.New(fetcher, cfg)
 
 	reg := prometheus.NewRegistry()
+	// #405 프로세스 자기계측. Go runtime / process 표준 collector 와 cgroup limit 기반 GOMEMLIMIT.
+	selfobs.RegisterProcessCollectors(reg)
+	selfobs.ApplyMemoryLimit()
 	collector := exporter.NewCollector(cfg.Step)
 	// #405 snapshot stale 판정 임계. reconcile interval 의 3배를 넘긴 snapshot 은 실패 cycle 누적
 	// 상태라 API 신선도 필드 (snapshot_stale) 가 true 로 노출된다.
