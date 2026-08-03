@@ -759,8 +759,9 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 
 		// #404 17개 쿼리는 전부 상호 독립이라 단일 queryParallel 라운드로 실행한다. 종전 완전 순차
 		// 실행은 쿼리당 300ms 면 5s 예산을 초과했고, 초과 시점 이후 쿼리가 조용히 버려져 응답 내용이
-		// Prometheus 지연에 따라 요청마다 달라졌다. 모든 쿼리가 status worst-of 합성의 입력이라 어느
-		// 하나의 실패도 응답을 왜곡하므로 전부 필수이며, 실패는 inventory.go 규약대로 500 query_failed
+		// Prometheus 지연에 따라 요청마다 달라졌다. pressure·health·alert·usage 는 status worst-of
+		// 합성의 입력이고 topk pod 4종은 top_pods 표시의 입력이라, 어느 쿼리의 실패도 응답 내용을
+		// 왜곡하므로 전부 필수이며, 실패는 inventory.go 규약대로 500 query_failed
 		// 다 (데이터 부재로 결과가 빈 것은 종전대로 graceful 생략). ALERTS_FOR_STATE 는 종전에 firing
 		// 존재 시에만 2차 조회했으나 병렬화로 무조건 조회하고 결과만 조건부 사용한다 (동일 의미).
 		nDims := len(synthDimensions)
