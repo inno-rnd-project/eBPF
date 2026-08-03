@@ -67,8 +67,8 @@ struct {
 } pod_bytes SEC(".maps");
 
 /* #85 Pod 간 정상 flow 의 5-tuple RX/TX 누적 맵이다. pod_bytes 의 LRU_PERCPU_HASH 와 분리해 per-CPU
- * × 1024 의 memory footprint 부담을 회피하고 BPF_MAP_TYPE_LRU_HASH 로 두 어 1024 entry 의 단일 instance
- * 만 유지한다. race 안전성 은 inc_flow_bytes 의 __sync_fetch_and_add 로 확보한다. tcp_sendmsg_ret 의
+ * 복제의 memory footprint 부담을 회피하고 BPF_MAP_TYPE_LRU_HASH 로 두어 단일 instance 만 유지한다.
+ * race 안전성 은 inc_flow_bytes 의 __sync_fetch_and_add 로 확보한다. tcp_sendmsg_ret 의
  * ret > 0 분기 와 tcp_cleanup_rbuf 의 copied > 0 분기 에서 5-tuple key 로 본 맵 에 bytes 를 누적 한다.
  * userspace flow.Collector 가 scrape 시점 에 본 맵 을 iterate 해 netobs_flow_bytes_total 로 emit 한다.
  */
@@ -82,9 +82,15 @@ struct {
  * alert 가 커버하므로 부족하면 데이터 기반으로 재조정한다. allow-list cgroup 을 BPF 로 내려 노이즈 를
  * 원천 필터하는 방식은 빈 allowed-set / cgroup v1 / 신규 pod warmup 창 에서 관심 flow 를 silent drop
  * 할 위험이 있어 채택하지 않는다. */
+/* #403 max_entries 32768 → 131072. 32768 재포화가 실측됐다: 4 노드 중 3 노드 (master / worker1 /
+ * worker2) 의 사용률이 0.993~0.995 로 상한에 붙어 실제 flow working set 이 검열 (상한 이상) 상태고,
+ * 활성 flow 가 커널 LRU 에 밀려나는 counter reset 이 재발했다. 검열된 관측치 (>= 32768) 에 4 배
+ * 헤드룸을 두어 131072 로 올린다. LRU_HASH 단일 instance 라 memory footprint 는 entry 당 수백 byte
+ * 수준으로 수십 MB 이내다. 포화 재발 관측 체계 (utilization_ratio + NetObsBpfMapUtilizationHigh)
+ * 는 #351 그대로 유지한다. */
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, 32768);
+    __uint(max_entries, 131072);
     __type(key, struct netobs_flow_key);
     __type(value, struct netobs_flow_value);
 } flow_bytes SEC(".maps");
