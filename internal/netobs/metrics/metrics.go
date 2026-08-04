@@ -364,6 +364,9 @@ func Record(ev types.EnrichedEvent) {
 	stageEventsLabeled.WithLabelValues(common...).Inc()
 
 	if podMetricsEnabled.Load() && ev.Src.IsPod() {
+		// #407 stale 시리즈 정리의 emit 추적. 여기서 등록된 UID 가 활성 pod 셋에서 사라지면
+		// CleanupStalePodInstanceSeries 가 pod-instance 4종의 시리즈를 회수한다.
+		trackPodUID(podUIDLabel(ev.Src))
 		podCommon := []string{
 			stage,
 			label(ev.ObservedNodeLabel()),

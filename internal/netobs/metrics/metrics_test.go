@@ -45,6 +45,18 @@ func resetMetrics() {
 		prometheus.HistogramOpts{Name: "netobs_pod_stage_latency_labeled_seconds", Buckets: prometheus.ExponentialBuckets(1e-6, 2, 20)},
 		[]string{"stage", "node", "src_namespace", "src_pod", "src_pod_uid", "traffic_scope", "direction", "dst_namespace", "dst_workload", "dst_pod_uid"},
 	)
+	sendPathFullLatencySeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "netobs_send_path_full_latency_seconds", Buckets: prometheus.ExponentialBuckets(1e-6, 2, 20)},
+		[]string{"node", "src_namespace", "src_pod", "src_pod_uid", "traffic_scope", "direction", "dst_namespace", "dst_workload", "dst_pod_uid"},
+	)
+	sendPathSegmentCountTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "netobs_send_path_segment_count_total"},
+		[]string{"node", "src_namespace", "src_pod", "src_pod_uid", "traffic_scope", "direction", "dst_namespace", "dst_workload", "dst_pod_uid"},
+	)
+	// #407 stale 시리즈 정리의 emit 추적 집합도 테스트 간 격리한다.
+	emittedPodUIDsMu.Lock()
+	emittedPodUIDs = make(map[string]struct{})
+	emittedPodUIDsMu.Unlock()
 	legacyEventsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "netobs_events_total"}, []string{"stage"})
 	legacyLatencySeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "netobs_stage_latency_seconds", Buckets: prometheus.ExponentialBuckets(1e-6, 2, 20)}, []string{"stage"})
 	legacyDropTotal = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "netobs_drop_total"}, []string{"reason"})
