@@ -93,8 +93,10 @@ func MethodGuard(next http.Handler) http.Handler {
 }
 
 // Chain 은 outermost 부터 innermost 순으로 미들웨어를 적용한다. 표준 순서: Logging -> Recover ->
-// CORS -> Handler. 호출 예: apicommon.Chain(handler, apicommon.LoggingMiddleware,
-// apicommon.RecoverMiddleware, apicommon.CORSMiddleware).
+// MethodGuard -> CORS -> Handler (#409). MethodGuard 가 GET 과 OPTIONS 를 통과시키므로 preflight 가
+// CORS 에 도달해 204 로 종결된다 (순서를 뒤집으면 preflight 가 405 로 막혀 CORS 가 무력화된다).
+// 호출 예: apicommon.Chain(handler, apicommon.LoggingMiddleware, apicommon.RecoverMiddleware,
+// apicommon.MethodGuard, apicommon.CORSMiddleware).
 func Chain(handler http.Handler, middlewares ...func(http.Handler) http.Handler) http.Handler {
 	for i := len(middlewares) - 1; i >= 0; i-- {
 		handler = middlewares[i](handler)
