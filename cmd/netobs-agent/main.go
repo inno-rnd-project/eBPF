@@ -217,7 +217,10 @@ func main() {
 				case <-ctx.Done():
 					return
 				case <-t.C:
-					pods := kr.PodsOnNode(cfg.NodeName)
+					// #407 대조 셋은 클러스터 전체 스냅샷이어야 한다. src_pod 가 resolver 의 IP 귀속으로
+					// remote pod 일 수 있어 노드 한정 셋이면 살아 있는 remote pod 시리즈가 매 주기
+					// 삭제·재생성된다 (dev 실측으로 확인된 결함).
+					pods := kr.AllPods()
 					activeUIDs := make(map[string]struct{}, len(pods))
 					activePods := make(map[[2]string]struct{}, len(pods))
 					for _, id := range pods {

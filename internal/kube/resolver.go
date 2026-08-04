@@ -775,6 +775,20 @@ func classifyFallbackIP(ip string) PodIdentity {
 	return externalIdentity(ip)
 }
 
+// AllPods 는 informer 캐시의 클러스터 전체 Pod identity 스냅샷을 돌려준다. #407 의 stale 시리즈
+// 정리가 활성 pod 대조 셋으로 사용한다. pod-instance 메트릭의 src_pod 는 resolver 의 클러스터 전체
+// IP 귀속으로 remote pod 도 될 수 있어, 노드 한정 스냅샷 (PodsOnNode) 을 대조 셋으로 쓰면 살아 있는
+// remote pod 의 시리즈가 매 주기 삭제·재생성된다.
+func (r *Resolver) AllPods() []PodIdentity {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]PodIdentity, 0, len(r.podByUID))
+	for _, id := range r.podByUID {
+		out = append(out, id)
+	}
+	return out
+}
+
 // PodsOnNode 는 informer 캐시에서 지정 노드에 스케줄된 Pod 들의 identity 스냅샷을 돌려준다. #228 의
 // cgroup 스캐너가 주기 스캔 대상을 얻는 데 사용한다.
 func (r *Resolver) PodsOnNode(node string) []PodIdentity {
