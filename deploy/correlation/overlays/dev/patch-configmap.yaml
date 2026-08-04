@@ -15,4 +15,4 @@ data:
   # #409 dev 는 port-forward 검증 관행 (swagger-ui 8080) 이 있어 localhost origin 을 추가 허용한다.
   # port-forward 가 열린 동안 로컬 페이지의 브라우저 경유 읽기 위험이 부분 복귀하는 트레이드오프를
   # dev 한정으로 감수하며, prod 는 base 의 클러스터 내부 origin 만 유지한다.
-  API_CORS_ALLOW_ORIGINS: "http://swagger-ui:8080,http://swagger-ui.ebpf-project:8080,http://swagger-ui.ebpf-project.svc.cluster.local:8080,http://localhost:8080"
+  API_CORS_ALLOW_ORIGINS: "http://swagger-ui:8080,http://swagger-ui.ebpf-project:8080,http://swagger-ui.ebpf-project.svc.cluster.local:8080,http://192.168.160.212:3000,http://localhost:8080"
