@@ -424,7 +424,7 @@ func Record(ev types.EnrichedEvent) {
 		// emit 한다. guard 가 nil 이면 emit 자체가 skip 되어 cardinality 가 도입 전 수준 (0 series)
 		// 으로 유지된다.
 		if dropFlowGuard != nil && dropFlowGuard.Admit(
-			ev.SourceNamespaceLabel(),
+			ev.SourceNamespaceLabel(), ev.Src.PodName,
 			ev.SrcIPText, ev.Raw.Sport,
 			ev.DstIPText, ev.Raw.Dport,
 			ev.ProtocolText,

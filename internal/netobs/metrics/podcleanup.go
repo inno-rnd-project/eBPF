@@ -64,3 +64,13 @@ func CleanupStalePodInstanceSeries(activeUIDs map[string]struct{}) int {
 	}
 	return deleted
 }
+
+// CleanupStaleDropFlowSeries 는 활성 pod 셋 (namespace, pod 이름 페어) 에 없는 pod 의 drop flow
+// LRU 슬롯과 시리즈를 회수한다 (#407). guard 미주입 (drop flow 메트릭 비활성 운영 모드) 이면
+// no-op 이다. main 이 CleanupStalePodInstanceSeries 와 같은 주기로 호출한다.
+func CleanupStaleDropFlowSeries(activePods map[[2]string]struct{}) int {
+	if dropFlowGuard == nil {
+		return 0
+	}
+	return dropFlowGuard.ReleaseStalePods(activePods)
+}

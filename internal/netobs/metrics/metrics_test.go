@@ -53,6 +53,14 @@ func resetMetrics() {
 		prometheus.CounterOpts{Name: "netobs_send_path_segment_count_total"},
 		[]string{"node", "src_namespace", "src_pod", "src_pod_uid", "traffic_scope", "direction", "dst_namespace", "dst_workload", "dst_pod_uid"},
 	)
+	dropEventsFlow = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "netobs_drop_events_flow_total"},
+		[]string{"node", "src_namespace", "src_workload", "src_pod", "traffic_scope", "direction", "drop_reason", "drop_category", "protocol", "src_ip", "src_port", "dst_ip", "dst_port", "ip_version"},
+	)
+	dropLastTimestamp = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "netobs_drop_last_timestamp_seconds"},
+		[]string{"node", "src_namespace", "src_workload", "src_pod", "traffic_scope", "direction", "drop_reason", "drop_category", "protocol", "src_ip", "src_port", "dst_ip", "dst_port", "ip_version"},
+	)
 	// #407 stale 시리즈 정리의 emit 추적 집합도 테스트 간 격리한다.
 	emittedPodUIDsMu.Lock()
 	emittedPodUIDs = make(map[string]struct{})
