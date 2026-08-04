@@ -78,11 +78,15 @@ spec:
             # cuda uprobe 는 host 의 libcuda.so.1 ELF 를 OpenExecutable 로 직접 파싱해야 하며, 이때
             # 컨테이너에 주입된 libcuda 가 아닌 host 의 inode 를 봐야 같은 inode 의 mmap 을 가진 모든
             # 프로세스에서 uprobe 가 fire 한다. read-only hostPath 로 host inode 를 명시 노출한다.
-            # #296 배포판 종속 제거: multiarch 하위 디렉터리 대신 /usr 전체를 올려 Debian
-            # (/usr/lib/x86_64-linux-gnu) 과 RHEL (/usr/lib64) 를 모두 커버한다. 컨테이너 내 최종
-            # 경로는 기존과 동일 (/host/usr/lib/x86_64-linux-gnu/...) 하다.
-            - name: host-usr
-              mountPath: /host/usr
+            # #410 /usr 전체 마운트를 라이브러리 디렉터리로 좁혔다. libcuda 후보 경로 (config 의
+            # libraryCandidates) 는 전부 /usr/lib 과 /usr/lib64 하위라 /usr/bin 과 /usr/sbin 과
+            # /usr/share 를 노출할 이유가 없다. 컨테이너 내 최종 경로는 기존과 동일
+            # (/host/usr/lib/x86_64-linux-gnu/... 와 /host/usr/lib64/...) 하다.
+            - name: host-usr-lib
+              mountPath: /host/usr/lib
+              readOnly: true
+            - name: host-usr-lib64
+              mountPath: /host/usr/lib64
               readOnly: true
             # #296 GPU Operator driver 컨테이너 환경은 driver 가 /run/nvidia/driver 하위에 주입된다.
             - name: host-nvidia-run
@@ -115,11 +119,17 @@ spec:
             limits:
               memory: 256Mi
       volumes:
-        # #296 host 라이브러리 트리. /usr 는 전 배포판 실존이라 type: Directory 로 mount 실패가 없다.
-        - name: host-usr
+        # #410 host 라이브러리 디렉터리. /usr/lib 은 전 배포판 실존이라 type: Directory 로 mount
+        # 실패가 없다. /usr/lib64 는 RHEL 계열의 주 경로이고 Debian 계열에는 없을 수 있어
+        # DirectoryOrCreate 로 두어 mount 실패를 막는다 (빈 디렉터리 생성은 무해하다).
+        - name: host-usr-lib
           hostPath:
-            path: /usr
+            path: /usr/lib
             type: Directory
+        - name: host-usr-lib64
+          hostPath:
+            path: /usr/lib64
+            type: DirectoryOrCreate
         # GPU Operator 미사용 노드에는 /run/nvidia 가 없으므로 DirectoryOrCreate 로 mount 실패를
         # 막는다. /run 은 tmpfs 라 빈 디렉터리 생성이 host 에 잔존하지 않는다 (재부팅 소멸).
         - name: host-nvidia-run
