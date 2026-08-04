@@ -124,11 +124,14 @@ spec:
             - name: lib-modules
               mountPath: /lib/modules
               readOnly: true
+            # #410 debugfs (/sys/kernel/debug) 전체 마운트를 제거하고 tracefs 단일화로 좁혔다.
+            # 실사용은 drop reason enum 을 읽는 kfree_skb format 파일 1개이고 그 파일이 tracefs
+            # (/sys/kernel/tracing/events/skb/kfree_skb/format) 에 동일하게 존재한다 (기본 config 의
+            # DROP_REASON_FORMAT_PATH 도 tracefs 경로다). kprobe attach 는 kernel 6.x 에서
+            # perf_event_open 경로라 debugfs 를 요구하지 않는다. debugfs 는 tracefs 외 커널 내부
+            # 인터페이스까지 노출하므로 실사용 경로만 남긴다.
             - name: sys-kernel-tracing
               mountPath: /sys/kernel/tracing
-              readOnly: true
-            - name: sys-kernel-debug
-              mountPath: /sys/kernel/debug
               readOnly: true
             # #83 drop stack capture 의 userspace symbol resolver 가 사용 하는 host /proc/kallsyms
             # 의 read-only bind mount 다. privileged 컨테이너 의 CAP_SYSLOG 로 kptr_restrict=1
@@ -157,10 +160,6 @@ spec:
         - name: sys-kernel-tracing
           hostPath:
             path: /sys/kernel/tracing
-            type: Directory
-        - name: sys-kernel-debug
-          hostPath:
-            path: /sys/kernel/debug
             type: Directory
         - name: host-proc-kallsyms
           hostPath:
