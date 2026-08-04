@@ -138,5 +138,5 @@ spec:
             severity: warning
             component: prometheus-capacity
           annotations:
-            summary: "Prometheus retained history {{ $value | humanize }}d below the 31d baseline requirement"
+            summary: "Prometheus retained history {{ printf \"%.1f\" $value }}d below the 31d baseline requirement"
             description: "Retained TSDB history is under 31 days, so the capacity-trends z-scores that read a 30-day baseline and the overview dashboard 4-week panels are incomplete, and the four *AnomalyDetected alerts derived from them are effectively blind until the window refills. Action: (1) distinguish the cause by checking whether the PVC survived (PrometheusStorageNotPersistent firing means history was destroyed, otherwise this is a fresh or recently rebuilt TSDB), (2) if history was destroyed investigate the pod restart cause and confirm storage is persistent, (3) otherwise treat capacity anomaly detection as unavailable and re-evaluate after the window refills."

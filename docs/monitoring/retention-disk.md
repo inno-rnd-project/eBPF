@@ -25,6 +25,7 @@ TSDB 는 `deploy/monitoring/prometheus-storage-patch.yaml` 이 선언하는 loca
 - **트레이드오프**: gpu 노드는 본 프로젝트의 GPU 부하 테스트 대상이라 관측자가 관측 대상과 같은 노드에 상주한다. 부하 실험이 Prometheus 의 디스크와 CPU 에 영향을 줄 수 있다
 - **한계**: local-path 는 hostPath 기반이라 pod 재시작과 노드 재부팅은 견디지만 노드 자체 소실은 견디지 못한다. `remote_write` 와 Thanos 가 없어 클러스터 외부 백업이 존재하지 않는다
 - **PV reclaim policy**: `Retain` 으로 전환해 PVC 가 실수로 삭제돼도 PV 와 데이터가 남는다. StorageClass 가 volume expansion 을 지원하지 않아 용량 확장은 PVC 재생성이 필요하다
+- **Retain 재적용**: 이 전환은 라이브 PV 에 대한 `kubectl patch` 였고 선언 어디에도 없다. local-path provisioner 가 새로 만드는 PV 는 다시 `Delete` 라, PVC 재생성 (용량 확장 절차 포함) 뒤에는 반드시 `kubectl patch pv <pv-name> -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'` 를 다시 적용한다
 
 ### emptyDir 구성에서의 이력 전량 소실 사고
 
