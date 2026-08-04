@@ -1,6 +1,8 @@
 package apicommon
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -88,5 +90,27 @@ func TestMethodGuard(t *testing.T) {
 		if rec.Code == http.StatusMethodNotAllowed {
 			t.Errorf("%s 가 405 로 차단됨", m)
 		}
+	}
+}
+
+// TestLoggingMiddleware_PathEscaped 는 percent-decode 된 경로의 개행이 이스케이프되어 위조 로그
+// 라인 주입이 불가한지 검증한다 (#409).
+func TestLoggingMiddleware_PathEscaped(t *testing.T) {
+	var buf bytes.Buffer
+	orig := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(orig)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/x", nil)
+	req.URL.Path = "/api/v1/x\ninjected: FAKE LINE"
+	rec := httptest.NewRecorder()
+	LoggingMiddleware(okHandler()).ServeHTTP(rec, req)
+
+	out := buf.String()
+	if strings.Count(out, "\n") != 1 {
+		t.Errorf("로그 라인 수=%d want 1 (개행 주입 차단): %q", strings.Count(out, "\n"), out)
+	}
+	if !strings.Contains(out, `\n`) {
+		t.Errorf("이스케이프된 개행 미포함: %q", out)
 	}
 }

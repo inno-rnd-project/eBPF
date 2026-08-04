@@ -14,7 +14,9 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		ww := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(ww, r)
-		log.Printf("apicommon: %s %s -> %d (%s)", r.Method, r.URL.Path, ww.status, time.Since(start))
+		// #409 경로는 percent-decode 된 사용자 입력이라 %q 로 이스케이프해 개행 주입으로 위조 로그
+		// 라인을 만드는 것을 차단한다.
+		log.Printf("apicommon: %s %q -> %d (%s)", r.Method, r.URL.Path, ww.status, time.Since(start))
 	})
 }
 
@@ -24,7 +26,8 @@ func RecoverMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				log.Printf("apicommon: panic recovered in %s %s: %v", r.Method, r.URL.Path, rec)
+				// #409 경로 이스케이프는 LoggingMiddleware 와 동일 사유다.
+				log.Printf("apicommon: panic recovered in %s %q: %v", r.Method, r.URL.Path, rec)
 				WriteError(w, http.StatusInternalServerError, "internal_panic", "internal server error")
 			}
 		}()
