@@ -12,18 +12,19 @@ metadata:
     app.kubernetes.io/part-of: monitoring
 spec:
   groups:
-    # prometheus-retention-capacity 그룹은 #88 의 retention 60일 상향 (deploy/monitoring/prometheus-
-    # retention-patch.yaml) 의 부수 영향인 디스크 사용량 증가와 메모리 압박을 사전 모니터링 한다.
-    # dev cluster 의 Prometheus 는 PVC 부재 (hostPath / emptyDir) 환경 이라 `kubelet_volume_stats_*`
-    # 메트릭이 emit 되지 않 으므로 node-exporter 의 `node_filesystem_*` 메트릭을 fallback 으로 사용
-    # 한다. root filesystem 사용률을 Prometheus PV 사용률의 proxy 로 활용 하며 본 정책은 monitoring
-    # stack 의 hostPath 환경 한정 valid 다. PVC 환경 으로 전환 시 본 expr 을 kubelet 메트릭 으로 정정 한다.
+    # prometheus-retention-capacity 그룹은 retention 상향 (deploy/monitoring/prometheus-retention-
+    # patch.yaml) 의 부수 영향인 디스크 사용량 증가와 메모리 압박, 그리고 TSDB 영속성 회귀를 모니터링
+    # 한다. Prometheus 는 local-path PVC 로 전환됐으나 (deploy/monitoring/prometheus-storage-patch.yaml)
+    # 이 클러스터는 `kubelet_volume_stats_*` 메트릭을 여전히 수집하지 않으므로 node-exporter 의
+    # `node_filesystem_*` 을 계속 fallback 으로 사용한다. local-path PV 는 노드 로컬 디렉터리라 요청
+    # 용량이 강제되지 않고 실제 사용량이 노드 root fs 에 누적되므로, root filesystem 사용률이 여전히
+    # Prometheus 디스크 사용률의 유효한 proxy 다. kubelet 메트릭이 수집되기 시작하면 그때 정정한다.
     - name: prometheus-retention-capacity
       interval: 30s
       rules:
         # prometheus:host_disk_usage_ratio:5m
-        # node 의 root filesystem 사용률 5분 윈도우 평균. hostPath / emptyDir 환경 의 Prometheus PV 가
-        # node root fs 에 누적 되므로 본 비율 이 Prometheus 디스크 사용률 의 proxy 역할 을 한다.
+        # node 의 root filesystem 사용률 5분 윈도우 평균. local-path PVC 의 실제 데이터가 노드 root fs
+        # 하위 디렉터리에 누적되므로 본 비율이 Prometheus 디스크 사용률의 proxy 역할을 한다.
         # tmpfs 와 overlay 같은 in-memory / 컨테이너 임시 fs 는 제외 해 실 디스크 사용률 만 cover.
         - record: prometheus:host_disk_usage_ratio:5m
           expr: |
@@ -36,7 +37,7 @@ spec:
             )
 
         # PrometheusVolumeUsageHigh
-        # root filesystem 사용률 80% 초과 가 15분 지속 시 발화. 60일 retention 의 정상 누적 추세 는
+        # root filesystem 사용률 80% 초과 가 15분 지속 시 발화. 40일 retention 의 정상 누적 추세 는
         # 시간당 수십 MB 수준 이라 15분 sustained 가 의미 있는 신호 다. component=prometheus-capacity
         # 라벨 로 #106 AlertmanagerConfig 의 (2) capacity 분기 (severity=warning + component=~".*-capacity")
         # 로 자연 흡수 되어 groupInterval=5m / repeatInterval=12h 의 저빈도 정책 으로 운영 된다.
@@ -48,7 +49,7 @@ spec:
             component: prometheus-capacity
           annotations:
             summary: "Prometheus host disk {{ $labels.instance }} {{ $value | humanizePercentage }} full"
-            description: "Node {{ $labels.instance }} root filesystem usage exceeded 80% for 15 minutes. Prometheus retention is 60 days (#88) and the PV uses hostPath / emptyDir, so this signals Prometheus TSDB approaching the host disk limit. Action: (1) check retention with `kubectl get prometheus -n monitoring -o jsonpath='{.spec.retention}'`, (2) reduce retention via deploy/monitoring/prometheus-retention-patch.yaml or resize PV (see docs/monitoring/retention-disk.md), (3) verify with prometheus_tsdb_storage_blocks_bytes trend."
+            description: "Node {{ $labels.instance }} root filesystem usage exceeded 80% for 15 minutes. Prometheus retention is 40 days with a 40GB retentionSize cap and the TSDB lives on a local-path PVC whose usage accumulates on the node root filesystem, so this can signal either Prometheus TSDB growth or unrelated disk consumers on the same node. Action: (1) confirm the Prometheus share via prometheus_tsdb_storage_blocks_bytes before touching retention, (2) if other consumers dominate, reclaim there first (docker build cache and package caches have been the top offenders on the gpu node), (3) if Prometheus dominates, lower retention or retentionSize via deploy/monitoring/prometheus-retention-patch.yaml keeping at least 31 days for the 30-day baseline (see docs/monitoring/retention-disk.md)."
 
         # PrometheusVolumeUsageCritical
         # root filesystem 사용률 90% 초과 가 5분 지속 시 발화. 즉시 escalation 정책 으로 component=prometheus
@@ -65,9 +66,9 @@ spec:
             description: "Node {{ $labels.instance }} root filesystem usage exceeded 90% for 5 minutes. Prometheus may stop writing TSDB blocks shortly leading to WAL corruption or OOM. Immediate action: shrink retention via `kubectl patch prometheus -n monitoring kube-prometheus-stack-prometheus --type=merge -p '{\"spec\":{\"retention\":\"30d\"}}'`. After recovery, plan PV resize per docs/monitoring/retention-disk.md."
 
         # PrometheusHighCardinality
-        # prometheus_tsdb_head_series 가 2M 초과 30분 지속 시 발화. retention 60일 상향 후 신규 메트릭
+        # prometheus_tsdb_head_series 가 2M 초과 30분 지속 시 발화. retention 상향 후 신규 메트릭
         # 도입 또는 라벨 카디널리티 폭증 으로 head_series 가 정상 운영 범위 를 벗어나면 사전 감지. 본
-        # dev cluster 현재 값 은 ~200K 라 임계 2M 까지 충분한 마진. PVC 부재 환경 의 OOM 위험 사전 신호.
+        # dev cluster 현재 값 은 ~190K 라 임계 2M 까지 충분한 마진. OOM 위험 의 사전 신호 다.
         - alert: PrometheusHighCardinality
           expr: prometheus_tsdb_head_series > 2000000
           for: 30m
@@ -81,7 +82,7 @@ spec:
         # PrometheusMemoryPressure
         # process_resident_memory_bytes 가 3 GB 초과 15분 지속 시 발화. dev cluster 의 Prometheus 가
         # container_spec_memory_limit_bytes 메트릭 부재 환경 (cAdvisor / kube-state-metrics 미수집) 이라
-        # 절대값 임계로 fallback. 현재 값 ~40 MB 대비 60일 retention 누적 시 4-8 GB 추정 의 80% 마진 으로
+        # 절대값 임계로 fallback. 현재 값 ~40 MB 대비 40일 retention 누적 시 추정치의 마진 을 두어
         # 3 GB 설정. cardinality alert 와 함께 OOM 위험 의 다른 측면 (process memory) 을 cover 한다.
         # job 매칭 패턴 `.*-prometheus$` 의 끝 anchor 는 helm release 이름 변경 에 robust 하면서도
         # alertmanager / grafana / operator / node-exporter 같은 다른 컴포넌트 의 process memory 매칭 을
@@ -95,3 +96,47 @@ spec:
           annotations:
             summary: "Prometheus {{ $labels.pod }} RSS {{ $value | humanize1024 }}B above 3GB"
             description: "process_resident_memory_bytes for {{ $labels.pod }} exceeded 3 GB for 15 minutes. Combined with PrometheusHighCardinality this is an OOM precursor. Action: (1) cross-reference prometheus_tsdb_head_series trend, (2) check pod memory limit if set, (3) consider retention reduction or PV migration to PVC with resource limits."
+
+        # PrometheusStorageNotPersistent
+        # Prometheus TSDB 의 PVC 가 사라지면 발화한다. 스토리지 선언이 유실되어 emptyDir 로 회귀한 상태를
+        # 뜻하며, 그 상태에서는 pod 재생성이 곧 전 이력 삭제라 즉시 대응이 필요하다. 실제로 종전 emptyDir
+        # 구성에서 retention 변경 patch 가 operator roll 을 유발해 최대 60일 이력 47 GiB 가 소실됐고
+        # remote_write 와 Thanos 가 없어 복구가 불가능했다. 회귀 경로는 Helm chart 기본값 (storage 미선언)
+        # 이 kustomize patch 를 덮는 경우다.
+        #
+        # 감지 신호를 TSDB 내부 이력 비교가 아니라 kube-state-metrics 의 PVC 존재로 잡는 이유는, 이력
+        # 소실 사건에서는 비교 대상이 되는 과거 값 자체가 함께 사라져 사후 비교로는 원리적으로 감지할 수
+        # 없기 때문이다. PVC 존재는 소실과 독립인 구조 신호다. kube-state-metrics 자체가 죽은 경우의
+        # absent 오발화를 막기 위해 up 게이트를 AND 로 둔다. component=prometheus 라벨로 #106 의 critical
+        # 분기로 흡수되어 즉시 통보된다.
+        - alert: PrometheusStorageNotPersistent
+          expr: |
+            absent(kube_persistentvolumeclaim_info{namespace="monitoring", persistentvolumeclaim=~"prometheus-.+-db-.+"})
+            and on() (max(up{job="kube-state-metrics"}) == 1)
+          for: 10m
+          labels:
+            severity: critical
+            component: prometheus
+          annotations:
+            summary: "Prometheus TSDB PVC missing (storage reverted to ephemeral)"
+            description: "The Prometheus TSDB PersistentVolumeClaim is absent for 10 minutes while kube-state-metrics is healthy, which means the storage declaration was lost and the pod is running on ephemeral storage. Any pod restart will destroy all metric history and there is no remote_write or Thanos backup to recover from. Action: (1) verify with `kubectl get pvc -n monitoring`, (2) re-apply the declaration with `kubectl apply -k deploy/monitoring/`, (3) confirm the pod volume is a PVC and not emptyDir with `kubectl get pod -n monitoring prometheus-kube-prometheus-stack-prometheus-0 -o jsonpath='{.spec.volumes}'`, (4) if a Helm upgrade caused it, carry the storage patch into that workflow (see docs/monitoring/retention-disk.md)."
+
+        # PrometheusHistoryInsufficient
+        # 보존된 이력이 30일 baseline 요구에 미달하면 발화한다. capacity-trends 계열 z-score 4종이
+        # `[30d] offset 1h` 를 참조하고 overview 대시보드가 `now-4w` 를 쓰므로, 이력이 31일 미만이면 해당
+        # 산출물과 그것을 소비하는 *AnomalyDetected alert 4종이 신뢰할 수 없거나 미emit 상태다. 즉 본
+        # alert 는 장애 신호가 아니라 "capacity 판정이 현재 눈먼 상태"라는 데이터 품질 신호다.
+        #
+        # 정상 운영에서는 이력이 retention (40일) 에 머물러 발화하지 않고, 이력 소실이나 신규 구축 직후에만
+        # 발화해 baseline 재축적 기간을 알린다. 두 원인을 임계로 구분할 수는 없으므로 description 에서
+        # 판별 방법을 안내한다. 재축적 기간 내내 유지되는 성격이라 capacity 분기 (repeatInterval=12h) 로
+        # 흡수시키고 for 를 1시간으로 둬 재시작 직후의 짧은 흔들림은 무시한다.
+        - alert: PrometheusHistoryInsufficient
+          expr: (time() - prometheus_tsdb_lowest_timestamp_seconds) / 86400 < 31
+          for: 1h
+          labels:
+            severity: warning
+            component: prometheus-capacity
+          annotations:
+            summary: "Prometheus retained history {{ $value | humanize }}d below the 31d baseline requirement"
+            description: "Retained TSDB history is under 31 days, so the capacity-trends z-scores that read a 30-day baseline and the overview dashboard 4-week panels are incomplete, and the four *AnomalyDetected alerts derived from them are effectively blind until the window refills. Action: (1) distinguish the cause by checking whether the PVC survived (PrometheusStorageNotPersistent firing means history was destroyed, otherwise this is a fresh or recently rebuilt TSDB), (2) if history was destroyed investigate the pod restart cause and confirm storage is persistent, (3) otherwise treat capacity anomaly detection as unavailable and re-evaluate after the window refills."
