@@ -1028,6 +1028,15 @@ spec:
         # pod:gpu_idle_cause_weight:5m 가 (victim_namespace, victim_pod, cause) 라벨 셋 을 가지므로
         # offset 의 vector 매칭 에 group_left() 가 필요 하다. weight 시리즈 가 idle 게이팅 으로 emit
         # 되지 않는 시간대 는 본 record 도 자연 emit 되지 않는다.
+        #
+        # #408 cause 셋 비대칭: cluster/node 차원 은 cause 9 종, victim 차원 은 6 종 이다. device
+        # 계열 3 종 (dcgm_pcie_replay, nccl_collective_stall, thermal) 은 node/device 단위 신호 라
+        # pod attribution 근거 가 없어 victim 차원 에 두지 않는다 (pcie_saturation 만 GPU 귀속 pod
+        # broadcast 로 예외 편입). 따라서 cluster dominant 가 thermal 같은 device cause 일 때 victim
+        # dominant 는 그 cause 를 구조적으로 지목 할 수 없고, 운영자 는 cluster/node dominant 를 함께
+        # 봐야 한다. 주의: 아래 offset 목록 에 없는 cause 는 + on(cause) group_left() 매칭 실패 로
+        # dominant 후보 에서 조용히 탈락 한다. pod:gpu_idle_cause_score:5m 에 cause 를 추가 하면 본
+        # offset 목록 과 gpuobs-victim-cause-gating.test.yaml 의 승리 가드 를 함께 갱신 해야 한다.
         - record: victim:gpu_idle_dominant_cause:5m
           expr: |
             topk by(node, victim_namespace, victim_pod) (1,

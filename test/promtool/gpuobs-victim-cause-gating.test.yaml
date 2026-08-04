@@ -59,3 +59,43 @@ tests:
         exp_samples:
           - labels: 'pod:gpu_idle_cause_score:5m{cause="pcie_saturation",node="n1",victim_namespace="ns",victim_pod="v-gpu"}'
             value: 0.8
+  # tie-breaker offset 가드 (#408): 유휴 노드 n1 에 victim 6개, 각 victim 은 서로 다른 cause 1종만
+  # 보유해 그 cause 가 자기 dominant 로 승리해야 한다 (weight 1 + cause 별 offset). offset 목록에서
+  # cause 가 누락되면 + on(cause) group_left() 매칭 실패로 해당 victim 의 dominant 시리즈 자체가
+  # 사라져 본 가드가 잡는다. pod:gpu_idle_cause_score:5m 에 cause 를 추가하면 offset 목록과 본
+  # 블록을 함께 갱신한다.
+  - interval: 30s
+    input_series:
+      - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
+        values: '5x40'
+      - series: 'pod:cpu_throttle_score:5m{node="n1",src_namespace="ns",src_pod="v-cpu"}'
+        values: '0.8x40'
+      - series: 'pod:memory_pressure_score:5m{node="n1",src_namespace="ns",src_pod="v-mem"}'
+        values: '0.8x40'
+      - series: 'pod:network_pressure_score:5m{node="n1",src_namespace="ns",src_pod="v-net"}'
+        values: '0.8x40'
+      - series: 'pod:host_compute_stall_score:5m{node="n1",src_namespace="ns",src_pod="v-stall"}'
+        values: '0.8x40'
+      - series: 'pod:cgroup_contention_score:5m{node="n1",src_namespace="ns",src_pod="v-cg"}'
+        values: '0.8x40'
+      - series: 'node:gpu_pcie_saturation_score:5m{node="n1"}'
+        values: '0.8x40'
+      - series: 'gpuobs_pod_memory_used_bytes{node="n1",src_namespace="ns",src_pod="v-pcie",src_pod_uid="u1",gpu_uuid="g1",gpu_index="0"}'
+        values: '1000000x40'
+
+    promql_expr_test:
+      - expr: victim:gpu_idle_dominant_cause:5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'victim:gpu_idle_dominant_cause:5m{cause="cgroup_contention",node="n1",victim_namespace="ns",victim_pod="v-cg"}'
+            value: 1.000006
+          - labels: 'victim:gpu_idle_dominant_cause:5m{cause="cpu_throttle",node="n1",victim_namespace="ns",victim_pod="v-cpu"}'
+            value: 1.000005
+          - labels: 'victim:gpu_idle_dominant_cause:5m{cause="host_compute_stall",node="n1",victim_namespace="ns",victim_pod="v-stall"}'
+            value: 1.000004
+          - labels: 'victim:gpu_idle_dominant_cause:5m{cause="memory_pressure",node="n1",victim_namespace="ns",victim_pod="v-mem"}'
+            value: 1.000003
+          - labels: 'victim:gpu_idle_dominant_cause:5m{cause="network_pressure",node="n1",victim_namespace="ns",victim_pod="v-net"}'
+            value: 1.000002
+          - labels: 'victim:gpu_idle_dominant_cause:5m{cause="pcie_saturation",node="n1",victim_namespace="ns",victim_pod="v-pcie"}'
+            value: 1.000001

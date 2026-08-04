@@ -69,3 +69,16 @@ dev cluster 의 RTX 3090 단일 GPU 는 MIG 미지원이라 본 PR 의 검증은
 - `gpuobs_cuda_pid_multi_gpu_count > 0` 일 때 `gpuobs_pod_utilization_percent` 값이 흔들리는 경우 nn.DataParallel 또는 model parallelism workload 가 단일 process 로 multi-GPU 점유 중인 신호. MIG 분할 환경에서는 process 가 단일 instance 에 bind 되어 본 문제 자연 해소.
 - `gpuobs_mps_active == 1` 환경에서 절대 수치 해석을 피하고 추세 비교만 활용. MPS 분할 정밀화는 본 이슈 비목표.
 - time-slicing (nvidia-device-plugin `sharing.timeSlicing`) 환경의 Pod util 은 NVML sampling window 가 time-slice 경계와 정렬 보장이 없어 정확한 wall-clock 분할이 안 된다. 본 환경의 정밀 측정도 본 이슈 비목표.
+
+## victim 차원 cause 셋 비대칭 (#408)
+
+idle cause 판정의 cause 셋은 차원마다 다르다. cluster/node 차원은 9종이고 victim(pod) 차원은 6종이다.
+
+- victim 차원이 갖는 cause: `cpu_throttle`, `memory_pressure`, `network_pressure`, `host_compute_stall`, `cgroup_contention`, `pcie_saturation`
+- victim 차원이 갖지 않는 cause: `dcgm_pcie_replay`, `nccl_collective_stall`, `thermal`
+
+device 계열 3종은 node/device 단위 신호라 pod attribution 근거가 없어 victim 차원에 두지 않는다. `pcie_saturation`만 GPU 귀속 pod(`gpuobs_pod_memory_used_bytes` 보유) broadcast 로 예외 편입되며, #408 부터 broadcast 대상이 노드 전체 pod 가 아니라 GPU 귀속 pod 로 한정된다. 운영 해석 규칙은 다음과 같다.
+
+- cluster/node dominant 가 `thermal` 같은 device cause 일 때 victim dominant 는 그 cause 를 구조적으로 지목할 수 없으므로, victim dominant 만 보고 원인을 확정하지 말고 cluster/node dominant 를 함께 본다
+- victim tie-breaker offset 목록에 없는 cause 는 `+ on(cause) group_left()` 매칭 실패로 dominant 후보에서 조용히 탈락한다. `pod:gpu_idle_cause_score:5m` 에 cause 를 추가하면 offset 목록과 `test/promtool/gpuobs-victim-cause-gating.test.yaml` 의 승리 가드를 함께 갱신한다
+- victim 차원에 device cause 3종을 추가하는 확장은 별도 판단 사안이다 (#408 비목표)
