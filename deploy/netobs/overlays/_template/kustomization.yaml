@@ -25,7 +25,7 @@ labels:
 images:
   - name: netobs-agent
     newName: ghcr.io/inno-rnd-project/netobs-agent
-    newTag: "3.0.0"
+    newTag: "3.0.1"
 
 patches:
   - path: patch-daemonset.yaml
