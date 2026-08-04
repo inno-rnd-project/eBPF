@@ -6,21 +6,17 @@ metadata:
     app.kubernetes.io/name: netobs-agent
     app.kubernetes.io/part-of: ebpf-project
     app.kubernetes.io/component: network-observer
+# #410 최소 권한. internal/kube 의 Resolver 가 띄우는 informer 는 pods 와 services 와 nodes 세 종
+# 뿐이라 그 외 리소스 권한은 코드에서 호출하는 곳이 없다. 종전 namespaces 와 endpoints 와
+# endpointslices 는 미사용 권한이었고, 잉여 read 권한은 토큰 유출 시 조회 가능한 범위를 넓히므로
+# 제거한다. informer 를 추가하면 그 리소스를 여기에 함께 등재한다 (누락 시 agent 로그에 forbidden
+# 이 남는다).
 rules:
   - apiGroups: [""]
     resources:
       - pods
       - nodes
-      - namespaces
       - services
-      - endpoints
-    verbs:
-      - get
-      - list
-      - watch
-  - apiGroups: ["discovery.k8s.io"]
-    resources:
-      - endpointslices
     verbs:
       - get
       - list

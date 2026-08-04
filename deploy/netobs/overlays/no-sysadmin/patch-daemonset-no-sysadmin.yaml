@@ -1,0 +1,23 @@
+# #410 CAP_SYS_ADMIN 제거 patch. capabilities.add 를 BPF 와 PERFMON 과 SYSLOG 3종으로 교체한다.
+# strategic merge 는 list 를 원소 병합이 아닌 교체로 처리하므로 add 목록 전체를 다시 적는다.
+#
+# 전제: 전 노드의 kernel.perf_event_paranoid 가 2 이하여야 한다. 4 (Ubuntu 기본) 에서는 CAP_PERFMON
+# 이 무력화되어 kprobe attach 가 전량 실패하고 netobs_bpf_program_loaded 가 0 으로 떨어진다.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: netobs-agent
+  namespace: ebpf-project
+spec:
+  template:
+    spec:
+      containers:
+        - name: netobs-agent
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - BPF
+                - PERFMON
+                - SYSLOG

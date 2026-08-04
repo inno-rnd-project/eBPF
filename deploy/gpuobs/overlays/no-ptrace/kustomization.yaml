@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ebpf-project
+
+# #410 SYS_PTRACE 제거 overlay. base 의 CAP_SYS_PTRACE 는 non-root GPU 워크로드의
+# /proc/<pid>/environ (mode 0400) 에서 NVIDIA_VISIBLE_DEVICES 를 읽어 multi-GPU 의 ordinal 과 UUID
+# 매핑 정확도를 유지하는 데만 쓰인다. 단일 GPU 노드나 매핑 모호성이 없는 운영에서는 제거해도 pod
+# 단위 GPU 메트릭 (cgroup 기반 귀속) 이 유지된다.
+#
+# 판정과 적용 후 확인 절차는 docs/deploy/kernel-matrix.md 의 "gpuobs SYS_PTRACE 제거 판정" 절을
+# 따른다. 이미지 태그는 운영 overlay 값을 써야 하므로 본 overlay 를 단독 배포하지 말고 운영
+# overlay 의 patches 목록에 patch-daemonset-no-ptrace.yaml 을 추가하는 방식으로 쓴다.
+resources:
+  - ../../base
+
+patches:
+  - path: patch-daemonset-no-ptrace.yaml
