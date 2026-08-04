@@ -39,3 +39,23 @@ tests:
           - labels: 'pod:gpu_idle_cause_weight:5m{cause="cpu_throttle",node="n1",victim_namespace="ns",victim_pod="v-idle"}'
             value: 1
 
+  # pcie broadcast 한정 (#408): GPU 귀속 pod (gpuobs_pod_memory_used_bytes 보유) 만 pcie_saturation
+  # cause score 를 받는다. 종전 kube_pod_info broadcast 면 비 GPU pod (v-plain) 도 동일 score 를
+  # 복제받았다.
+  - interval: 30s
+    input_series:
+      - series: 'gpuobs_device_utilization_percent{node="n1",gpu_uuid="g1"}'
+        values: '5x40'
+      - series: 'node:gpu_pcie_saturation_score:5m{node="n1"}'
+        values: '0.8x40'
+      - series: 'gpuobs_pod_memory_used_bytes{node="n1",src_namespace="ns",src_pod="v-gpu",src_pod_uid="u1",gpu_uuid="g1",gpu_index="0"}'
+        values: '1000000x40'
+      - series: 'kube_pod_info{node="n1",namespace="ns",pod="v-plain"}'
+        values: '1x40'
+
+    promql_expr_test:
+      - expr: pod:gpu_idle_cause_score:5m{cause="pcie_saturation"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'pod:gpu_idle_cause_score:5m{cause="pcie_saturation",node="n1",victim_namespace="ns",victim_pod="v-gpu"}'
+            value: 0.8

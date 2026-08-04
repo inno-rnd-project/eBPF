@@ -908,12 +908,14 @@ spec:
         # memory_pressure 와 host_compute_stall 와 network_pressure) 는 이미 pod 단위 emit 중인 base
         # score 를 label_replace 로 src_namespace → victim_namespace, src_pod → victim_pod 로 alias
         # 한 뒤 (victim_namespace, victim_pod) 로 sum 해 잔여 라벨을 정리 한다. pcie_saturation 은
-        # node 단위 단일 시리즈 (node:gpu_pcie_saturation_score:5m) 라 kube_pod_info 의 (node,
-        # namespace, pod) 매핑 으로 GPU 노드 의 모든 Pod 에 PCIe score 를 broadcast 한다. PCIe 압박
-        # 의 Pod 단위 attribution 은 불가능 하므로 노드 전체 Pod 에 동일 score 를 부여 한 뒤 dashboard
-        # 와 alert 에서 운영자 가 victim 의 dimension 라벨 과 함께 해석 한다. dev cluster 에서 CUDA
-        # workload 가 없는 경우 host_compute_stall base 시리즈 가 비어 자연 skip 되어 본 helper 도
-        # 해당 cause 시리즈 가 emit 되지 않는다.
+        # node 단위 단일 시리즈 (node:gpu_pcie_saturation_score:5m) 라 pod 단위 attribution 이 불가능
+        # 하므로 노드 의 pod 들 에 동일 score 를 broadcast 한다. #408 부터 broadcast 대상 은 kube_pod_
+        # info 의 노드 전체 pod 가 아니라 GPU 귀속 pod (gpuobs_pod_memory_used_bytes 보유) 로 한정
+        # 된다. 비 GPU 워크로드 는 PCIe 압박 의 victim 이 될 수 없는데 도 종전 broadcast 가 pod x
+        # cause 시리즈 를 노드 전체 pod 로 복제 해 카디널리티 를 불필요 하게 키웠다. GPU pod 이 없는
+        # 시간대 는 본 cause 시리즈 가 자연 skip 된다. dev cluster 에서 CUDA workload 가 없는 경우
+        # host_compute_stall base 시리즈 가 비어 자연 skip 되어 본 helper 도 해당 cause 시리즈 가
+        # emit 되지 않는다.
         - record: pod:gpu_idle_cause_score:5m
           labels:
             cause: pcie_saturation
@@ -923,9 +925,9 @@ spec:
               * on(node) group_right()
               (
                 label_replace(label_replace(
-                  sum by(node, namespace, pod) (kube_pod_info),
-                  "victim_namespace", "$1", "namespace", "(.+)"),
-                  "victim_pod", "$1", "pod", "(.+)")
+                  sum by(node, src_namespace, src_pod) (gpuobs_pod_memory_used_bytes),
+                  "victim_namespace", "$1", "src_namespace", "(.+)"),
+                  "victim_pod", "$1", "src_pod", "(.+)")
                 * 0 + 1
               )
             )
