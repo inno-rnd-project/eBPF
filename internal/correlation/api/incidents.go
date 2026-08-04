@@ -31,6 +31,7 @@ func (h *IncidentsHandler) Register(mux *http.ServeMux) {
 		http.HandlerFunc(h.GetIncidents),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 }

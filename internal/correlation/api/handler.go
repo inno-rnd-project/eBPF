@@ -98,36 +98,42 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		http.HandlerFunc(h.ListNoisyNeighbors),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/cross-node-interference", apicommon.Chain(
 		http.HandlerFunc(h.ListCrossNode),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/service-impact", apicommon.Chain(
 		http.HandlerFunc(h.ListServiceImpact),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/cross-level", apicommon.Chain(
 		http.HandlerFunc(h.ListCrossLevel),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/impact-graph", apicommon.Chain(
 		http.HandlerFunc(h.GetImpactGraph),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/impact-paths", apicommon.Chain(
 		http.HandlerFunc(h.ListImpactPaths),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 }

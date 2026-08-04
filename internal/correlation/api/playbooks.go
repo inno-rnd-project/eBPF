@@ -26,6 +26,7 @@ func (h *PlaybooksHandler) Register(mux *http.ServeMux) {
 		http.HandlerFunc(h.GetPlaybooks),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 }
