@@ -54,6 +54,10 @@ type PodMemory struct {
 // @Router       /api/v1/memory [get]
 func (h *SynthesisHandler) GetMemory(w http.ResponseWriter, r *http.Request) {
 	nsFilter := strings.TrimSpace(r.URL.Query().Get("namespace"))
+	if _, err := parseNamespaceParam(nsFilter); err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_namespace", err.Error())
+		return
+	}
 	limit := 30
 	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

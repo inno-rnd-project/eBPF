@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -857,5 +858,18 @@ func TestSynthesis_GetNode_TopPodsFilterOptIn(t *testing.T) {
 	low := get(qLow, "/api/v1/node/worker2?is_filtered=true")
 	if len(low.TopPods) != 0 {
 		t.Errorf("dominant low + filtered top_pods=%+v want 비움", low.TopPods)
+	}
+}
+
+// TestGetNode_InvalidNodeRejected 는 #409 의 GetNode DNS-1123 검증을 고정한다. 종전에는 빈 값과
+// 슬래시만 거부해 임의 장문 경로가 17개 PromQL 로 증폭되고 응답과 로그에 반사됐다.
+func TestGetNode_InvalidNodeRejected(t *testing.T) {
+	h := NewSynthesisHandler(nil, nil, nil)
+	for _, node := range []string{strings.Repeat("a", 254), "UPPER", `evil"}`, "no room"} {
+		rec := httptest.NewRecorder()
+		h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/"+url.PathEscape(node), nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("node=%q status=%d want 400", node, rec.Code)
+		}
 	}
 }

@@ -32,3 +32,22 @@ func TestParseNodeParam(t *testing.T) {
 		}
 	}
 }
+
+// TestParseNamespaceParam 은 #409 의 namespace 공통 검증을 테이블로 고정한다.
+func TestParseNamespaceParam(t *testing.T) {
+	valid := []string{"", "default", "kube-system", "a", "ns-1", "monitoring"}
+	for _, in := range valid {
+		if _, err := parseNamespaceParam(in); err != nil {
+			t.Errorf("parseNamespaceParam(%q) err=%v want nil", in, err)
+		}
+	}
+	invalid := []string{
+		"UPPER", "has_underscore", "has.dot", "-lead", "trail-",
+		`evil"} or up{`, "line\nbreak", strings.Repeat("a", 64),
+	}
+	for _, in := range invalid {
+		if _, err := parseNamespaceParam(in); err == nil {
+			t.Errorf("parseNamespaceParam(%q) err=nil want 거부", in)
+		}
+	}
+}

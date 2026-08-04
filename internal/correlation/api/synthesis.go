@@ -759,6 +759,12 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node", "경로는 /api/v1/node/{node} 형식이어야 합니다")
 		return
 	}
+	// #409 형제 핸들러들과 동일한 DNS-1123 검증. 종전에는 빈 값과 슬래시만 거부해 10만 자 경로가
+	// 17개 PromQL 로 증폭되고 응답과 로그에 반사됐다.
+	if _, err := parseNodeParam(node); err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node", err.Error())
+		return
+	}
 	// #380 is_filtered=true 면 top_pods 를 원인 후보 임계로 거른다 (opt-in). 미전달 기본은 종전대로 전
 	// pod 를 노출해 기존 소비자에 무영향이다 (additive 쿼리 파라미터, 응답 스키마 불변).
 	isFiltered := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("is_filtered")), "true")

@@ -287,6 +287,10 @@ func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
 // @Router       /api/v1/pods [get]
 func (h *SynthesisHandler) GetPods(w http.ResponseWriter, r *http.Request) {
 	nsFilter := strings.TrimSpace(r.URL.Query().Get("namespace"))
+	if _, err := parseNamespaceParam(nsFilter); err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_namespace", err.Error())
+		return
+	}
 	resp := PodsResponse{GeneratedAt: time.Now().UTC().Format(time.RFC3339), Pods: []PodInventory{}}
 	if h.querier == nil {
 		apicommon.WriteJSON(w, resp)
@@ -313,7 +317,9 @@ func (h *SynthesisHandler) GetPods(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// kube_pod_info: base set. namespace 필터는 PromQL injection 을 피해 Go 측에서 적용한다.
+	// kube_pod_info: base set. namespace 는 parseNamespaceParam 검증을 통과한 값이라 PromQL %q 결합도
+	// 안전하나 (#409 단일 정책), 본 핸들러는 base set 전체를 한 쿼리로 받아 여러 파생 목록을 만들므로
+	// Go 측 필터를 유지한다.
 	pods := []*PodInventory{}
 	byUID := map[string]*PodInventory{}
 	for _, sm := range res[0] {

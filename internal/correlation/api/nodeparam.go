@@ -29,6 +29,27 @@ func parseNodeParam(raw string) (string, error) {
 	return raw, nil
 }
 
+// namespacePattern 은 Kubernetes namespace 의 DNS-1123 label 형식이다. subdomain (node 이름) 과
+// 달리 점을 허용하지 않는다.
+var namespacePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// parseNamespaceParam 은 #409 의 namespace 쿼리 파라미터 공통 검증이다. 빈 값은 필터 미적용 의미
+// 그대로 통과시키고, 값이 있으면 DNS-1123 label (63자 이하) 형식을 강제한다. 검증 통과 값은 PromQL
+// %q 결합과 Go 측 비교 어느 쪽에 쓰여도 안전하다는 단일 정책의 진입점이며, 종전에는 6개 핸들러
+// 어디서도 검증이 없어 임의 문자열이 쿼리와 응답과 로그에 반사됐다.
+func parseNamespaceParam(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	if len(raw) > 63 {
+		return "", fmt.Errorf("namespace 가 63 자를 초과합니다")
+	}
+	if !namespacePattern.MatchString(raw) {
+		return "", fmt.Errorf("namespace 가 DNS-1123 label 형식이 아닙니다: %q", raw)
+	}
+	return raw, nil
+}
+
 // nodeMatcher 는 검증된 node 로 PromQL exact matcher 조각 (node="...") 을 만든다. node 가 비면 빈
 // 문자열을 돌려줘 promSelector 에서 자연 제외된다. 값은 parseNodeParam 검증을 통과한 DNS-1123 문자열
 // 이라 %q 결합이 안전하다.
