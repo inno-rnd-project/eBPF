@@ -79,6 +79,9 @@ func (g *DropFlowGuard) Admit(srcNamespace, srcPod, srcIP string, srcPort uint16
 	defer g.mu.Unlock()
 	if e, ok := g.index[k]; ok {
 		g.lru.MoveToFront(e)
+		// #407 소유 pod 갱신. pod IP 재사용으로 같은 5-tuple 이 새 pod 의 flow 가 되면 entry 소유를
+		// 현재 pod 로 옮겨, 옛 pod 기준 해제가 새 pod 의 활성 슬롯과 시리즈를 회수하는 부정합을 막는다.
+		e.Value.(*dropFlowEntry).srcPod = srcPod
 		return true
 	}
 	if g.lru.Len() >= g.maxN {

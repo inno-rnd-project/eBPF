@@ -161,3 +161,24 @@ func TestDropFlowGuard_ReleaseStalePodsPreservesUnattributed(t *testing.T) {
 		t.Errorf("Size=%d want 1 (귀속 불명 entry 보존)", g.Size())
 	}
 }
+
+// TestDropFlowGuard_AdmitHitRefreshesOwner 는 IP 재사용으로 같은 5-tuple 이 새 pod 의 flow 가 됐을
+// 때 entry 소유가 갱신되어, 옛 pod 기준 해제가 새 pod 의 활성 슬롯을 회수하지 않는지 검증한다 (#407).
+func TestDropFlowGuard_AdmitHitRefreshesOwner(t *testing.T) {
+	resetMetrics()
+	g := NewDropFlowGuard([]string{"ns"}, 10)
+	if !g.Admit("ns", "pod-old", "10.0.0.1", 80, "10.0.0.9", 443, "TCP") {
+		t.Fatal("pod-old admit 실패")
+	}
+	// 같은 5-tuple 재방문 (IP 재사용, 새 소유 pod).
+	if !g.Admit("ns", "pod-new", "10.0.0.1", 80, "10.0.0.9", 443, "TCP") {
+		t.Fatal("pod-new admit 실패 (캐시 hit 경로)")
+	}
+	// pod-old 는 죽었지만 entry 소유가 pod-new 로 갱신되어 해제 대상이 아니다.
+	if deleted := g.ReleaseStalePods(map[[2]string]struct{}{{"ns", "pod-new"}: {}}); deleted != 0 {
+		t.Errorf("deleted=%d want 0 (소유 갱신으로 활성 entry 보존)", deleted)
+	}
+	if g.Size() != 1 {
+		t.Errorf("Size=%d want 1", g.Size())
+	}
+}
