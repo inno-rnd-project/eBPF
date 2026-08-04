@@ -1,13 +1,22 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# 이슈 #88 의 capacity-trends 패널 데이터 토대 확보 용 prometheus retention 60일 상향 patch.
-# kube-prometheus-stack operator 가 spec.retention 변경 시 자동 으로 storage flag
-# (--storage.tsdb.retention.time=60d) 를 prometheus pod 에 재적용 한다. 본 patch 는 monitoring
-# stack 의 declarative 정의가 아닌 application observability 영역의 retention 요구사항을 cluster
-# 에 반영 하는 helper 라 monitoring namespace 의 operator-managed CR 에 strategic merge 적용 한다.
+# kube-prometheus-stack은 chart 기본값으로 설치돼 있고(사용자 지정 values 없음), 본 디렉터리가 application
+# observability 영역의 요구사항을 operator-managed CR에 strategic merge로 반영하는 helper 다. monitoring
+# stack 자체의 declarative 정의가 아니므로 Helm values를 건드리지 않고 여기서 patch를 관리한다.
+#
+# retention patch는 capacity-trends baseline이 요구하는 보존 기간과 노드 디스크 보호용 크기 상한을,
+# storage patch는 TSDB 영속 볼륨과 배치 노드를 선언한다. operator가 두 CR 변경을 감지해 prometheus pod의
+# storage flag와 StatefulSet volumeClaimTemplate에 반영한다. 각 값의 산정 근거는 해당 파일 주석에 있다.
 namespace: monitoring
 
+# storage patch는 retention patch와 동일한 Prometheus CR을 대상으로 하므로 resources에 중복 등록할 수
+# 없다. patches로 두어 두 선언이 하나의 partial CR로 병합된 뒤 apply 시점에 라이브 CR에 strategic merge
+# 되게 한다. 파일을 나눈 이유는 보존 기간과 스토리지의 산정 근거가 서로 독립이라 각 주석을 분리해
+# 유지하기 위함이다.
 resources:
   - prometheus-retention-patch.yaml
   - prometheus-pv-alert.yaml
+
+patches:
+  - path: prometheus-storage-patch.yaml

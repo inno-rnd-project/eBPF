@@ -1,0 +1,73 @@
+# monitoring-storage-persistence.test.yaml 은 PR #424 의 TSDB 영속성 감지기 2종을 검증한다.
+# PrometheusStorageNotPersistent 는 PVC 부재 + kube-state-metrics 정상일 때만 발화하고 (up 게이트가
+# ksm 장애 시의 absent 오발화를 차단), PrometheusHistoryInsufficient 는 보존 이력이 31일 미만일 때
+# 발화하며 summary 의 일수 렌더링이 1 미만 값에서도 소수 표기로 유지된다.
+rule_files:
+  - monitoring.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # 케이스 1: PVC 시리즈 부재 + ksm 정상 → 발화.
+  - interval: 30s
+    input_series:
+      - series: 'up{job="kube-state-metrics"}'
+        values: '1x40'
+    alert_rule_test:
+      - alertname: PrometheusStorageNotPersistent
+        eval_time: 15m
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: prometheus
+              namespace: monitoring
+            exp_annotations:
+              summary: "Prometheus TSDB PVC missing (storage reverted to ephemeral)"
+              description: "The Prometheus TSDB PersistentVolumeClaim is absent for 10 minutes while kube-state-metrics is healthy, which means the storage declaration was lost and the pod is running on ephemeral storage. Any pod restart will destroy all metric history and there is no remote_write or Thanos backup to recover from. Action: (1) verify with `kubectl get pvc -n monitoring`, (2) re-apply the declaration with `kubectl apply -k deploy/monitoring/`, (3) confirm the pod volume is a PVC and not emptyDir with `kubectl get pod -n monitoring prometheus-kube-prometheus-stack-prometheus-0 -o jsonpath='{.spec.volumes}'`, (4) if a Helm upgrade caused it, carry the storage patch into that workflow (see docs/monitoring/retention-disk.md)."
+
+  # 케이스 2: ksm 자체가 죽은 상태 → up 게이트가 막아 미발화 (absent 오발화 차단).
+  - interval: 30s
+    input_series: []
+    alert_rule_test:
+      - alertname: PrometheusStorageNotPersistent
+        eval_time: 15m
+        exp_alerts: []
+
+  # 케이스 3: PVC 시리즈 존재 → 미발화.
+  - interval: 30s
+    input_series:
+      - series: 'kube_persistentvolumeclaim_info{namespace="monitoring", persistentvolumeclaim="prometheus-kube-prometheus-stack-prometheus-db-prometheus-kube-prometheus-stack-prometheus-0"}'
+        values: '1x40'
+      - series: 'up{job="kube-state-metrics"}'
+        values: '1x40'
+    alert_rule_test:
+      - alertname: PrometheusStorageNotPersistent
+        eval_time: 15m
+        exp_alerts: []
+
+  # 케이스 4: 이력 0.1일 (신규 구축 직후) → 발화하며 summary 가 소수 일수로 렌더링된다. 종전
+  # humanize 는 1 미만 값에 SI 접두어를 붙여 "90.14md" 로 오독을 만들었다.
+  - interval: 30s
+    input_series:
+      - series: 'prometheus_tsdb_lowest_timestamp_seconds'
+        values: '0x240'
+    alert_rule_test:
+      - alertname: PrometheusHistoryInsufficient
+        eval_time: 2h
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: prometheus-capacity
+            exp_annotations:
+              summary: "Prometheus retained history 0.1d below the 31d baseline requirement"
+              description: "Retained TSDB history is under 31 days, so the capacity-trends z-scores that read a 30-day baseline and the overview dashboard 4-week panels are incomplete, and the four *AnomalyDetected alerts derived from them are effectively blind until the window refills. Action: (1) distinguish the cause by checking whether the PVC survived (PrometheusStorageNotPersistent firing means history was destroyed, otherwise this is a fresh or recently rebuilt TSDB), (2) if history was destroyed investigate the pod restart cause and confirm storage is persistent, (3) otherwise treat capacity anomaly detection as unavailable and re-evaluate after the window refills."
+
+  # 케이스 5: 이력 32일 → 미발화.
+  - interval: 30s
+    input_series:
+      - series: 'prometheus_tsdb_lowest_timestamp_seconds'
+        values: '-2757600x240'
+    alert_rule_test:
+      - alertname: PrometheusHistoryInsufficient
+        eval_time: 2h
+        exp_alerts: []

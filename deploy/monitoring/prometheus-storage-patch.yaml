@@ -1,0 +1,36 @@
+# Prometheus TSDB의 영속 스토리지와 배치 노드 선언이다.
+#
+# 전환 배경: 종전 스토리지가 chart 기본값인 emptyDir 였고 PVC도 StorageClass도 없어, pod가 재생성되는
+# 모든 사건(노드 재부팅, OOM, CR 변경으로 인한 operator roll)이 TSDB 전량 삭제로 직결됐다. 실제로
+# retention 변경 patch가 operator roll을 유발해 최대 60일 이력 47 GiB가 소실됐고 remote_write와 Thanos가
+# 없어 복구 경로도 없었다. local-path provisioner(`local-path-storage` namespace)를 도입해 PVC로 전환한다.
+#
+# 노드 고정: master와 worker 3대의 루트 디스크가 각 82 GiB라 TSDB를 수용하지 못하고(전환 전 worker1이
+# TSDB 47 GiB 때문에 84% 포화), gpu 노드만 495 GiB로 여유가 있다. local-path PV는 노드 로컬 디렉터리라
+# node affinity가 자동으로 붙으므로 배치를 명시해 pod와 볼륨의 노드가 어긋나지 않게 한다.
+# 트레이드오프: gpu 노드는 본 프로젝트의 GPU 부하 테스트 대상이라 관측자가 관측 대상과 같은 노드에
+# 상주한다. 부하 실험이 Prometheus의 디스크와 CPU에 영향을 줄 수 있음을 인지하고 감수하는 선택이며,
+# 82 GiB 노드로는 이전이 불가능하다.
+#
+# 한계: local-path는 hostPath 기반이라 pod 재시작과 노드 재부팅은 견디지만 노드 자체 소실은 견디지
+# 못한다. 실제 내구성이 필요하면 네트워크 스토리지나 remote_write 백업이 별도로 필요하다.
+# 용량: 요청 60Gi는 디렉터리 기반이라 강제되지 않으므로 실질 디스크 상한은 retention patch의
+# retentionSize가 담당한다. StorageClass가 volume expansion을 지원하지 않아 사후 확장은 PVC 재생성이
+# 필요하다.
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: kube-prometheus-stack-prometheus
+  namespace: monitoring
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: gpu
+  storage:
+    volumeClaimTemplate:
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 60Gi

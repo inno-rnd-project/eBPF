@@ -1,10 +1,19 @@
-# 이슈 #88 의 capacity-trends 패널이 4주 heatmap 과 30일 baseline offset 윈도우를 산정 하므로
-# 최소 60일치 sample 이 prometheus tsdb 에 누적 되어야 한다. kube-prometheus-stack 의 기본
-# retention 10일 과 정합 안 되므로 본 patch 로 60일 상향 적용한다.
+# capacity-trends 계열 rule과 overview 대시보드가 요구하는 최장 참조 구간을 덮는 retention이다.
+# 초기 도입(#88)은 z-score baseline이 `[30d] offset 30d` 로 30~60일 전 구간을 참조해 60일이 필요했으나,
+# #370 에서 trailing `[30d] offset 1h` 로 전환해 60일 요구가 소멸했다. 현재 최장 참조는 rule의 30일 1시간과
+# overview 대시보드의 `now-4w`(28일)이라 40일이면 약 10일 여유가 남는다. kube-prometheus-stack의 기본
+# retention 10일로는 30일 baseline이 성립하지 않으므로 본 patch로 상향 적용한다.
+#
+# retentionSize는 노드 디스크를 보호하는 실질 상한이다. local-path PV는 디렉터리 기반이라 PVC 요청 용량이
+# 강제되지 않으므로 크기 통제는 이 필드가 담당한다. 실측 기준은 블록 47.1 GiB에 retention 60일이라
+# 0.785 GiB/day 였고, 시리즈가 29.9만에서 18.9만으로 줄어(#403) 현재는 약 0.5 GiB/day 라 40일 누적은
+# 약 20 GiB로 추정된다. 40GB는 약 2배 여유이며 크기 상한이 시간 상한보다 먼저 걸려 실질 retention이
+# 30일 미만으로 떨어지는 것을 방지한다. 시리즈 규모가 크게 늘면 함께 재산정한다.
 apiVersion: monitoring.coreos.com/v1
 kind: Prometheus
 metadata:
   name: kube-prometheus-stack-prometheus
   namespace: monitoring
 spec:
-  retention: 60d
+  retention: 40d
+  retentionSize: 40GB
