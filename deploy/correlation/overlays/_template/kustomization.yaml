@@ -25,7 +25,7 @@ labels:
 images:
   - name: correlation-exporter
     newName: ghcr.io/inno-rnd-project/correlation-exporter
-    newTag: "2.9.7"
+    newTag: "2.9.8"
 
 patches:
   - path: patch-configmap.yaml
