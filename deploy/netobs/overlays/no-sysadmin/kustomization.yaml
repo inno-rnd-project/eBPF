@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ebpf-project
+
+# #410 SYS_ADMIN 제거 overlay. base 는 Ubuntu 커널의 kernel.perf_event_paranoid=4 대응으로
+# CAP_SYS_ADMIN 을 포함하는데, 이 레벨은 CAP_PERFMON 까지 무력화해 perf_kprobe PMU 생성이 실패한다
+# (#216 canary 실측). paranoid 가 2 이하인 표준 커널에서는 PERFMON 만으로 attach 가 성립하므로 본
+# overlay 로 SYS_ADMIN 을 제거해 hostPID 와 결합된 컨테이너 탈출 면적을 줄인다.
+#
+# 적용 전 판정 절차와 attach 전수 검증은 deploy/netobs/README.md 의 "SYS_ADMIN 제거 판정" 절을
+# 따른다. 노드 중 하나라도 paranoid 가 3 이상이면 그 노드에서 attach 가 전량 실패하므로 적용하지
+# 않는다 (DaemonSet 은 노드별 분기가 없다).
+#
+# 이미지 태그는 base 를 그대로 쓰지 않고 운영 overlay (dev 또는 prod) 와 동일 값을 유지해야 하므로,
+# 본 overlay 를 단독 배포하지 말고 운영 overlay 의 patches 목록에 patch-daemonset-no-sysadmin.yaml
+# 을 추가하는 방식으로 쓴다. 본 디렉터리는 그 patch 파일의 정본과 단독 렌더 검증용이다.
+resources:
+  - ../../base
+
+patches:
+  - path: patch-daemonset-no-sysadmin.yaml
