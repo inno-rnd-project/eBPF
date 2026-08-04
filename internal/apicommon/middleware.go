@@ -3,6 +3,7 @@ package apicommon
 import (
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -54,11 +55,37 @@ func SetCORSAllowedOrigins(origins []string) {
 	corsAllowedOrigins = m
 }
 
+// corsDenied 는 거부된 origin 의 첫 관측 로그용 집합이다 (#409 후속). CORS 거부는 서버가 200 을
+// 돌려주고 브라우저만 읽기를 차단하므로 서버 측 흔적이 없으면 소비자 장애의 진단이 브라우저
+// 콘솔에서만 가능하다. origin 당 1회만 로그하고 집합 크기에 상한을 둬 임의 origin 스팸으로 인한
+// 메모리 증가와 로그 폭주를 막는다.
+var (
+	corsDeniedMu  sync.Mutex
+	corsDenied    = map[string]struct{}{}
+	corsDeniedCap = 64
+)
+
+// logDeniedOriginOnce 는 미등록 origin 을 첫 관측 시 1회 로그한다. 운영자는 이 로그로 어떤 origin
+// 을 API_CORS_ALLOW_ORIGINS 에 등재해야 하는지 서버 측에서 즉시 판별한다.
+func logDeniedOriginOnce(origin string) {
+	corsDeniedMu.Lock()
+	defer corsDeniedMu.Unlock()
+	if _, seen := corsDenied[origin]; seen {
+		return
+	}
+	if len(corsDenied) >= corsDeniedCap {
+		return
+	}
+	corsDenied[origin] = struct{}{}
+	log.Printf("apicommon: cors: denied origin %q (API_CORS_ALLOW_ORIGINS 에 미등재)", origin)
+}
+
 // CORSMiddleware 는 allow-list 에 등록된 origin 의 요청에만 CORS 헤더를 부착한다 (#409). 요청
 // Origin 이 allow-list 와 정확히 일치할 때만 그 origin 을 echo 하고 (와일드카드 미사용), Vary:
 // Origin 으로 캐시 오염을 막는다. allow-list 미설정 (기본) 이나 미등록 origin 은 헤더가 없어
-// 브라우저가 응답 읽기를 차단한다. OPTIONS preflight 는 allow-list 매칭 여부와 무관하게 204 로
-// 종결한다 (매칭 실패면 CORS 헤더가 없어 브라우저가 본요청을 보내지 않는다).
+// 브라우저가 응답 읽기를 차단하며, 거부는 origin 당 1회 서버 로그로 남는다. OPTIONS preflight 는
+// allow-list 매칭 여부와 무관하게 204 로 종결한다 (매칭 실패면 CORS 헤더가 없어 브라우저가
+// 본요청을 보내지 않는다).
 func CORSMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
@@ -68,6 +95,8 @@ func CORSMiddleware(next http.Handler) http.Handler {
 				w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 				w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 				w.Header().Add("Vary", "Origin")
+			} else {
+				logDeniedOriginOnce(origin)
 			}
 		}
 		if r.Method == http.MethodOptions {

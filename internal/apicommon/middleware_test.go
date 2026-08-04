@@ -114,3 +114,30 @@ func TestLoggingMiddleware_PathEscaped(t *testing.T) {
 		t.Errorf("이스케이프된 개행 미포함: %q", out)
 	}
 }
+
+// TestCORSMiddleware_DeniedOriginLoggedOnce 는 미등록 origin 거부가 origin 당 1회만 서버 로그로
+// 남는지 검증한다 (#409 후속). CORS 거부는 브라우저만 읽기를 차단해 서버 흔적이 없으면 소비자
+// 장애 진단이 브라우저 콘솔에서만 가능했다.
+func TestCORSMiddleware_DeniedOriginLoggedOnce(t *testing.T) {
+	SetCORSAllowedOrigins(nil)
+	corsDeniedMu.Lock()
+	corsDenied = map[string]struct{}{}
+	corsDeniedMu.Unlock()
+
+	var buf bytes.Buffer
+	orig := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(orig)
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/x", nil)
+		req.Header.Set("Origin", "http://unregistered.example:3000")
+		CORSMiddleware(okHandler()).ServeHTTP(httptest.NewRecorder(), req)
+	}
+	if got := strings.Count(buf.String(), "denied origin"); got != 1 {
+		t.Errorf("denied 로그 %d회 want 1 (origin 당 1회)", got)
+	}
+	if !strings.Contains(buf.String(), "unregistered.example:3000") {
+		t.Errorf("로그에 origin 미포함: %q", buf.String())
+	}
+}
