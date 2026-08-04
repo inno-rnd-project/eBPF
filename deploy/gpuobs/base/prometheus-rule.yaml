@@ -1001,10 +1001,13 @@ spec:
         # 식 (cause score / 5 cause 합) 을 victim 라벨 차원 으로 적용 한다. on(victim_namespace,
         # victim_pod) group_left() 로 cause 라벨 을 LHS 에서 그대로 보존 한다. (pod:gpu_idle_cause_
         # sum:5m > 0) 필터 로 분모 0 인 victim 은 시리즈 자체 가 emit 되지 않아 NaN 잡음 을 차단 한다.
-        # cluster 단위 weight 와 동일 하게 어느 노드 라도 GPU idle > 0.5 인 시간대 에만 emit 되도록
-        # idle 게이팅 을 둔다. 본 weight 는 correlation_noisy_neighbor_score{victim_namespace,
-        # victim_pod} 와 (victim_namespace, victim_pod) 라벨 join 으로 매칭 되어 dashboard 와 alert
-        # 가 victim 단위 dominant cause 식별 에 사용 한다.
+        # #408 idle 게이팅 은 노드별 (and on(node)) 이다. 종전 전역 스칼라 게이트 (max(node:gpu_idle
+        # :5m) > 0.5) 는 클러스터 에 유휴 노드 가 하나 라도 있으면 바쁜 노드 의 victim weight 까지
+        # 전부 emit 해, cluster 차원 이 #364 로 고친 오귀속 결함 이 pod 차원 에 그대로 남아 있었다.
+        # 본 rule 은 node 라벨 을 보유 하므로 자기 노드 의 idle 상태 로만 게이팅 한다. 본 weight 는
+        # correlation_noisy_neighbor_score{victim_namespace, victim_pod} 와 (victim_namespace,
+        # victim_pod) 라벨 join 으로 매칭 되어 dashboard 와 alert 가 victim 단위 dominant cause 식별
+        # 에 사용 한다.
         - record: pod:gpu_idle_cause_weight:5m
           expr: |
             (
@@ -1012,7 +1015,7 @@ spec:
               / on(node, victim_namespace, victim_pod) group_left()
               (pod:gpu_idle_cause_sum:5m > 0)
             )
-            and on() (max(node:gpu_idle:5m) > 0.5)
+            and on(node) (node:gpu_idle:5m > 0.5)
 
         # victim:gpu_idle_dominant_cause:5m{victim_namespace,victim_pod,cause}
         # #101 victim 단위 dominant cause 단일 시리즈. cluster:gpu_idle_dominant_cause:5m 와 동일
