@@ -28,6 +28,8 @@ netobs DaemonSet 의 base 는 `CAP_SYS_ADMIN` 을 포함한다. Ubuntu 커널 �
 
 현재 이 클러스터의 전 노드는 paranoid 4 (Ubuntu) 이므로 본 overlay 를 적용하지 않는다. overlay 는 표준 커널 클러스터로 확장할 때 쓰며, 렌더 결과는 `kubectl kustomize deploy/netobs/overlays/no-sysadmin` 으로 확인한다.
 
+두 opt-out overlay 는 **검증된 구성이 아니라 준비된 구성**이다. 현 클러스터가 paranoid 4 라 실제 적용과 동작 검증이 불가능해 렌더링만 확인한 상태이므로, 처음 적용하는 클러스터에서는 위 attach 전수 검증을 생략하지 않는다. 특히 attach 실패는 부분 degrade 가 아니라 관측 전면 중단이라 canary 노드 없이 전 노드 동시 적용을 피한다.
+
 ## gpuobs SYS_PTRACE 제거 판정 (#410)
 
 gpuobs 의 `CAP_SYS_PTRACE` 는 non-root GPU 워크로드의 `/proc/<pid>/environ` (mode 0400) 에서 `NVIDIA_VISIBLE_DEVICES` 를 읽어 multi-GPU 환경의 ordinal 과 UUID 매핑 정확도를 유지하는 데만 쓰인다. 단일 GPU 노드나 매핑 정확도가 불필요한 운영에서는 `deploy/gpuobs/overlays/no-ptrace/patch-daemonset-no-ptrace.yaml` 을 운영 overlay 의 `patches` 에 추가해 제거한다. `/proc/<pid>/cgroup` 기반 Pod 귀속은 cap 없이 동작하므로 pod 단위 GPU 메트릭은 유지된다.

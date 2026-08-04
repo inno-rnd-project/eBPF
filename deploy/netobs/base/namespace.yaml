@@ -7,6 +7,11 @@ kind: Namespace
 # warn/audit 단계에서 correlation-exporter 와 workload-injector 가 생성하는 부하 pod 의 위반이
 # 이벤트와 kubectl 경고로 드러나므로, 그 목록을 근거로 baseline 준수 스펙으로 좁힌 뒤 enforce 를
 # 내린다.
+#
+# 한계: agent 2종이 매 배포마다 baseline 위반 경고를 남겨 그 경고가 일상이 되면 새로 들어온 위반
+# 워크로드의 경고가 묻힐 수 있다. 후속의 enforce 하향 작업에서 agent 를 별도 namespace 로 분리하거나
+# API server 의 PSA exemption 을 적용하면 agent 경고가 사라져 이 노이즈가 함께 해소된다. 그때까지는
+# 배포 로그의 경고를 컨테이너 이름으로 걸러 (netobs-agent 와 gpuobs-agent 제외) 신규 위반만 본다.
 metadata:
   name: ebpf-project
   labels:
