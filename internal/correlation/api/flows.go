@@ -59,6 +59,10 @@ type FlowEdge struct {
 func (h *SynthesisHandler) GetFlows(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	nsFilter := strings.TrimSpace(q.Get("namespace"))
+	if _, err := parseNamespaceParam(nsFilter); err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_namespace", err.Error())
+		return
+	}
 	direction := strings.ToLower(strings.TrimSpace(q.Get("direction")))
 	if direction != "" && direction != "egress" && direction != "ingress" {
 		apicommon.WriteError(w, http.StatusBadRequest, "invalid_direction", "direction 은 egress 또는 ingress 여야 합니다")
@@ -85,6 +89,7 @@ func (h *SynthesisHandler) GetFlows(w http.ResponseWriter, r *http.Request) {
 		if direction != "" {
 			matchers = append(matchers, fmt.Sprintf("direction=%q", direction))
 		}
+		// namespace 는 parseNamespaceParam 검증을 통과한 값이라 PromQL %q 결합이 안전하다 (#409 단일 정책).
 		if nsFilter != "" {
 			matchers = append(matchers, fmt.Sprintf("src_namespace=%q", nsFilter))
 		}

@@ -72,6 +72,10 @@ type bandwidthPodKey struct {
 func (h *SynthesisHandler) GetBandwidth(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	nsFilter := strings.TrimSpace(q.Get("namespace"))
+	if _, err := parseNamespaceParam(nsFilter); err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_namespace", err.Error())
+		return
+	}
 	limit := 50
 	if v := strings.TrimSpace(q.Get("limit")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -110,6 +114,7 @@ func (h *SynthesisHandler) GetBandwidth(w http.ResponseWriter, r *http.Request) 
 
 	// namespace 는 기존 규약대로 %q 이스케이프로 PromQL label matcher 에 밀어 Prometheus 측에서
 	// 필터한다. #263 node 필터도 같은 selector 에 병합해 pod 쿼리를 노드로 좁힌다.
+	// namespace 는 parseNamespaceParam 검증을 통과한 값이라 PromQL %q 결합이 안전하다 (#409 단일 정책).
 	nsMatcher := ""
 	if nsFilter != "" {
 		nsMatcher = fmt.Sprintf("src_namespace=%q", nsFilter)

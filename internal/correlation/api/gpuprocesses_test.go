@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -24,6 +25,11 @@ func gpuProcessesAgent(t *testing.T, listing gpuobstypes.GPUProcessListing) (*ht
 	}))
 	t.Cleanup(srv.Close)
 	instance := strings.TrimPrefix(srv.URL, "http://")
+	// #409 포트 allow-list 에 httptest 의 임의 포트를 주입한다. 운영 값은 agent 고정 포트뿐이다.
+	if _, port, err := net.SplitHostPort(instance); err == nil {
+		agentAllowedPorts[port] = struct{}{}
+		t.Cleanup(func() { delete(agentAllowedPorts, port) })
+	}
 	q := (&fakeQuerier{}).on(`up{job="gpuobs-agent"`, sample(1, "node", "gpu", "instance", instance))
 	return srv, q
 }
@@ -169,5 +175,28 @@ func TestGpuProcesses_NilQuerier(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	if resp.Available || len(resp.Processes) != 0 {
 		t.Errorf("resp=%+v want 빈 graceful 응답", resp)
+	}
+}
+
+// TestValidAgentInstance_Hardening 은 #409 의 사설 대역과 포트 allow-list 검사를 고정한다.
+func TestValidAgentInstance_Hardening(t *testing.T) {
+	valid := []string{"172.16.0.5:9820", "10.0.0.1:9810", "192.168.1.9:9850", "127.0.0.1:9830"}
+	for _, in := range valid {
+		if !validAgentInstance(in) {
+			t.Errorf("validAgentInstance(%q)=false want true", in)
+		}
+	}
+	invalid := []string{
+		"8.8.8.8:9820",          // 공인 대역
+		"169.254.169.254:9820",  // link-local (메타데이터 endpoint)
+		"172.16.0.5:22",         // 비 agent 포트
+		"172.16.0.5:80",         // 비 agent 포트
+		"evil.example.com:9820", // hostname
+		"172.16.0.5",            // 포트 없음
+	}
+	for _, in := range invalid {
+		if validAgentInstance(in) {
+			t.Errorf("validAgentInstance(%q)=true want false", in)
+		}
 	}
 }

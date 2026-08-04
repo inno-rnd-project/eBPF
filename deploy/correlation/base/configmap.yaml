@@ -20,3 +20,8 @@ data:
   TOP_N: "10"
   FETCH_TIMEOUT: "30s"
   LISTEN_ADDR: ":9830"
+  # #409 CORS origin allow-list. swagger-ui pod 가 브라우저 경유로 spec 을 fetch 하는 cross-origin
+  # 경로가 동작하도록 클러스터 내부 접근의 page origin (service 숏네임과 FQDN 변형) 을 등재한다.
+  # 이 클러스터에 ingress 가 없어 외부 origin 은 없다. port-forward 관행용 localhost 는 임의 로컬
+  # 페이지의 브라우저 경유 읽기 위험이 부분 복귀하므로 base 에 두지 않고 dev overlay 에만 둔다.
+  API_CORS_ALLOW_ORIGINS: "http://swagger-ui:8080,http://swagger-ui.ebpf-project:8080,http://swagger-ui.ebpf-project.svc.cluster.local:8080"

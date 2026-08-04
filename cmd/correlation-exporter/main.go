@@ -54,6 +54,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 
+	"netobs/internal/apicommon"
 	"netobs/internal/correlation"
 	"netobs/internal/correlation/api"
 	correlationdocs "netobs/internal/correlation/api/docs"
@@ -123,6 +124,10 @@ func main() {
 	if v := strings.TrimSpace(os.Getenv("RCA_SUMMARIZER_URL")); v != "" {
 		rcaURL = v
 	}
+	// #409 CORS origin allow-list. 콤마 구분 origin 목록이며 미설정 (기본) 이면 CORS 헤더를 아예
+	// 부착하지 않아 브라우저 cross-origin 읽기가 차단된다. 자체 dashboard 를 다른 origin 에서
+	// 서빙하는 운영은 그 origin 만 등록한다.
+	corsOrigins := strings.TrimSpace(os.Getenv("API_CORS_ALLOW_ORIGINS"))
 	applyEnvDuration("WINDOW", "window", &cfg.Window)
 	applyEnvDuration("STEP", "step", &cfg.Step)
 	applyEnvDuration("FETCH_TIMEOUT", "fetch-timeout", &cfg.FetchTimeout)
@@ -194,6 +199,7 @@ func main() {
 
 	fs := flag.NewFlagSet("correlation-exporter", flag.ContinueOnError)
 	fs.StringVar(&cfg.PrometheusURL, "prometheus-url", cfg.PrometheusURL, "Prometheus base URL (env PROMETHEUS_URL fallback)")
+	fs.StringVar(&corsOrigins, "api-cors-allow-origins", corsOrigins, "comma-separated CORS origin allow-list; empty (default) disables CORS headers (env API_CORS_ALLOW_ORIGINS fallback)")
 	fs.DurationVar(&cfg.Window, "window", cfg.Window, "query_range window")
 	fs.DurationVar(&cfg.Step, "step", cfg.Step, "query_range step")
 	fs.IntVar(&cfg.MinSamples, "min-samples", cfg.MinSamples, "minimum valid samples per pair after NaN/Inf removal")
@@ -227,6 +233,18 @@ func main() {
 	}
 	cfg.ExtraMetrics = []string(extra)
 	cfg.LagSteps = []int(lagSteps)
+
+	// #409 CORS allow-list 적용. 빈 값이면 기본 (헤더 미부착) 유지다.
+	if corsOrigins != "" {
+		var origins []string
+		for _, o := range strings.Split(corsOrigins, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				origins = append(origins, o)
+			}
+		}
+		apicommon.SetCORSAllowedOrigins(origins)
+		log.Printf("api: CORS origin allow-list %d개 적용", len(origins))
+	}
 
 	if cfg.Window <= 0 || cfg.Step <= 0 {
 		log.Fatalf("window and step must be positive")

@@ -31,6 +31,7 @@ func (h *TrendsHandler) Register(mux *http.ServeMux) {
 		http.HandlerFunc(h.GetTrends),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 }

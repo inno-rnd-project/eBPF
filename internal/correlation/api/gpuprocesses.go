@@ -110,22 +110,30 @@ func (h *SynthesisHandler) GetGpuProcesses(w http.ResponseWriter, r *http.Reques
 	writeOut()
 }
 
-// validAgentInstance 는 Prometheus instance 라벨이 "IP:port" 형식인지 검증한다. scrape 대상이
-// pod IP 라는 전제를 dial 전에 강제해, 라벨 조작으로 임의 host 를 호출하는 표면을 차단한다.
+// agentAllowedPorts 는 agent 호출을 허용하는 포트 allow-list 다 (#409). 본 프로젝트 agent 들의
+// 고정 포트 (netobs 9810, gpuobs 9820, correlation 9830, injector 9840, rca 9850) 로 한정해, 라벨
+// 조작으로 클러스터 내 다른 서비스 포트를 호출하는 표면을 차단한다.
+var agentAllowedPorts = map[string]struct{}{
+	"9810": {}, "9820": {}, "9830": {}, "9840": {}, "9850": {},
+}
+
+// validAgentInstance 는 Prometheus instance 라벨이 "사설 IP:agent 포트" 형식인지 검증한다. scrape
+// 대상이 pod IP 라는 전제를 dial 전에 강제해, 라벨 조작으로 임의 host 를 호출하는 표면을 차단한다.
+// #409 부터 IP 는 사설 대역 (RFC 1918, ULA) 이어야 하고 포트는 agent 포트 allow-list 로 한정된다.
+// pod CIDR 는 사설 대역이므로 정상 scrape 대상은 항상 통과한다.
 func validAgentInstance(instance string) bool {
 	host, port, err := net.SplitHostPort(instance)
 	if err != nil {
 		return false
 	}
-	if net.ParseIP(host) == nil {
+	ip := net.ParseIP(host)
+	// loopback 은 자기 pod 한정이라 사설 대역과 함께 신뢰 범위다. 차단 대상은 공인 대역으로의
+	// SSRF 표면이다.
+	if ip == nil || (!ip.IsPrivate() && !ip.IsLoopback()) {
 		return false
 	}
-	for _, ch := range port {
-		if ch < '0' || ch > '9' {
-			return false
-		}
-	}
-	return port != ""
+	_, ok := agentAllowedPorts[port]
+	return ok
 }
 
 // fetchAgentProcesses 는 agent 로컬 endpoint 를 호출해 스냅샷을 디코딩한다. 응답은 1MB 로 제한해

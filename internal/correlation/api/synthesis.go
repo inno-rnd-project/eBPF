@@ -51,12 +51,14 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		http.HandlerFunc(h.GetHealth),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/pressure", apicommon.Chain(
 		http.HandlerFunc(h.GetPressure),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	// /api/v1/node/{node} 는 경로 끝 segment 가 node 라 prefix 매칭 후 핸들러에서 파싱한다. 기존
@@ -66,6 +68,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		http.HandlerFunc(h.nodeSubroute),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	// #307 pod 단위 종합 상세. {namespace}/{pod} 두 segment 를 prefix 매칭 후 핸들러에서 파싱한다.
@@ -73,12 +76,14 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		http.HandlerFunc(h.GetPodDetail),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/events", apicommon.Chain(
 		http.HandlerFunc(h.GetEvents),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	// #249 랜딩 대시보드 요약. 기존 판정 (alert 매칭, 압박 임계, weakest) 의 합성이라 의존성이 같다.
@@ -86,6 +91,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		http.HandlerFunc(h.GetOverview),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	// #249 랜딩 노드 그리드. 노드별 pod 상태 맵을 서버 판정으로 내장한다.
@@ -93,6 +99,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		http.HandlerFunc(h.GetNodeMap),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	// #258 노드 GPU RCA 합성. scope=node gpu-idle 과 noisy-neighbor/cross-node snapshot 을 합성한다.
@@ -100,6 +107,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		http.HandlerFunc(h.GetNodeGpuRca),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	// #265 노드 raw 사용률 프록시. cadvisor / gpuobs 원시 게이지를 노드별로 얇게 노출한다.
@@ -107,6 +115,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		http.HandlerFunc(h.GetNodeVitals),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	// #266 노드별 관측 에이전트 self-health. 알림 규칙과 동일 임계로 healthy/degraded 를 판정한다.
@@ -114,18 +123,21 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		http.HandlerFunc(h.GetAgents),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/gpu-idle", apicommon.Chain(
 		http.HandlerFunc(h.GetGpuIdle),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/gpu-status", apicommon.Chain(
 		http.HandlerFunc(h.GetGpuStatus),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	// #281 노드 GPU 실행 프로세스 프록시. gpuobs agent 로컬 스냅샷을 단일 진입점으로 중계한다.
@@ -133,54 +145,63 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		http.HandlerFunc(h.GetGpuProcesses),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/bandwidth", apicommon.Chain(
 		http.HandlerFunc(h.GetBandwidth),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/nodes", apicommon.Chain(
 		http.HandlerFunc(h.GetNodes),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/pods", apicommon.Chain(
 		http.HandlerFunc(h.GetPods),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/latency-breakdown", apicommon.Chain(
 		http.HandlerFunc(h.GetLatencyBreakdown),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/drops", apicommon.Chain(
 		http.HandlerFunc(h.GetDrops),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/topology", apicommon.Chain(
 		http.HandlerFunc(h.GetTopology),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/flows", apicommon.Chain(
 		http.HandlerFunc(h.GetFlows),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/memory", apicommon.Chain(
 		http.HandlerFunc(h.GetMemory),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 }
@@ -736,6 +757,12 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 	node := strings.TrimPrefix(r.URL.Path, "/api/v1/node/")
 	if node == "" || strings.Contains(node, "/") {
 		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node", "경로는 /api/v1/node/{node} 형식이어야 합니다")
+		return
+	}
+	// #409 형제 핸들러들과 동일한 DNS-1123 검증. 종전에는 빈 값과 슬래시만 거부해 10만 자 경로가
+	// 17개 PromQL 로 증폭되고 응답과 로그에 반사됐다.
+	if _, err := parseNodeParam(node); err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node", err.Error())
 		return
 	}
 	// #380 is_filtered=true 면 top_pods 를 원인 후보 임계로 거른다 (opt-in). 미전달 기본은 종전대로 전

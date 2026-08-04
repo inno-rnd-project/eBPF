@@ -98,36 +98,42 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		http.HandlerFunc(h.ListNoisyNeighbors),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/cross-node-interference", apicommon.Chain(
 		http.HandlerFunc(h.ListCrossNode),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/service-impact", apicommon.Chain(
 		http.HandlerFunc(h.ListServiceImpact),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/cross-level", apicommon.Chain(
 		http.HandlerFunc(h.ListCrossLevel),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/impact-graph", apicommon.Chain(
 		http.HandlerFunc(h.GetImpactGraph),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 	mux.Handle("/api/v1/impact-paths", apicommon.Chain(
 		http.HandlerFunc(h.ListImpactPaths),
 		apicommon.LoggingMiddleware,
 		apicommon.RecoverMiddleware,
+		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
 	))
 }
@@ -643,6 +649,10 @@ func (h *Handler) ListCrossLevel(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetImpactGraph(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	namespace := strings.TrimSpace(q.Get("namespace"))
+	if _, err := parseNamespaceParam(namespace); err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_namespace", err.Error())
+		return
+	}
 	var minScore float64
 	if raw := strings.TrimSpace(q.Get("min_score")); raw != "" {
 		v, err := strconv.ParseFloat(raw, 64)
@@ -702,6 +712,10 @@ func (h *Handler) ListImpactPaths(w http.ResponseWriter, r *http.Request) {
 	rootPod := strings.TrimSpace(q.Get("root_pod"))
 	terminalPod := strings.TrimSpace(q.Get("terminal_pod"))
 	namespace := strings.TrimSpace(q.Get("namespace"))
+	if _, err := parseNamespaceParam(namespace); err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_namespace", err.Error())
+		return
+	}
 
 	var minScore float64
 	if raw := strings.TrimSpace(q.Get("min_score")); raw != "" {

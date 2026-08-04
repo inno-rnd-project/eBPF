@@ -112,6 +112,10 @@ type RetransGroup struct {
 func (h *SynthesisHandler) GetDrops(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	nsFilter := strings.TrimSpace(q.Get("namespace"))
+	if _, err := parseNamespaceParam(nsFilter); err != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_namespace", err.Error())
+		return
+	}
 	limit, ok := apicommon.ParseLimit(r, 20, 100)
 	if !ok {
 		apicommon.WriteError(w, http.StatusBadRequest, "invalid_limit", "limit 은 정수여야 합니다")
