@@ -80,5 +80,7 @@ idle cause 판정의 cause 셋은 차원마다 다르다. cluster/node 차원은
 device 계열 3종은 node/device 단위 신호라 pod attribution 근거가 없어 victim 차원에 두지 않는다. `pcie_saturation`만 GPU 귀속 pod(`gpuobs_pod_memory_used_bytes` 보유) broadcast 로 예외 편입되며, #408 부터 broadcast 대상이 노드 전체 pod 가 아니라 GPU 귀속 pod 로 한정된다. 운영 해석 규칙은 다음과 같다.
 
 - cluster/node dominant 가 `thermal` 같은 device cause 일 때 victim dominant 는 그 cause 를 구조적으로 지목할 수 없으므로, victim dominant 만 보고 원인을 확정하지 말고 cluster/node dominant 를 함께 본다
+- pcie broadcast 필터는 GPU 프로세스 존재 기준이다 (`gpuobs_pod_memory_used_bytes` 는 NVML running-process 순회로 만들어진다). 워크로드 프로세스가 죽어 GPU 가 유휴인 경우는 victim attribution 이 비므로 그 상황의 원인 해석은 cluster/node 차원이 담당한다. GPU 할당 기준 필터 (`kube_pod_container_resource_requests` 의 nvidia 리소스) 가 의미상 더 정확하나 이 클러스터에서 해당 시리즈가 수집되지 않아 쓸 수 없다
+- pcie cause 의 victim 집합은 다른 5종과 유도 경로가 달라 (pod score 직접 유도가 아닌 node score broadcast) GPU pod 가 없는 시간대에는 victim 목록에서 pcie 가 빠지고, 분모 (`pod:gpu_idle_cause_sum:5m`) 구성 변화로 나머지 cause 의 weight 가 상대적으로 커진다. PCIe 가 원인일 수 없는 상태의 정확한 반영이므로 결함이 아니나 대시보드 해석 시 인지한다
 - victim tie-breaker offset 목록에 없는 cause 는 `+ on(cause) group_left()` 매칭 실패로 dominant 후보에서 조용히 탈락한다. `pod:gpu_idle_cause_score:5m` 에 cause 를 추가하면 offset 목록과 `test/promtool/gpuobs-victim-cause-gating.test.yaml` 의 승리 가드를 함께 갱신한다
 - victim 차원에 device cause 3종을 추가하는 확장은 별도 판단 사안이다 (#408 비목표)
