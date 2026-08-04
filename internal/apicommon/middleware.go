@@ -99,7 +99,7 @@ func CORSMiddleware(next http.Handler) http.Handler {
 			}
 			if allowed {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
 				// preflight 가 요청한 헤더를 그대로 허용한다. 종전 Content-Type 고정은 소비자가 임의
 				// 헤더 (Cache-Control, X-* 등) 를 실으면 preflight 가 실패해 요청이 차단됐다.
 				if reqHeaders := r.Header.Get("Access-Control-Request-Headers"); reqHeaders != "" {
@@ -121,14 +121,19 @@ func CORSMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// MethodGuard 는 GET 과 OPTIONS 외 메서드에 405 와 표준 ErrorBody 를 반환한다 (#409). 본 API 는
-// 전부 조회 전용인데 종전에는 DELETE 나 POST 도 전 쿼리를 실행해 감사 로그에 쓰기 시도 성공처럼
-// 남았다. Allow 헤더로 허용 메서드를 명시한다 (RFC 9110).
+// MethodGuard 는 안전한 조회 메서드 (GET, HEAD, OPTIONS) 외 메서드에 405 와 표준 ErrorBody 를
+// 반환한다 (#409). 본 API 는 전부 조회 전용인데 종전에는 DELETE 나 POST 도 전 쿼리를 실행해 감사
+// 로그에 쓰기 시도 성공처럼 남았다. HEAD 는 본문 없는 GET 이라 Go 의 http 서버가 GET 핸들러를
+// 실행하고 본문만 버리는 방식으로 자동 처리하며, 헬스체크와 프록시와 일부 HTTP 클라이언트가
+// 도달성 확인에 쓰는 표준 안전 메서드라 차단하면 소비자가 끊긴다 (#409 직후 405 회귀 확인).
+// Allow 헤더로 허용 메서드를 명시한다 (RFC 9110).
 func MethodGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodOptions {
-			w.Header().Set("Allow", "GET, OPTIONS")
-			WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET 과 OPTIONS 만 지원합니다")
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+		default:
+			w.Header().Set("Allow", "GET, HEAD, OPTIONS")
+			WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET 과 HEAD 와 OPTIONS 만 지원합니다")
 			return
 		}
 		next.ServeHTTP(w, r)

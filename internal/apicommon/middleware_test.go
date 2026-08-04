@@ -76,14 +76,14 @@ func TestMethodGuard(t *testing.T) {
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s status=%d want 405", m, rec.Code)
 		}
-		if got := rec.Header().Get("Allow"); got != "GET, OPTIONS" {
-			t.Errorf("%s Allow=%q want GET, OPTIONS", m, got)
+		if got := rec.Header().Get("Allow"); got != "GET, HEAD, OPTIONS" {
+			t.Errorf("%s Allow=%q want GET, HEAD, OPTIONS", m, got)
 		}
 		if !strings.Contains(rec.Body.String(), "method_not_allowed") {
 			t.Errorf("%s body=%q want method_not_allowed ErrorBody", m, rec.Body.String())
 		}
 	}
-	for _, m := range []string{http.MethodGet, http.MethodOptions} {
+	for _, m := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
 		req := httptest.NewRequest(m, "/api/v1/x", nil)
 		rec := httptest.NewRecorder()
 		MethodGuard(okHandler()).ServeHTTP(rec, req)
