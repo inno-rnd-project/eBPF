@@ -21,7 +21,17 @@ data:
   FETCH_TIMEOUT: "30s"
   LISTEN_ADDR: ":9830"
   # #409 CORS origin allow-list. swagger-ui pod 가 브라우저 경유로 spec 을 fetch 하는 cross-origin
-  # 경로가 동작하도록 클러스터 내부 접근의 page origin (service 숏네임과 FQDN 변형) 을 등재한다.
-  # 이 클러스터에 ingress 가 없어 외부 origin 은 없다. port-forward 관행용 localhost 는 임의 로컬
-  # 페이지의 브라우저 경유 읽기 위험이 부분 복귀하므로 base 에 두지 않고 dev overlay 에만 둔다.
-  API_CORS_ALLOW_ORIGINS: "http://swagger-ui:8080,http://swagger-ui.ebpf-project:8080,http://swagger-ui.ebpf-project.svc.cluster.local:8080"
+  # 경로가 동작하도록 클러스터 내부 접근의 page origin (service 숏네임과 FQDN 변형) 을 등재하고,
+  # 실소비자인 프론트엔드 dashboard 의 dev 서버 origin (192.168.160.212:3000, 외부 포트 매핑 경유로
+  # API 를 호출) 을 함께 등재한다. port-forward 관행용 localhost 는 임의 로컬 페이지의 브라우저 경유
+  # 읽기 위험이 부분 복귀하므로 base 에 두지 않고 dev overlay 에만 둔다. 프론트 origin 이 바뀌면
+  # 본 목록을 갱신하며, 미등재 origin 의 거부는 exporter 로그 (cors: denied origin) 로 드러난다.
+  # 프론트는 브라우저가 접속한 주소가 곧 Origin 이라 접속 경로마다 값이 다르다. 사설 IP 직접 접속과
+  # 터널/포트포워딩 경유 (localhost, 127.0.0.1) 를 모두 등재한다. 미등재 origin 은 exporter 로그의
+  # cors: denied origin 으로 즉시 드러나므로 새 접속 경로가 생기면 그 로그의 값을 그대로 추가한다.
+  # 명시 목록으로 운영한다. swagger-ui pod 의 브라우저 경유 spec fetch 경로 (service 숏네임과 FQDN
+  # 변형) 와 프론트 dashboard 의 접속 경로 (사설 IP 직접, 터널·포트포워딩 경유 localhost 와
+  # 127.0.0.1) 를 등재한다. 새 접속 경로가 생기면 exporter 로그의 cors: denied origin 값을 그대로
+  # 추가한다. 전 origin 허용 ("*", 요청 origin echo) 도 지원하나 브라우저 경유 읽기를 열어 두는
+  # 트레이드오프라 임시 진단 목적에 한정한다.
+  API_CORS_ALLOW_ORIGINS: "http://swagger-ui:8080,http://swagger-ui.ebpf-project:8080,http://swagger-ui.ebpf-project.svc.cluster.local:8080,http://192.168.160.212:3000,http://localhost:3000,http://127.0.0.1:3000"

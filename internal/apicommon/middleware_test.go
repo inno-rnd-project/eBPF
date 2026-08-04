@@ -76,14 +76,14 @@ func TestMethodGuard(t *testing.T) {
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s status=%d want 405", m, rec.Code)
 		}
-		if got := rec.Header().Get("Allow"); got != "GET, OPTIONS" {
-			t.Errorf("%s Allow=%q want GET, OPTIONS", m, got)
+		if got := rec.Header().Get("Allow"); got != "GET, HEAD, OPTIONS" {
+			t.Errorf("%s Allow=%q want GET, HEAD, OPTIONS", m, got)
 		}
 		if !strings.Contains(rec.Body.String(), "method_not_allowed") {
 			t.Errorf("%s body=%q want method_not_allowed ErrorBody", m, rec.Body.String())
 		}
 	}
-	for _, m := range []string{http.MethodGet, http.MethodOptions} {
+	for _, m := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
 		req := httptest.NewRequest(m, "/api/v1/x", nil)
 		rec := httptest.NewRecorder()
 		MethodGuard(okHandler()).ServeHTTP(rec, req)
@@ -113,4 +113,103 @@ func TestLoggingMiddleware_PathEscaped(t *testing.T) {
 	if !strings.Contains(out, `\n`) {
 		t.Errorf("이스케이프된 개행 미포함: %q", out)
 	}
+}
+
+// TestCORSMiddleware_DeniedOriginLoggedOnce 는 미등록 origin 거부가 origin 당 1회만 서버 로그로
+// 남는지 검증한다 (#409 후속). CORS 거부는 브라우저만 읽기를 차단해 서버 흔적이 없으면 소비자
+// 장애 진단이 브라우저 콘솔에서만 가능했다.
+func TestCORSMiddleware_DeniedOriginLoggedOnce(t *testing.T) {
+	SetCORSAllowedOrigins(nil)
+	corsDeniedMu.Lock()
+	corsDenied = map[string]struct{}{}
+	corsDeniedMu.Unlock()
+
+	var buf bytes.Buffer
+	orig := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(orig)
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/x", nil)
+		req.Header.Set("Origin", "http://unregistered.example:3000")
+		CORSMiddleware(okHandler()).ServeHTTP(httptest.NewRecorder(), req)
+	}
+	if got := strings.Count(buf.String(), "denied origin"); got != 1 {
+		t.Errorf("denied 로그 %d회 want 1 (origin 당 1회)", got)
+	}
+	if !strings.Contains(buf.String(), "unregistered.example:3000") {
+		t.Errorf("로그에 origin 미포함: %q", buf.String())
+	}
+}
+
+// TestCORSMiddleware_WildcardOptIn 은 allow-list 에 "*" 가 있으면 임의 origin 을 echo 하는지 검증
+// 한다 (#409 후속, 임시 개방과 원인 판별 실험용). literal * 가 아니라 echo 라 credentials 요청에도
+// 동작한다.
+func TestCORSMiddleware_WildcardOptIn(t *testing.T) {
+	SetCORSAllowedOrigins([]string{"*"})
+	defer SetCORSAllowedOrigins(nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/x", nil)
+	req.Header.Set("Origin", "http://any.example:1234")
+	rec := httptest.NewRecorder()
+	CORSMiddleware(okHandler()).ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://any.example:1234" {
+		t.Errorf("ACAO=%q want 요청 origin echo", got)
+	}
+}
+
+// TestCORSMiddleware_PreflightHeadersEchoed 는 preflight 가 요청한 헤더가 그대로 허용되는지 검증
+// 한다. 종전 Content-Type 고정은 소비자가 임의 헤더를 실으면 preflight 실패로 요청이 차단됐다.
+func TestCORSMiddleware_PreflightHeadersEchoed(t *testing.T) {
+	SetCORSAllowedOrigins([]string{"http://dash.example"})
+	defer SetCORSAllowedOrigins(nil)
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/x", nil)
+	req.Header.Set("Origin", "http://dash.example")
+	req.Header.Set("Access-Control-Request-Headers", "cache-control, x-trace-id")
+	rec := httptest.NewRecorder()
+	CORSMiddleware(okHandler()).ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "cache-control, x-trace-id" {
+		t.Errorf("Allow-Headers=%q want 요청 헤더 echo", got)
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("status=%d want 204", rec.Code)
+	}
+}
+
+// TestSetCORSAllowedOrigins_WildcardWarns 는 전 origin 개방 설정이 기동 경고 로그를 남기는지 검증
+// 한다 (#409 후속 리뷰). 진단용 임시 설정이 운영에 남아 있는 것을 운영자가 인지하게 한다.
+func TestSetCORSAllowedOrigins_WildcardWarns(t *testing.T) {
+	var buf bytes.Buffer
+	orig := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(orig)
+
+	SetCORSAllowedOrigins([]string{"*"})
+	defer SetCORSAllowedOrigins(nil)
+	if !strings.Contains(buf.String(), "전 origin 개방") {
+		t.Errorf("경고 로그 없음: %q", buf.String())
+	}
+
+	buf.Reset()
+	SetCORSAllowedOrigins([]string{"http://dash.example"})
+	if strings.Contains(buf.String(), "전 origin 개방") {
+		t.Errorf("명시 목록인데 경고 발생: %q", buf.String())
+	}
+}
+
+// TestCORSMiddleware_NoAllowCredentials 는 어떤 경로에서도 Access-Control-Allow-Credentials 가
+// 부착되지 않는지 고정한다 (#409 후속 리뷰). 이 헤더가 없어야 와일드카드 echo 상태에서도 브라우저가
+// 인증 정보를 실은 cross-origin 응답 읽기를 차단한다. 인증 도입 시 본 테스트가 먼저 실패해 와일드
+// 카드 경로 차단 검토를 강제한다.
+func TestCORSMiddleware_NoAllowCredentials(t *testing.T) {
+	for _, origins := range [][]string{{"*"}, {"http://dash.example"}} {
+		SetCORSAllowedOrigins(origins)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/x", nil)
+		req.Header.Set("Origin", "http://dash.example")
+		rec := httptest.NewRecorder()
+		CORSMiddleware(okHandler()).ServeHTTP(rec, req)
+		if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+			t.Errorf("origins=%v 에서 Allow-Credentials=%q 부착됨", origins, got)
+		}
+	}
+	SetCORSAllowedOrigins(nil)
 }
