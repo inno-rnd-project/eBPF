@@ -90,10 +90,24 @@ func CORSMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if origin != "" {
-			if _, ok := corsAllowedOrigins[origin]; ok {
+			// #409 후속 와일드카드 opt-in. allow-list 에 "*" 가 있으면 요청 origin 을 그대로 echo 한다
+			// (literal * 대신 echo 라 credentials 요청에도 동작). 브라우저 소비자의 origin 확정 전
+			// 임시 개방과 CORS 원인 판별 실험용이며, 운영 기본값은 명시 목록이다.
+			_, allowed := corsAllowedOrigins[origin]
+			if !allowed {
+				_, allowed = corsAllowedOrigins["*"]
+			}
+			if allowed {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+				// preflight 가 요청한 헤더를 그대로 허용한다. 종전 Content-Type 고정은 소비자가 임의
+				// 헤더 (Cache-Control, X-* 등) 를 실으면 preflight 가 실패해 요청이 차단됐다.
+				if reqHeaders := r.Header.Get("Access-Control-Request-Headers"); reqHeaders != "" {
+					w.Header().Set("Access-Control-Allow-Headers", reqHeaders)
+				} else {
+					w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+				}
+				w.Header().Set("Access-Control-Max-Age", "600")
 				w.Header().Add("Vary", "Origin")
 			} else {
 				logDeniedOriginOnce(origin)

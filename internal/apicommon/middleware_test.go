@@ -141,3 +141,36 @@ func TestCORSMiddleware_DeniedOriginLoggedOnce(t *testing.T) {
 		t.Errorf("로그에 origin 미포함: %q", buf.String())
 	}
 }
+
+// TestCORSMiddleware_WildcardOptIn 은 allow-list 에 "*" 가 있으면 임의 origin 을 echo 하는지 검증
+// 한다 (#409 후속, 임시 개방과 원인 판별 실험용). literal * 가 아니라 echo 라 credentials 요청에도
+// 동작한다.
+func TestCORSMiddleware_WildcardOptIn(t *testing.T) {
+	SetCORSAllowedOrigins([]string{"*"})
+	defer SetCORSAllowedOrigins(nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/x", nil)
+	req.Header.Set("Origin", "http://any.example:1234")
+	rec := httptest.NewRecorder()
+	CORSMiddleware(okHandler()).ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://any.example:1234" {
+		t.Errorf("ACAO=%q want 요청 origin echo", got)
+	}
+}
+
+// TestCORSMiddleware_PreflightHeadersEchoed 는 preflight 가 요청한 헤더가 그대로 허용되는지 검증
+// 한다. 종전 Content-Type 고정은 소비자가 임의 헤더를 실으면 preflight 실패로 요청이 차단됐다.
+func TestCORSMiddleware_PreflightHeadersEchoed(t *testing.T) {
+	SetCORSAllowedOrigins([]string{"http://dash.example"})
+	defer SetCORSAllowedOrigins(nil)
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/x", nil)
+	req.Header.Set("Origin", "http://dash.example")
+	req.Header.Set("Access-Control-Request-Headers", "cache-control, x-trace-id")
+	rec := httptest.NewRecorder()
+	CORSMiddleware(okHandler()).ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "cache-control, x-trace-id" {
+		t.Errorf("Allow-Headers=%q want 요청 헤더 echo", got)
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("status=%d want 204", rec.Code)
+	}
+}
