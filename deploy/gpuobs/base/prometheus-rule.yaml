@@ -908,12 +908,14 @@ spec:
         # memory_pressure 와 host_compute_stall 와 network_pressure) 는 이미 pod 단위 emit 중인 base
         # score 를 label_replace 로 src_namespace → victim_namespace, src_pod → victim_pod 로 alias
         # 한 뒤 (victim_namespace, victim_pod) 로 sum 해 잔여 라벨을 정리 한다. pcie_saturation 은
-        # node 단위 단일 시리즈 (node:gpu_pcie_saturation_score:5m) 라 kube_pod_info 의 (node,
-        # namespace, pod) 매핑 으로 GPU 노드 의 모든 Pod 에 PCIe score 를 broadcast 한다. PCIe 압박
-        # 의 Pod 단위 attribution 은 불가능 하므로 노드 전체 Pod 에 동일 score 를 부여 한 뒤 dashboard
-        # 와 alert 에서 운영자 가 victim 의 dimension 라벨 과 함께 해석 한다. dev cluster 에서 CUDA
-        # workload 가 없는 경우 host_compute_stall base 시리즈 가 비어 자연 skip 되어 본 helper 도
-        # 해당 cause 시리즈 가 emit 되지 않는다.
+        # node 단위 단일 시리즈 (node:gpu_pcie_saturation_score:5m) 라 pod 단위 attribution 이 불가능
+        # 하므로 노드 의 pod 들 에 동일 score 를 broadcast 한다. #408 부터 broadcast 대상 은 kube_pod_
+        # info 의 노드 전체 pod 가 아니라 GPU 귀속 pod (gpuobs_pod_memory_used_bytes 보유) 로 한정
+        # 된다. 비 GPU 워크로드 는 PCIe 압박 의 victim 이 될 수 없는데 도 종전 broadcast 가 pod x
+        # cause 시리즈 를 노드 전체 pod 로 복제 해 카디널리티 를 불필요 하게 키웠다. GPU pod 이 없는
+        # 시간대 는 본 cause 시리즈 가 자연 skip 된다. dev cluster 에서 CUDA workload 가 없는 경우
+        # host_compute_stall base 시리즈 가 비어 자연 skip 되어 본 helper 도 해당 cause 시리즈 가
+        # emit 되지 않는다.
         - record: pod:gpu_idle_cause_score:5m
           labels:
             cause: pcie_saturation
@@ -923,9 +925,9 @@ spec:
               * on(node) group_right()
               (
                 label_replace(label_replace(
-                  sum by(node, namespace, pod) (kube_pod_info),
-                  "victim_namespace", "$1", "namespace", "(.+)"),
-                  "victim_pod", "$1", "pod", "(.+)")
+                  sum by(node, src_namespace, src_pod) (gpuobs_pod_memory_used_bytes),
+                  "victim_namespace", "$1", "src_namespace", "(.+)"),
+                  "victim_pod", "$1", "src_pod", "(.+)")
                 * 0 + 1
               )
             )
@@ -1001,10 +1003,13 @@ spec:
         # 식 (cause score / 5 cause 합) 을 victim 라벨 차원 으로 적용 한다. on(victim_namespace,
         # victim_pod) group_left() 로 cause 라벨 을 LHS 에서 그대로 보존 한다. (pod:gpu_idle_cause_
         # sum:5m > 0) 필터 로 분모 0 인 victim 은 시리즈 자체 가 emit 되지 않아 NaN 잡음 을 차단 한다.
-        # cluster 단위 weight 와 동일 하게 어느 노드 라도 GPU idle > 0.5 인 시간대 에만 emit 되도록
-        # idle 게이팅 을 둔다. 본 weight 는 correlation_noisy_neighbor_score{victim_namespace,
-        # victim_pod} 와 (victim_namespace, victim_pod) 라벨 join 으로 매칭 되어 dashboard 와 alert
-        # 가 victim 단위 dominant cause 식별 에 사용 한다.
+        # #408 idle 게이팅 은 노드별 (and on(node)) 이다. 종전 전역 스칼라 게이트 (max(node:gpu_idle
+        # :5m) > 0.5) 는 클러스터 에 유휴 노드 가 하나 라도 있으면 바쁜 노드 의 victim weight 까지
+        # 전부 emit 해, cluster 차원 이 #364 로 고친 오귀속 결함 이 pod 차원 에 그대로 남아 있었다.
+        # 본 rule 은 node 라벨 을 보유 하므로 자기 노드 의 idle 상태 로만 게이팅 한다. 본 weight 는
+        # correlation_noisy_neighbor_score{victim_namespace, victim_pod} 와 (victim_namespace,
+        # victim_pod) 라벨 join 으로 매칭 되어 dashboard 와 alert 가 victim 단위 dominant cause 식별
+        # 에 사용 한다.
         - record: pod:gpu_idle_cause_weight:5m
           expr: |
             (
@@ -1012,7 +1017,7 @@ spec:
               / on(node, victim_namespace, victim_pod) group_left()
               (pod:gpu_idle_cause_sum:5m > 0)
             )
-            and on() (max(node:gpu_idle:5m) > 0.5)
+            and on(node) (node:gpu_idle:5m > 0.5)
 
         # victim:gpu_idle_dominant_cause:5m{victim_namespace,victim_pod,cause}
         # #101 victim 단위 dominant cause 단일 시리즈. cluster:gpu_idle_dominant_cause:5m 와 동일
@@ -1023,6 +1028,15 @@ spec:
         # pod:gpu_idle_cause_weight:5m 가 (victim_namespace, victim_pod, cause) 라벨 셋 을 가지므로
         # offset 의 vector 매칭 에 group_left() 가 필요 하다. weight 시리즈 가 idle 게이팅 으로 emit
         # 되지 않는 시간대 는 본 record 도 자연 emit 되지 않는다.
+        #
+        # #408 cause 셋 비대칭: cluster/node 차원 은 cause 9 종, victim 차원 은 6 종 이다. device
+        # 계열 3 종 (dcgm_pcie_replay, nccl_collective_stall, thermal) 은 node/device 단위 신호 라
+        # pod attribution 근거 가 없어 victim 차원 에 두지 않는다 (pcie_saturation 만 GPU 귀속 pod
+        # broadcast 로 예외 편입). 따라서 cluster dominant 가 thermal 같은 device cause 일 때 victim
+        # dominant 는 그 cause 를 구조적으로 지목 할 수 없고, 운영자 는 cluster/node dominant 를 함께
+        # 봐야 한다. 주의: 아래 offset 목록 에 없는 cause 는 + on(cause) group_left() 매칭 실패 로
+        # dominant 후보 에서 조용히 탈락 한다. pod:gpu_idle_cause_score:5m 에 cause 를 추가 하면 본
+        # offset 목록 과 gpuobs-victim-cause-gating.test.yaml 의 승리 가드 를 함께 갱신 해야 한다.
         - record: victim:gpu_idle_dominant_cause:5m
           expr: |
             topk by(node, victim_namespace, victim_pod) (1,
