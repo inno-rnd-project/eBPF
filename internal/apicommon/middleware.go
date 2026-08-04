@@ -45,6 +45,8 @@ var corsAllowedOrigins = map[string]struct{}{}
 
 // SetCORSAllowedOrigins 는 CORS origin allow-list 를 설정한다. main 이 env/flag 값으로 startup
 // 시점에 1회 호출한다 (serve 시작 전이라 동기화 불필요). 빈 슬라이스는 기본 (미부착) 유지다.
+// allow-list 에 "*" 가 있으면 전 origin 개방 상태를 기동 로그로 경고해, 진단용 임시 설정이 운영에
+// 남아 있는 것을 운영자가 즉시 인지하게 한다.
 func SetCORSAllowedOrigins(origins []string) {
 	m := make(map[string]struct{}, len(origins))
 	for _, o := range origins {
@@ -53,6 +55,9 @@ func SetCORSAllowedOrigins(origins []string) {
 		}
 	}
 	corsAllowedOrigins = m
+	if _, wildcard := m["*"]; wildcard {
+		log.Printf("apicommon: warn: cors: 전 origin 개방 (\"*\") 상태다. 임의 사이트가 브라우저 경유로 API 를 읽을 수 있으니 진단 목적 한정으로만 유지하고 명시 목록으로 되돌린다")
+	}
 }
 
 // corsDenied 는 거부된 origin 의 첫 관측 로그용 집합이다 (#409 후속). CORS 거부는 서버가 200 을
@@ -90,9 +95,16 @@ func CORSMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if origin != "" {
-			// #409 후속 와일드카드 opt-in. allow-list 에 "*" 가 있으면 요청 origin 을 그대로 echo 한다
-			// (literal * 대신 echo 라 credentials 요청에도 동작). 브라우저 소비자의 origin 확정 전
-			// 임시 개방과 CORS 원인 판별 실험용이며, 운영 기본값은 명시 목록이다.
+			// #409 후속 와일드카드 opt-in. allow-list 에 "*" 가 있으면 요청 origin 을 그대로 echo 한다.
+			//
+			// 위험 경고: origin echo 는 literal "*" 가 credentials 와 함께 쓰일 수 없다는 브라우저
+			// 제약을 우회하는 방식이라 literal "*" 보다 위험한 성질이다. 현재는 본 패키지가
+			// Access-Control-Allow-Credentials 를 어디에서도 부착하지 않아 브라우저가 인증 정보를
+			// 실은 cross-origin 응답 읽기를 차단하므로 실해가 없다. 향후 인증을 도입해 그 헤더를
+			// 추가할 때는 allow-list 에 "*" 가 있으면 임의 사이트가 인증된 응답을 읽게 되므로, 반드시
+			// 본 경로를 차단하고 (wildcard 와 credentials 동시 허용 금지) 명시 목록만 남겨야 한다.
+			// 본 opt-in 은 소비자 origin 확정 전의 임시 개방과 원인 판별용이며 운영 기본값은 명시
+			// 목록이다. 설정 시 기동 로그로 경고가 남는다 (SetCORSAllowedOrigins).
 			_, allowed := corsAllowedOrigins[origin]
 			if !allowed {
 				_, allowed = corsAllowedOrigins["*"]

@@ -174,3 +174,42 @@ func TestCORSMiddleware_PreflightHeadersEchoed(t *testing.T) {
 		t.Errorf("status=%d want 204", rec.Code)
 	}
 }
+
+// TestSetCORSAllowedOrigins_WildcardWarns 는 전 origin 개방 설정이 기동 경고 로그를 남기는지 검증
+// 한다 (#409 후속 리뷰). 진단용 임시 설정이 운영에 남아 있는 것을 운영자가 인지하게 한다.
+func TestSetCORSAllowedOrigins_WildcardWarns(t *testing.T) {
+	var buf bytes.Buffer
+	orig := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(orig)
+
+	SetCORSAllowedOrigins([]string{"*"})
+	defer SetCORSAllowedOrigins(nil)
+	if !strings.Contains(buf.String(), "전 origin 개방") {
+		t.Errorf("경고 로그 없음: %q", buf.String())
+	}
+
+	buf.Reset()
+	SetCORSAllowedOrigins([]string{"http://dash.example"})
+	if strings.Contains(buf.String(), "전 origin 개방") {
+		t.Errorf("명시 목록인데 경고 발생: %q", buf.String())
+	}
+}
+
+// TestCORSMiddleware_NoAllowCredentials 는 어떤 경로에서도 Access-Control-Allow-Credentials 가
+// 부착되지 않는지 고정한다 (#409 후속 리뷰). 이 헤더가 없어야 와일드카드 echo 상태에서도 브라우저가
+// 인증 정보를 실은 cross-origin 응답 읽기를 차단한다. 인증 도입 시 본 테스트가 먼저 실패해 와일드
+// 카드 경로 차단 검토를 강제한다.
+func TestCORSMiddleware_NoAllowCredentials(t *testing.T) {
+	for _, origins := range [][]string{{"*"}, {"http://dash.example"}} {
+		SetCORSAllowedOrigins(origins)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/x", nil)
+		req.Header.Set("Origin", "http://dash.example")
+		rec := httptest.NewRecorder()
+		CORSMiddleware(okHandler()).ServeHTTP(rec, req)
+		if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+			t.Errorf("origins=%v 에서 Allow-Credentials=%q 부착됨", origins, got)
+		}
+	}
+	SetCORSAllowedOrigins(nil)
+}
