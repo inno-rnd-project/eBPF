@@ -198,6 +198,49 @@ func main() {
 		}()
 	}
 
+	// #407 stale 시리즈 정리 루프. informer 의 노드 pod 스냅샷과 대조해 사라진 pod 의 pod-instance
+	// 메트릭 4종 시리즈와 drop flow 슬롯/시리즈를 회수한다. cgroup2 여부와 무관하게 informer 만
+	// 있으면 동작하므로 스캐너 블록과 분리해 기동한다. 주기는 metadata refresh 에 편승한다.
+	if kr.Enabled() {
+		go func() {
+			for !kr.HasSynced() {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(500 * time.Millisecond):
+				}
+			}
+			t := time.NewTicker(cfg.MetadataRefresh)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					// #407 대조 셋은 클러스터 전체 스냅샷이어야 한다. src_pod 가 resolver 의 IP 귀속으로
+					// remote pod 일 수 있어 노드 한정 셋이면 살아 있는 remote pod 시리즈가 매 주기
+					// 삭제·재생성된다 (dev 실측으로 확인된 결함).
+					pods := kr.AllPods()
+					activeUIDs := make(map[string]struct{}, len(pods))
+					activePods := make(map[[2]string]struct{}, len(pods))
+					for _, id := range pods {
+						if id.PodUID != "" {
+							activeUIDs[id.PodUID] = struct{}{}
+						}
+						if id.Namespace != "" && id.PodName != "" {
+							activePods[[2]string{id.Namespace, id.PodName}] = struct{}{}
+						}
+					}
+					deleted := metrics.CleanupStalePodInstanceSeries(activeUIDs)
+					deleted += metrics.CleanupStaleDropFlowSeries(activePods)
+					if deleted > 0 {
+						log.Printf("stale series cleanup: %d series 회수 (active pods=%d)", deleted, len(pods))
+					}
+				}
+			}
+		}()
+	}
+
 	// informer sync lag emitter. 30s 주기로 lastWatchEvent 와 현재 시각의 차이를 self-health
 	// gauge 로 노출한다. kube client 가 비활성 (in-cluster 와 KUBECONFIG 모두 부재) 인 local 환경
 	// 에서는 lastWatchEvent 가 영원히 zero 라 fallback 이 단조 증가해 ObsAgentInformerStale 가

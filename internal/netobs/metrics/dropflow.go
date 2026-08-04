@@ -6,6 +6,8 @@ package metrics
 import (
 	"container/list"
 	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // DropFlowGuard 는 namespace allow-list 와 top-N LRU sampling 두 가드를 노출한다. injector_active 와
@@ -28,6 +30,14 @@ type flowKey struct {
 	dstIP        string
 	dstPort      uint16
 	protocol     string
+}
+
+// dropFlowEntry 는 LRU element 의 값이다 (#407). srcPod 는 entry 를 만든 flow 의 소유 pod 로,
+// ReleaseStalePods 가 죽은 pod 의 슬롯과 시리즈를 함께 회수할 때 대조 키가 된다. 식별 키 (flowKey)
+// 에는 넣지 않아 admit dedup 의미는 종전과 동일하다.
+type dropFlowEntry struct {
+	key    flowKey
+	srcPod string
 }
 
 // NewDropFlowGuard 는 namespace allow-list 와 LRU 상한으로 가드를 구성한다. allowList 가 빈 슬라이스
@@ -57,7 +67,7 @@ func NewDropFlowGuard(allowList []string, maxActive int) *DropFlowGuard {
 // 유일한 방식이다. 이미 등록된 flow 는 계속 admit 되어 카운터 누적이 이어진다. 빈 IP 또는
 // 0.0.0.0 의 5-tuple 은 socket bind 전 drop 으로 정확한 connection 식별이 불가하므로 LRU 등록
 // 자체를 거부해 cache 공간이 낭비되지 않게 한다.
-func (g *DropFlowGuard) Admit(srcNamespace, srcIP string, srcPort uint16, dstIP string, dstPort uint16, protocol string) bool {
+func (g *DropFlowGuard) Admit(srcNamespace, srcPod, srcIP string, srcPort uint16, dstIP string, dstPort uint16, protocol string) bool {
 	if _, ok := g.allowSet[srcNamespace]; !ok {
 		return false
 	}
@@ -69,15 +79,52 @@ func (g *DropFlowGuard) Admit(srcNamespace, srcIP string, srcPort uint16, dstIP 
 	defer g.mu.Unlock()
 	if e, ok := g.index[k]; ok {
 		g.lru.MoveToFront(e)
+		// #407 소유 pod 갱신. pod IP 재사용으로 같은 5-tuple 이 새 pod 의 flow 가 되면 entry 소유를
+		// 현재 pod 로 옮겨, 옛 pod 기준 해제가 새 pod 의 활성 슬롯과 시리즈를 회수하는 부정합을 막는다.
+		e.Value.(*dropFlowEntry).srcPod = srcPod
 		return true
 	}
 	if g.lru.Len() >= g.maxN {
 		AddFlowGuardRejected("drop_flow")
 		return false
 	}
-	e := g.lru.PushFront(k)
+	e := g.lru.PushFront(&dropFlowEntry{key: k, srcPod: srcPod})
 	g.index[k] = e
 	return true
+}
+
+// ReleaseStalePods 는 활성 pod 셋 (namespace, pod 이름 페어) 에 없는 pod 의 LRU 슬롯을 해제하고
+// 해당 pod 의 drop flow 시리즈 (netobs_drop_events_flow_total, netobs_drop_last_timestamp_seconds)
+// 를 DeletePartialMatch 로 회수한다 (#407). #403 의 sticky 상한은 슬롯을 스스로 반납하지 않으므로
+// 죽은 pod 의 flow 가 budget 을 영구 점유해 신규 flow admit 을 막았고, 시리즈도 에이전트 수명
+// 동안 잔존했다. pod 이름이 빈 entry 는 귀속 불명이라 보존한다. 반환값은 삭제한 시리즈 수다.
+func (g *DropFlowGuard) ReleaseStalePods(activePods map[[2]string]struct{}) int {
+	g.mu.Lock()
+	stale := make(map[[2]string]struct{})
+	var next *list.Element
+	for e := g.lru.Front(); e != nil; e = next {
+		next = e.Next()
+		entry := e.Value.(*dropFlowEntry)
+		if entry.srcPod == "" {
+			continue
+		}
+		nsPod := [2]string{entry.key.srcNamespace, entry.srcPod}
+		if _, ok := activePods[nsPod]; ok {
+			continue
+		}
+		stale[nsPod] = struct{}{}
+		delete(g.index, entry.key)
+		g.lru.Remove(e)
+	}
+	g.mu.Unlock()
+
+	deleted := 0
+	for nsPod := range stale {
+		match := prometheus.Labels{"src_namespace": nsPod[0], "src_pod": nsPod[1]}
+		deleted += dropEventsFlow.DeletePartialMatch(match)
+		deleted += dropLastTimestamp.DeletePartialMatch(match)
+	}
+	return deleted
 }
 
 // Size 는 현재 LRU 가 추적 중인 entry 수를 반환한다. 단위 테스트와 운영 디버깅용.
