@@ -25,7 +25,7 @@ labels:
 images:
   - name: gpuobs-agent
     newName: ghcr.io/inno-rnd-project/gpuobs-agent
-    newTag: "3.0.9"
+    newTag: "3.1.0"
 
 patches:
   - path: patch-daemonset.yaml
