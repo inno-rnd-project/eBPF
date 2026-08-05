@@ -117,7 +117,8 @@ func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 		"kube_pod_status_phase",
 		"count by(src_namespace, src_pod) (netobs_pod_bytes_total)",
 		// #320 미관측 사유 판별용 netobs agent 배치 노드 집합.
-		"count by(node) (netobs_bpf_program_loaded)"+nodeSel,
+		// 집계 함수 결과에는 selector 를 붙일 수 없어 매처를 metric selector 안에 넣는다.
+		fmt.Sprintf("count by(node) (netobs_bpf_program_loaded%s)", nodeSel),
 		// #342 무소켓 pod 집합 (no_traffic 판별 입력).
 		"count by(src_namespace, src_pod) (netobs_pod_no_sockets)",
 	)

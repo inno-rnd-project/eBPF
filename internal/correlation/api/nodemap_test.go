@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -197,5 +198,25 @@ func TestNodeMap_NodeFilterPushdown(t *testing.T) {
 	h2.GetNodeMap(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/node-map", nil))
 	if !q2.sawQuery("kube_node_info") || q2.sawQuery(`kube_node_info{node=`) {
 		t.Errorf("미지정 시 bare 쿼리가 아님: %v", q2.queries)
+	}
+}
+
+// TestNodeMap_PushdownQueriesAreValidPromQL 은 #411 필터 하강이 문법적으로 유효한 PromQL 을 만드는지
+// 고정한다. 집계 함수 결과에 selector 를 붙이면 (count by(...) (m){node="x"}) Prometheus 가 400 을
+// 돌려주고 핸들러가 500 이 되는데, 라이브에서 이 실수가 실제로 발생했다. 매처는 반드시 metric
+// selector 안에 있어야 한다.
+func TestNodeMap_PushdownQueriesAreValidPromQL(t *testing.T) {
+	q := (&fakeQuerier{}).on("kube_node_info", sample(1, "node", "gpu"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodeMap(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node-map?node=gpu", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	for _, query := range q.queries {
+		// 닫는 괄호 바로 뒤에 selector 가 붙은 형태는 PromQL 문법 오류다.
+		if strings.Contains(query, "){") {
+			t.Errorf("집계 결과에 selector 결합 (PromQL 문법 오류): %q", query)
+		}
 	}
 }
