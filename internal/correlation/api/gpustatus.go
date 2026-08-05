@@ -202,40 +202,50 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 단일값 device 메트릭은 (query, setter) 바인딩으로 묶어 인덱스 실수를 막는다. throttle_violation
-	// 은 reason 별 다중이라 sum 으로, sm_occupancy 는 gpm 라벨로 좁혀 단일값으로 만든다. gpm 은
-	// consumer GPU 에서 시리즈가 없어 자연 생략된다.
+	// #411 단일값 device 게이지는 (node, gpu_uuid) 동일 라벨셋이라 metric 이름만 다르다. 종전에는
+	// 20 개를 개별 instant 쿼리로 발사했는데 요청당 쿼리 수가 그대로 Prometheus 부하였다. __name__
+	// 정규식 1 쿼리로 접고 응답의 __name__ 라벨로 setter 를 분배한다 (instant 파서가 Labels 에
+	// __name__ 을 보존한다). throttle_violation 은 reason 별 다중이라 sum 으로, sm_occupancy 는 gpm
+	// 라벨로 좁혀야 해 두 쿼리는 병합에서 제외한다. gpm 은 consumer GPU 에서 시리즈가 없어 자연
+	// 생략된다.
 	gpmSel := promSelector(nodeMatcher(node), `gpm="sm_occupancy"`)
+	mergedSetters := map[string]func(d *GpuDevice, v float64){}
 	binds := []struct {
 		query string
 		set   func(d *GpuDevice, v float64)
 	}{
-		{"gpuobs_device_memory_used_bytes" + sel, func(d *GpuDevice, v float64) { d.MemoryUsedBytes = &v }},
-		{"gpuobs_device_memory_total_bytes" + sel, func(d *GpuDevice, v float64) { d.MemoryTotalBytes = &v }},
-		{"gpuobs_device_power_usage_watts" + sel, func(d *GpuDevice, v float64) { d.PowerUsageWatts = &v }},
-		{"gpuobs_device_power_limit_watts" + sel, func(d *GpuDevice, v float64) { d.PowerLimitWatts = &v }},
-		{"gpuobs_device_temperature_celsius" + sel, func(d *GpuDevice, v float64) { d.TemperatureCelsius = &v }},
 		{"gpuobs_device_gpm_utilization_percent" + gpmSel, func(d *GpuDevice, v float64) { d.SMActivePercent = &v }},
-		{"gpuobs_device_encoder_utilization_percent" + sel, func(d *GpuDevice, v float64) { d.EncoderUtilizationPercent = &v }},
-		{"gpuobs_device_decoder_utilization_percent" + sel, func(d *GpuDevice, v float64) { d.DecoderUtilizationPercent = &v }},
-		{"gpuobs_device_bar1_memory_used_bytes" + sel, func(d *GpuDevice, v float64) { d.Bar1MemoryUsedBytes = &v }},
-		{"gpuobs_device_bar1_memory_total_bytes" + sel, func(d *GpuDevice, v float64) { d.Bar1MemoryTotalBytes = &v }},
-		{"gpuobs_device_power_limit_enforced_watts" + sel, func(d *GpuDevice, v float64) { d.PowerLimitEnforcedWatts = &v }},
-		{"gpuobs_device_energy_consumption_joules_total" + sel, func(d *GpuDevice, v float64) { d.EnergyConsumptionJoules = &v }},
-		{"gpuobs_device_fan_speed_percent" + sel, func(d *GpuDevice, v float64) { d.FanSpeedPercent = &v }},
-		{"gpuobs_device_performance_state" + sel, func(d *GpuDevice, v float64) { d.PerformanceState = &v }},
-		{"gpuobs_device_compute_mode" + sel, func(d *GpuDevice, v float64) { d.ComputeMode = &v }},
-		{"gpuobs_device_persistence_mode" + sel, func(d *GpuDevice, v float64) { d.PersistenceMode = &v }},
-		{"gpuobs_device_pcie_link_generation_current" + sel, func(d *GpuDevice, v float64) { d.PcieLinkGeneration = &v }},
-		{"gpuobs_device_pcie_link_width_current" + sel, func(d *GpuDevice, v float64) { d.PcieLinkWidth = &v }},
-		{"gpuobs_device_pcie_rx_bytes_per_second" + sel, func(d *GpuDevice, v float64) { d.PcieRxBytesPerSecond = &v }},
-		{"gpuobs_device_pcie_tx_bytes_per_second" + sel, func(d *GpuDevice, v float64) { d.PcieTxBytesPerSecond = &v }},
 		{fmt.Sprintf("sum by(node, gpu_uuid) (gpuobs_device_throttle_violation_seconds_total%s)", sel), func(d *GpuDevice, v float64) { d.ThrottleViolationSeconds = &v }},
 	}
-	bq := make([]string, len(binds))
-	for i, b := range binds {
-		bq[i] = b.query
+	mergedSetters["gpuobs_device_memory_used_bytes"] = func(d *GpuDevice, v float64) { d.MemoryUsedBytes = &v }
+	mergedSetters["gpuobs_device_memory_total_bytes"] = func(d *GpuDevice, v float64) { d.MemoryTotalBytes = &v }
+	mergedSetters["gpuobs_device_power_usage_watts"] = func(d *GpuDevice, v float64) { d.PowerUsageWatts = &v }
+	mergedSetters["gpuobs_device_power_limit_watts"] = func(d *GpuDevice, v float64) { d.PowerLimitWatts = &v }
+	mergedSetters["gpuobs_device_temperature_celsius"] = func(d *GpuDevice, v float64) { d.TemperatureCelsius = &v }
+	mergedSetters["gpuobs_device_encoder_utilization_percent"] = func(d *GpuDevice, v float64) { d.EncoderUtilizationPercent = &v }
+	mergedSetters["gpuobs_device_decoder_utilization_percent"] = func(d *GpuDevice, v float64) { d.DecoderUtilizationPercent = &v }
+	mergedSetters["gpuobs_device_bar1_memory_used_bytes"] = func(d *GpuDevice, v float64) { d.Bar1MemoryUsedBytes = &v }
+	mergedSetters["gpuobs_device_bar1_memory_total_bytes"] = func(d *GpuDevice, v float64) { d.Bar1MemoryTotalBytes = &v }
+	mergedSetters["gpuobs_device_power_limit_enforced_watts"] = func(d *GpuDevice, v float64) { d.PowerLimitEnforcedWatts = &v }
+	mergedSetters["gpuobs_device_energy_consumption_joules_total"] = func(d *GpuDevice, v float64) { d.EnergyConsumptionJoules = &v }
+	mergedSetters["gpuobs_device_fan_speed_percent"] = func(d *GpuDevice, v float64) { d.FanSpeedPercent = &v }
+	mergedSetters["gpuobs_device_performance_state"] = func(d *GpuDevice, v float64) { d.PerformanceState = &v }
+	mergedSetters["gpuobs_device_compute_mode"] = func(d *GpuDevice, v float64) { d.ComputeMode = &v }
+	mergedSetters["gpuobs_device_persistence_mode"] = func(d *GpuDevice, v float64) { d.PersistenceMode = &v }
+	mergedSetters["gpuobs_device_pcie_link_generation_current"] = func(d *GpuDevice, v float64) { d.PcieLinkGeneration = &v }
+	mergedSetters["gpuobs_device_pcie_link_width_current"] = func(d *GpuDevice, v float64) { d.PcieLinkWidth = &v }
+	mergedSetters["gpuobs_device_pcie_rx_bytes_per_second"] = func(d *GpuDevice, v float64) { d.PcieRxBytesPerSecond = &v }
+	mergedSetters["gpuobs_device_pcie_tx_bytes_per_second"] = func(d *GpuDevice, v float64) { d.PcieTxBytesPerSecond = &v }
+
+	// 병합 쿼리 1건. __name__ 정규식은 고정 리터럴 목록이라 사용자 입력이 섞이지 않고, sel 의 node
+	// 매처는 parseNodeParam 검증을 통과한 값이라 결합이 안전하다.
+	mergedNames := "gpuobs_device_(memory_used_bytes|memory_total_bytes|power_usage_watts|power_limit_watts|temperature_celsius|encoder_utilization_percent|decoder_utilization_percent|bar1_memory_used_bytes|bar1_memory_total_bytes|power_limit_enforced_watts|energy_consumption_joules_total|fan_speed_percent|performance_state|compute_mode|persistence_mode|pcie_link_generation_current|pcie_link_width_current|pcie_rx_bytes_per_second|pcie_tx_bytes_per_second)"
+	mergedQuery := promSelector(fmt.Sprintf("__name__=~%q", mergedNames), nodeMatcher(node))
+	bq := make([]string, 0, len(binds)+1)
+	for _, b := range binds {
+		bq = append(bq, b.query)
 	}
+	bq = append(bq, mergedQuery)
 	bres, qerr := h.queryParallel(ctx, bq...)
 	if qerr != nil {
 		apicommon.WriteError(w, http.StatusInternalServerError, "query_failed", fmt.Sprintf("Prometheus 쿼리 실행 실패: %v", qerr))
@@ -293,6 +303,20 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 	}
 	for i, b := range binds {
 		assign(bres[i], b.set)
+	}
+	// #411 병합 쿼리 결과는 __name__ 라벨로 setter 를 찾아 분배한다. 목록에 없는 이름 (정규식 확장
+	// 시의 오타 등) 은 조용히 무시하지 않고 아래 assign 이 skip 하므로 필드가 비어 드러난다.
+	for _, sm := range bres[len(binds)] {
+		set, ok := mergedSetters[sm.Labels["__name__"]]
+		if !ok {
+			continue
+		}
+		if math.IsNaN(sm.Value) || math.IsInf(sm.Value, 0) {
+			continue
+		}
+		if d, ok := devices[gpuDeviceKey{node: sm.Labels["node"], gpuUUID: sm.Labels["gpu_uuid"]}]; ok {
+			set(d, sm.Value)
+		}
 	}
 
 	// throttle 은 `== 1` 필터로 활성 reason 만 남으므로 라벨을 목록에 수집한다.

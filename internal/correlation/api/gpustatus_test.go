@@ -12,13 +12,22 @@ func gpuStatusFakeQuerier() *fakeQuerier {
 	dev := []string{"node", "gpu", "gpu_uuid", "u1", "gpu_index", "0", "gpu_model", "RTX 3090"}
 	return (&fakeQuerier{}).
 		on("gpuobs_device_utilization_percent", sample(42, dev...)).
-		on("gpuobs_device_memory_used_bytes", sample(6e9, dev...)).
-		on("gpuobs_device_memory_total_bytes", sample(24e9, dev...)).
+		// #411 단일값 device 게이지는 __name__ 정규식 1 쿼리로 병합되므로 병합 쿼리에 응답한다.
+		// +Inf 샘플은 JSON 직렬화가 불가해 필터로 배제되어야 한다 (배제가 깨지면 180 을 Inf 가 덮어쓴다).
+		on("__name__=~",
+			sample(6e9, append(dev, "__name__", "gpuobs_device_memory_used_bytes")...),
+			sample(24e9, append(dev, "__name__", "gpuobs_device_memory_total_bytes")...),
+			sample(180, append(dev, "__name__", "gpuobs_device_power_usage_watts")...),
+			sample(350, append(dev, "__name__", "gpuobs_device_power_limit_watts")...),
+			sample(61, append(dev, "__name__", "gpuobs_device_temperature_celsius")...),
+			sample(45, append(dev, "__name__", "gpuobs_device_fan_speed_percent")...),
+			sample(2, append(dev, "__name__", "gpuobs_device_performance_state")...),
+			sample(4, append(dev, "__name__", "gpuobs_device_pcie_link_generation_current")...),
+			sample(16, append(dev, "__name__", "gpuobs_device_pcie_link_width_current")...),
+			sample(math.Inf(1), append(dev, "__name__", "gpuobs_device_power_usage_watts")...),
+		).
 		// +Inf 샘플은 JSON 직렬화가 불가하므로 필터로 배제되어야 한다. 배제가 깨지면 180 을 Inf 가
 		// 덮어써 응답 인코딩이 실패한다.
-		on("gpuobs_device_power_usage_watts", sample(180, dev...), sample(math.Inf(1), dev...)).
-		on("gpuobs_device_power_limit_watts", sample(350, dev...)).
-		on("gpuobs_device_temperature_celsius", sample(61, dev...)).
 		on("gpuobs_device_throttle_active", sample(1, "node", "gpu", "gpu_uuid", "u1", "reason", "sw_power_cap")).
 		on("gpuobs_pod_utilization_percent",
 			sample(30, "node", "gpu", "gpu_uuid", "u1", "src_namespace", "ml", "src_pod", "train-a"),
@@ -26,10 +35,6 @@ func gpuStatusFakeQuerier() *fakeQuerier {
 		on("gpuobs_pod_memory_used_bytes",
 			sample(4e9, "node", "gpu", "gpu_uuid", "u1", "src_namespace", "ml", "src_pod", "train-a")).
 		// #267 device 상세 확장. 단일값과 서브라벨(clock/threshold), reason 합산(throttle_violation).
-		on("gpuobs_device_fan_speed_percent", sample(45, dev...)).
-		on("gpuobs_device_performance_state", sample(2, dev...)).
-		on("gpuobs_device_pcie_link_generation_current", sample(4, dev...)).
-		on("gpuobs_device_pcie_link_width_current", sample(16, dev...)).
 		on("gpuobs_device_clock_mhz",
 			sample(1800, "node", "gpu", "gpu_uuid", "u1", "clock", "sm"),
 			sample(9500, "node", "gpu", "gpu_uuid", "u1", "clock", "mem")).
@@ -134,7 +139,8 @@ func TestGpuStatus_DeviceStatus(t *testing.T) {
 	dev := []string{"node", "gpu", "gpu_uuid", "u1", "gpu_index", "0"}
 	q := (&fakeQuerier{}).
 		on("gpuobs_device_utilization_percent", sample(5, dev...)).
-		on("gpuobs_device_temperature_celsius", sample(86, dev...)).
+		// #411 병합 쿼리로 온도를 응답한다 (86 >= 0.9*93 → warning 판정 입력).
+		on("__name__=~", sample(86, append(dev, "__name__", "gpuobs_device_temperature_celsius")...)).
 		on("gpuobs_device_temperature_threshold_celsius",
 			sample(93, "node", "gpu", "gpu_uuid", "u1", "threshold", "slowdown")).
 		// 정보성 gpu_idle 만 활성 → degraded 아님. 온도 86 >= 0.9*93(83.7) → warning.
@@ -188,5 +194,35 @@ func TestGpuStatus_NilQuerier(t *testing.T) {
 	}
 	if len(resp.Devices) != 0 {
 		t.Errorf("devices=%+v want empty", resp.Devices)
+	}
+}
+
+// TestGpuStatus_MergedDeviceQuery 는 #411 의 쿼리 병합을 고정한다. 단일값 device 게이지 19종이
+// __name__ 정규식 1 쿼리로 접혀 개별 메트릭 쿼리가 더는 발사되지 않고, node 매처는 exact 로 같은
+// selector 안에 결합된다.
+func TestGpuStatus_MergedDeviceQuery(t *testing.T) {
+	q := gpuStatusFakeQuerier()
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetGpuStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-status?node=gpu", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	if !q.sawQuery(`__name__=~"gpuobs_device_(`) {
+		t.Errorf("병합 쿼리 미발사: %v", q.queries)
+	}
+	// 병합 대상 메트릭의 개별 쿼리는 사라져야 한다 (utilization 은 별도 쿼리라 제외).
+	for _, name := range []string{
+		"gpuobs_device_memory_used_bytes{",
+		"gpuobs_device_fan_speed_percent{",
+		"gpuobs_device_pcie_link_width_current{",
+	} {
+		if q.sawQuery(name) {
+			t.Errorf("병합 대상 %q 의 개별 쿼리가 남아 있음", name)
+		}
+	}
+	// 요청당 쿼리 수 상한. 종전 30 개에서 병합 후 12 개로 줄어든다.
+	if len(q.queries) > 14 {
+		t.Errorf("쿼리 수=%d want <=14 (병합 효과)", len(q.queries))
 	}
 }
