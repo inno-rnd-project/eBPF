@@ -2,9 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"netobs/internal/correlation"
 )
 
 // TestInventory_Nodes 는 /api/v1/nodes 가 kube_node_* 메트릭을 합쳐 노드 기본 정보 (uid / 내부·외부 IP /
@@ -119,4 +122,55 @@ func podFakeQuerier() *fakeQuerier {
 			sample(1, "uid", "u2", "phase", "Running")).
 		on("kube_pod_status_qos_class", sample(1, "uid", "u1", "qos_class", "Burstable")).
 		on("netobs_pod_bytes_total", sample(3, "src_namespace", "default", "src_pod", "trainer"))
+}
+
+// TestListPagination_OptIn 은 #411 의 opt-in 페이지네이션을 고정한다. 미지정 요청은 종전대로 전량이고
+// page 필드가 생략되며, limit/offset 지정 시 그만큼 절단되고 total 은 절단 전 개수다. 형식 위반은
+// 400 이다.
+func TestListPagination_OptIn(t *testing.T) {
+	samples := []correlation.InstantSample{}
+	for i := 0; i < 5; i++ {
+		samples = append(samples, sample(1, "node", fmt.Sprintf("n%d", i)))
+	}
+	q := (&fakeQuerier{}).on("kube_node_info", samples...)
+	h := NewSynthesisHandler(q, nil, nil)
+
+	get := func(target string) NodesResponse {
+		rec := httptest.NewRecorder()
+		h.GetNodes(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status=%d want 200", target, rec.Code)
+		}
+		var resp NodesResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return resp
+	}
+
+	full := get("/api/v1/nodes")
+	if len(full.Nodes) != 5 || full.Page != nil {
+		t.Errorf("미지정 요청 nodes=%d page=%v want 5/nil", len(full.Nodes), full.Page)
+	}
+	paged := get("/api/v1/nodes?limit=2&offset=1")
+	if len(paged.Nodes) != 2 {
+		t.Fatalf("절단 nodes=%d want 2", len(paged.Nodes))
+	}
+	if paged.Nodes[0].Name != "n1" {
+		t.Errorf("offset 반영 실패: 첫 항목=%s want n1", paged.Nodes[0].Name)
+	}
+	if paged.Page == nil || paged.Page.Total != 5 || paged.Page.Limit != 2 || paged.Page.Offset != 1 {
+		t.Errorf("page=%+v want limit2/offset1/total5", paged.Page)
+	}
+	// 범위 밖 offset 은 빈 목록이고 total 은 유지된다.
+	over := get("/api/v1/nodes?offset=99")
+	if len(over.Nodes) != 0 || over.Page == nil || over.Page.Total != 5 {
+		t.Errorf("범위 밖 offset nodes=%d page=%+v", len(over.Nodes), over.Page)
+	}
+
+	rec := httptest.NewRecorder()
+	h.GetNodes(rec, httptest.NewRequest(http.MethodGet, "/api/v1/nodes?limit=-1", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("limit=-1 status=%d want 400", rec.Code)
+	}
 }

@@ -46,6 +46,12 @@ func NewSynthesisHandler(querier correlation.InstantQuerier, neighbors SnapshotS
 
 // Register 는 합성 API 라우트를 mux 에 등록한다. 기존 correlation API 와 동일하게 Logging / Recover /
 // CORS 미들웨어 체인을 적용해 frontend 대시보드의 cross-origin 호출을 허용한다.
+// pollCache 는 #411 의 폴링 엔드포인트 응답 캐시다. 프론트 랜딩이 10 초 주기로 overview 와 node-map
+// 과 health 를 갱신하는데 데이터 원천이 5 분 recording rule 이라 매 요청 재계산이 낭비다. TTL 은
+// recording rule 주기보다 짧은 15 초로 두어 신선도 손실을 최소화하면서 동일 요청의 재계산을 접는다.
+// 캐시 키에 at 이 포함되므로 시점 지정 조회는 서로 섞이지 않는다.
+var pollCache = apicommon.NewResponseCache(15*time.Second, 512)
+
 func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 	mux.Handle("/api/v1/health", apicommon.Chain(
 		http.HandlerFunc(h.GetHealth),
@@ -53,6 +59,10 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
+		// #411 폴링 경로 응답 캐시. gzip 바깥이 아니라 안쪽에 둬 평문을 저장하므로 Accept-Encoding
+		// 이 다른 소비자가 같은 캐시 항목을 공유한다.
+		pollCache.Middleware,
 	))
 	mux.Handle("/api/v1/pressure", apicommon.Chain(
 		http.HandlerFunc(h.GetPressure),
@@ -60,6 +70,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	// /api/v1/node/{node} 는 경로 끝 segment 가 node 라 prefix 매칭 후 핸들러에서 파싱한다. 기존
 	// 라우트와 동일하게 CORSMiddleware 가 OPTIONS preflight 를 처리하도록 method 패턴은 쓰지 않는다.
@@ -70,6 +81,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	// #307 pod 단위 종합 상세. {namespace}/{pod} 두 segment 를 prefix 매칭 후 핸들러에서 파싱한다.
 	mux.Handle("/api/v1/pod/", apicommon.Chain(
@@ -78,6 +90,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/events", apicommon.Chain(
 		http.HandlerFunc(h.GetEvents),
@@ -85,6 +98,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	// #249 랜딩 대시보드 요약. 기존 판정 (alert 매칭, 압박 임계, weakest) 의 합성이라 의존성이 같다.
 	mux.Handle("/api/v1/overview", apicommon.Chain(
@@ -93,6 +107,10 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
+		// #411 폴링 경로 응답 캐시. gzip 바깥이 아니라 안쪽에 둬 평문을 저장하므로 Accept-Encoding
+		// 이 다른 소비자가 같은 캐시 항목을 공유한다.
+		pollCache.Middleware,
 	))
 	// #249 랜딩 노드 그리드. 노드별 pod 상태 맵을 서버 판정으로 내장한다.
 	mux.Handle("/api/v1/node-map", apicommon.Chain(
@@ -101,6 +119,10 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
+		// #411 폴링 경로 응답 캐시. gzip 바깥이 아니라 안쪽에 둬 평문을 저장하므로 Accept-Encoding
+		// 이 다른 소비자가 같은 캐시 항목을 공유한다.
+		pollCache.Middleware,
 	))
 	// #258 노드 GPU RCA 합성. scope=node gpu-idle 과 noisy-neighbor/cross-node snapshot 을 합성한다.
 	mux.Handle("/api/v1/gpu-rca", apicommon.Chain(
@@ -109,6 +131,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	// #265 노드 raw 사용률 프록시. cadvisor / gpuobs 원시 게이지를 노드별로 얇게 노출한다.
 	mux.Handle("/api/v1/node-vitals", apicommon.Chain(
@@ -117,6 +140,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	// #266 노드별 관측 에이전트 self-health. 알림 규칙과 동일 임계로 healthy/degraded 를 판정한다.
 	mux.Handle("/api/v1/agents", apicommon.Chain(
@@ -125,6 +149,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/gpu-idle", apicommon.Chain(
 		http.HandlerFunc(h.GetGpuIdle),
@@ -132,6 +157,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/gpu-status", apicommon.Chain(
 		http.HandlerFunc(h.GetGpuStatus),
@@ -139,6 +165,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	// #281 노드 GPU 실행 프로세스 프록시. gpuobs agent 로컬 스냅샷을 단일 진입점으로 중계한다.
 	mux.Handle("/api/v1/gpu-processes", apicommon.Chain(
@@ -147,6 +174,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/bandwidth", apicommon.Chain(
 		http.HandlerFunc(h.GetBandwidth),
@@ -154,6 +182,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/nodes", apicommon.Chain(
 		http.HandlerFunc(h.GetNodes),
@@ -161,6 +190,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/pods", apicommon.Chain(
 		http.HandlerFunc(h.GetPods),
@@ -168,6 +198,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/latency-breakdown", apicommon.Chain(
 		http.HandlerFunc(h.GetLatencyBreakdown),
@@ -175,6 +206,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/drops", apicommon.Chain(
 		http.HandlerFunc(h.GetDrops),
@@ -182,6 +214,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/topology", apicommon.Chain(
 		http.HandlerFunc(h.GetTopology),
@@ -189,6 +222,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/flows", apicommon.Chain(
 		http.HandlerFunc(h.GetFlows),
@@ -196,6 +230,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/memory", apicommon.Chain(
 		http.HandlerFunc(h.GetMemory),
@@ -203,6 +238,7 @@ func (h *SynthesisHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 }
 

@@ -37,6 +37,7 @@ func (h *RCAProxyHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 }
 

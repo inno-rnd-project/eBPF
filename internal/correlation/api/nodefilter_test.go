@@ -57,8 +57,10 @@ func TestNodeFilter_ExactMatcher(t *testing.T) {
 			if !q.sawQuery(tc.wantSub) {
 				t.Errorf("%s: exact 매처 %q 결합 쿼리 미확인: %v", tc.name, tc.wantSub, q.queries)
 			}
-			if q.sawQuery("=~") {
-				t.Errorf("%s: 정규식 매처(=~)가 쓰임: %v", tc.name, q.queries)
+			// #411 node 라벨에 정규식 매처가 쓰이지 않는지만 본다. __name__ 정규식은 metric 이름
+			// 병합 (gpu-status 의 device 게이지 1 쿼리 축약) 에 쓰이는 고정 리터럴이라 대상이 아니다.
+			if q.sawQuery("node=~") {
+				t.Errorf("%s: node 에 정규식 매처(node=~)가 쓰임: %v", tc.name, q.queries)
 			}
 		})
 	}

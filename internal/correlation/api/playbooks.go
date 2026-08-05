@@ -28,6 +28,7 @@ func (h *PlaybooksHandler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 }
 

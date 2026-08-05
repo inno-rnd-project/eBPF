@@ -2,9 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 func nodeMapFakeQuerier() *fakeQuerier {
@@ -141,16 +144,79 @@ func TestNodeMap_AtParam(t *testing.T) {
 	q := nodeMapFakeQuerier()
 	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
-	h.GetNodeMap(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node-map?at=1751943600", nil))
+	// #411 at 은 retention 범위 (45일) 안이어야 하므로 고정 epoch 대신 상대 시점을 쓴다.
+	at := time.Now().UTC().Add(-2 * time.Hour).Unix()
+	h.GetNodeMap(rec, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/node-map?at=%d", at), nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200", rec.Code)
 	}
-	if q.lastAt.Unix() != 1751943600 {
-		t.Errorf("lastAt=%v want unix 1751943600 전파", q.lastAt)
+	if q.lastAt.Unix() != at {
+		t.Errorf("lastAt=%v want unix %d 전파", q.lastAt, at)
+	}
+	// retention 밖 과거는 400 으로 거부한다 (조용한 clamp 로 다른 시점 데이터를 돌려주지 않는다).
+	rec = httptest.NewRecorder()
+	old := time.Now().UTC().Add(-100 * 24 * time.Hour).Unix()
+	h.GetNodeMap(rec, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/node-map?at=%d", old), nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("retention 밖 at status=%d want 400", rec.Code)
 	}
 	rec = httptest.NewRecorder()
 	h.GetNodeMap(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node-map?at=bogus", nil))
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status=%d want 400", rec.Code)
+	}
+}
+
+// TestNodeMap_NodeFilterPushdown 은 #411 의 필터 하강을 고정한다. node 파라미터가 있으면 node 라벨을
+// 가진 쿼리에 exact 매처가 실려 Prometheus 단에서 좁혀지고, 라벨 규약이 다른 ALERTS 와 축이 다른
+// netobs pod 계열은 하강 대상이 아니다.
+func TestNodeMap_NodeFilterPushdown(t *testing.T) {
+	// 노드가 존재해야 200 이다 (미등록 노드는 404 로 종전 계약 유지).
+	q := (&fakeQuerier{}).on("kube_node_info", sample(1, "node", "gpu"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodeMap(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node-map?node=gpu", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	for _, want := range []string{
+		`kube_node_info{node="gpu"}`,
+		`kube_pod_info{node="gpu"}`,
+		`node:pressure_score:5m{node="gpu"}`,
+	} {
+		if !q.sawQuery(want) {
+			t.Errorf("하강 쿼리 %q 미확인: %v", want, q.queries)
+		}
+	}
+	// ALERTS 는 노드 라벨 규약이 alert 별로 달라 하강하지 않는다.
+	if q.sawQuery(`ALERTS{alertstate="firing",node=`) {
+		t.Errorf("ALERTS 에 node 매처가 결합됨: %v", q.queries)
+	}
+	// 필터 미지정이면 종전과 동일한 전 클러스터 쿼리다.
+	q2 := (&fakeQuerier{}).on("kube_node_info", sample(1, "node", "gpu"))
+	h2 := NewSynthesisHandler(q2, nil, nil)
+	h2.GetNodeMap(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/node-map", nil))
+	if !q2.sawQuery("kube_node_info") || q2.sawQuery(`kube_node_info{node=`) {
+		t.Errorf("미지정 시 bare 쿼리가 아님: %v", q2.queries)
+	}
+}
+
+// TestNodeMap_PushdownQueriesAreValidPromQL 은 #411 필터 하강이 문법적으로 유효한 PromQL 을 만드는지
+// 고정한다. 집계 함수 결과에 selector 를 붙이면 (count by(...) (m){node="x"}) Prometheus 가 400 을
+// 돌려주고 핸들러가 500 이 되는데, 라이브에서 이 실수가 실제로 발생했다. 매처는 반드시 metric
+// selector 안에 있어야 한다.
+func TestNodeMap_PushdownQueriesAreValidPromQL(t *testing.T) {
+	q := (&fakeQuerier{}).on("kube_node_info", sample(1, "node", "gpu"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodeMap(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node-map?node=gpu", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	for _, query := range q.queries {
+		// 닫는 괄호 바로 뒤에 selector 가 붙은 형태는 PromQL 문법 오류다.
+		if strings.Contains(query, "){") {
+			t.Errorf("집계 결과에 selector 결합 (PromQL 문법 오류): %q", query)
+		}
 	}
 }

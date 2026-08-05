@@ -100,6 +100,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/cross-node-interference", apicommon.Chain(
 		http.HandlerFunc(h.ListCrossNode),
@@ -107,6 +108,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/service-impact", apicommon.Chain(
 		http.HandlerFunc(h.ListServiceImpact),
@@ -114,6 +116,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/cross-level", apicommon.Chain(
 		http.HandlerFunc(h.ListCrossLevel),
@@ -121,6 +124,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/impact-graph", apicommon.Chain(
 		http.HandlerFunc(h.GetImpactGraph),
@@ -128,6 +132,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 	mux.Handle("/api/v1/impact-paths", apicommon.Chain(
 		http.HandlerFunc(h.ListImpactPaths),
@@ -135,6 +140,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		apicommon.RecoverMiddleware,
 		apicommon.MethodGuard,
 		apicommon.CORSMiddleware,
+		apicommon.GzipMiddleware,
 	))
 }
 
