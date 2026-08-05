@@ -15,8 +15,10 @@ import (
 // applyAtParam 은 #235 의 시점 지정 조회 공용 진입점이다. at 쿼리 파라미터 (RFC3339 또는 unix
 // seconds) 를 파싱해 평가 시점을 context 에 싣고, 응답 generated_at 에 쓸 시각을 돌려준다. 미지정
 // 시 현재 시각과 원본 ctx 를 그대로 돌려주고, 잘못된 형식은 400 을 기록한 뒤 ok=false 를 돌려주므로
-// 호출자는 즉시 return 한다. Prometheus retention 밖 시점은 쿼리가 빈 결과를 돌려줘 기존 graceful
-// 경로로 자연 처리된다.
+// 호출자는 즉시 return 한다. #411 부터 파싱된 시점은 clampAtValue 로 조회 가능 범위로 제한된다.
+// 미래 시점은 현재로 정규화되고 Prometheus retention 밖 과거는 400 으로 거부되므로, 종전의 "빈 결과
+// graceful 처리" 대신 명시 오류가 돌아간다 (요청 시점과 다른 데이터를 같은 응답으로 돌려주지 않기
+// 위한 선택이며, 응답 캐시 키가 임의 과거 시점으로 증식하는 우회도 함께 막는다).
 func applyAtParam(w http.ResponseWriter, r *http.Request, ctx context.Context) (context.Context, time.Time, bool) {
 	raw := strings.TrimSpace(r.URL.Query().Get("at"))
 	if raw == "" {
@@ -57,8 +59,9 @@ func clampAtValue(t time.Time) (time.Time, error) {
 }
 
 // parseAtValue 는 RFC3339 문자열 또는 unix seconds 정수를 시각으로 해석한다. 두 분기 모두 UTC 로
-// 정규화해 ctx 에 실리는 시각의 Location 이 입력 형식과 무관하게 일관되도록 한다. 미래 시점은
-// Prometheus 가 빈 결과를 돌려주므로 별도 거부하지 않는다.
+// 정규화해 ctx 에 실리는 시각의 Location 이 입력 형식과 무관하게 일관되도록 한다. 본 함수는 형식만
+// 해석하고 범위 판정은 하지 않는다. 미래 시점과 retention 밖 과거의 처리는 호출부 (applyAtParam) 가
+// clampAtValue 로 수행한다 (#411, 미래는 현재로 정규화하고 retention 밖 과거는 거부).
 func parseAtValue(raw string) (time.Time, error) {
 	if sec, err := strconv.ParseInt(raw, 10, 64); err == nil {
 		if sec <= 0 {

@@ -11,6 +11,8 @@ retention 은 소비자가 요구하는 최장 참조 구간이 결정한다. �
 
 따라서 최소 요구는 약 31일이고 `retention: 40d` 는 약 10일 여유를 남긴다. **31일 미만으로 내리면 capacity 판정이 성립하지 않으므로 축소 시 이 하한을 지켜야 한다.**
 
+retention 을 조정할 때는 correlation API 의 `at` 파라미터 허용 범위 상수 (`internal/correlation/api/timeparam.go` 의 `atRetentionWindow`, 현재 45일) 도 함께 확인한다 (#411). 이 상수는 retention 보다 약간 넉넉하게 두어 정상 조회를 막지 않으면서 응답 캐시 키가 임의 과거 시점으로 증식하는 것을 차단하는 값이라, retention 을 크게 내리면 두 값의 간격이 벌어져 이미 조회 불가한 구간을 계속 허용하게 된다.
+
 크기 상한은 `retentionSize: 40GB` 가 담당한다. local-path PV 는 노드 로컬 디렉터리라 PVC 요청 용량이 강제되지 않으므로 노드 디스크를 보호하는 실질 상한은 이 필드다. 실측 기준은 다음과 같다.
 
 - **실측 유입률**: 블록 47.1 GiB 에 retention 60일이라 0.785 GiB/day. 이후 flow 계열 카디널리티 통제(#403)로 시리즈가 29.9만에서 18.9만으로 줄어 현재는 약 0.5 GiB/day
