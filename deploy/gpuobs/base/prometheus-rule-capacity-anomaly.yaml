@@ -34,9 +34,10 @@ spec:
     # 절감된다.
     - name: netobs-gpuobs.capacity-trends.recording
       interval: 5m
-      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그룹 평가가 실패로 기록되어 폭주가
-      # 조용히 스토리지를 채우는 대신 가시화된다. 현행 최대 그룹이 수백 시리즈라 2000 은
-      # 정상 운영에 닿지 않는다.
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
+      # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
+      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
       limit: 2000
       rules:
         # cluster:gpu_util_1h_avg
@@ -140,9 +141,10 @@ spec:
     # for: 5m 대비 최악 감지 지연 증가가 2m 에 그치면서 7d 스캔 빈도는 1/4 로 준다.
     - name: netobs-gpuobs.resource-anomaly-spike.recording
       interval: 2m
-      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그룹 평가가 실패로 기록되어 폭주가
-      # 조용히 스토리지를 채우는 대신 가시화된다. 현행 최대 그룹이 수백 시리즈라 2000 은
-      # 정상 운영에 닿지 않는다.
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
+      # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
+      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
       limit: 2000
       rules:
         # cluster:gpu_util_5m_avg

@@ -23,9 +23,10 @@ spec:
     # gpuobs와의 상관 분석 산출물이며 cross-cutting rule들의 위치를 단일화하기 위해서다.
     - name: netobs-gpuobs.recording
       interval: 30s
-      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그룹 평가가 실패로 기록되어 폭주가
-      # 조용히 스토리지를 채우는 대신 가시화된다. 현행 최대 그룹이 수백 시리즈라 2000 은
-      # 정상 운영에 닿지 않는다.
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
+      # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
+      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
       limit: 2000
       rules:
         # node:gpu_util_p95:5m
@@ -110,9 +111,10 @@ spec:
     # 는 운영 환경의 sustained burst 감지 (alert) 가 우선이라 채택한다.
     - name: netobs-gpuobs.drop-flow.recording
       interval: 30s
-      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그룹 평가가 실패로 기록되어 폭주가
-      # 조용히 스토리지를 채우는 대신 가시화된다. 현행 최대 그룹이 수백 시리즈라 2000 은
-      # 정상 운영에 닿지 않는다.
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
+      # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
+      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
       limit: 2000
       rules:
         # netobs_drop_burst:rate1m
@@ -145,9 +147,10 @@ spec:
     # 라벨이 없어 본 그룹에서 제외하며 dst_node 계측 도입 시 별도 follow-up 으로 추가한다.
     - name: netobs-gpuobs.flow-bandwidth.recording
       interval: 30s
-      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그룹 평가가 실패로 기록되어 폭주가
-      # 조용히 스토리지를 채우는 대신 가시화된다. 현행 최대 그룹이 수백 시리즈라 2000 은
-      # 정상 운영에 닿지 않는다.
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
+      # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
+      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
       limit: 2000
       rules:
         # pod:network_mbps:5m

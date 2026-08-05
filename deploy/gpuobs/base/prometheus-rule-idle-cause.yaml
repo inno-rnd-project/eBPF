@@ -26,9 +26,10 @@ spec:
     # 동적 산출되므로 GPU 모델 혼합 클러스터에서도 정확하다.
     - name: netobs-gpuobs.gpu-idle.recording
       interval: 30s
-      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그룹 평가가 실패로 기록되어 폭주가
-      # 조용히 스토리지를 채우는 대신 가시화된다. 현행 최대 그룹이 수백 시리즈라 2000 은
-      # 정상 운영에 닿지 않는다.
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
+      # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
+      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
       limit: 2000
       rules:
         # node:gpu_idle:5m
@@ -303,6 +304,10 @@ spec:
         # by() 가 전부 본 라벨 셋 (node, src_namespace, src_pod, src_pod_uid, le) 의 부분집합이고
         # rate 합산은 선형이라, 여기서 한 번 접은 결과를 재집계해도 산출이 동일하다. stage 와 dst
         # 계열 라벨은 세 소비처 모두 쓰지 않아 함께 접는다.
+        # 본 rule은 그룹 limit 2000 대비 최대 산출원이다 (dev 실측 903 시리즈, pod 수와 stage와
+        # le 조합에 비례). limit 초과 시 본 rule 산출만 소실되고 같은 그룹의 다른 rule은 유지되나,
+        # 이를 소비하는 세 파생 rule (node p99, pod p99, correlation victim latency pressure) 이
+        # 함께 조용히 빈다. 임박은 StageLatencyIntermediateSeriesNearLimit (80% 임계) 가 감지한다.
         - record: pod:netobs_stage_latency_rate_le:5m
           expr: |
             sum by(node, src_namespace, src_pod, src_pod_uid, le) (
@@ -343,9 +348,10 @@ spec:
     # 분모와 tie-breaker offset 이 변경 없이 자동 정합되기 때문이다.
     - name: netobs-gpuobs.dominant-cause.recording
       interval: 30s
-      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그룹 평가가 실패로 기록되어 폭주가
-      # 조용히 스토리지를 채우는 대신 가시화된다. 현행 최대 그룹이 수백 시리즈라 2000 은
-      # 정상 운영에 닿지 않는다.
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
+      # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
+      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
       limit: 2000
       rules:
         # cluster:gpu_pcie_saturation_score:5m
