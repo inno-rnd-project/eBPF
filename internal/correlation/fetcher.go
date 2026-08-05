@@ -42,7 +42,8 @@ func NewPrometheusFetcher(baseURL string, timeout time.Duration) (*PrometheusFet
 	}
 	return &PrometheusFetcher{
 		queryURL: u,
-		client:   &http.Client{Timeout: timeout},
+		// #411 공용 Transport (idle 풀 상향) 를 instant querier 와 공유한다.
+		client: &http.Client{Timeout: timeout, Transport: sharedTransport},
 	}, nil
 }
 

@@ -984,6 +984,12 @@ definitions:
         items:
           $ref: '#/definitions/internal_correlation_api.NodeMapNode'
         type: array
+      page:
+        allOf:
+        - $ref: '#/definitions/netobs_internal_apicommon.Page'
+        description: |-
+          Page 는 #411 의 opt-in 페이지네이션 additive 필드다. limit 또는 offset 을 지정한 요청에만 실리고
+          미지정 요청에는 생략된다. summary 는 절단 전 전체 기준으로 산출해 요약의 의미를 보존한다.
       summary:
         type: string
     type: object
@@ -1175,6 +1181,12 @@ definitions:
         items:
           $ref: '#/definitions/internal_correlation_api.NodeInventory'
         type: array
+      page:
+        allOf:
+        - $ref: '#/definitions/netobs_internal_apicommon.Page'
+        description: |-
+          Page 는 #411 의 opt-in 페이지네이션 additive 필드다. limit 또는 offset 을 지정한 요청에만 실리고
+          미지정 요청에는 생략되어 기존 소비자의 응답 형태가 바뀌지 않는다. Total 은 절단 전 전체 개수다.
     type: object
   internal_correlation_api.NoisyNeighborListResponse:
     properties:
@@ -1458,6 +1470,11 @@ definitions:
     properties:
       generated_at:
         type: string
+      page:
+        allOf:
+        - $ref: '#/definitions/netobs_internal_apicommon.Page'
+        description: 'Page 는 #411 의 opt-in 페이지네이션 additive 필드다. limit 또는 offset 을
+          지정한 요청에만 실린다.'
       pods:
         items:
           $ref: '#/definitions/internal_correlation_api.PodInventory'

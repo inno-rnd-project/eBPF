@@ -25,6 +25,17 @@ type InstantSample struct {
 // 할당을 허용한다. 8MiB 는 정상 대비 열 배 이상의 안전 마진이다.
 const maxInstantResponseBytes = 8 << 20
 
+// sharedTransport 는 #411 의 공용 HTTP Transport 다. 기본 Transport 는 호스트당 idle 연결이 2 개라
+// 핸들러가 10~17 개 쿼리를 병렬 팬아웃할 때마다 대부분이 새 커넥션을 수립하고 (TCP handshake 비용)
+// 요청 종료 후 버려졌다. Prometheus 는 단일 호스트라 idle 풀을 팬아웃 폭 이상으로 올리면 커넥션이
+// 재사용되어 지연과 CPU 가 함께 줄어든다. instant querier 와 range fetcher 가 같은 Transport 를
+// 공유해 풀도 함께 쓴다.
+var sharedTransport http.RoundTripper = &http.Transport{
+	MaxIdleConns:        64,
+	MaxIdleConnsPerHost: 32,
+	IdleConnTimeout:     90 * time.Second,
+}
+
 // InstantQuerier 는 Prometheus instant query (/api/v1/query) 를 수행하는 인터페이스다. range 시계열을
 // 다루는 Fetcher 와 분리해, synthesis API 가 recording rule 의 현재 스칼라 값만 가볍게 조회하고 테스트
 // 에서 mock 으로 대체할 수 있게 한다.
@@ -48,7 +59,7 @@ func NewPrometheusInstantQuerier(baseURL string, timeout time.Duration) (*Promet
 	}
 	return &PrometheusInstantQuerier{
 		queryURL: u,
-		client:   &http.Client{Timeout: timeout},
+		client:   &http.Client{Timeout: timeout, Transport: sharedTransport},
 	}, nil
 }
 

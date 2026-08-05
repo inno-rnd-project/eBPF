@@ -1,7 +1,7 @@
 swagger: '2.0'
 info:
   title: netobs unified API
-  version: 3.0.0
+  version: 3.0.5
 paths:
   /api/v1/agents:
     get:
@@ -2319,6 +2319,13 @@ definitions:
         type: array
         items:
           $ref: '#/definitions/internal_correlation_api.NodeMapNode'
+      page:
+        description: 'Page 는 #411 의 opt-in 페이지네이션 additive 필드다. limit 또는 offset 을
+          지정한 요청에만 실리고
+
+          미지정 요청에는 생략된다. summary 는 절단 전 전체 기준으로 산출해 요약의 의미를 보존한다.'
+        allOf:
+        - $ref: '#/definitions/netobs_internal_apicommon.Page'
       summary:
         type: string
   internal_correlation_api.NodePodPressure:
@@ -2525,6 +2532,13 @@ definitions:
         type: array
         items:
           $ref: '#/definitions/internal_correlation_api.NodeInventory'
+      page:
+        description: 'Page 는 #411 의 opt-in 페이지네이션 additive 필드다. limit 또는 offset 을
+          지정한 요청에만 실리고
+
+          미지정 요청에는 생략되어 기존 소비자의 응답 형태가 바뀌지 않는다. Total 은 절단 전 전체 개수다.'
+        allOf:
+        - $ref: '#/definitions/netobs_internal_apicommon.Page'
   internal_correlation_api.NoisyNeighborListResponse:
     type: object
     properties:
@@ -2819,6 +2833,11 @@ definitions:
     properties:
       generated_at:
         type: string
+      page:
+        description: 'Page 는 #411 의 opt-in 페이지네이션 additive 필드다. limit 또는 offset 을
+          지정한 요청에만 실린다.'
+        allOf:
+        - $ref: '#/definitions/netobs_internal_apicommon.Page'
       pods:
         type: array
         items:

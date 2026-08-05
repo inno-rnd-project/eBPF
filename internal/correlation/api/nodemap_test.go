@@ -2,9 +2,11 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func nodeMapFakeQuerier() *fakeQuerier {
@@ -141,12 +143,21 @@ func TestNodeMap_AtParam(t *testing.T) {
 	q := nodeMapFakeQuerier()
 	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
-	h.GetNodeMap(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node-map?at=1751943600", nil))
+	// #411 at 은 retention 범위 (45일) 안이어야 하므로 고정 epoch 대신 상대 시점을 쓴다.
+	at := time.Now().UTC().Add(-2 * time.Hour).Unix()
+	h.GetNodeMap(rec, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/node-map?at=%d", at), nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200", rec.Code)
 	}
-	if q.lastAt.Unix() != 1751943600 {
-		t.Errorf("lastAt=%v want unix 1751943600 전파", q.lastAt)
+	if q.lastAt.Unix() != at {
+		t.Errorf("lastAt=%v want unix %d 전파", q.lastAt, at)
+	}
+	// retention 밖 과거는 400 으로 거부한다 (조용한 clamp 로 다른 시점 데이터를 돌려주지 않는다).
+	rec = httptest.NewRecorder()
+	old := time.Now().UTC().Add(-100 * 24 * time.Hour).Unix()
+	h.GetNodeMap(rec, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/node-map?at=%d", old), nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("retention 밖 at status=%d want 400", rec.Code)
 	}
 	rec = httptest.NewRecorder()
 	h.GetNodeMap(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node-map?at=bogus", nil))
