@@ -14,6 +14,13 @@ spec:
   groups:
     # workload-injector.alerts 는 injection 의 정상 / 비정상 lifecycle 과 blast radius 가시성을 둔다.
     - name: workload-injector.alerts
+      # #412 전역 기본값 의존이던 평가 주기를 명시한다 (kube-prometheus-stack 기본 30s 동일).
+      interval: 30s
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
+      # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
+      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      limit: 2000
       rules:
         # InjectorActive
         # injector_active == 1 가 30 초 지속 시 정보성 알림. 운영자가 injection 실행 사실을 즉시

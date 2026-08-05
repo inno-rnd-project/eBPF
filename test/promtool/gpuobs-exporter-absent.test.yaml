@@ -1,0 +1,122 @@
+# gpuobs-exporter-absent.test.yaml 은 #412 외부 exporter 부재 가드의 발화 검증이다. 전손 가드
+# absent() 3종과 부분 결측 가드 (kube_node_info 대비 실측 노드 수 비교) 2종을 다룬다. 전손 시
+# absent 발화 + 부분 비교는 무데이터 침묵, 부분 결측 시 partial 발화, 정상 시 전부 미발화의 세
+# 시나리오를 단정한다. rule_files 는 make test-prometheus-rules 가 추출해 마운트하는 gpuobs.yaml.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # 세 exporter 메트릭이 전부 부재한 클러스터: absent 3종 모두 12m 시점 (for 10m 경과 후) 에
+  # 발화한다. 부분 결측 가드는 count() 가 무데이터라 침묵하며 이 케이스는 absent 가 커버한다는
+  # 상호 보완 설계를 함께 고정한다.
+  - interval: 30s
+    input_series: []
+    alert_rule_test:
+      - alertname: CadvisorMetricsPartiallyAbsent
+        eval_time: 12m
+        exp_alerts: []
+      - alertname: NodeExporterMetricsPartiallyAbsent
+        eval_time: 12m
+        exp_alerts: []
+      - alertname: CadvisorMetricsAbsent
+        eval_time: 12m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: observability
+            exp_annotations:
+              summary: "cAdvisor metrics absent"
+              description: "container_cpu_cfs_periods_total 시리즈가 10 분 이상 부재하다. cAdvisor (kubelet) 메트릭 수집이 끊겨 CPU throttle 기반 dominant cause 와 capacity z-score 산출이 조용히 비는 상태다. kubelet ServiceMonitor 대상 등록과 kubelet 상태를 점검한다."
+      - alertname: NodeExporterMetricsAbsent
+        eval_time: 12m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: observability
+            exp_annotations:
+              summary: "node-exporter metrics absent"
+              description: "node_memory_MemAvailable_bytes 시리즈가 10 분 이상 부재하다. node-exporter 수집이 끊겨 memory pressure 기반 dominant cause 산출이 조용히 비는 상태다. node-exporter DaemonSet 과 ServiceMonitor 대상 등록을 점검한다."
+      - alertname: KubeStateMetricsAbsent
+        eval_time: 12m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: observability
+            exp_annotations:
+              summary: "kube-state-metrics metrics absent"
+              description: "kube_pod_container_resource_limits 시리즈가 10 분 이상 부재하다. kube-state-metrics 수집이 끊겨 limit 기반 ratio 산출 (memory pressure, CPU throttle 계열) 이 조용히 비는 상태다. kube-state-metrics Deployment 와 ServiceMonitor 대상 등록을 점검한다."
+
+  # 2 노드 중 1 노드만 exporter 메트릭이 있는 부분 결측 클러스터: absent 3종은 시리즈 잔존으로
+  # 침묵하고 (#430 양상) partial 2종이 발화한다.
+  - interval: 30s
+    input_series:
+      - series: 'kube_node_info{node="n1"}'
+        values: '1+0x40'
+      - series: 'kube_node_info{node="n2"}'
+        values: '1+0x40'
+      - series: 'machine_cpu_cores{node="n1"}'
+        values: '8+0x40'
+      - series: 'node_memory_MemAvailable_bytes{instance="n1"}'
+        values: '1000000+0x40'
+      - series: 'container_cpu_cfs_periods_total{namespace="ns1",pod="p1",node="n1"}'
+        values: '0+10x40'
+      - series: 'kube_pod_container_resource_limits{namespace="ns1",pod="p1",resource="memory"}'
+        values: '1000+0x40'
+    alert_rule_test:
+      - alertname: CadvisorMetricsPartiallyAbsent
+        eval_time: 12m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: observability
+            exp_annotations:
+              summary: "cAdvisor metrics missing on some nodes"
+              description: "cAdvisor (kubelet) 의 per-node 메트릭 (machine_cpu_cores) 이 kube_node_info 대비 일부 노드에서 10 분 이상 결측이다. 해당 노드의 CPU throttle 과 memory 기반 dominant cause 산출이 조용히 비는 상태다. kubelet 상태와 ServiceMonitor 대상 등록에서 빠진 노드를 특정한다."
+      - alertname: NodeExporterMetricsPartiallyAbsent
+        eval_time: 12m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: observability
+            exp_annotations:
+              summary: "node-exporter metrics missing on some nodes"
+              description: "node-exporter 의 per-node 메트릭 (node_memory_MemAvailable_bytes) 이 kube_node_info 대비 일부 노드에서 10 분 이상 결측이다. 해당 노드의 memory pressure 기반 dominant cause 산출이 조용히 비는 상태다. node-exporter DaemonSet pod 상태에서 빠진 노드를 특정한다."
+      - alertname: CadvisorMetricsAbsent
+        eval_time: 12m
+        exp_alerts: []
+      - alertname: NodeExporterMetricsAbsent
+        eval_time: 12m
+        exp_alerts: []
+
+  # 전 노드에 exporter 메트릭이 존재하는 정상 클러스터: absent 3종과 partial 2종 모두 미발화를
+  # 단정한다.
+  - interval: 30s
+    input_series:
+      - series: 'kube_node_info{node="n1"}'
+        values: '1+0x40'
+      - series: 'machine_cpu_cores{node="n1"}'
+        values: '8+0x40'
+      - series: 'container_cpu_cfs_periods_total{namespace="ns1",pod="p1",node="n1"}'
+        values: '0+10x40'
+      - series: 'node_memory_MemAvailable_bytes{instance="n1"}'
+        values: '1000000+0x40'
+      - series: 'kube_pod_container_resource_limits{namespace="ns1",pod="p1",resource="memory"}'
+        values: '1000+0x40'
+    alert_rule_test:
+      - alertname: CadvisorMetricsPartiallyAbsent
+        eval_time: 12m
+        exp_alerts: []
+      - alertname: NodeExporterMetricsPartiallyAbsent
+        eval_time: 12m
+        exp_alerts: []
+      - alertname: CadvisorMetricsAbsent
+        eval_time: 12m
+        exp_alerts: []
+      - alertname: NodeExporterMetricsAbsent
+        eval_time: 12m
+        exp_alerts: []
+      - alertname: KubeStateMetricsAbsent
+        eval_time: 12m
+        exp_alerts: []

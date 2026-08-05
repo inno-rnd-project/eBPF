@@ -87,6 +87,16 @@ kube-state-metrics 와 cadvisor 와 node_exporter 는 kube-prometheus-stack 번�
    curl -s "http://127.0.0.1:9830/api/v1/overview"
    ```
 
+## 마이그레이션: 단일 PrometheusRule에서 도메인별 5 리소스로 전환 (#412)
+
+3.0.9부터 gpuobs rule이 단일 `netobs-gpuobs-correlation` 리소스에서 `netobs-gpuobs-{network,idle-cause,device,capacity-anomaly,alerts}` 5 리소스로 분리됐다. kustomize apply는 prune을 하지 않으므로 3.0.8 이하에서 올라오는 클러스터는 구 리소스를 1회 수동 삭제해야 한다. 삭제하지 않으면 동일 record가 구/신 두 그룹에서 중복 평가되어 시리즈와 rule 평가에 혼선이 생긴다. 신규 클러스터는 해당 없다.
+
+```sh
+kubectl -n ebpf-project delete prometheusrule netobs-gpuobs-correlation
+# 구 리소스 부재와 신규 5 리소스 존재 확인 (기대: netobs-gpuobs-* 5개)
+kubectl -n ebpf-project get prometheusrule
+```
+
 ## 문제 해결
 
 - preflight 가 release 라벨 불일치로 실패하면 `helm ls -n <monitoring-ns>` 의 release 이름을 각 overlay `labels` 에 반영한다

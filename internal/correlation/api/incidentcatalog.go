@@ -42,6 +42,14 @@ var incidentCatalog = map[string]incidentInfo{
 	"GPUObsCudaSymbolUnavailable": {"CUDA 심볼 미부착", "gpuobs CUDA 심볼 {{symbol}}가 {{node|instance}}에 부착되지 않음"},
 	"GPUObsAgentNvmlErrorsHigh":   {"NVML 호출 오류 급증", "gpuobs NVML 호출 {{call}}이 {{node|instance}}에서 {{error_code}}로 실패함"},
 
+	// 외부 exporter 입력 부재 가드 계열 (#412)
+	"CadvisorMetricsAbsent":                   {"cAdvisor 관측 두절", "cAdvisor (kubelet) 메트릭이 수집되지 않아 CPU throttle 파생 신호가 조용히 비어 있음"},
+	"NodeExporterMetricsAbsent":               {"node-exporter 관측 두절", "node-exporter 메트릭이 수집되지 않아 memory pressure 파생 신호가 조용히 비어 있음"},
+	"KubeStateMetricsAbsent":                  {"kube-state-metrics 관측 두절", "kube-state-metrics 메트릭이 수집되지 않아 limit 기반 ratio 파생 신호가 조용히 비어 있음"},
+	"CadvisorMetricsPartiallyAbsent":          {"cAdvisor 부분 결측", "cAdvisor (kubelet) 메트릭이 일부 노드에서 결측되어 해당 노드의 파생 신호가 조용히 비어 있음"},
+	"NodeExporterMetricsPartiallyAbsent":      {"node-exporter 부분 결측", "node-exporter 메트릭이 일부 노드에서 결측되어 해당 노드의 파생 신호가 조용히 비어 있음"},
+	"StageLatencyIntermediateSeriesNearLimit": {"stage latency rule 카디널리티 임박", "stage latency 중간 rule의 산출 시리즈가 그룹 limit의 80%를 초과함"},
+
 	// gpuobs (하드웨어 신호) 계열
 	"GPUObsThrottleActive":           {"GPU throttle 활성", "{{node}}의 GPU가 {{reason}} 사유로 throttle 중임"},
 	"GPUObsThermalHeadroomLow":       {"GPU 열 여유 부족", "{{node}}의 GPU 열 여유가 임계 이내로 좁혀짐"},

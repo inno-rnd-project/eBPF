@@ -41,7 +41,7 @@
 ## 실패 시 진단
 
 - `[fail] prometheus retention=... 가 60d 와 정합 안 됨` 으로 떨어지면 `kubectl apply -k deploy/monitoring/` 적용 필요. 또는 `kubectl patch prometheus -n monitoring kube-prometheus-stack-prometheus --type merge -p '{"spec":{"retention":"60d"}}'` 직접 patch
-- `[fail] capacity-trends.recording group 미등록` 으로 떨어지면 `kubectl apply -f deploy/gpuobs/base/prometheus-rule.yaml` 재적용
+- `[fail] capacity-trends.recording group 미등록` 으로 떨어지면 `kubectl apply -f deploy/gpuobs/base/prometheus-rule-capacity-anomaly.yaml` 재적용
 - `[fail] cluster:*_1h_avg: count=0` 으로 떨어지면 base 시리즈 (`gpuobs_device_utilization_percent`, `pod:network_throughput_score:5m`, `pod:cpu_throttle_score:5m`, `pod:memory_pressure_score:5m`) 의 emit 여부 확인
 - `[skip] cluster:*_zscore:1h: count=0` 은 정상 동작. 30일 baseline 누적 후 자연 활성화
 - `[fail] alert ... 미등록` 으로 떨어지면 prometheus-rule.yaml의 alerts group에 capacity anomaly alert 4종 추가 확인

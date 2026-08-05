@@ -1,0 +1,1033 @@
+# #412 단일 2300줄 prometheus-rule.yaml 을 도메인별 5 파일로 분리한 것 중 하나다. 분리는 리소스
+# 단위 diff / 리뷰 가시성 확보 목적이며 그룹 내용과 평가 semantics 는 분리 전과 동일하다. 구
+# PrometheusRule (netobs-gpuobs-correlation) 은 본 5 리소스로 대체되어 배포 시 1회 수동 삭제가
+# 필요하다.
+# 본 파일: GPU 유휴 정의와 원인 후보 score, dominant cause 판정 recording rule.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: netobs-gpuobs-idle-cause
+  namespace: ebpf-project
+  labels:
+    # release 라벨은 servicemonitor.yaml과 동일하게 kube-prometheus-stack Prometheus 인스턴스의
+    # ruleSelector에 매치되도록 둔다. 운영 클러스터의 helm release 이름과 일치시켜야 픽업된다.
+    release: kube-prometheus-stack
+    app.kubernetes.io/name: gpuobs-agent
+    app.kubernetes.io/component: prometheus-rules
+    app.kubernetes.io/part-of: ebpf-project
+spec:
+  groups:
+
+    # netobs-gpuobs.gpu-idle.recording 그룹은 GPU 유휴 정의와 원인 후보 score 6건을 산출한다.
+    # 운영자가 GPU 유휴 알림을 받았을 때 단일 진단 가이드 (docs/correlation/diagnosis-gpu-idle.md) 로
+    # 원인을 짚을 수 있게 cause score를 모두 0-1 정규화 해 모은다. score 정규화 분모는 두 tunable
+    # 메트릭 (netobs_node_nic_capacity_bytes_per_sec, gpuobs_node_cuda_launch_baseline_per_sec) 으로
+    # 클러스터별 override 가능하다. PCIe 이론치는 device 의 link generation/width 메트릭에서
+    # 동적 산출되므로 GPU 모델 혼합 클러스터에서도 정확하다.
+    - name: netobs-gpuobs.gpu-idle.recording
+      interval: 30s
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
+      # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
+      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      limit: 2000
+      rules:
+        # node:gpu_idle:5m
+        # 5분 윈도우에서 GPU 사용률이 20% 미만이었던 시간 비율 (0-1). 노드 내 GPU별 비율의 평균을
+        # 노드 단위로 rollup한다. avg_over_time + bool 비교 + subquery 패턴이라 evaluation 비용이
+        # 다른 rule보다 높으니 group interval 변경 시 주의.
+        - record: node:gpu_idle:5m
+          expr: |
+            avg by(node) (
+              avg_over_time((gpuobs_device_utilization_percent < bool 20)[5m:30s])
+            )
+
+        # node:gpu_pcie_theoretical_bytes_per_sec
+        # GPU device 별 PCIe 이론 throughput (bytes/sec). gpuobs_device_pcie_link_generation_current 와
+        # gpuobs_device_pcie_link_width_current 에 따라 Gen1-5 × x8/x16 10개 조합을 분기로 매핑한다.
+        # Gen1/2는 NVIDIA GPU가 idle 시 다운클록되는 link state라 saturation 계산에 반드시 포함되어야
+        # false positive (Gen1로 다운클록된 상태에서 작은 PCIe traffic이 분모 0과 만나 +Inf로 saturate)
+        # 를 막을 수 있다. x4 이하 또는 매핑 표 외 조합은 saturation rule의 ">0" 필터로 무시된다.
+        - record: node:gpu_pcie_theoretical_bytes_per_sec
+          expr: |
+            (gpuobs_device_pcie_link_generation_current == bool 1) * (gpuobs_device_pcie_link_width_current == bool 8) * 2e9
+            + (gpuobs_device_pcie_link_generation_current == bool 1) * (gpuobs_device_pcie_link_width_current == bool 16) * 4e9
+            + (gpuobs_device_pcie_link_generation_current == bool 2) * (gpuobs_device_pcie_link_width_current == bool 8) * 4e9
+            + (gpuobs_device_pcie_link_generation_current == bool 2) * (gpuobs_device_pcie_link_width_current == bool 16) * 8e9
+            + (gpuobs_device_pcie_link_generation_current == bool 3) * (gpuobs_device_pcie_link_width_current == bool 8) * 7.88e9
+            + (gpuobs_device_pcie_link_generation_current == bool 3) * (gpuobs_device_pcie_link_width_current == bool 16) * 15.75e9
+            + (gpuobs_device_pcie_link_generation_current == bool 4) * (gpuobs_device_pcie_link_width_current == bool 8) * 15.75e9
+            + (gpuobs_device_pcie_link_generation_current == bool 4) * (gpuobs_device_pcie_link_width_current == bool 16) * 31.5e9
+            + (gpuobs_device_pcie_link_generation_current == bool 5) * (gpuobs_device_pcie_link_width_current == bool 8) * 31.5e9
+            + (gpuobs_device_pcie_link_generation_current == bool 5) * (gpuobs_device_pcie_link_width_current == bool 16) * 63e9
+
+        # node:gpu_pcie_saturation_score:5m
+        # 노드 GPU 의 PCIe 실 throughput (RX + TX) 대비 이론치 비율 (0-1). 0.7 이상이면 PCIe가 GPU 유휴의
+        # 원인일 가능성이 높다. 분모를 ">0"으로 필터해 매핑 표 외 조합 (Gen0 등 비정상 link state) 에서
+        # 0 division으로 NaN/+Inf가 생기는 false positive를 차단한다. 그 결과 매핑 불가 노드는 series
+        # 자체가 emit되지 않아 alert에서도 자연 제외된다.
+        - record: node:gpu_pcie_saturation_score:5m
+          expr: |
+            clamp_max(
+              sum by(node) (gpuobs_device_pcie_rx_bytes_per_second + gpuobs_device_pcie_tx_bytes_per_second)
+              / on(node) group_left()
+              (sum by(node) (node:gpu_pcie_theoretical_bytes_per_sec) > 0),
+              1
+            )
+
+        # pod:network_throughput_score:5m
+        # Pod 단위 네트워크 throughput 대비 노드 NIC 이론 capacity 비율 (0-1). egress는 NIC layer,
+        # ingress는 L4 layer (NIC ingress는 #47 follow-up) 을 합산해 양방향 traffic을 근사한다.
+        # 분모는 netobs-agent가 startup 시 노출하는 NIC capacity tunable이다.
+        - record: pod:network_throughput_score:5m
+          expr: |
+            clamp_max(
+              (
+                sum by(node, src_namespace, src_pod, src_pod_uid) (
+                  rate(netobs_pod_bytes_total{direction="egress",layer="nic"}[5m])
+                )
+                +
+                sum by(node, src_namespace, src_pod, src_pod_uid) (
+                  rate(netobs_pod_bytes_total{direction="ingress",layer="l4"}[5m])
+                )
+              )
+              / on(node) group_left()
+              netobs_node_nic_capacity_bytes_per_sec,
+              1
+            )
+
+        # pod:network_retrans_score:5m
+        # Pod 단위 TCP 재전송 비율 (retrans events/sec / total packets/sec) 을 saturate. 0.05 이상이면
+        # 네트워크 품질 저하 신호다. 분자는 netobs_pod_stage_events_labeled_total{stage="retrans"}로
+        # pod 단위 재전송을, 분모는 netobs_pod_packets_total로 pod 단위 총 패킷을 산출한다.
+        - record: pod:network_retrans_score:5m
+          expr: |
+            clamp_max(
+              sum by(node, src_namespace, src_pod, src_pod_uid) (
+                rate(netobs_pod_stage_events_labeled_total{stage="retrans"}[5m])
+              )
+              /
+              sum by(node, src_namespace, src_pod, src_pod_uid) (
+                rate(netobs_pod_packets_total[5m])
+              ),
+              1
+            )
+
+        # pod:network_pressure_score:5m
+        # Pod 단위 네트워크 압박 의 단일 진실원. throughput saturation 과 TCP 재전송 두 신호의 element-
+        # wise max 다. 두 신호가 서로 다른 스케일 (throughput 은 NIC capacity 비율, retrans 는 재전송
+        # 비율) 이라 합산은 의미가 흐려져 worst-of 를 채택한다. node / cluster / victim 차원의 network_
+        # pressure 가 모두 본 score 를 rollup 해 "network pressure" 의 의미를 단일화한다 (#154).
+        #
+        # PromQL 의 OR 는 동일 라벨 셋 충돌 시 LHS 만 남겨 element-wise max 가 되지 않으므로, 두 신호가
+        # 모두 있는 Pod 는 (a >= bool b) 곱셈으로 max 를 취하고, 한쪽만 있는 Pod 는 뒤의 or 두 항으로
+        # 보존한다. 둘 다 [0, 1] clamp 된 score 라 곱셈 결과도 [0, 1] 을 유지한다.
+        - record: pod:network_pressure_score:5m
+          expr: |
+            (
+              (pod:network_throughput_score:5m >= bool pod:network_retrans_score:5m)
+                * pod:network_throughput_score:5m
+              + (pod:network_retrans_score:5m > bool pod:network_throughput_score:5m)
+                * pod:network_retrans_score:5m
+            )
+            or pod:network_throughput_score:5m
+            or pod:network_retrans_score:5m
+
+        # pod:cpu_throttle_score:5m
+        # cAdvisor의 CPU CFS throttled / total periods 비율 (0-1). 0.3 이상이면 컨테이너 CPU limit
+        # 으로 인한 throttle이 빈번하다. label_replace로 cAdvisor의 namespace/pod 라벨을 netobs/gpuobs
+        # 메트릭과 join 가능하도록 src_namespace/src_pod로 alias한다 (원본 라벨도 함께 유지).
+        - record: pod:cpu_throttle_score:5m
+          expr: |
+            clamp_max(
+              label_replace(
+                label_replace(
+                  sum by(node, namespace, pod) (rate(container_cpu_cfs_throttled_periods_total[5m]))
+                  / on(node, namespace, pod)
+                  sum by(node, namespace, pod) (rate(container_cpu_cfs_periods_total[5m])),
+                  "src_namespace", "$1", "namespace", "(.+)"
+                ),
+                "src_pod", "$1", "pod", "(.+)"
+              ),
+              1
+            )
+
+        # pod:memory_pressure_score:5m
+        # 컨테이너 메모리 working_set 대비 resource limit 비율 (0-1). 0.9 이상이면 OOM 임박 신호.
+        # kube-state-metrics의 kube_pod_container_resource_limits는 node 라벨이 없어 (namespace, pod)
+        # 로 join하고, cAdvisor 의 node 라벨은 working_set 측에서 보존된다.
+        - record: pod:memory_pressure_score:5m
+          expr: |
+            clamp_max(
+              label_replace(
+                label_replace(
+                  sum by(node, namespace, pod) (container_memory_working_set_bytes)
+                  / on(namespace, pod) group_left()
+                  sum by(namespace, pod) (kube_pod_container_resource_limits{resource="memory"}),
+                  "src_namespace", "$1", "namespace", "(.+)"
+                ),
+                "src_pod", "$1", "pod", "(.+)"
+              ),
+              1
+            )
+
+        # pod:memory_rss_pressure_score:5m (#194)
+        # 컨테이너 anonymous(RSS) 메모리 대비 limit 비율 (0-1). RSS 는 page cache 와 달리 reclaim 이
+        # 안 되는 non-reclaimable 메모리라 OOM 을 직접 유발한다. working_set 대비 RSS 가 지배적이면
+        # 진짜 메모리 압박이다. cadvisor container_memory_rss 는 pod-level (container 라벨 없음) 이라
+        # sum by(node, namespace, pod) 로 집계 후 (namespace, pod) 로 limit 과 join 한다.
+        - record: pod:memory_rss_pressure_score:5m
+          expr: |
+            clamp_max(
+              label_replace(
+                label_replace(
+                  sum by(node, namespace, pod) (container_memory_rss)
+                  / on(namespace, pod) group_left()
+                  sum by(namespace, pod) (kube_pod_container_resource_limits{resource="memory"}),
+                  "src_namespace", "$1", "namespace", "(.+)"
+                ),
+                "src_pod", "$1", "pod", "(.+)"
+              ),
+              1
+            )
+
+        # pod:memory_cache_pressure_score:5m (#194)
+        # 컨테이너 page cache 메모리 대비 limit 비율 (0-1). cache 는 kernel 이 reclaim 가능한 메모리라
+        # 그 자체로 OOM 압박은 아니지만, working_set 이 cache 로 채워졌다면 RSS 압박과 구분해 "실제
+        # 압박이 아님" 을 판정하는 데 쓴다. rss 룰과 동일하게 pod-level 집계 후 limit 과 join 한다.
+        - record: pod:memory_cache_pressure_score:5m
+          expr: |
+            clamp_max(
+              label_replace(
+                label_replace(
+                  sum by(node, namespace, pod) (container_memory_cache)
+                  / on(namespace, pod) group_left()
+                  sum by(namespace, pod) (kube_pod_container_resource_limits{resource="memory"}),
+                  "src_namespace", "$1", "namespace", "(.+)"
+                ),
+                "src_pod", "$1", "pod", "(.+)"
+              ),
+              1
+            )
+
+        # pod:host_compute_stall_score:5m
+        # host측 CUDA kernel launch rate 부족과 GPU device memory pressure 둘 중 큰 쪽을 채택한다.
+        # 둘 다 GPU가 호스트 측 또는 device 측 자원 한계로 추가 kernel을 실행하지 못하는 상태를
+        # 가리키므로 cross-validation 가치가 있다. 단순 max 라 두 신호가 동시에 높을 때 의미가 약화
+        # 되는 한계는 docs에 명시한다.
+        - record: pod:host_compute_stall_score:5m
+          expr: |
+            max by(node, src_namespace, src_pod, src_pod_uid) (
+              clamp_min(
+                clamp_max(
+                  1 - (
+                    sum by(node, src_namespace, src_pod, src_pod_uid) (rate(gpuobs_cuda_kernel_launches_total[5m]))
+                    / on(node) group_left()
+                    gpuobs_node_cuda_launch_baseline_per_sec
+                  ),
+                  1
+                ),
+                0
+              )
+              or
+              pod:gpu_memory_utilization_ratio:5m
+            )
+
+        # #84 cross-node interference layer 의 node 단위 pressure score 5 종. 본 그룹의 pod-level
+        # cause score 4 종 (cpu_throttle / memory_pressure / network_throughput / host_compute_stall) 을
+        # node 차원으로 max rollup 한다. correlation-exporter 의 cross-node correlator 가 본 시계열을
+        # victim_node / suspect_node 후보로 입력 받아 (victim_node != suspect_node) 페어의 Pearson 상관
+        # 계수를 산정한다. 통합 node:pressure_score:5m 은 4 dimension max 의 평균으로 [0, 1] 단일
+        # 점수를 노출해 운영자가 노드 단위 압박을 단일 시계열로 본다.
+        - record: node:cpu_pressure_score:5m
+          expr: max by(node) (pod:cpu_throttle_score:5m)
+
+        # node:memory_pressure_score:5m (#274 재정의)
+        # 기존 max(pod:memory_pressure_score) 는 pod 의 working_set 대비 limit 비율을 노드 지표로
+        # 승격해, limit 을 타이트하게 잡은 관측 인프라 pod (dcgm-exporter 등) 가 노드를 영구 degraded
+        # 로 만들었다 (실측: pod 지표 0.97 vs 노드 실제 사용률 19.8%). 노드의 메모리 압박은
+        # node_exporter 실측 (1 - MemAvailable/MemTotal) 로 재정의한다. node_exporter 메트릭은 node
+        # 라벨이 없어 node_uname_info 의 nodename 을 instance 조인으로 부여한다 (value 1 이라 곱해도
+        # 값 불변). pod 단위 score (pod:memory_pressure_score) 는 그 pod 의 OOM 근접도로 의미가
+        # 유효해 유지하며, 문제였던 것은 pod 지표의 노드 승격이다.
+        # node_uname_info 는 max by(instance, nodename) 로 사전 집계한다. node-exporter 를 여러
+        # scrape job 이 수집하는 구성에서는 job 라벨만 다른 중복 시리즈가 생겨 group_left 조인이
+        # many-to-many 로 평가 실패 (시리즈 전멸) 할 수 있는데, 이는 본 저장소 밖의 monitoring 스택
+        # 설정에 좌우되는 경계라 사전 집계로 방어한다.
+        - record: node:memory_pressure_score:5m
+          expr: |
+            max by(node) (
+              label_replace(
+                (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+                * on(instance) group_left(nodename) max by(instance, nodename) (node_uname_info),
+                "node", "$1", "nodename", "(.+)"
+              )
+            )
+
+        # network 압박은 pod:network_pressure_score:5m (throughput 과 retrans 의 element-wise max) 을
+        # node 단위로 max rollup 한다. 기존 max(throughput or retrans) 는 동일 라벨 Pod 에서 OR 충돌로
+        # retrans 가 누락될 수 있어, canonical pod score 로 통일해 정확성과 의미 일관성을 확보한다 (#154).
+        - record: node:network_pressure_score:5m
+          expr: max by(node) (pod:network_pressure_score:5m)
+
+        # gpu 압박은 host_compute_stall_score 로 두어 host 측 launch 부족 또는 device memory 압박이
+        # 노드 의 GPU 작업 진행을 막는 신호를 노드 단위로 노출한다.
+        - record: node:gpu_pressure_score:5m
+          expr: max by(node) (pod:host_compute_stall_score:5m)
+
+        # 통합 pressure score 는 4 dimension 의 평균으로 정규화한다. 합 / 4 가 [0, 1] 범위를 자연스럽게
+        # 유지해 운영자가 dashboard 또는 수동 query에서 노드 단위 압박을 단일 시계열로 확인할 수 있게
+        # 한다. cross-node correlator는 본 통합 score를 입력으로 받지 않고 4 dimension score를 직접
+        # 사용해 dimension 라벨 분포까지 노출한다. 본 통합 시리즈는 노출 (보조 신호) 만 담당한다.
+        # 결측 dimension은 node 라벨이 없는 vector(0) 대신 cpu_pressure 기준 시계열에 0을 곱한 형태로
+        # fallback해 vector 연산의 라벨 매칭 실패 (node 라벨이 한쪽에만 있어 결과가 empty가 되는 케이스)
+        # 를 회피한다. node:cpu_pressure_score:5m이 결측인 노드는 본 통합 score 자체가 emit되지 않으나
+        # 본 시리즈의 의도가 "어떤 dimension이라도 활성인 노드의 통합 점수" 이므로 cpu 자체가 비활성인
+        # 노드는 분석 대상에서 자연 제외된다.
+        - record: node:pressure_score:5m
+          expr: |
+            (
+              node:cpu_pressure_score:5m
+              + (node:memory_pressure_score:5m or node:cpu_pressure_score:5m * 0)
+              + (node:network_pressure_score:5m or node:cpu_pressure_score:5m * 0)
+              + (node:gpu_pressure_score:5m or node:cpu_pressure_score:5m * 0)
+            ) / 4
+
+        # cross-node correlator 의 victim 후보 latency 다. histogram_quantile 의 le 합산을 node 차원
+        # 으로 둬 노드 단위 p99 를 산출한다. 노드 의 모든 pod p99 가 conflate 되어 latency-sensitive
+        # workload 식별 력은 흐릿하나 본 시리즈의 raw signal 이며 follow-up 에서 workload-label filter
+        # 도입 으로 보강 가능하다.
+        # pod:netobs_stage_latency_rate_le:5m (#412)
+        # 최대 카디널리티 메트릭인 netobs_pod_stage_latency_labeled_seconds_bucket 의 공통 중간
+        # 집계다. 종전에는 세 rule (아래 node p99, cross-correlation 의 pod p99, correlation CR 의
+        # victim latency) 이 서로 다른 by() 로 30초마다 raw bucket 을 중복 전수 스캔했다. 세 소비처의
+        # by() 가 전부 본 라벨 셋 (node, src_namespace, src_pod, src_pod_uid, le) 의 부분집합이고
+        # rate 합산은 선형이라, 여기서 한 번 접은 결과를 재집계해도 산출이 동일하다. stage 와 dst
+        # 계열 라벨은 세 소비처 모두 쓰지 않아 함께 접는다.
+        # 본 rule은 그룹 limit 2000 대비 최대 산출원이다 (dev 실측 903 시리즈, pod 수와 stage와
+        # le 조합에 비례). limit 초과 시 본 rule 산출만 소실되고 같은 그룹의 다른 rule은 유지되나,
+        # 이를 소비하는 세 파생 rule (node p99, pod p99, correlation victim latency pressure) 이
+        # 함께 조용히 빈다. 임박은 StageLatencyIntermediateSeriesNearLimit (80% 임계) 가 감지한다.
+        - record: pod:netobs_stage_latency_rate_le:5m
+          expr: |
+            sum by(node, src_namespace, src_pod, src_pod_uid, le) (
+              rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])
+            )
+
+        - record: node:netobs_pod_stage_latency_p99:5m
+          expr: |
+            histogram_quantile(0.99,
+              sum by(node, le) (
+                pod:netobs_stage_latency_rate_le:5m
+              )
+            )
+
+        # #148 service-impact correlator 의 victim 후보 latency 다. 위 node 단위 rule 의 conflate 대신
+        # netobs 의 src_workload (resolver 의 owner 해석 결과) 라벨로 집계해 workload (K8s Service 근사)
+        # 단위 p99 를 산출한다. 위 node rule 주석이 예고한 workload-label 보강을 실현하며 correlation-
+        # exporter 의 service-impact layer 가 본 시계열을 victim 으로 입력받아 suspect node 압박과의
+        # Pearson 상관을 산정한다. 입력은 src_workload 라벨을 보유한 workload-level 메트릭 netobs_stage_
+        # latency_labeled_seconds 이며 src_pod 를 쓰는 netobs_pod_stage_latency_labeled_seconds 와 구분된다.
+        - record: workload:netobs_stage_latency_p99:5m
+          expr: |
+            histogram_quantile(0.99,
+              sum by(src_namespace, src_workload, le) (
+                rate(netobs_stage_latency_labeled_seconds_bucket[5m])
+              )
+            )
+
+    # netobs-gpuobs.dominant-cause.recording 그룹은 #66 의 GPU 유휴 dominant cause 가중치 산정에
+    # 사용하는 recording rule 을 모은다. 본 그룹의 앞부분은 node 와 Pod 차원으로 흩어진 cause 별
+    # base score 를 cluster 단위 단일 값으로 max rollup 해 (cause enum 이 늘며 함께 늘어난 rollup
+    # 8 종, #374) dominant cause weight 산정 단계에서 동일한 차원으로 비교 가능하게 한다. dominant
+    # cause 가 cluster 평균이 아니라 worst-case 신호를 따라가도록 max 를 채택한다. network_pressure cause 의 base score 는 canonical pod:network_pressure_score:5m
+    # (throughput saturation 과 TCP 재전송 의 element-wise max) 의 rollup 이라, 재전송이 GPU 유휴를
+    # 유발하는 경우도 network_pressure dominant cause 로 직접 분류된다 (#154). 두 신호의 스케일 차이는
+    # 합산이 아닌 max 로 흡수해 cause 간 비교 의미를 유지한다. retrans 를 별도 cause slot 으로 분리하지
+    # 않는 이유는 비목표 (재전송 원인 세부 분류) 와 정합하며, 단일 cause 유지로 gpu_idle_cause_sum:5m
+    # 분모와 tie-breaker offset 이 변경 없이 자동 정합되기 때문이다.
+    - name: netobs-gpuobs.dominant-cause.recording
+      interval: 30s
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
+      # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
+      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      limit: 2000
+      rules:
+        # cluster:gpu_pcie_saturation_score:5m
+        # 노드 단위 PCIe saturation score 의 cluster max. worst-case 노드의 PCIe 압박이 본 시계열 값.
+        - record: cluster:gpu_pcie_saturation_score:5m
+          expr: max(node:gpu_pcie_saturation_score:5m)
+
+        # cluster:pod_cpu_throttle_score:5m
+        # Pod 단위 CPU CFS throttle 비율의 cluster max. worst-case Pod 의 throttle 신호.
+        - record: cluster:pod_cpu_throttle_score:5m
+          expr: max(pod:cpu_throttle_score:5m)
+
+        # cluster:pod_memory_pressure_score:5m
+        # Pod 단위 메모리 working_set / limit 비율의 cluster max. worst-case Pod 의 OOM 임박도.
+        - record: cluster:pod_memory_pressure_score:5m
+          expr: max(pod:memory_pressure_score:5m)
+
+        # cluster:pod_network_pressure_score:5m
+        # Pod 단위 network pressure (throughput saturation 과 TCP 재전송 의 max) 의 cluster max. canonical
+        # pod:network_pressure_score:5m 을 rollup 해 재전송이 GPU 유휴를 유발할 때도 network_pressure
+        # cause 로 직접 분류되게 한다 (#154). retrans 가 throughput 보다 강한 worst-case Pod 가 본 값을
+        # 결정한다. or vector(0) 로 network 트래픽이 없는 환경에서도 합 산출이 가능하다.
+        - record: cluster:pod_network_pressure_score:5m
+          expr: max(pod:network_pressure_score:5m) or vector(0)
+
+        # cluster:pod_host_compute_stall_score:5m
+        # Pod 단위 host 측 CUDA launch 부족 또는 GPU memory 포화 score 의 cluster max.
+        - record: cluster:pod_host_compute_stall_score:5m
+          expr: max(pod:host_compute_stall_score:5m)
+
+        # gpu_idle_cause_sum:5m
+        # 5 cause base score 의 합. cause weight 정규화의 분모로 쓰인다. base 시리즈가 비어 있는
+        # cause 는 `or vector(0)` 로 0 으로 대체해 합이 NaN 으로 빠지지 않게 한다. dev cluster 처럼
+        # PCIe / network 트래픽이 거의 없는 환경에서도 합 산출이 가능하게 한다.
+        # node:dcgm_pcie_replay_score:5m (#133, #155)
+        # 노드 단위 DCGM PCIe replay score. DCGM_FI_DEV_PCIE_REPLAY_COUNTER (PCIe link error 로 인한
+        # retry 누적 카운터) 의 5 분 rate 를 node 단위 max 후 정규화 임계 (100 replays/sec) 로 나눠
+        # 0-1 로 만든다. clamp_max 로 burst 시 1.0 상한 둔다. GPUIdleWithDCGMPCIeReplay alert 가
+        # on(node) join 으로 본 score 를 사용해 어떤 노드의 PCIe link error 인지 식별 가능하게 한다.
+        # dcgm-exporter 가 활성인 데이터센터 GPU 환경에서만 base 가 emit 되고, dev (DCGM 부재) 에서는
+        # or on(node)(node:gpu_idle:5m * 0) fallback 이 GPU 노드별 0 을 채워 alert 가 발화하지 않는다.
+        - record: node:dcgm_pcie_replay_score:5m
+          expr: |
+            clamp_max(
+              max by(node) (rate(DCGM_FI_DEV_PCIE_REPLAY_COUNTER[5m])) / 100,
+              1
+            )
+            or on(node) (node:gpu_idle:5m * 0)
+
+        # cluster:dcgm_pcie_replay_score:5m (#133)
+        # node 단위 score 의 cluster max. dominant cause 엔진이 worst-case 노드의 PCIe replay 를 따른다.
+        - record: cluster:dcgm_pcie_replay_score:5m
+          expr: max(node:dcgm_pcie_replay_score:5m) or vector(0)
+
+        # node:nccl_collective_stall_score:5m (#134, #155)
+        # 노드 단위 NCCL collective stall score. gpuobs 가 libnccl.so collective 심볼 uprobe 로 수집한
+        # gpuobs_nccl_collective_duration_seconds histogram 의 _sum rate 를 node 단위로 합산 후 1.0 상한
+        # 으로 clamp 한다. _sum 의 5 분 rate 는 초당 누적 collective wall-clock (collective-seconds/sec)
+        # 이며 한 rank 가 시간의 100% 를 collective 대기에 쓰면 1.0 에 근접한다. GPUIdleWithNCCLCollective
+        # Stall alert 가 on(node) join 으로 본 score 를 사용해 어떤 노드의 collective stall 인지 식별
+        # 가능하게 한다. NCCL profiler 가 활성 (build tag nccl 이미지 + GPUOBS_NCCL_ENABLED=true +
+        # 데이터센터 GPU) 인 노드에서만 base 가 emit 되고, dev (noop profiler) 에서는 or on(node)
+        # (node:gpu_idle:5m * 0) fallback 이 GPU 노드별 0 을 채워 alert 가 발화하지 않는다.
+        - record: node:nccl_collective_stall_score:5m
+          expr: |
+            clamp_max(
+              sum by(node) (rate(gpuobs_nccl_collective_duration_seconds_sum[5m])),
+              1
+            )
+            or on(node) (node:gpu_idle:5m * 0)
+
+        # cluster:nccl_collective_stall_score:5m (#134)
+        # node 단위 score 의 cluster max. dominant cause 엔진이 worst-case 노드의 collective stall 을 따른다.
+        - record: cluster:nccl_collective_stall_score:5m
+          expr: max(node:nccl_collective_stall_score:5m) or vector(0)
+
+        # node:gpu_thermal_score:5m (#190)
+        # 노드 단위 thermal 유휴 원인 score. gpuobs_thermal_correlation_score:5m 는 GPU 별 temperature
+        # 와 hw_thermal_slowdown throttle 의 Pearson |corr| 로, 값이 클수록 온도 상승이 thermal throttle
+        # 로 이어져 GPU 성능이 제약됨을 뜻한다. GPU 별 score 를 node max 로 rollup 한다. thermal
+        # correlation 의 분모 (stddev) 가 0 인 (온도·throttle 변화가 없는) 노드에서는 base 가 비어
+        # or on(node) (node:gpu_idle:5m * 0) fallback 이 GPU 노드별 0 을 채워 weight 가 0 으로 유지된다.
+        - record: node:gpu_thermal_score:5m
+          expr: |
+            max by(node) (gpuobs_thermal_correlation_score:5m)
+            or on(node) (node:gpu_idle:5m * 0)
+
+        # cluster:gpu_thermal_score:5m (#190)
+        # node 단위 score 의 cluster max. dominant cause 엔진이 worst-case 노드의 thermal throttle 을 따른다.
+        - record: cluster:gpu_thermal_score:5m
+          expr: max(node:gpu_thermal_score:5m) or vector(0)
+
+        # pod:cgroup_contention_score:5m (#198, #224)
+        # Pod 단위 cgroup PSI 경합 score (0-1). gpuobs 가 cgroup v2 cpu.pressure / memory.pressure /
+        # io.pressure 의 some avg10 을 수집한 gpuobs_pod_*_pressure_ratio 3종의 5 분 max 를 (node,
+        # src_namespace, src_pod) 단위로 취해 CPU / memory / 디스크 I/O stall 중 가장 심한 쪽을 pod 경합
+        # 강도로 삼는다. cAdvisor 의 throttle-ratio / working-set-ratio 휴리스틱과 달리 실제 stall 시간을
+        # 직접 반영한다. gpuobs 메트릭은 이미 src_namespace / src_pod 라벨을 달고 나와 label_replace 가
+        # 불필요하다.
+        - record: pod:cgroup_contention_score:5m
+          expr: |
+            clamp_max(
+              max by(node, src_namespace, src_pod) (
+                label_replace(max_over_time(gpuobs_pod_cpu_pressure_ratio[5m]), "psi_kind", "cpu", "", "")
+                or
+                label_replace(max_over_time(gpuobs_pod_memory_pressure_ratio[5m]), "psi_kind", "mem", "", "")
+                or
+                label_replace(max_over_time(gpuobs_pod_io_pressure_ratio[5m]), "psi_kind", "io", "", "")
+              ),
+              1
+            )
+
+        # cluster:pod_cgroup_contention_score:5m (#198)
+        # Pod 단위 cgroup 경합 score 의 cluster max. worst-case Pod 의 PSI stall 을 GPU 유휴 cause 로 rollup 한다.
+        - record: cluster:pod_cgroup_contention_score:5m
+          expr: max(pod:cgroup_contention_score:5m) or vector(0)
+
+        # pod:*_score_rise:5m (#244, fallback 교정 #285)
+        # pod 계열 cause score 의 baseline (30m~1h30m 전 평균) 대비 상승분 (0 하한). memory limit 에
+        # 상시 근접한 관측 인프라 pod (dcgm-exporter 등) 처럼 GPU 유휴 여부와 무관하게 일정한 신호는
+        # baseline 과 현재값이 같아 0 에 수렴하고, GPU 유휴와 함께 나타난 신규 압박만 남는다. baseline
+        # 이 없는 신생 시리즈는 `or score` self-baseline fallback 으로 rise = 0 이 되어 90분 이력이
+        # 쌓일 때까지 침묵한다. 과거 `or (score * 0)` fallback 은 rise = 현재값이라 재배포마다 새로
+        # 뜬 agent pod (상시 working_set/limit 0.66) 가 약 30분씩 alert 를 발화시키고 dominant cause
+        # 를 오귀속시켰다 (#285 실측). 신생 pod 의 onset 즉시 감지는 포기하는 트레이드오프이며, 시작
+        # 부터 임박한 포화는 rise 축이 아닌 절대값 기반 pod:*_score:5m 과 pressure API 의 몫이다.
+        # 압박이 1.5h 이상 지속되면 baseline 이 따라잡아 rise 가 감쇠하는데, 장기 지속 압박도 동일하게
+        # 절대값 기반 신호와 victim 단위 rule 이 계속 노출한다.
+        - record: pod:cpu_throttle_score_rise:5m
+          expr: |
+            clamp_min(
+              pod:cpu_throttle_score:5m
+              - (avg_over_time(pod:cpu_throttle_score:5m[1h] offset 30m) or pod:cpu_throttle_score:5m),
+              0
+            )
+
+        - record: pod:memory_pressure_score_rise:5m
+          expr: |
+            clamp_min(
+              pod:memory_pressure_score:5m
+              - (avg_over_time(pod:memory_pressure_score:5m[1h] offset 30m) or pod:memory_pressure_score:5m),
+              0
+            )
+
+        - record: pod:network_pressure_score_rise:5m
+          expr: |
+            clamp_min(
+              pod:network_pressure_score:5m
+              - (avg_over_time(pod:network_pressure_score:5m[1h] offset 30m) or pod:network_pressure_score:5m),
+              0
+            )
+
+        # network 서브 신호 2종의 rise. GPUIdleWithNetworkPressure alert 가 throughput (임계 0.7) 과
+        # retrans (임계 0.05) 를 스케일이 달라 분리 판정하므로 canonical rise 와 별도로 둔다.
+        - record: pod:network_throughput_score_rise:5m
+          expr: |
+            clamp_min(
+              pod:network_throughput_score:5m
+              - (avg_over_time(pod:network_throughput_score:5m[1h] offset 30m) or pod:network_throughput_score:5m),
+              0
+            )
+
+        - record: pod:network_retrans_score_rise:5m
+          expr: |
+            clamp_min(
+              pod:network_retrans_score:5m
+              - (avg_over_time(pod:network_retrans_score:5m[1h] offset 30m) or pod:network_retrans_score:5m),
+              0
+            )
+
+        - record: pod:cgroup_contention_score_rise:5m
+          expr: |
+            clamp_min(
+              pod:cgroup_contention_score:5m
+              - (avg_over_time(pod:cgroup_contention_score:5m[1h] offset 30m) or pod:cgroup_contention_score:5m),
+              0
+            )
+
+        - record: pod:host_compute_stall_score_rise:5m
+          expr: |
+            clamp_min(
+              pod:host_compute_stall_score:5m
+              - (avg_over_time(pod:host_compute_stall_score:5m[1h] offset 30m) or pod:host_compute_stall_score:5m),
+              0
+            )
+
+        # cluster:gpu_idle_*_rise:5m (#244)
+        # GPU 유휴 노드의 pod rise max. 기존 cluster:pod_*_score (클러스터 전체 pod max) 가 GPU 와
+        # 무관한 노드의 압박까지 dominant cause 로 둔갑시키던 것을, `and on(node)` 조인으로 GPU 유휴
+        # 노드의 pod 로 좁힌다. gpu_idle_cause_sum 과 weight 의 pod 계열 5종이 본 시리즈를 소비하고,
+        # cluster:pod_*_score 는 운영자용 클러스터 worst-case 뷰로 유지된다.
+        - record: cluster:gpu_idle_cpu_throttle_rise:5m
+          expr: max(pod:cpu_throttle_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: cluster:gpu_idle_memory_pressure_rise:5m
+          expr: max(pod:memory_pressure_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: cluster:gpu_idle_network_pressure_rise:5m
+          expr: max(pod:network_pressure_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: cluster:gpu_idle_cgroup_contention_rise:5m
+          expr: max(pod:cgroup_contention_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: cluster:gpu_idle_host_compute_stall_rise:5m
+          expr: max(pod:host_compute_stall_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        # cluster:gpu_idle_*_score:5m (#364)
+        # GPU 유휴 노드의 device score max. device 계열 4종 (pcie_saturation / dcgm_pcie_replay /
+        # nccl_collective_stall / thermal) 은 비게이팅 cluster:gpu_*_score:5m (클러스터 전체 max) 를
+        # 그대로 써서, weight 단계의 전역 스칼라 게이트 (max(node:gpu_idle:5m) > 0.5) 만 열리면
+        # (유휴 노드가 하나라도 있으면) 바쁜 다른 노드의 PCIe·thermal 포화가 유휴의 dominant cause
+        # 로 오귀속됐다. pod 계열의 and on(node) 게이팅 (#244) 및 node-scope rule
+        # (node:gpu_idle_cause_score:5m, #256) 의 device 게이팅과 규약을 일치시켜 유휴 노드 자신의
+        # device 신호만 cause 로 계상한다. 비게이팅 cluster:gpu_*_score:5m 는 운영자용 worst-case
+        # 뷰와 integration verify 프로브 소비처가 있어 그대로 유지된다.
+        - record: cluster:gpu_idle_pcie_saturation_score:5m
+          expr: max(node:gpu_pcie_saturation_score:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: cluster:gpu_idle_dcgm_pcie_replay_score:5m
+          expr: max(node:dcgm_pcie_replay_score:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: cluster:gpu_idle_nccl_collective_stall_score:5m
+          expr: max(node:nccl_collective_stall_score:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: cluster:gpu_idle_thermal_score:5m
+          expr: max(node:gpu_thermal_score:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: gpu_idle_cause_sum:5m
+          expr: |
+            (cluster:gpu_idle_pcie_saturation_score:5m or vector(0))
+            + (cluster:gpu_idle_cpu_throttle_rise:5m or vector(0))
+            + (cluster:gpu_idle_memory_pressure_rise:5m or vector(0))
+            + (cluster:gpu_idle_network_pressure_rise:5m or vector(0))
+            + (cluster:gpu_idle_host_compute_stall_rise:5m or vector(0))
+            + (cluster:gpu_idle_dcgm_pcie_replay_score:5m or vector(0))
+            + (cluster:gpu_idle_nccl_collective_stall_score:5m or vector(0))
+            + (cluster:gpu_idle_thermal_score:5m or vector(0))
+            + (cluster:gpu_idle_cgroup_contention_rise:5m or vector(0))
+
+        # gpu_idle_cause_weight:5m{cause}
+        # cause 의 정규화 가중치 (cause 별 base / cause 합). 분모가 0 인 idle window 는
+        # `(gpu_idle_cause_sum:5m > 0.05)` 필터로 시리즈 자체가 emit 되지 않아 NaN 이 라벨 세트에
+        # 끼지 않는다. 하한 0.05 는 노이즈 게이트다 (#244). 정규화가 잔여 노이즈 rise (실측 sum
+        # 0.01 수준) 를 큰 weight 로 부풀려 무부하에서도 dominant 가 지목되는 것을 막고, 실제
+        # onset (rise 0.3 이상) 은 하한을 크게 웃돌아 영향이 없다. cluster 의 어느 노드라도 GPU idle > 0.5 인 상태에서만 emit 되도록 AND 게이팅
+        # 을 두어 idle 이 아닌 시간대의 cause weight 잡음이 dashboard 와 alert 의 신호 대 잡음비를
+        # 떨어뜨리지 않게 한다. cause 라벨 enum 은 GPUIdleWith* 8 종 alert 와 1:1 매핑된다.
+        # #244 부터 pod 계열 5종 (cpu_throttle / memory_pressure / network_pressure /
+        # cgroup_contention / host_compute_stall) 의 base 는 클러스터 전체 max 가 아니라 GPU 유휴
+        # 노드 스코프의 rise (cluster:gpu_idle_*_rise:5m) 라, GPU 와 무관한 노드의 압박과 상시
+        # 포화 신호는 dominant cause 로 둔갑하지 않는다. #364 부터 device 계열 4종 (pcie_saturation /
+        # dcgm_pcie_replay / nccl_collective_stall / thermal) 의 base 도 동일 규약의 유휴 노드 스코프
+        # (cluster:gpu_idle_*_score:5m) 라, 바쁜 다른 노드의 device 포화가 오귀속되지 않는다.
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: pcie_saturation
+          expr: |
+            (
+              (cluster:gpu_idle_pcie_saturation_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0.05)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: cpu_throttle
+          expr: |
+            (
+              (cluster:gpu_idle_cpu_throttle_rise:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0.05)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: memory_pressure
+          expr: |
+            (
+              (cluster:gpu_idle_memory_pressure_rise:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0.05)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        # cause: cgroup_contention (#198)
+        # gpuobs 가 수집한 pod cgroup PSI stall (cpu.pressure / memory.pressure) 기반 경합 원인 가중치.
+        # cAdvisor 의 CFS throttle / working-set 휴리스틱인 cpu_throttle / memory_pressure cause 와 달리
+        # 실제 stall 시간을 반영해 pod 간 공동피해를 직접 드러낸다.
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: cgroup_contention
+          expr: |
+            (
+              (cluster:gpu_idle_cgroup_contention_rise:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0.05)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: network_pressure
+          expr: |
+            (
+              (cluster:gpu_idle_network_pressure_rise:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0.05)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: host_compute_stall
+          expr: |
+            (
+              (cluster:gpu_idle_host_compute_stall_rise:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0.05)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        # #123/#133/#134 신규 cause 슬롯 2종. 둘 다 base score가 도입되어 해당 신호가 emit되는
+        # 환경에서 weight가 활성된다.
+        #
+        # nccl_collective_stall은 #134에서 cluster:nccl_collective_stall_score:5m base score가
+        # 도입되어 gpuobs가 libnccl.so collective uprobe로 gpuobs_nccl_collective_duration_seconds를
+        # emit하는 환경 (build tag nccl 이미지 + GPUOBS_NCCL_ENABLED=true + 데이터센터 GPU) 에서
+        # 활성된다. dev cluster의 RTX 3090 (noop profiler) 에서는 base 메트릭 부재로 or vector(0)
+        # fallback이 0을 돌려줘 weight가 0으로 유지된다. NCCL collective operation (allreduce,
+        # broadcast 등) 의 wait 신호로 기존 host_compute_stall (kernel launch rate 저하) 와 의미
+        # 분리. allreduce가 rank 간 sync 대기로 GPU가 유휴 상태인 케이스를 구분한다.
+        #
+        # dcgm_pcie_replay는 #133에서 cluster:dcgm_pcie_replay_score:5m base score가 도입되어
+        # dcgm-exporter가 DCGM_FI_DEV_PCIE_REPLAY_COUNTER를 emit하는 데이터센터 GPU 환경에서
+        # 활성된다. dev cluster의 RTX 3090 (DCGM 부재) 에서는 base 메트릭 부재로 or vector(0)
+        # fallback이 0을 돌려줘 weight가 0으로 유지된다. DCGM의 PCIe replay count 카운터 기반
+        # hardware-level 신호로 기존 pcie_saturation (heuristic 대역폭 점유) 와 의미 분리. PCIe
+        # link error로 인한 retry가 GPU의 compute 진입 지연을 직접 일으키는 케이스를 구분한다.
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: nccl_collective_stall
+          expr: |
+            (
+              (cluster:gpu_idle_nccl_collective_stall_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0.05)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: dcgm_pcie_replay
+          expr: |
+            (
+              (cluster:gpu_idle_dcgm_pcie_replay_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0.05)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        # thermal 은 #190 에서 추가된 8 번째 cause 다. cluster:gpu_thermal_score:5m base 가 도입되어
+        # temperature 와 hw_thermal_slowdown throttle 이 함께 움직이는 노드에서 weight 가 활성된다.
+        # 온도·throttle 변화가 없는 dev 등에서는 base 가 0 이라 weight 가 0 으로 유지된다. 기존
+        # host_compute_stall (kernel launch 부족) 이나 pcie_saturation (대역폭 점유) 와 의미 분리로,
+        # 발열로 인한 clock 강하가 GPU 활용을 떨어뜨리는 케이스를 구분한다.
+        - record: gpu_idle_cause_weight:5m
+          labels:
+            cause: thermal
+          expr: |
+            (
+              (cluster:gpu_idle_thermal_score:5m or vector(0))
+              / (gpu_idle_cause_sum:5m > 0.05)
+            )
+            and on() (max(node:gpu_idle:5m) > 0.5)
+
+        # cluster:gpu_idle_dominant_cause:5m
+        # 9 cause weight 중 최대값을 가진 cause 1 종만 단일 시리즈로 노출한다. 정확한 동률 케이스에
+        # 서 cause enum 사전순 가장 앞 라벨이 채택되도록 1e-6 단위의 deterministic offset 을
+        # cause 별로 가산해 tie-breaker 로 둔다. offset 은 사전순 (cgroup_contention, cpu_throttle,
+        # dcgm_pcie_replay, host_compute_stall, memory_pressure, nccl_collective_stall,
+        # network_pressure, pcie_saturation, thermal) 으로 9e-6 부터 1e-6 까지 부여한다. offset 단위는 어떤 실 weight
+        # 값에도 미치지 못해 일반 케이스의 정렬을 바꾸지 않는다. weight 시리즈 자체가 idle 게이팅으로
+        # emit 되지 않는 시간대는 본 record 도 자연 emit 되지 않는다.
+        - record: cluster:gpu_idle_dominant_cause:5m
+          expr: |
+            topk(1,
+              gpu_idle_cause_weight:5m
+              + on(cause) (
+                label_replace(vector(9e-6), "cause", "cgroup_contention", "", "")
+                or label_replace(vector(8e-6), "cause", "cpu_throttle", "", "")
+                or label_replace(vector(7e-6), "cause", "dcgm_pcie_replay", "", "")
+                or label_replace(vector(6e-6), "cause", "host_compute_stall", "", "")
+                or label_replace(vector(5e-6), "cause", "memory_pressure", "", "")
+                or label_replace(vector(4e-6), "cause", "nccl_collective_stall", "", "")
+                or label_replace(vector(3e-6), "cause", "network_pressure", "", "")
+                or label_replace(vector(2e-6), "cause", "pcie_saturation", "", "")
+                or label_replace(vector(1e-6), "cause", "thermal", "", "")
+              )
+            )
+
+        # gpu_idle_dominant_cause_indicator:5m{cause}
+        # GPUIdleDominantCauseSwitch alert 가 사용하는 cause 별 0/1 indicator 다. dominant cause 인
+        # cause 는 1, idle 게이팅이 트리거된 상태에서 dominant 가 아닌 cause 는 0 으로 emit 되어
+        # changes() 가 1 과 0 사이 전이를 안정적으로 카운트할 수 있다. label change 자체를 추적하는
+        # Prometheus 표현식이 직접 지원되지 않아 본 indirect indicator 로 대체한다. dominant cause
+        # 1 종 시리즈에 * 0 + 1 로 라벨 보존한 1 을 만들고 or 로 나머지 cause weight 9 종에 0 을 fill
+        # 한다 (or 는 LHS 라벨 셋에 없는 RHS series 만 채우므로 dominant cause 는 1, 나머지 8 cause
+        # 는 0 으로 emit, #374 현행 cause enum 9 종 기준). idle 게이팅이 꺼진 시간대는 양쪽 시리즈
+        # 모두 없어 본 indicator 도 자연 emit 되지 않는다.
+        - record: gpu_idle_dominant_cause_indicator:5m
+          expr: |
+            (cluster:gpu_idle_dominant_cause:5m * 0 + 1)
+            or (gpu_idle_cause_weight:5m * 0)
+
+        # node:gpu_idle_cause_score:5m{node,cause} (#256)
+        # 노드 단위 GPU idle 원인 귀속 base score 9 종. cluster 단위 gpu_idle_cause_weight:5m 와 pod
+        # 단위 pod:gpu_idle_cause_score:5m 사이의 노드 scope 계층으로, 노드 하나의 GPU 가 왜 노는지를
+        # 원인별로 설명한다. cause 정의와 정규화 규약은 cluster rule 과 동일해 세 scope 의 cause 해석이
+        # 단일 진실원을 공유한다. 모든 cause 는 node:gpu_idle:5m > 0.5 게이팅으로 유휴 노드에서만
+        # 산출되고, node 신호가 없는 원인 (dev 의 dcgm/nccl 등) 은 series 자체가 자연 제외된다.
+        #
+        # pod 계열 5 종은 pod:*_score_rise:5m (#244 baseline 대비 상승분) 을 node 별 max 로 집계한다.
+        # cluster:gpu_idle_*_rise:5m 는 max() 로 node 라벨이 이미 소거돼 by(node) 재집계가 불가하므로
+        # 동일 소스인 pod rise 를 직접 집계한다. device 계열 4 종은 node:gpu_*_score:5m 노드 신호를
+        # 그대로 쓰되 유휴 게이팅만 덧댄다.
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: cpu_throttle
+          expr: max by(node) (pod:cpu_throttle_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: memory_pressure
+          expr: max by(node) (pod:memory_pressure_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: network_pressure
+          expr: max by(node) (pod:network_pressure_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: cgroup_contention
+          expr: max by(node) (pod:cgroup_contention_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: host_compute_stall
+          expr: max by(node) (pod:host_compute_stall_score_rise:5m and on(node) (node:gpu_idle:5m > 0.5))
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: pcie_saturation
+          expr: node:gpu_pcie_saturation_score:5m and on(node) (node:gpu_idle:5m > 0.5)
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: dcgm_pcie_replay
+          expr: node:dcgm_pcie_replay_score:5m and on(node) (node:gpu_idle:5m > 0.5)
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: nccl_collective_stall
+          expr: node:nccl_collective_stall_score:5m and on(node) (node:gpu_idle:5m > 0.5)
+
+        - record: node:gpu_idle_cause_score:5m
+          labels:
+            cause: thermal
+          expr: node:gpu_thermal_score:5m and on(node) (node:gpu_idle:5m > 0.5)
+
+        # node:gpu_idle_cause_sum:5m{node}
+        # 노드별 9 cause base 의 합 (정규화 분모). 존재하는 cause 만 합산되고 pod:gpu_idle_cause_sum
+        # 과 동일하게 vector(0) fallback 을 두지 않는다 (sum by(node) 의 라벨 매칭에 무라벨 항이 섞이지
+        # 않게 하려는 것).
+        - record: node:gpu_idle_cause_sum:5m
+          expr: sum by(node) (node:gpu_idle_cause_score:5m)
+
+        # node:gpu_idle_cause_weight:5m{node,cause}
+        # 노드별 정규화 가중치 (cause score / 노드 cause 합). cluster weight 와 동일하게 분모에 노이즈
+        # 하한 (> 0.05) 을 둬 무부하 잔여 노이즈가 dominant 로 부풀지 않게 하고, 분모 0 인 노드는 시리즈
+        # 자체가 emit 되지 않아 NaN 잡음을 차단한다. on(node) group_left() 로 cause 라벨을 보존한다.
+        - record: node:gpu_idle_cause_weight:5m
+          expr: |
+            node:gpu_idle_cause_score:5m
+            / on(node) group_left()
+            (node:gpu_idle_cause_sum:5m > 0.05)
+
+        # node:gpu_idle_dominant_cause:5m{node,cause}
+        # 노드별 dominant cause 단일 시리즈. cluster:gpu_idle_dominant_cause:5m 와 동일한 tie-breaker
+        # (cause enum 사전순 epsilon) 를 노드 차원으로 적용해 동률 시 결정성을 확보한다.
+        - record: node:gpu_idle_dominant_cause:5m
+          expr: |
+            topk by(node) (1,
+              node:gpu_idle_cause_weight:5m
+              + on(cause) group_left() (
+                label_replace(vector(9e-6), "cause", "cgroup_contention", "", "")
+                or label_replace(vector(8e-6), "cause", "cpu_throttle", "", "")
+                or label_replace(vector(7e-6), "cause", "dcgm_pcie_replay", "", "")
+                or label_replace(vector(6e-6), "cause", "host_compute_stall", "", "")
+                or label_replace(vector(5e-6), "cause", "memory_pressure", "", "")
+                or label_replace(vector(4e-6), "cause", "nccl_collective_stall", "", "")
+                or label_replace(vector(3e-6), "cause", "network_pressure", "", "")
+                or label_replace(vector(2e-6), "cause", "pcie_saturation", "", "")
+                or label_replace(vector(1e-6), "cause", "thermal", "", "")
+              )
+            )
+
+        # pod:gpu_idle_cause_score:5m{victim_namespace,victim_pod,cause}
+        # #101 victim 단위 cause weight 산정 의 입력 helper. 기존 cluster 단위 cause score 5 종을
+        # victim Pod 라벨 (victim_namespace 와 victim_pod) 로 정합 한다. 4 cause (cpu_throttle 와
+        # memory_pressure 와 host_compute_stall 와 network_pressure) 는 이미 pod 단위 emit 중인 base
+        # score 를 label_replace 로 src_namespace → victim_namespace, src_pod → victim_pod 로 alias
+        # 한 뒤 (victim_namespace, victim_pod) 로 sum 해 잔여 라벨을 정리 한다. pcie_saturation 은
+        # node 단위 단일 시리즈 (node:gpu_pcie_saturation_score:5m) 라 pod 단위 attribution 이 불가능
+        # 하므로 노드 의 pod 들 에 동일 score 를 broadcast 한다. #408 부터 broadcast 대상 은 kube_pod_
+        # info 의 노드 전체 pod 가 아니라 GPU 귀속 pod (gpuobs_pod_memory_used_bytes 보유) 로 한정
+        # 된다. 비 GPU 워크로드 는 PCIe 압박 의 victim 이 될 수 없는데 도 종전 broadcast 가 pod x
+        # cause 시리즈 를 노드 전체 pod 로 복제 해 카디널리티 를 불필요 하게 키웠다. GPU pod 이 없는
+        # 시간대 는 본 cause 시리즈 가 자연 skip 된다. dev cluster 에서 CUDA workload 가 없는 경우
+        # host_compute_stall base 시리즈 가 비어 자연 skip 되어 본 helper 도 해당 cause 시리즈 가
+        # emit 되지 않는다.
+        - record: pod:gpu_idle_cause_score:5m
+          labels:
+            cause: pcie_saturation
+          expr: |
+            sum by(node, victim_namespace, victim_pod) (
+              node:gpu_pcie_saturation_score:5m
+              * on(node) group_right()
+              (
+                label_replace(label_replace(
+                  sum by(node, src_namespace, src_pod) (gpuobs_pod_memory_used_bytes),
+                  "victim_namespace", "$1", "src_namespace", "(.+)"),
+                  "victim_pod", "$1", "src_pod", "(.+)")
+                * 0 + 1
+              )
+            )
+
+        - record: pod:gpu_idle_cause_score:5m
+          labels:
+            cause: cpu_throttle
+          expr: |
+            sum by(node, victim_namespace, victim_pod) (
+              label_replace(label_replace(
+                pod:cpu_throttle_score:5m,
+                "victim_namespace", "$1", "src_namespace", "(.+)"),
+                "victim_pod", "$1", "src_pod", "(.+)")
+            )
+
+        - record: pod:gpu_idle_cause_score:5m
+          labels:
+            cause: memory_pressure
+          expr: |
+            sum by(node, victim_namespace, victim_pod) (
+              label_replace(label_replace(
+                pod:memory_pressure_score:5m,
+                "victim_namespace", "$1", "src_namespace", "(.+)"),
+                "victim_pod", "$1", "src_pod", "(.+)")
+            )
+
+        - record: pod:gpu_idle_cause_score:5m
+          labels:
+            cause: network_pressure
+          expr: |
+            sum by(node, victim_namespace, victim_pod) (
+              label_replace(label_replace(
+                pod:network_pressure_score:5m,
+                "victim_namespace", "$1", "src_namespace", "(.+)"),
+                "victim_pod", "$1", "src_pod", "(.+)")
+            )
+
+        - record: pod:gpu_idle_cause_score:5m
+          labels:
+            cause: host_compute_stall
+          expr: |
+            sum by(node, victim_namespace, victim_pod) (
+              label_replace(label_replace(
+                pod:host_compute_stall_score:5m,
+                "victim_namespace", "$1", "src_namespace", "(.+)"),
+                "victim_pod", "$1", "src_pod", "(.+)")
+            )
+
+        # cause: cgroup_contention (#198) victim 단위. pod:cgroup_contention_score 는 이미 src_namespace /
+        # src_pod 라벨 이라 cpu_throttle / memory_pressure victim 룰 과 동일 하게 victim_* 로 alias 한다.
+        - record: pod:gpu_idle_cause_score:5m
+          labels:
+            cause: cgroup_contention
+          expr: |
+            sum by(node, victim_namespace, victim_pod) (
+              label_replace(label_replace(
+                pod:cgroup_contention_score:5m,
+                "victim_namespace", "$1", "src_namespace", "(.+)"),
+                "victim_pod", "$1", "src_pod", "(.+)")
+            )
+
+        # pod:gpu_idle_cause_sum:5m
+        # 5 cause base score 의 victim 단위 합. 정규화 분모 로 쓰인다. 일부 cause base 가 비어 있는
+        # victim 은 그 cause 항 만 자연 skip 되며 sum 은 존재 하는 cause 의 합 으로 산출 된다. cluster
+        # 단위 gpu_idle_cause_sum:5m 와 달리 vector(0) fallback 을 두지 않는 이유는 sum by(victim_*)
+        # 가 라벨 매칭 으로 동작 해 vector(0) 의 무라벨 항 이 정상 victim 시리즈 와 합쳐지지 않기
+        # 때문이다.
+        - record: pod:gpu_idle_cause_sum:5m
+          expr: sum by(node, victim_namespace, victim_pod) (pod:gpu_idle_cause_score:5m)
+
+        # pod:gpu_idle_cause_weight:5m{victim_namespace,victim_pod,cause}
+        # victim Pod 단위 5 cause 정규화 가중치. cluster 단위 gpu_idle_cause_weight:5m 와 동일 산정
+        # 식 (cause score / 5 cause 합) 을 victim 라벨 차원 으로 적용 한다. on(victim_namespace,
+        # victim_pod) group_left() 로 cause 라벨 을 LHS 에서 그대로 보존 한다. (pod:gpu_idle_cause_
+        # sum:5m > 0) 필터 로 분모 0 인 victim 은 시리즈 자체 가 emit 되지 않아 NaN 잡음 을 차단 한다.
+        # #408 idle 게이팅 은 노드별 (and on(node)) 이다. 종전 전역 스칼라 게이트 (max(node:gpu_idle
+        # :5m) > 0.5) 는 클러스터 에 유휴 노드 가 하나 라도 있으면 바쁜 노드 의 victim weight 까지
+        # 전부 emit 해, cluster 차원 이 #364 로 고친 오귀속 결함 이 pod 차원 에 그대로 남아 있었다.
+        # 본 rule 은 node 라벨 을 보유 하므로 자기 노드 의 idle 상태 로만 게이팅 한다. 본 weight 는
+        # correlation_noisy_neighbor_score{victim_namespace, victim_pod} 와 (victim_namespace,
+        # victim_pod) 라벨 join 으로 매칭 되어 dashboard 와 alert 가 victim 단위 dominant cause 식별
+        # 에 사용 한다.
+        - record: pod:gpu_idle_cause_weight:5m
+          expr: |
+            (
+              pod:gpu_idle_cause_score:5m
+              / on(node, victim_namespace, victim_pod) group_left()
+              (pod:gpu_idle_cause_sum:5m > 0)
+            )
+            and on(node) (node:gpu_idle:5m > 0.5)
+
+        # victim:gpu_idle_dominant_cause:5m{victim_namespace,victim_pod,cause}
+        # #101 victim 단위 dominant cause 단일 시리즈. cluster:gpu_idle_dominant_cause:5m 와 동일
+        # topk + tie-breaker 패턴 을 victim 차원 으로 적용 한다. victim 별 6 cause weight 중 최대값
+        # cause 1 종 만 노출 해 dashboard 와 alert 에서 victim 단위 단일 cause string 으로 join 가능
+        # 하다. 정확한 동률 케이스 에서 cause enum 사전순 가장 앞 라벨 이 채택 되도록 1e-6 단위 의
+        # deterministic offset 을 cause 별로 가산해 tie-breaker 로 둔다. cluster 단위 rule 과 달리
+        # pod:gpu_idle_cause_weight:5m 가 (victim_namespace, victim_pod, cause) 라벨 셋 을 가지므로
+        # offset 의 vector 매칭 에 group_left() 가 필요 하다. weight 시리즈 가 idle 게이팅 으로 emit
+        # 되지 않는 시간대 는 본 record 도 자연 emit 되지 않는다.
+        #
+        # #408 cause 셋 비대칭: cluster/node 차원 은 cause 9 종, victim 차원 은 6 종 이다. device
+        # 계열 3 종 (dcgm_pcie_replay, nccl_collective_stall, thermal) 은 node/device 단위 신호 라
+        # pod attribution 근거 가 없어 victim 차원 에 두지 않는다 (pcie_saturation 만 GPU 귀속 pod
+        # broadcast 로 예외 편입). 따라서 cluster dominant 가 thermal 같은 device cause 일 때 victim
+        # dominant 는 그 cause 를 구조적으로 지목 할 수 없고, 운영자 는 cluster/node dominant 를 함께
+        # 봐야 한다. 주의: 아래 offset 목록 에 없는 cause 는 + on(cause) group_left() 매칭 실패 로
+        # dominant 후보 에서 조용히 탈락 한다. pod:gpu_idle_cause_score:5m 에 cause 를 추가 하면 본
+        # offset 목록 과 gpuobs-victim-cause-gating.test.yaml 의 승리 가드 를 함께 갱신 해야 한다.
+        - record: victim:gpu_idle_dominant_cause:5m
+          expr: |
+            topk by(node, victim_namespace, victim_pod) (1,
+              pod:gpu_idle_cause_weight:5m
+              + on(cause) group_left() (
+                label_replace(vector(6e-6), "cause", "cgroup_contention", "", "")
+                or label_replace(vector(5e-6), "cause", "cpu_throttle", "", "")
+                or label_replace(vector(4e-6), "cause", "host_compute_stall", "", "")
+                or label_replace(vector(3e-6), "cause", "memory_pressure", "", "")
+                or label_replace(vector(2e-6), "cause", "network_pressure", "", "")
+                or label_replace(vector(1e-6), "cause", "pcie_saturation", "", "")
+              )
+            )
+
+        # victim:gpu_idle_dominant_cause_indicator:5m{victim_namespace,victim_pod,cause}
+        # GPUIdleDominantCauseSwitch 와 동일 패턴 의 victim 단위 cause 별 0/1 indicator. victim 의
+        # dominant cause 는 1, dominant 가 아닌 cause 4 종 은 0 으로 emit 되어 changes() 가 victim 별
+        # cause swap 빈도 를 안정적으로 카운트 가능 하다. dominant cause 1 종 시리즈 에 * 0 + 1 로
+        # 라벨 보존한 1 을 만들고 or 로 나머지 cause weight 4 종 에 0 을 fill 한다. idle 게이팅 이
+        # 꺼진 시간대 는 양쪽 시리즈 모두 없어 본 indicator 도 자연 emit 되지 않는다. victim 단위
+        # ambiguous alert 와 dashboard 의 dominant cause 색상 mapping 에 활용 된다.
+        - record: victim:gpu_idle_dominant_cause_indicator:5m
+          expr: |
+            (victim:gpu_idle_dominant_cause:5m * 0 + 1)
+            or (pod:gpu_idle_cause_weight:5m * 0)
+
+        # gpu_idle_cause_weight_top3:5m{cause}
+        # #101 secondary cause 가시화 의 cluster 단위 top3 시리즈. cluster:gpu_idle_dominant_cause:
+        # 5m 가 top1 cause 1 종 만 노출 해 운영자 가 2 위 와 3 위 cause 와 의 격차 또는 동률 여부 를
+        # 확인 불가 한 한계 를 보완 한다. dashboard 의 stacked time-series panel 에서 top3 cause 만
+        # 색상 강조 후 나머지 2 cause 는 회색 처리 로 secondary 비교 와 cardinality 가시성 을 동시
+        # 확보 한다. weight 시리즈 가 idle 게이팅 으로 emit 되지 않는 시간대 는 본 record 도 자연
+        # emit 되지 않는다.
+        - record: gpu_idle_cause_weight_top3:5m
+          expr: topk(3, gpu_idle_cause_weight:5m)
+
+        # pod:gpu_idle_cause_weight_top3:5m{victim_namespace,victim_pod,cause}
+        # #101 victim 단위 top3 cause 시리즈. cluster 단위 top3 와 동일 의도 를 victim 차원 으로
+        # 적용 한다. dashboard 의 victim selection drill-down 시 해당 victim 의 5 cause 중 top3 만
+        # 강조 해 secondary 와 tertiary cause 비교 가 가능 하다. topk by(victim_namespace, victim_pod)
+        # 로 victim 별 독립적 으로 top3 선정 한다.
+        - record: pod:gpu_idle_cause_weight_top3:5m
+          expr: topk by(node, victim_namespace, victim_pod) (3, pod:gpu_idle_cause_weight:5m)

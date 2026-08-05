@@ -44,7 +44,7 @@ z-score는 `clamp(-5, 5)`로 시각화 안정성을 위해 산출 범위가 제�
 
 본 패널 군은 Prometheus의 UTC 기준 시계열을 Grafana의 panel-level `timezone: Asia/Seoul` 설정으로 KST 변환해 표시한다.
 
-- recording rule (`deploy/gpuobs/base/prometheus-rule.yaml`) 의 PromQL은 UTC 그대로 산정
+- recording rule (`deploy/gpuobs/base/prometheus-rule-capacity-anomaly.yaml`) 의 PromQL은 UTC 그대로 산정
 - heatmap과 overlay 패널의 `timezone: Asia/Seoul` 옵션으로 X축 시간대를 KST로 자동 변환
 - alert rule (`GPUUtilAnomalyDetected` 등) 의 firing 시각은 Alertmanager의 timezone 설정 따름
 
@@ -72,7 +72,7 @@ prometheus retention 60일 (`deploy/monitoring/prometheus-retention-patch.yaml`)
 
 본 capacity-trends row의 패턴은 다음 절차로 확장 가능하다.
 
-- `deploy/gpuobs/base/prometheus-rule.yaml`의 `netobs-gpuobs.capacity-trends.recording` group에 신규 record 2종 추가 (`cluster:<domain>_1h_avg` 와 `cluster:<domain>_zscore:1h`)
+- `deploy/gpuobs/base/prometheus-rule-capacity-anomaly.yaml`의 `netobs-gpuobs.capacity-trends.recording` group에 신규 record 2종 추가 (`cluster:<domain>_1h_avg` 와 `cluster:<domain>_zscore:1h`)
 - `deploy/dashboards/overview.json`의 Capacity trends row (id 600) 에 신규 panel 3종 추가 (heatmap + overlay + z-score, id 613-615 부터 +3 씩 증가)
 - `netobs-gpuobs.alerts` group에 신규 alert 1종 추가 (`<Domain>AnomalyDetected`, severity warning, component `<domain>-capacity`)
 - `test/perf/capacity-trends/verify.sh`의 EXPECTED_RECORDS 표 갱신

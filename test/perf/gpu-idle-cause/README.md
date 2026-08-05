@@ -41,7 +41,7 @@
 ## 실패 시 진단
 
 - `[fatal] PrometheusRule netobs-gpuobs-correlation 가 ${NAMESPACE} 에 존재 하지 않는다` 로 떨어지면 `make deploy-gpuobs-dev` 적용 여부 점검
-- `[fatal] recording rule '<name>' 가 PrometheusRule 에 누락` 로 떨어지면 `deploy/gpuobs/base/prometheus-rule.yaml` 의 `netobs-gpuobs.dominant-cause.recording` group 안에 해당 record 가 있는지 확인 후 재배포
+- `[fatal] recording rule '<name>' 가 PrometheusRule 에 누락` 로 떨어지면 `deploy/gpuobs/base/prometheus-rule-idle-cause.yaml` 의 `netobs-gpuobs.dominant-cause.recording` group 안에 해당 record 가 있는지 확인 후 재배포
 - `[fatal] alert rule '<name>' 가 PrometheusRule 에 누락` 로 떨어지면 `netobs-gpuobs.gpu-idle.alerts` group 안에 해당 alert 정의 확인
 - `[fatal] gpu-network-correlation-dashboard ConfigMap 이 ${NAMESPACE} 에 존재 하지 않는다` 또는 `[fatal] dashboard panel 표현식 ... 누락` 로 떨어지면 `make deploy-dashboards` 적용 여부 와 `deploy/dashboards/gpu-network-correlation.json` 의 panel 등록 확인
 - `[fail] timed out waiting for victim 단위 cause weight recording rule series` 로 떨어지면 gpu node 의 `gpuobs-agent` Pod 상태 (`node:gpu_idle:5m` emit 여부) 와 cAdvisor / kube-state-metrics 정상 동작 점검. idle 게이팅 비활성 시간대 (GPU active) 에는 weight 와 dominant cause 시리즈 가 모두 emit 되지 않으므로 GPU idle 시간대 에 재실행

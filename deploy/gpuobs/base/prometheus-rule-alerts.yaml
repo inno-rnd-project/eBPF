@@ -1,0 +1,788 @@
+# #412 단일 2300줄 prometheus-rule.yaml 을 도메인별 5 파일로 분리한 것 중 하나다. 분리는 리소스
+# 단위 diff / 리뷰 가시성 확보 목적이며 그룹 내용과 평가 semantics 는 분리 전과 동일하다. 구
+# PrometheusRule (netobs-gpuobs-correlation) 은 본 5 리소스로 대체되어 배포 시 1회 수동 삭제가
+# 필요하다.
+# 본 파일: netobs / gpuobs / gpu-idle / self-health alert rule 전체.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: netobs-gpuobs-alerts
+  namespace: ebpf-project
+  labels:
+    # release 라벨은 servicemonitor.yaml과 동일하게 kube-prometheus-stack Prometheus 인스턴스의
+    # ruleSelector에 매치되도록 둔다. 운영 클러스터의 helm release 이름과 일치시켜야 픽업된다.
+    release: kube-prometheus-stack
+    app.kubernetes.io/name: gpuobs-agent
+    app.kubernetes.io/component: prometheus-rules
+    app.kubernetes.io/part-of: ebpf-project
+spec:
+  groups:
+
+        # node:gpu_health_score:5m 는 cluster 판이 참조하는 순서 제약으로 cluster-health 블록 상단
+        # (#273) 에 정의되어 있다.
+
+    # netobs-gpuobs.alerts 그룹은 운영 임계 초과를 Alertmanager로 전달하는 alert rule을 모은다.
+    # severity 라벨로 critical(즉시 대응)과 warning(추세 관찰)을 구분한다. for 절은 false-positive
+    # 차단 목적으로 2분 이상을 기본으로 둔다. ECC와 PCIe replay 알람은 본 그룹에서 제외했다.
+    # 두 메트릭(gpuobs_device_ecc_errors_total, gpuobs_device_pcie_replay_errors_total)의
+    # emit 경로가 아직 구현되지 않아 알람이 dead alert가 되기 때문이며, 메트릭 emit이 추가되는
+    # 시점에 본 그룹에 함께 들여온다.
+    - name: netobs-gpuobs.alerts
+      interval: 30s
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
+      # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
+      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      limit: 2000
+      rules:
+        # NetObsHighStageLatencyP99
+        # 로컬 커널 처리 stage의 5분 윈도우 p99 latency가 0.4초를 초과하고 동시에 해당 stage의
+        # 이벤트 발생률이 1event/s 이상일 때만 발화한다. 발생률 필터는 sparse 시리즈에서 +Inf 버킷
+        # fallback이 만드는 노이즈를 차단한다. netobs_stage_latency_labeled_seconds의 버킷은
+        # ExponentialBuckets(1e-6, 2, 20)이라 최상위 finite 경계가 0.524288s이고,
+        # histogram_quantile은 이 경계를 넘는 값을 낼 수 없다. 기존 임계 1.0s는 이 천장 위라
+        # 어떤 부하에서도 도달 불가한 dead alert였다(#362). 임계 0.4s는 최상위 finite 버킷
+        # [0.262144s, 0.524288s] 안이라 도달 가능하며, 처리 stage의 실측 baseline p99(최대 약
+        # 0.014s) 위로 충분한 여유를 둔다. 관측 상한은 0.524288s로 유지되어 그보다 큰 latency는
+        # 천장에서 포화하지만 0.4s 임계는 여전히 발화한다.
+        # stage!~ 매처로 대기/간격/네트워크 stage를 제외한다. to_veth(전송 간격)와 ack_wait(지연 ACK
+        # 타이머, 설계상 최대 200~500ms)와 rcv_app(app pickup 대기)과 connect(핸드셰이크 왕복 RTT)은
+        # 로컬 처리 병목이 아니라 트래픽 패턴·TCP 타이머·앱 스케줄링·네트워크 RTT에 좌우되어 정상
+        # 상태에서도 구조적으로 천장 근처에 상주한다. 이들을 포함하면 임계 0.4s가 상시 오탐이 되므로
+        # (#362 실측: 0.4 발화가 전부 to_veth·ack_wait), 처리 병목만 SLO 대상으로 남긴다. 더 큰 상한
+        # 관측이 필요하면 histogram bucket 범위를 확장한 뒤 임계를 재설정하는 follow-up이 필요하다.
+        # stage!~ 는 부정 목록이라 새 latency stage 추가 시 SLO 적합성을 재검토해야 부적합 stage가
+        # 자동 포함돼 오탐이 되는 것을 막는다 (현재 retrans·drop·sock_teardown 은 latency histogram 을
+        # emit 하지 않아 시리즈 부재로 무해). 제외한 stage(ack_wait·rcv_app·connect)의 실제 비정상은
+        # 별도 alert 로 감지해야 하며 이 SLO 로는 잡지 않는다(#362 리뷰, follow-up). rate(count) > 1
+        # 게이트는 sparse +Inf fallback 노이즈를 막는 대신 초당 1 event 미만 저트래픽 워크로드의 처리
+        # 병목은 놓치는 트레이드오프가 있다.
+        - alert: NetObsHighStageLatencyP99
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le, stage, src_workload, src_namespace, node) (
+                rate(netobs_stage_latency_labeled_seconds_bucket{stage!~"to_veth|ack_wait|rcv_app|connect"}[5m])
+              )
+            ) > 0.4
+            and
+            sum by (stage, src_workload, src_namespace, node) (
+              rate(netobs_stage_latency_labeled_seconds_count{stage!~"to_veth|ack_wait|rcv_app|connect"}[5m])
+            ) > 1
+          for: 5m
+          labels:
+            severity: warning
+            component: netobs
+          annotations:
+            summary: "netobs stage latency p99 over 0.4s (node={{ $labels.node }} workload={{ $labels.src_namespace }}/{{ $labels.src_workload }} stage={{ $labels.stage }})"
+            description: "stage {{ $labels.stage }} latency p99 of workload {{ $labels.src_namespace }}/{{ $labels.src_workload }} on node {{ $labels.node }} is {{ $value | humanizeDuration }} over the last 5 minutes."
+
+        # NetObsHighDropRate
+        # drop_category별 drop rate가 10event/s를 초과하면 발화한다. 카테고리별로 분리해
+        # 정책(policy)/큐 포화(queue)/checksum 등 원인 그룹을 즉시 식별할 수 있게 한다.
+        - alert: NetObsHighDropRate
+          expr: |
+            sum by (node, drop_category, src_namespace, src_workload) (
+              rate(netobs_drop_events_labeled_total[5m])
+            ) > 10
+          for: 2m
+          labels:
+            severity: warning
+            component: netobs
+          annotations:
+            summary: "netobs drop rate over 10/s (node={{ $labels.node }} category={{ $labels.drop_category }})"
+            description: "drop category {{ $labels.drop_category }} for workload {{ $labels.src_namespace }}/{{ $labels.src_workload }} on node {{ $labels.node }} is {{ $value }} events/sec sustained over 2 minutes. Reference docs/netobs/drop-reason.md for category semantics."
+
+        # NetObsDropBurst
+        # 동일 5-tuple 에서 drop rate 가 10 회/초 이상이고 1 분 지속 시 발화한다 (#64). 본 alert 는
+        # netobs_drop_events_flow_total 메트릭이 emit 되는 namespace 한정으로 동작하며 cardinality
+        # 가드를 통과한 5-tuple 만 검출 대상이다. burst rate 임계 10/s 는 dev cluster 의 합성 drop
+        # 시나리오 (iptables -j DROP) 에서 sustained burst 의 하한값으로 검증되었다.
+        - alert: NetObsDropBurst
+          expr: |
+            netobs_drop_burst:rate1m > 10
+          for: 1m
+          labels:
+            severity: warning
+            component: netobs
+          annotations:
+            summary: "netobs drop burst on 5-tuple (src={{ $labels.src_namespace }}/{{ $labels.src_pod }} dst={{ $labels.dst_ip }}:{{ $labels.dst_port }} proto={{ $labels.protocol }} reason={{ $labels.drop_reason }})"
+            description: "drop burst rate {{ $value }} events/sec sustained over 1 minute for 5-tuple src={{ $labels.src_ip }}:{{ $labels.src_port }} → dst={{ $labels.dst_ip }}:{{ $labels.dst_port }} protocol={{ $labels.protocol }} drop_reason={{ $labels.drop_reason }}. See docs/netobs/drop-flow-analysis.md for triage workflow."
+
+        # NetObsHighRetransmissionRate
+        # TCP 재전송 rate가 5event/s를 넘으면 발화. 네트워크 혼잡, peer 처리 지연, 경로 패킷
+        # 손실 셋 중 하나의 시그널이다.
+        - alert: NetObsHighRetransmissionRate
+          expr: |
+            sum by (node, src_namespace, src_workload) (
+              rate(netobs_retrans_events_labeled_total[5m])
+            ) > 5
+          for: 2m
+          labels:
+            severity: warning
+            component: netobs
+          annotations:
+            summary: "netobs retransmission rate over 5/s (node={{ $labels.node }} workload={{ $labels.src_namespace }}/{{ $labels.src_workload }})"
+            description: "TCP retransmission rate for workload {{ $labels.src_namespace }}/{{ $labels.src_workload }} on node {{ $labels.node }} is {{ $value }} events/sec sustained over 2 minutes."
+
+        # NetObsTcpCongestion
+        # 수신 Pod 의 TCP 혼잡 신호 alert (#65). max_srtt 가 200 ms 초과 (RTT degradation) 이고
+        # 동시에 min_cwnd 가 5 분 전 5 분 baseline 의 50 % 미만으로 떨어진 경우 (cwnd backoff) 두
+        # 조건 AND 로 false positive 를 차단한다. raw gauge 는 scrape 마다 reset 되어 window 내
+        # min/max sample 을 의미하며 평소 baseline 과의 비교는 offset 5m 윈도우로 산출한다.
+        # tcp_v4_rcv 는 emit 대상이 아니라 본 alert 는 rcv_demux 이후 stage 의 sample 만 본다.
+        # #371 baseline 부재 fallback. 갓 뜬 pod 이나 5분 미만 flow 는 baseline 이 없어 and 우변이
+        # 비고 심한 혼잡에도 발화하지 않았다. baseline 이 없는 시리즈에 한해 (unless 게이트) 절대
+        # cwnd 하한 4 이하를 fallback 으로 둔다. Linux 초기 cwnd 기본 10 에서 loss recovery backoff
+        # 는 4 이하로 수렴하므로 신생 flow 의 정상 초기값과 분리되고, srtt 200 ms 초과 AND 와 for 2m
+        # 이 그대로 걸려 있어 오발화 여지가 좁다 (현행 24h 실측 fallback 발동 0). baseline 이 생기면
+        # unless 가 fallback 을 배제해 상대 비교 단독으로 복귀한다. avg_over_time >= 0 은 cwnd 가
+        # 양수라 항상 참인 존재 술어다.
+        - alert: NetObsTcpCongestion
+          expr: |
+            (netobs_tcp_state_max_srtt_seconds > 0.2)
+            and
+            (
+              (
+                netobs_tcp_state_min_cwnd
+                < (avg_over_time(netobs_tcp_state_min_cwnd[5m] offset 5m) * 0.5)
+              )
+              or
+              (
+                (netobs_tcp_state_min_cwnd <= 4)
+                unless (avg_over_time(netobs_tcp_state_min_cwnd[5m] offset 5m) >= 0)
+              )
+            )
+          for: 2m
+          labels:
+            severity: warning
+            component: netobs
+          annotations:
+            summary: "netobs tcp congestion on receiving pod {{ $labels.namespace }}/{{ $labels.pod }} (node={{ $labels.node }})"
+            description: "Receiving pod {{ $labels.namespace }}/{{ $labels.pod }} on node {{ $labels.node }} shows max srtt {{ $value | humanizeDuration }} with min_cwnd dropped below 50% of the previous 5-minute baseline (or at/below the absolute floor 4 for young flows without a baseline, #371), sustained over 2 minutes. Inspect peer congestion or downstream link saturation via netobs_tcp_state_min_cwnd / max_srtt_seconds / min_ssthresh."
+
+        # GPUObsThrottleActive
+        # hw_* / sw_thermal_slowdown / sw_power_cap reason은 운영상 문제 시그널이라 활성이면 critical.
+        # gpu_idle / applications_clocks_setting / display_clock_setting / sync_boost는 정상 동작 신호라
+        # reason 필터로 제외한다. for: 1m은 다른 critical보다 짧게 두어 throttle 발생을 즉시 포착한다.
+        - alert: GPUObsThrottleActive
+          expr: |
+            gpuobs_device_throttle_active{reason=~"hw_slowdown|hw_thermal_slowdown|hw_power_brake_slowdown|sw_thermal_slowdown|sw_power_cap"} == 1
+          for: 1m
+          labels:
+            severity: critical
+            component: gpuobs
+          annotations:
+            summary: "GPU throttle active ({{ $labels.reason }}) on {{ $labels.node }} gpu_index={{ $labels.gpu_index }}"
+            description: "GPU {{ $labels.gpu_index }} ({{ $labels.gpu_model }} uuid={{ $labels.gpu_uuid }}) on node {{ $labels.node }} is throttling due to {{ $labels.reason }}. Throughput is reduced. Check thermal headroom, power budget, or downstream hardware limits."
+
+        # GPUObsThermalHeadroomLow
+        # threshold(slowdown/hwslowdown/shutdown) 대비 5℃ 이내로 좁혀지면 발화. 기존 recording
+        # rule node:gpu_temperature_headroom_celsius를 재사용해 노드 단위 최악 GPU 기준으로 평가한다.
+        - alert: GPUObsThermalHeadroomLow
+          expr: node:gpu_temperature_headroom_celsius < 5
+          for: 2m
+          labels:
+            severity: critical
+            component: gpuobs
+          annotations:
+            summary: "GPU thermal headroom below 5C on {{ $labels.node }} (threshold={{ $labels.threshold }})"
+            description: "Thermal headroom for the worst GPU on node {{ $labels.node }} against threshold {{ $labels.threshold }} is {{ $value }}C. Thermal slowdown or shutdown is imminent. Check cooling, fan speed, or reduce GPU load."
+
+        # GPUObsPowerHeadroomLow
+        # power limit과 현재 사용량 차이가 10W 이내면 발화. 기존 recording rule
+        # node:gpu_power_headroom_watts를 재사용한다. sw_power_cap throttle이 곧 발생할 수 있는 사전 시그널.
+        - alert: GPUObsPowerHeadroomLow
+          expr: node:gpu_power_headroom_watts < 10
+          for: 2m
+          labels:
+            severity: warning
+            component: gpuobs
+          annotations:
+            summary: "GPU power headroom below 10W on {{ $labels.node }}"
+            description: "Power headroom (limit minus current usage) for the worst GPU on node {{ $labels.node }} is {{ $value }}W. The GPU is approaching its power limit and may start power-cap throttling. Consider reducing concurrent CUDA workloads."
+
+        # GPUObsCudaStreamWaitHigh
+        # cuStreamSynchronize 의 p99 host wait time 이 100ms 를 5 분 지속 초과하면 발화 (#67). GPU
+        # 워크로드의 stream 단위 병목 (kernel 완료 대기, 대규모 memcpy 대기 등) 을 운영자가 즉시 식별
+        # 할 수 있게 한다. cuEventSynchronize 는 event recording 의존 시점이 워크로드별로 너무 다양해
+        # 동일 임계 적용이 부적절하므로 본 alert 의 expr 대상에서 제외한다. 임계 100ms 는 histogram
+        # bucket 의 17 번째 경계 약 131ms 인근에서 정확한 p99 산정이 가능해 false positive 가 적다.
+        # 그룹화 라벨에 src_pod_uid 를 포함해 롤링 업데이트 중 old/new Pod 이 같은 이름으로 공존할
+        # 때 두 instance 의 sample 이 섞여 p99 가 잘못 산정되는 케이스를 차단한다. gpu_uuid 는 dev
+        # 클러스터의 single GPU 전제로 의도적으로 드롭해 multi-GPU 워크로드 follow-up 까지 알람 단위
+        # 를 Pod 로 유지한다.
+        - alert: GPUObsCudaStreamWaitHigh
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le, node, src_namespace, src_pod, src_pod_uid) (
+                rate(gpuobs_cuda_stream_synchronize_seconds_bucket[5m])
+              )
+            ) > 0.1
+            and
+            sum by (node, src_namespace, src_pod, src_pod_uid) (
+              rate(gpuobs_cuda_stream_synchronize_seconds_count[5m])
+            ) > 0
+          for: 5m
+          labels:
+            severity: warning
+            component: gpuobs
+          annotations:
+            summary: "cuStreamSynchronize p99 over 100ms on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }})"
+            description: "cuStreamSynchronize p99 host wait time for pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} (uid {{ $labels.src_pod_uid }}) on node {{ $labels.node }} is {{ $value | humanizeDuration }} sustained over 5 minutes. Inspect the workload's CUDA stream usage and the receiving GPU's kernel queue. See docs/gpuobs/cuda-sync-latency.md for triage workflow."
+
+        # GPUObsThermalThrottleSustained
+        # #68 의 RTX consumer GPU thermal correlation alert. thermal_correlation_score 가 0.8 초과로
+        # 10 분 지속이고 같은 10 분 윈도우 안에 hw_thermal_slowdown throttle 이 실제로 발생한 적 있는
+        # 케이스에만 발화한다. throttle 게이팅 없이 score 단독으로 발화하면 throttle 미발생 시간대의
+        # 잡음 (분모가 매우 작은 평탄 시간대의 우연 상관) 이 누적되므로 max_over_time(throttle[10m]) == 1
+        # AND 조건을 둔다. 일회성 thermal spike 가 아닌 sustained 패턴 감지가 본 alert 의 의도다.
+        - alert: GPUObsThermalThrottleSustained
+          expr: |
+            gpuobs_thermal_correlation_score:5m > 0.8
+            and
+            max_over_time(
+              (max by(node, gpu_uuid) (gpuobs_device_throttle_active{reason="hw_thermal_slowdown"}))[10m:30s]
+            ) == 1
+          for: 10m
+          labels:
+            severity: warning
+            component: gpuobs
+          annotations:
+            summary: "GPU thermal throttle sustained on {{ $labels.node }} gpu_uuid={{ $labels.gpu_uuid }} (score={{ $value }})"
+            description: "GPU {{ $labels.gpu_uuid }} on node {{ $labels.node }} shows sustained thermal throttle correlation with temperature for 10 minutes (score={{ $value }}, threshold 0.8). Check cooling, fan curve, ambient temperature, and reduce concurrent CUDA workloads. See docs/gpuobs/rtx-thermal-correlation.md for triage workflow."
+
+    # netobs-gpuobs.gpu-idle.alerts 그룹은 GPU 유휴 상태와 7종 cause score 조합 alert을 모은다.
+    # 단일 cause는 warning, host_compute_stall 은 host와 device 양쪽 자원 한계가 동시에 의심되므로
+    # critical로 둔다. cutoff는 docs/correlation/diagnosis-gpu-idle.md 의 기본값 (warning 0.5, critical
+    # 0.7-0.9) 을 따른다. for 5m으로 spike에 의한 false-positive를 차단한다. dcgm_pcie_replay 와
+    # nccl_collective_stall 은 node 단위 base score (node:*_score:5m) 로 다른 5종과 동일하게 on(node)
+    # 조인하며 데이터센터 GPU 환경에서만 발화한다 (#155).
+    - name: netobs-gpuobs.gpu-idle.alerts
+      interval: 30s
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
+      # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
+      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      limit: 2000
+      rules:
+        # GPUIdleWithPCIeSaturation
+        # 노드 GPU 가 5분 평균 50% 이상 유휴이면서 PCIe saturation score 가 0.7 이상이면 발화.
+        # GPU 작업 데이터가 PCIe 대역폭에 막혀 GPU가 일을 기다리는 시나리오. saturation score를 LHS에
+        # 두어 alert의 $value가 PCIe score를 가리키도록 한다 ($value는 LHS 값으로 평가됨).
+        - alert: GPUIdleWithPCIeSaturation
+          expr: node:gpu_pcie_saturation_score:5m > 0.7 and on(node) node:gpu_idle:5m > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle with PCIe saturation on {{ $labels.node }} (score={{ $value }})"
+            description: "Node {{ $labels.node }} GPUs are idle while PCIe saturation score is {{ $value }} (threshold 0.7). See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
+
+        # GPUIdleWithNetworkPressure
+        # GPU 유휴 + (네트워크 throughput 포화 또는 재전송 비율 상승). Pod 단위 score라 어떤 pod이
+        # 원인인지 src_namespace / src_pod 라벨로 식별 가능. retrans cutoff 0.05는 5% 이상 재전송 비율.
+        # cause score를 LHS에 두어 $value 와 pod 라벨 (src_namespace, src_pod) 이 보존된다.
+        - alert: GPUIdleWithNetworkPressure
+          expr: |
+            (
+              pod:network_throughput_score_rise:5m > 0.7
+              or
+              pod:network_retrans_score_rise:5m > 0.05
+            )
+              and on(node)
+            (node:gpu_idle:5m > 0.5)
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle with network pressure on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} score={{ $value }})"
+            description: "Pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} on node {{ $labels.node }} network throughput or retransmission score rose by {{ $value }} over its 30m-1h30m baseline while GPU is idle. Check whether the GPU workload depends on this pod's network I/O."
+
+        # GPUIdleWithCPUThrottle
+        # GPU 유휴 + 컨테이너 CPU CFS throttle. CPU limit 으로 인해 host측이 GPU에 작업을 보내지
+        # 못하는 시나리오. cutoff 0.3은 30% 이상 period가 throttle된 상태. cause score를 LHS에 두어
+        # $value 와 pod 라벨 이 보존된다.
+        - alert: GPUIdleWithCPUThrottle
+          expr: |
+            (pod:cpu_throttle_score_rise:5m > 0.3)
+              and on(node)
+            (node:gpu_idle:5m > 0.5)
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle with CPU throttle on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} score={{ $value }})"
+            description: "Pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} on node {{ $labels.node }} CPU throttle score rose by {{ $value }} over its 30m-1h30m baseline while GPU is idle. Consider raising CPU limit or reducing concurrent CPU work."
+
+        # GPUIdleWithMemoryPressure
+        # GPU 유휴 + 컨테이너 메모리 working_set 이 limit에 임박. OOMKilled 전조이며 GPU 작업이 host
+        # 메모리 부족으로 stall될 수 있다. cutoff 0.9은 working_set이 limit의 90%를 넘는 상태. cause
+        # score를 LHS에 두어 $value (메모리 working_set / limit 비율) 와 pod 라벨 이 보존된다.
+        # #244 절대 비율 (0.9) 대신 baseline 대비 상승분으로 판정한다. limit 에 상시 근접한 관측
+        # 인프라 pod (dcgm-exporter 등) 의 오탐을 제거하고, 상승분 기준에서는 0.9 상승이 사실상
+        # 불가능해 유의미한 신규 압박 임계로 0.3 을 쓴다.
+        - alert: GPUIdleWithMemoryPressure
+          expr: |
+            (pod:memory_pressure_score_rise:5m > 0.3)
+              and on(node)
+            (node:gpu_idle:5m > 0.5)
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle with memory pressure on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }})"
+            description: "Pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} on node {{ $labels.node }} memory working_set / limit ratio rose by {{ $value | humanizePercentage }} over its 30m-1h30m baseline while GPU is idle. Consider raising memory limit before OOMKill."
+
+        # GPUIdleWithHostComputeStall
+        # GPU 유휴 + host측 CUDA launch 부족 또는 GPU device memory 포화. host 또는 device 측에서
+        # GPU 작업을 진행할 수 없는 상태이며 다른 cause score와 무관하게 GPU 자체 활용이 막힌 critical
+        # 시그널이다. cutoff 0.7은 baseline의 30% 미만 launch rate 또는 GPU memory 70% 이상. cause
+        # score를 LHS에 두어 $value 와 pod 라벨 이 보존된다.
+        - alert: GPUIdleWithHostComputeStall
+          expr: |
+            (pod:host_compute_stall_score_rise:5m > 0.7)
+              and on(node)
+            (node:gpu_idle:5m > 0.5)
+          for: 5m
+          labels:
+            severity: critical
+            component: correlation
+          annotations:
+            summary: "GPU idle with host compute stall on {{ $labels.node }} (pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} score={{ $value }})"
+            description: "Pod {{ $labels.src_namespace }}/{{ $labels.src_pod }} on node {{ $labels.node }} host compute stall score (low CUDA launch rate or GPU memory saturation) rose by {{ $value }} over its 30m-1h30m baseline while GPU is idle. Inspect kernel launches via gpuobs_cuda_kernel_launches_total and GPU memory via pod:gpu_memory_utilization_ratio:5m."
+
+        # GPUIdleWithDCGMPCIeReplay (#155)
+        # GPU 유휴 + DCGM PCIe replay score 상승. dcgm_pcie_replay 는 dominant cause 엔진의 7 cause 중
+        # 하나다. base score node:dcgm_pcie_replay_score:5m 가 node 단위라 기존 5 alert 와 동일하게
+        # on(node) 로 같은 노드의 GPU 유휴와 결합해 cross-node 오탐을 막고 node 라벨로 조치 가능하게
+        # 한다. dcgm-exporter 가 활성인 데이터센터 GPU 환경에서만 base 가 emit 되고 dev (DCGM 부재)
+        # 에서는 score 가 0 이라 발화하지 않는다. PCIe link error 로 인한 retry 가 GPU compute 진입을
+        # 지연시키는 hardware 신호다.
+        - alert: GPUIdleWithDCGMPCIeReplay
+          expr: |
+            node:dcgm_pcie_replay_score:5m > 0.7
+              and on(node) (node:gpu_idle:5m > 0.5)
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle with DCGM PCIe replay on {{ $labels.node }} (score={{ $value }})"
+            description: "DCGM PCIe replay score is {{ $value }} (threshold 0.7) on node {{ $labels.node }} while a GPU is idle. PCIe link errors (DCGM_FI_DEV_PCIE_REPLAY_COUNTER) are forcing retries that delay GPU compute. Inspect link health on datacenter GPUs. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
+
+        # GPUIdleWithNCCLCollectiveStall (#155)
+        # GPU 유휴 + NCCL collective stall score 상승. nccl_collective_stall 은 dominant cause 엔진의
+        # 7 cause 중 하나다. base score node:nccl_collective_stall_score:5m 가 node 단위라 on(node) 로
+        # 같은 노드의 GPU 유휴와 결합해 cross-node 오탐을 막고 node 라벨로 조치 가능하게 한다. NCCL
+        # profiler 가 활성인 데이터센터 GPU 환경에서만 base 가 emit 되고 dev (noop profiler) 에서는
+        # score 가 0 이라 발화하지 않는다. allreduce / broadcast 등 collective 의 rank 간 sync 대기로
+        # GPU 가 유휴인 상태를 host_compute_stall (kernel launch 부족) 과 구분한다.
+        - alert: GPUIdleWithNCCLCollectiveStall
+          expr: |
+            node:nccl_collective_stall_score:5m > 0.7
+              and on(node) (node:gpu_idle:5m > 0.5)
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle with NCCL collective stall on {{ $labels.node }} (score={{ $value }})"
+            description: "NCCL collective stall score is {{ $value }} (threshold 0.7) on node {{ $labels.node }} while a GPU is idle. Ranks are spending wall-clock in collective wait (allreduce/broadcast sync). Inspect gpuobs_nccl_collective_duration_seconds. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
+
+        # GPUIdleWithThermal (#190)
+        # GPU 유휴 + thermal score 상승. thermal 은 dominant cause 엔진의 8 cause 중 하나다. base score
+        # node:gpu_thermal_score:5m 가 node 단위라 on(node) 로 같은 노드의 GPU 유휴와 결합해 cross-node
+        # 오탐을 막고 node 라벨로 조치 가능하게 한다. 온도·throttle 변화가 없는 노드에서는 score 가 0
+        # 이라 발화하지 않는다. 발열로 인한 clock 강하가 GPU 활용을 떨어뜨리는 상태를 host_compute_stall
+        # (kernel launch 부족) 과 구분한다. cause enum 과 GPUIdleWith* alert 의 1:1 매핑을 유지한다.
+        - alert: GPUIdleWithThermal
+          expr: |
+            node:gpu_thermal_score:5m > 0.7
+              and on(node) (node:gpu_idle:5m > 0.5)
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle with thermal throttle on {{ $labels.node }} (score={{ $value }})"
+            description: "GPU thermal score is {{ $value }} (threshold 0.7) on node {{ $labels.node }} while a GPU is idle. Temperature and hw_thermal_slowdown throttle move together, so heat is capping clocks and GPU utilization. Inspect gpuobs_device_temperature_celsius and cooling. See docs/correlation/diagnosis-gpu-idle.md for diagnosis steps."
+
+        # GPUIdleDominantCauseSwitch
+        # GPU 유휴 dominant cause 가 10 분 안에 두 번 이상 swap 시 발화 (#66). cause 식별이 불안정한
+        # 워크로드 (cause 간 신호가 cycling 하거나 동률에 근접) 를 검출한다. cause 별 0/1 indicator 의
+        # 1 ↔ 0 전이를 합산해 임계를 잡는다. 1 회 swap 은 두 cause indicator 가 동시에 전이해 합 2 가
+        # 발생하므로 2 회 swap 의 임계는 합 4 이상이다. for: 1m 으로 changes() 윈도우 내부의 단일
+        # spike 가 firing 으로 즉시 이어지지 않게 한다.
+        - alert: GPUIdleDominantCauseSwitch
+          expr: |
+            sum(changes(gpu_idle_dominant_cause_indicator:5m[10m])) >= 4
+          for: 1m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle dominant cause unstable (>= 2 swaps in 10m)"
+            description: "GPU idle dominant cause has swapped {{ $value | humanize }} indicator transitions across 9 causes in the last 10 minutes. Inspect gpu_idle_cause_weight:5m and cluster:gpu_idle_dominant_cause:5m to identify the alternating causes. See docs/observability/gpu-idle-dominant-cause.md for triage workflow."
+
+        # GPUIdleDominantCauseAmbiguous
+        # #101 cluster 단위 dominant cause 의 동률 ambiguous 상태 감지. 기존 GPUIdleDominantCauseSwitch
+        # 는 시간축 flapping (10 분 안 2 회 이상 cause 전이) 을 잡지만 동일 시점 에 top1 과 top2 가
+        # 거의 동률 인 ambiguous 상태 는 잡지 못한다. 본 alert 는 top1 weight 와 top2 weight 의 격차
+        # 가 0.1 미만 이면서 동시에 magnitude (top1) 가 0.3 초과 일 때 발화 한다. magnitude 게이팅 은
+        # noise floor (모든 cause 가 작은 값 일 때 의 무의미 한 동률) 를 차단 한다. severity 는 즉시
+        # 대응 의미 가 아닌 자동 rule 의 dominant 판정 에서 manual 진단 으로 전환 해야 한다는 신호
+        # 라 critical 이 아닌 warning 채택. for: 5m 으로 단발 spike false positive 차단.
+        - alert: GPUIdleDominantCauseAmbiguous
+          expr: |
+            (
+              max(topk(1, gpu_idle_cause_weight:5m))
+              - max(bottomk(1, topk(2, gpu_idle_cause_weight:5m)))
+            ) < 0.1
+            and max(gpu_idle_cause_weight:5m) > 0.3
+            and count(gpu_idle_cause_weight:5m) >= 2
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "GPU idle dominant cause ambiguous (top1 와 top2 격차 < 0.1)"
+            description: "GPU idle dominant cause 의 top1 과 top2 weight 격차가 {{ $value | humanizePercentage }} 로 0.1 미만이며 top1 magnitude 는 0.3 초과 상태입니다. 자동 rule 의 dominant 선택이 noise 에 휘둘릴 위험이 있어 manual 진단 으로 전환이 필요합니다. gpu_idle_cause_weight_top3:5m 로 secondary cause 와 함께 비교하고 docs/observability/gpu-idle-dominant-cause.md 의 ambiguous 운영 워크플로 를 참조합니다."
+
+        # VictimGPUIdleDominantCauseAmbiguous
+        # #101 victim 단위 dominant cause ambiguous 상태 감지. cluster 단위 GPUIdleDominantCauseAmbiguous
+        # 와 동일 패턴 을 victim 차원 으로 적용 해 victim 별 dominant cause 동률 을 잡는다. victim 별
+        # ambiguous 가 다발 하면 cluster 단위 보다 먼저 발화 한다. labels 에 victim_namespace 와
+        # victim_pod 를 보존 해 Alertmanager 가 victim 별 별도 alert 인스턴스 로 라우팅 한다.
+        - alert: VictimGPUIdleDominantCauseAmbiguous
+          expr: |
+            (
+              max by(node, victim_namespace, victim_pod) (topk by(node, victim_namespace, victim_pod) (1, pod:gpu_idle_cause_weight:5m))
+              - max by(node, victim_namespace, victim_pod) (bottomk by(node, victim_namespace, victim_pod) (1, topk by(node, victim_namespace, victim_pod) (2, pod:gpu_idle_cause_weight:5m)))
+            ) < 0.1
+            and max by(node, victim_namespace, victim_pod) (pod:gpu_idle_cause_weight:5m) > 0.3
+            and count by(node, victim_namespace, victim_pod) (pod:gpu_idle_cause_weight:5m) >= 2
+          for: 5m
+          labels:
+            severity: warning
+            component: correlation
+          annotations:
+            summary: "victim {{ $labels.victim_namespace }}/{{ $labels.victim_pod }} GPU idle dominant cause ambiguous"
+            description: "victim {{ $labels.victim_namespace }}/{{ $labels.victim_pod }} 의 dominant cause top1 과 top2 weight 격차가 0.1 미만 이며 top1 magnitude 는 0.3 초과 상태입니다. victim 별 dashboard 의 cause weight stacked panel 로 secondary cause 와 의 격차 를 확인 합니다."
+
+    # netobs-gpuobs.self-health.alerts 는 두 agent 자체의 운영 상태를 가시화한다. BPF 자원 포화 /
+    # NVML 호출 실패 / informer staleness 같은 신호를 alert 로 노출해 데이터 품질 저하의 원인을
+    # 데이터 자체보다 먼저 진단할 수 있게 한다. ObsAgentDown 은 verifier rejection / required attach
+    # 실패 / agent crash 같은 fatal 케이스를 모두 cover 하고, ProgramUnavailable 두 종은 optional
+    # attach 실패 (부분 실패) 를 cover 한다.
+    - name: netobs-gpuobs.self-health.alerts
+      interval: 30s
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
+      # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
+      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      limit: 2000
+      rules:
+        # ObsAgentDown
+        # netobs-agent 또는 gpuobs-agent 인스턴스가 2 분 이상 scrape 실패 상태이면 발화. BPF object
+        # 로드 실패 (verifier rejection 포함) / required kprobe attach 실패 / agent crash 같은 fatal
+        # 케이스가 모두 본 alert 로 잡힌다. job 라벨이 어느 agent 인지 식별한다.
+        - alert: ObsAgentDown
+          expr: up{job=~"netobs-agent|gpuobs-agent"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            component: observability
+          annotations:
+            summary: "{{ $labels.job }} on {{ $labels.instance }} is down"
+            description: "{{ $labels.job }} on instance {{ $labels.instance }} has been unreachable for >= 2 minutes. Check pod status, BPF verifier output (kubectl logs), and required kprobe attach errors."
+
+        # NetObsBpfProgramUnavailable
+        # netobs optional kprobe 의 attach 실패가 5 분 이상 지속되면 발화. required attach 실패는
+        # agent crash 로 이어져 ObsAgentDown 이 잡으므로 본 alert 는 부분 실패만 cover 한다.
+        # #105 도입 후 본 alert 는 *현재 attach 미상태* 가시화 만 cover 하고 attach 실패 빈도 spike 는
+        # NetObsBpfAttachFailureHigh 가 별도 cover 한다. 영구 실패 (program_loaded=0 지속) 와 transient
+        # flap (실패 후 retry 성공) 의 구분이 두 alert 의 trigger 시점 차이로 가시화 된다.
+        - alert: NetObsBpfProgramUnavailable
+          expr: netobs_bpf_program_loaded == 0
+          for: 5m
+          labels:
+            severity: warning
+            component: netobs
+          annotations:
+            summary: "netobs BPF probe {{ $labels.symbol }} not attached on {{ $labels.instance }}"
+            description: "Optional kprobe {{ $labels.symbol }} could not be attached on {{ $labels.instance }} (kernel build option or version difference). Receive-path or drop-path metrics may be missing. Inspect agent logs for the attach error message."
+
+        # NetObsBpfAttachFailureHigh
+        # #105 의 BPF program attach 실패 발생 을 5 분 윈도우 increase 로 감지 해 2 분 이상 지속 시 발화.
+        # NetObsBpfProgramUnavailable 이 현재 attach 미상태 의 gauge 신호 라면 본 alert 는 startup 이후
+        # attach 시도 의 실패 발생 신호 다. attach 시도 는 agent startup 시점 1 회 만 발생 하므로 rate 기반
+        # 임계값 (예: > 0.1/s) 은 5 분 윈도우 에서 max 1/300=0.0033 으로 절대 발화 하지 않 는다. 본 alert 는
+        # increase(...[5m]) > 0 으로 "직전 5 분 안 1 회 라도 실패" 를 단정 감지 한다. retry budget 안에서
+        # transient flap 이 반복 되어도 마지막 시도 가 success 면 attach_total{result="failure"} 가 증가
+        # 하지 않 으므로 영구 실패 만 본 alert 로 발화 된다. 라벨 partition (program) 으로 어느 program 의
+        # 실패 가 발생 했는지 즉시 식별 가능.
+        - alert: NetObsBpfAttachFailureHigh
+          expr: sum by(program) (increase(netobs_bpf_program_attach_total{result="failure"}[5m])) > 0
+          for: 2m
+          labels:
+            severity: warning
+            component: netobs
+          annotations:
+            summary: "netobs BPF program {{ $labels.program }} attach failed {{ $value | humanize }} times in 5m"
+            description: "BPF program {{ $labels.program }} attach has failed at least once in the last 5 minutes for 2 minutes (#105). Check netobs_bpf_program_attach_retry_total for the failure reason (symbol_not_found / kernel_version_mismatch / btf_missing / verifier_rejected / permission_denied / link_internal_error / other). Cross-reference with netobs_bpf_program_loaded for current state. See docs/netobs/bpf-self-health.md for the remediation matrix."
+
+        # GPUObsCudaSymbolUnavailable
+        # gpuobs uprobe 의 attach 실패가 5 분 이상 지속되면 발화. #41 의 기존 메트릭을 self-health
+        # row 의 source 로 재사용해 신규 메트릭 도입을 회피한다. libcuda 심볼 (cu* prefix) 만 cover
+        # 하고 libcudart 심볼 (cuda* prefix) 은 GPUOBS_CUDA_LIBCUDART_PATH 가 비어 있는 운영 의도
+        # 케이스에서도 0 으로 emit 되어 false positive 가 되므로 본 alert 범위에서 제외한다.
+        - alert: GPUObsCudaSymbolUnavailable
+          expr: gpuobs_cuda_symbol_available{symbol!~"cuda.*"} == 0
+          for: 5m
+          labels:
+            severity: warning
+            component: gpuobs
+          annotations:
+            summary: "gpuobs CUDA symbol {{ $labels.symbol }} not attached on {{ $labels.instance }}"
+            description: "Uprobe for {{ $labels.symbol }} could not be attached (libcuda ABI drift or capability gap). CUDA event metrics may be incomplete. Verify libcuda.so path and CAP_BPF / CAP_PERFMON / CAP_SYS_PTRACE on the daemonset pod."
+
+        # NetObsAgentBpfDropsHigh
+        # events ringbuf 가 가득 차서 reserve 가 실패한 비율이 2 분 이상 10/s 를 넘으면 발화.
+        # userspace reader 가 producer 속도를 못 따라가는 신호이며 ringbuf 크기 또는 reader 처리량
+        # 검토가 필요하다.
+        - alert: NetObsAgentBpfDropsHigh
+          expr: rate(netobs_bpf_ringbuf_drops_total[5m]) > 10
+          for: 2m
+          labels:
+            severity: warning
+            component: netobs
+          annotations:
+            summary: "netobs ringbuf drop rate {{ $value | humanize }}/s on {{ $labels.instance }}"
+            description: "netobs events ringbuf reserve failed at >10/s for 2 minutes on {{ $labels.instance }}. The userspace reader is falling behind producers. Consider raising the ringbuf size in bpf/netlat.bpf.c or reducing event emit rate."
+
+        # NetObsBpfMapUtilizationHigh
+        # netobs_bpf_map_utilization_ratio 는 map 필터 없이 전역 임계라 refresher 가 노출하는 모든 map
+        # (starts / pod_bytes / flow_bytes / netobs_drop_stacks) 의 현재 entry 수가 max_entries 의 80%
+        # 를 5 분 이상 넘으면 발화한다. 특히 flow_bytes 는 5-tuple 키라 노드 규모에 비례해 차므로 (#351)
+        # 본 alert 가 evict 임박의 주 감시 신호다. LRU evict 가 동작해 1.0 도달은 통상 일어나지 않지만
+        # 0.8 안정 초과는 max_entries 가 워크로드 규모를 따라가지 못한다는 신호다. 수용 조건 ("80% 초과
+        # 시 alert 정상 발화") 을 충족한다.
+        - alert: NetObsBpfMapUtilizationHigh
+          expr: netobs_bpf_map_utilization_ratio > 0.8
+          for: 5m
+          labels:
+            severity: warning
+            component: netobs
+          annotations:
+            summary: "netobs BPF map {{ $labels.map }} {{ $value | humanizePercentage }} full on {{ $labels.instance }}"
+            description: "netobs BPF map {{ $labels.map }} on {{ $labels.instance }} has been >80% full for 5 minutes. LRU evict will start dropping older entries. Inspect max_entries in bpf/netlat.bpf.c and consider raising it."
+
+        # GPUObsAgentNvmlErrorsHigh
+        # NVML wrapper 호출 실패가 2 분 이상 1/s 를 넘으면 발화. NOT_SUPPORTED 같은 정상 케이스는
+        # markUnsupported 캐싱이 첫 호출 이후 차단하므로 본 alert 가 발화하는 케이스는 driver issue,
+        # GPU unresponsive, ECC / RM 버전 mismatch 같은 의미 있는 신호다.
+        - alert: GPUObsAgentNvmlErrorsHigh
+          expr: rate(gpuobs_nvml_errors_total[5m]) > 1
+          for: 2m
+          labels:
+            severity: warning
+            component: gpuobs
+          annotations:
+            summary: "gpuobs NVML call {{ $labels.call }} failing with {{ $labels.error_code }} on {{ $labels.instance }}"
+            description: "gpuobs NVML wrapper call {{ $labels.call }} has been failing at >1/s for 2 minutes on {{ $labels.instance }} with error code {{ $labels.error_code }}. Inspect nvidia-smi, driver logs (dmesg), and GPU power / thermal state."
+
+        # ObsAgentInformerStale
+        # netobs 또는 gpuobs agent 의 kube informer 가 5 분 넘게 어떤 watch event 도 못 받으면 발화.
+        # API server 단절 / RBAC 실수 / NetworkPolicy 차단 같은 케이스를 잡는다. 첫 이벤트 전 startup
+        # 윈도우 fallback (agent 기동 시각) 이 본 임계 안에서는 자연 통과해 false positive 를 막는다.
+        - alert: ObsAgentInformerStale
+          expr: max by (job, instance) (netobs_informer_sync_lag_seconds or gpuobs_informer_sync_lag_seconds) > 300
+          for: 5m
+          labels:
+            severity: critical
+            component: observability
+          annotations:
+            summary: "{{ $labels.job }} informer stale {{ $value | humanizeDuration }} on {{ $labels.instance }}"
+            description: "{{ $labels.job }} on {{ $labels.instance }} has not received any kube watch event for {{ $value | humanizeDuration }}. Check API server reachability, NetworkPolicy, and the agent ServiceAccount RBAC (pods/services/nodes watch verbs)."
+
+        # #412 외부 exporter 입력 부재 가드 3종. gpu-idle dominant cause 와 capacity z-score 군은
+        # cAdvisor / node-exporter / kube-state-metrics 메트릭을 조인 입력으로 쓰는데, 이들 exporter
+        # 가 죽으면 파생 rule 이 에러 없이 시리즈 미존재로 조용히 비어 관측 공백을 아무도 감지하지
+        # 못한다. exporter 군별 대표 메트릭 1개씩의 absent() 로 부재 자체를 발화시킨다. DCGM 은
+        # dev 환경에 원래 부재라 (optional 입력) 가드 대상에서 제외한다. for 10m 는 exporter pod
+        # 재기동 (rollout) 의 일시 공백을 걸러낸다.
+        - alert: CadvisorMetricsAbsent
+          expr: absent(container_cpu_cfs_periods_total)
+          for: 10m
+          labels:
+            severity: warning
+            component: observability
+          annotations:
+            summary: "cAdvisor metrics absent"
+            description: "container_cpu_cfs_periods_total 시리즈가 10 분 이상 부재하다. cAdvisor (kubelet) 메트릭 수집이 끊겨 CPU throttle 기반 dominant cause 와 capacity z-score 산출이 조용히 비는 상태다. kubelet ServiceMonitor 대상 등록과 kubelet 상태를 점검한다."
+
+        - alert: NodeExporterMetricsAbsent
+          expr: absent(node_memory_MemAvailable_bytes)
+          for: 10m
+          labels:
+            severity: warning
+            component: observability
+          annotations:
+            summary: "node-exporter metrics absent"
+            description: "node_memory_MemAvailable_bytes 시리즈가 10 분 이상 부재하다. node-exporter 수집이 끊겨 memory pressure 기반 dominant cause 산출이 조용히 비는 상태다. node-exporter DaemonSet 과 ServiceMonitor 대상 등록을 점검한다."
+
+        - alert: KubeStateMetricsAbsent
+          expr: absent(kube_pod_container_resource_limits)
+          for: 10m
+          labels:
+            severity: warning
+            component: observability
+          annotations:
+            summary: "kube-state-metrics metrics absent"
+            description: "kube_pod_container_resource_limits 시리즈가 10 분 이상 부재하다. kube-state-metrics 수집이 끊겨 limit 기반 ratio 산출 (memory pressure, CPU throttle 계열) 이 조용히 비는 상태다. kube-state-metrics Deployment 와 ServiceMonitor 대상 등록을 점검한다."
+
+        # #412 리뷰 반영: absent() 는 전 시리즈 소실만 잡아 부분 결측이 조용히 지나간다 (#430 실증:
+        # node-exporter 4대 중 3대 down 에도 gpu 노드 시리즈 잔존으로 absent 미발화). per-node
+        # exporter 2종은 kube_node_info 대비 실측 노드 수 비교로 결측 노드 존재 자체를 발화시킨다.
+        # 분모 kube_node_info 가 kube-state-metrics 산출이라 KSM 전손 시 본 비교는 무데이터로
+        # 침묵하나 그 케이스는 KubeStateMetricsAbsent 가 커버한다 (상호 보완). KSM 자신은 단일
+        # Deployment 라 부분 결측 개념이 없어 absent 가드만으로 충분하다. per-target up == 0 계열
+        # alert 는 #430 의 작업 범위에서 설계한다.
+        - alert: CadvisorMetricsPartiallyAbsent
+          expr: count(machine_cpu_cores) < count(kube_node_info)
+          for: 10m
+          labels:
+            severity: warning
+            component: observability
+          annotations:
+            summary: "cAdvisor metrics missing on some nodes"
+            description: "cAdvisor (kubelet) 의 per-node 메트릭 (machine_cpu_cores) 이 kube_node_info 대비 일부 노드에서 10 분 이상 결측이다. 해당 노드의 CPU throttle 과 memory 기반 dominant cause 산출이 조용히 비는 상태다. kubelet 상태와 ServiceMonitor 대상 등록에서 빠진 노드를 특정한다."
+
+        - alert: NodeExporterMetricsPartiallyAbsent
+          expr: count(node_memory_MemAvailable_bytes) < count(kube_node_info)
+          for: 10m
+          labels:
+            severity: warning
+            component: observability
+          annotations:
+            summary: "node-exporter metrics missing on some nodes"
+            description: "node-exporter 의 per-node 메트릭 (node_memory_MemAvailable_bytes) 이 kube_node_info 대비 일부 노드에서 10 분 이상 결측이다. 해당 노드의 memory pressure 기반 dominant cause 산출이 조용히 비는 상태다. node-exporter DaemonSet pod 상태에서 빠진 노드를 특정한다."
+
+        # #412 리뷰 반영: 그룹 limit 2000 의 최대 산출원인 stage latency 중간 rule (dev 실측 903
+        # 시리즈) 은 pod 수에 비례해 커져 한계 도달 시 세 파생 rule 이 함께 조용히 빈다. 80% 임계
+        # (1600) 에서 선행 발화해 limit 상향 또는 카디널리티 절감을 준비할 시간을 준다.
+        - alert: StageLatencyIntermediateSeriesNearLimit
+          expr: count(pod:netobs_stage_latency_rate_le:5m) > 1600
+          for: 30m
+          labels:
+            severity: warning
+            component: observability
+          annotations:
+            summary: "stage latency intermediate rule nearing group limit ({{ $value }} series)"
+            description: "pod:netobs_stage_latency_rate_le:5m 의 산출 시리즈가 {{ $value }} 개로 그룹 limit 2000 의 80% 를 30 분 이상 초과했다. 한계 도달 시 본 rule과 node p99, pod p99, correlation victim latency pressure 파생이 함께 소실된다. pod 증가 추세를 확인하고 limit 상향 또는 stage 라벨 축소를 검토한다."
+
+        # #88 capacity-trends z-score anomaly alert 4종. 본 alert 군은 capacity planning 의 선행
+        # 신호 (즉시 대응 불요 의 warning severity) 라 throttle 류 critical alert 와 component
+        # 라벨로 분리한다 (gpuobs-capacity, netobs-capacity, cpu-capacity, memory-capacity). |z| > 3
+        # 은 정규분포의 99.7% 신뢰구간 outside 라 normal shift 벗어난 usage pattern 을 의미하고,
+        # 30 분 sustained 조건으로 일시적 spike 의 alert flapping 을 차단한다. baseline (trailing
+        # 30일, offset 1h, #370) 의 stddev 가 0 인 평탄 구간 은 record 자체가 미 emit 되어 alert 도
+        # 자연 통과한다.
+        # #365 개별 판단으로 본 1h 4종은 abs() 양방향을 유지한다. usage-shift 감지 의도라 상승
+        # (증설 신호) 과 하강 (회수 여지) 모두 capacity 계획 입력으로 유의미하며, 즉시 RCA 의도인
+        # 5m spike 군의 방향성 임계 (#365) 와 구분된다.
+        - alert: GPUUtilAnomalyDetected
+          expr: abs(cluster:gpu_util_zscore:1h) > 3
+          for: 30m
+          labels:
+            severity: warning
+            component: gpuobs-capacity
+          annotations:
+            summary: "GPU utilization capacity anomaly (z={{ $value }})"
+            description: "Cluster GPU utilization 의 z-score 가 30일 baseline 대비 |z|={{ $value }} 로 30 분 sustained 됐다. 99.7% 신뢰구간 outside (3-sigma rule) 의 normal shift 신호다. capacity-trends heatmap 패널에서 시간대 패턴을 확인하고 필요 시 GPU 자원 재할당 또는 워크로드 schedule 조정을 검토하라."
+
+        - alert: NetworkUtilAnomalyDetected
+          expr: abs(cluster:network_zscore:1h) > 3
+          for: 30m
+          labels:
+            severity: warning
+            component: netobs-capacity
+          annotations:
+            summary: "Network throughput capacity anomaly (z={{ $value }})"
+            description: "Cluster network throughput score 의 z-score 가 30일 baseline 대비 |z|={{ $value }} 로 30 분 sustained 됐다. capacity-trends overlay 패널에서 시간대 분포를 확인하고 필요 시 NIC bandwidth 또는 Pod replica 재설정을 검토하라."
+
+        - alert: CPUThrottleAnomalyDetected
+          expr: abs(cluster:cpu_throttle_zscore:1h) > 3
+          for: 30m
+          labels:
+            severity: warning
+            component: cpu-capacity
+          annotations:
+            summary: "CPU throttle capacity anomaly (z={{ $value }})"
+            description: "Cluster CPU CFS throttle ratio 의 z-score 가 30일 baseline 대비 |z|={{ $value }} 로 30 분 sustained 됐다. capacity-trends heatmap 패널에서 시간대 패턴을 확인하고 필요 시 CPU limit 상향 또는 워크로드 재배치를 검토하라."
+
+        - alert: MemoryPressureAnomalyDetected
+          expr: abs(cluster:memory_pressure_zscore:1h) > 3
+          for: 30m
+          labels:
+            severity: warning
+            component: memory-capacity
+          annotations:
+            summary: "Memory pressure capacity anomaly (z={{ $value }})"
+            description: "Cluster memory working_set / limit ratio 의 z-score 가 30일 baseline 대비 |z|={{ $value }} 로 30 분 sustained 됐다. OOM 임박 위험 으로 memory limit 상향 또는 워크로드 재배치를 검토하라."
+
+        # #89 resource-anomaly-spike z-score spike alert 4종. 본 alert 군은 #88 의 capacity-trends
+        # alert (장기 capacity planning, 30분 sustained) 와 다른 즉시 RCA spike 감지 (5분 sustained)
+        # 의도라 component 라벨을 *-anomaly 로 분리한다 (gpuobs-anomaly, netobs-anomaly, cpu-anomaly,
+        # memory-anomaly). baseline window 7일 의 stddev 가 평탄한 케이스는 z-score record 자체가
+        # 미 emit 되어 alert 도 자연 통과한다. z 임계 3 은 정규분포 의 99.7% 신뢰구간 outside (3-sigma
+        # rule) 라 즉시 대응 필요 신호이지만 severity 는 warning 유지로 throttle 류 critical alert
+        # 와 운영 채널 분리한다. #365 부터 abs() 양방향이 아니라 유해 방향만 보는 방향성 임계다.
+        # drop / cpu / memory 는 상승 (z > 3) 만 이상이고 하강 (조용한 5분, throttle 완화, 사용량
+        # 감소) 은 무해라 발화하지 않는다. gpu_util 은 반대로 급락 (z < -3) 이 워크로드 스톨·중단
+        # 신호라 하강만 보고, 급등은 정상 활용이라 발화하지 않는다 (gpu health 가 사용률 포화를
+        # 등급 입력에서 제외하는 철학과 정합). 양방향 usage-shift 감지는 위 #88 capacity 1h 군이
+        # 유지한다. alertname 은 소비처 (rca / playbooks 링크 입력) 호환으로 불변이다.
+        - alert: GPUUtilSpikeDetected
+          expr: cluster:gpu_util_zscore:5m < -3
+          for: 5m
+          labels:
+            severity: warning
+            component: gpuobs-anomaly
+          annotations:
+            summary: "GPU utilization crash (z={{ $value }})"
+            description: "Cluster GPU utilization 의 5분 z-score 가 직전 7일 baseline 대비 z={{ $value }} 로 5분 sustained 급락했다. 잘 돌던 GPU 워크로드의 스톨 또는 중단 신호다 (#365, 급등은 정상 활용이라 발화하지 않는다). observability-overview 의 Resource anomaly spike row 에서 시점 확인 후 gpu-idle 원인 귀속과 gpu-rca 로 root cause 를 추적하라."
+
+        - alert: NetworkDropSpikeDetected
+          expr: cluster:network_drop_zscore:5m > 3
+          for: 5m
+          labels:
+            severity: warning
+            component: netobs-anomaly
+          annotations:
+            summary: "Network drop spike (z={{ $value }})"
+            description: "Cluster network drop event rate 의 5분 z-score 가 직전 7일 baseline 대비 z={{ $value }} 로 5분 sustained 급등했다. link quality 이상 또는 NIC saturation 의 즉시 RCA spike 신호다 (#365, 하강은 조용한 5분일 뿐이라 발화하지 않는다). netobs-overview 의 drop rate 패널에서 drop_category 별 분포 확인 후 drill-down 으로 root cause 추적 하라."
+
+        - alert: CPUThrottleSpikeDetected
+          expr: cluster:cpu_throttle_zscore:5m > 3
+          for: 5m
+          labels:
+            severity: warning
+            component: cpu-anomaly
+          annotations:
+            summary: "CPU throttle spike (z={{ $value }})"
+            description: "Cluster CPU CFS throttle ratio 의 5분 z-score 가 직전 7일 baseline 대비 z={{ $value }} 로 5분 sustained 급등했다 (#365, 하강 (throttle 완화) 은 무해라 발화하지 않는다). 즉시 RCA spike 신호 로 CPU limit 상향 또는 워크로드 재배치를 검토 하라."
+
+        - alert: MemoryPressureSpikeDetected
+          expr: cluster:memory_pressure_zscore:5m > 3
+          for: 5m
+          labels:
+            severity: warning
+            component: memory-anomaly
+          annotations:
+            summary: "Memory pressure spike (z={{ $value }})"
+            description: "Cluster memory working_set / limit ratio 의 5분 z-score 가 직전 7일 baseline 대비 z={{ $value }} 로 5분 sustained 급등했다 (#365, 하강 (사용량 감소) 은 무해라 발화하지 않는다). OOM 임박 즉시 RCA spike 신호 로 memory limit 상향 또는 워크로드 재배치를 검토 하라."

@@ -18,6 +18,11 @@ spec:
     # 두 종으로 dashboard 와 alert 가 latency 압박 실측 시간대 한정의 의미 있는 신호만 보게 한다.
     - name: correlation-exporter.recording
       interval: 30s
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
+      # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
+      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      limit: 2000
       rules:
         # correlation_victim_latency_pressure:5m
         # victim Pod 의 latency p99 가 임계 (0.1s) 를 초과하면 1, 그 외에는 시리즈 미존재로 둬 active
@@ -36,7 +41,7 @@ spec:
                     (
                       histogram_quantile(0.99,
                         sum by(le, src_namespace, src_pod, src_pod_uid) (
-                          rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])
+                          pod:netobs_stage_latency_rate_le:5m
                         )
                       ) > 0.1
                     ) * 0 + 1,
@@ -62,6 +67,13 @@ spec:
     # correlation-exporter.alerts 는 noisy neighbor 발견과 exporter 자체의 헬스 두 축으로 alert 를
     # 묶는다. severity 와 component 라벨은 netobs-gpuobs.alerts 와 동일 컨벤션을 따른다.
     - name: correlation-exporter.alerts
+      # #412 전역 기본값 의존이던 평가 주기를 명시한다 (kube-prometheus-stack 기본 30s 동일).
+      interval: 30s
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
+      # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
+      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      limit: 2000
       rules:
         # CorrelationStrongNoisyNeighbor
         # 한 (victim_namespace, victim_pod, suspect_namespace, suspect_pod, resource_dimension) 페어가

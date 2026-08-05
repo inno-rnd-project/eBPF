@@ -122,7 +122,7 @@ setup-envtest:
 # ============================================================================
 # PrometheusRule lint
 # ----------------------------------------------------------------------------
-# check-prometheus-rules - deploy/gpuobs/base/prometheus-rule.yaml 의 PromQL 문법과 rule 정의 정합성
+# check-prometheus-rules - PROMETHEUS_RULE_FILES 전체 (#412 분리된 gpuobs 5 파일 포함) 의 PromQL 문법과 rule 정의 정합성
 #                          을 promtool 로 검증한다. PrometheusRule CRD wrapper 를 그대로 promtool 에 줄
 #                          수 없어 awk 로 spec.groups 만 추출해 promtool 입력 형식으로 변환한다. 임시
 #                          산출물은 gitignore 대상인 ./bin 디렉토리에 두어 /tmp 공유 충돌 (병렬 CI, 다중
@@ -130,18 +130,17 @@ setup-envtest:
 #                          호스트 설치를 요구하지 않으며 PROMTOOL_IMAGE 변수로 버전을 pin 한다.
 # ============================================================================
 PROMTOOL_IMAGE ?= prom/prometheus:v2.55.0
-PROMETHEUS_RULE_FILES ?= deploy/gpuobs/base/prometheus-rule.yaml deploy/correlation/base/prometheus-rule.yaml deploy/injector/base/prometheus-rule.yaml deploy/monitoring/prometheus-pv-alert.yaml
+PROMETHEUS_RULE_FILES ?= $(wildcard deploy/gpuobs/base/prometheus-rule-*.yaml) deploy/correlation/base/prometheus-rule.yaml deploy/injector/base/prometheus-rule.yaml deploy/monitoring/prometheus-pv-alert.yaml
 PROMTOOL_RULES_TMP_DIR ?= bin/promtool-rules
 # PROMTOOL_TEST_FILES 는 promtool test rules 로 실행할 unit test 파일이다. 각 test 파일은 gpuobs
 # recording rule 을 입력 series 로부터 평가해 산출 series 의 기대값을 단정한다. rule_files 는 컨테이너
 # 안에서 gpuobs.yaml (추출본) 을 가리킨다.
-PROMTOOL_TEST_FILES ?= test/promtool/gpuobs-network-retrans.test.yaml test/promtool/gpuobs-new-cause-alerts.test.yaml test/promtool/gpuobs-cgroup-contention.test.yaml test/promtool/gpuobs-cause-rise.test.yaml test/promtool/gpuobs-node-cause.test.yaml test/promtool/gpuobs-node-health.test.yaml test/promtool/gpuobs-gpu-health.test.yaml test/promtool/gpuobs-idle-device-gating.test.yaml test/promtool/gpuobs-spike-direction.test.yaml test/promtool/gpuobs-capacity-zscore.test.yaml test/promtool/gpuobs-memory-node-measured.test.yaml test/promtool/netobs-stage-latency-alert.test.yaml test/promtool/netobs-tcp-congestion.test.yaml test/promtool/correlation-noisy-neighbor-evidence.test.yaml test/promtool/monitoring-storage-persistence.test.yaml test/promtool/gpuobs-victim-cause-gating.test.yaml
+PROMTOOL_TEST_FILES ?= test/promtool/gpuobs-network-retrans.test.yaml test/promtool/gpuobs-new-cause-alerts.test.yaml test/promtool/gpuobs-cgroup-contention.test.yaml test/promtool/gpuobs-cause-rise.test.yaml test/promtool/gpuobs-node-cause.test.yaml test/promtool/gpuobs-node-health.test.yaml test/promtool/gpuobs-gpu-health.test.yaml test/promtool/gpuobs-idle-device-gating.test.yaml test/promtool/gpuobs-spike-direction.test.yaml test/promtool/gpuobs-capacity-zscore.test.yaml test/promtool/gpuobs-memory-node-measured.test.yaml test/promtool/netobs-stage-latency-alert.test.yaml test/promtool/netobs-tcp-congestion.test.yaml test/promtool/correlation-noisy-neighbor-evidence.test.yaml test/promtool/monitoring-storage-persistence.test.yaml test/promtool/gpuobs-victim-cause-gating.test.yaml test/promtool/gpuobs-latency-intermediate.test.yaml test/promtool/gpuobs-exporter-absent.test.yaml
 
 check-prometheus-rules:
 	@mkdir -p $(PROMTOOL_RULES_TMP_DIR)
 	@for f in $(PROMETHEUS_RULE_FILES); do \
-		base=$$(basename $$(dirname $$(dirname $$f))); \
-		out=$(PROMTOOL_RULES_TMP_DIR)/$$base.yaml; \
+		out=$(PROMTOOL_RULES_TMP_DIR)/check-$$(basename $$f); \
 		echo "extracting spec.groups from $$f → $$out"; \
 		awk '/^spec:/{f=1;next} f' $$f | sed 's/^  //' > $$out; \
 		docker run --rm --entrypoint promtool -v $(CURDIR)/$$out:/tmp/rules.yaml $(PROMTOOL_IMAGE) check rules /tmp/rules.yaml || exit 1; \
@@ -155,7 +154,10 @@ check-prometheus-rules:
 #                         으로 검증한다.
 test-prometheus-rules:
 	@mkdir -p $(PROMTOOL_RULES_TMP_DIR)
-	@awk '/^spec:/{f=1;next} f' deploy/gpuobs/base/prometheus-rule.yaml | sed 's/^  //' > $(PROMTOOL_RULES_TMP_DIR)/gpuobs.yaml
+	@echo 'groups:' > $(PROMTOOL_RULES_TMP_DIR)/gpuobs.yaml
+	@for f in $(wildcard deploy/gpuobs/base/prometheus-rule-*.yaml); do \
+		awk '/^spec:/{f=1;next} f' $$f | sed 's/^  //' | tail -n +2 >> $(PROMTOOL_RULES_TMP_DIR)/gpuobs.yaml; \
+	done
 	@awk '/^spec:/{f=1;next} f' deploy/correlation/base/prometheus-rule.yaml | sed 's/^  //' > $(PROMTOOL_RULES_TMP_DIR)/correlation.yaml
 	@awk '/^spec:/{f=1;next} f' deploy/monitoring/prometheus-pv-alert.yaml | sed 's/^  //' > $(PROMTOOL_RULES_TMP_DIR)/monitoring.yaml
 	@for t in $(PROMTOOL_TEST_FILES); do \

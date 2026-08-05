@@ -14,7 +14,7 @@
 
 ## recording rule 정의
 
-`deploy/gpuobs/base/prometheus-rule.yaml`의 `netobs-gpuobs.recording` 그룹에 다음 6종 을 추가한다.
+`deploy/gpuobs/base/prometheus-rule-network.yaml`의 `netobs-gpuobs.recording` 그룹에 다음 6종 을 추가한다.
 
 | record name | expr 요약 | 의미 |
 |---|---|---|

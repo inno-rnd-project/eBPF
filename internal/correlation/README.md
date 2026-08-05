@@ -23,7 +23,7 @@
 
 node-level 메트릭 (`node:gpu_idle:5m` 등) 은 namespace / pod 라벨이 없어 본 패키지의 Pod 페어 schema 와 불일치라 default 에서 제외된다. 운영자가 명시적으로 node × pod 분석이 필요하면 별도 도구 또는 future cross-level schema (follow-up) 를 사용한다.
 
-운영자는 `-extra-metric` flag로 추가 query를 등록 가능하다. 본 7종이 cluster의 PrometheusRule (`deploy/gpuobs/base/prometheus-rule.yaml`) 에 deploy되어 있어야 fetcher가 데이터를 받는다.
+운영자는 `-extra-metric` flag로 추가 query를 등록 가능하다. 본 7종이 cluster의 PrometheusRule (`deploy/gpuobs/base/prometheus-rule-*.yaml`) 에 deploy되어 있어야 fetcher가 데이터를 받는다.
 
 ## CLI 사용
 

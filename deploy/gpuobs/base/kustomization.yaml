@@ -16,4 +16,8 @@ resources:
   - networkpolicy.yaml
   # Monitoring
   - servicemonitor.yaml
-  - prometheus-rule.yaml
+  - prometheus-rule-network.yaml
+  - prometheus-rule-idle-cause.yaml
+  - prometheus-rule-device.yaml
+  - prometheus-rule-capacity-anomaly.yaml
+  - prometheus-rule-alerts.yaml
