@@ -1,0 +1,61 @@
+# gpuobs-exporter-absent.test.yaml 은 #412 외부 exporter 부재 가드 3종의 발화 검증이다.
+# cAdvisor / node-exporter / kube-state-metrics 대표 메트릭이 없으면 absent() 가 for 10m 뒤 발화하고,
+# 시리즈가 존재하면 발화하지 않음을 양방향으로 단정한다. rule_files 는 make test-prometheus-rules 가
+# 추출해 마운트하는 gpuobs.yaml.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # 세 exporter 메트릭이 전부 부재한 클러스터: 3종 모두 12m 시점 (for 10m 경과 후) 에 발화한다.
+  - interval: 30s
+    input_series: []
+    alert_rule_test:
+      - alertname: CadvisorMetricsAbsent
+        eval_time: 12m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: observability
+            exp_annotations:
+              summary: "cAdvisor metrics absent"
+              description: "container_cpu_cfs_periods_total 시리즈가 10 분 이상 부재하다. cAdvisor (kubelet) 메트릭 수집이 끊겨 CPU throttle 기반 dominant cause 와 capacity z-score 산출이 조용히 비는 상태다. kubelet ServiceMonitor 대상 등록과 kubelet 상태를 점검한다."
+      - alertname: NodeExporterMetricsAbsent
+        eval_time: 12m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: observability
+            exp_annotations:
+              summary: "node-exporter metrics absent"
+              description: "node_memory_MemAvailable_bytes 시리즈가 10 분 이상 부재하다. node-exporter 수집이 끊겨 memory pressure 기반 dominant cause 산출이 조용히 비는 상태다. node-exporter DaemonSet 과 ServiceMonitor 대상 등록을 점검한다."
+      - alertname: KubeStateMetricsAbsent
+        eval_time: 12m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: observability
+            exp_annotations:
+              summary: "kube-state-metrics metrics absent"
+              description: "kube_pod_container_resource_limits 시리즈가 10 분 이상 부재하다. kube-state-metrics 수집이 끊겨 limit 기반 ratio 산출 (memory pressure, CPU throttle 계열) 이 조용히 비는 상태다. kube-state-metrics Deployment 와 ServiceMonitor 대상 등록을 점검한다."
+
+  # 세 exporter 메트릭이 전부 존재하는 정상 클러스터: 3종 모두 미발화를 단정한다.
+  - interval: 30s
+    input_series:
+      - series: 'container_cpu_cfs_periods_total{namespace="ns1",pod="p1",node="n1"}'
+        values: '0+10x40'
+      - series: 'node_memory_MemAvailable_bytes{instance="n1"}'
+        values: '1000000+0x40'
+      - series: 'kube_pod_container_resource_limits{namespace="ns1",pod="p1",resource="memory"}'
+        values: '1000+0x40'
+    alert_rule_test:
+      - alertname: CadvisorMetricsAbsent
+        eval_time: 12m
+        exp_alerts: []
+      - alertname: NodeExporterMetricsAbsent
+        eval_time: 12m
+        exp_alerts: []
+      - alertname: KubeStateMetricsAbsent
+        eval_time: 12m
+        exp_alerts: []

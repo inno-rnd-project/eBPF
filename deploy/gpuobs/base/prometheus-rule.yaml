@@ -1960,6 +1960,42 @@ spec:
             summary: "{{ $labels.job }} informer stale {{ $value | humanizeDuration }} on {{ $labels.instance }}"
             description: "{{ $labels.job }} on {{ $labels.instance }} has not received any kube watch event for {{ $value | humanizeDuration }}. Check API server reachability, NetworkPolicy, and the agent ServiceAccount RBAC (pods/services/nodes watch verbs)."
 
+        # #412 외부 exporter 입력 부재 가드 3종. gpu-idle dominant cause 와 capacity z-score 군은
+        # cAdvisor / node-exporter / kube-state-metrics 메트릭을 조인 입력으로 쓰는데, 이들 exporter
+        # 가 죽으면 파생 rule 이 에러 없이 시리즈 미존재로 조용히 비어 관측 공백을 아무도 감지하지
+        # 못한다. exporter 군별 대표 메트릭 1개씩의 absent() 로 부재 자체를 발화시킨다. DCGM 은
+        # dev 환경에 원래 부재라 (optional 입력) 가드 대상에서 제외한다. for 10m 는 exporter pod
+        # 재기동 (rollout) 의 일시 공백을 걸러낸다.
+        - alert: CadvisorMetricsAbsent
+          expr: absent(container_cpu_cfs_periods_total)
+          for: 10m
+          labels:
+            severity: warning
+            component: observability
+          annotations:
+            summary: "cAdvisor metrics absent"
+            description: "container_cpu_cfs_periods_total 시리즈가 10 분 이상 부재하다. cAdvisor (kubelet) 메트릭 수집이 끊겨 CPU throttle 기반 dominant cause 와 capacity z-score 산출이 조용히 비는 상태다. kubelet ServiceMonitor 대상 등록과 kubelet 상태를 점검한다."
+
+        - alert: NodeExporterMetricsAbsent
+          expr: absent(node_memory_MemAvailable_bytes)
+          for: 10m
+          labels:
+            severity: warning
+            component: observability
+          annotations:
+            summary: "node-exporter metrics absent"
+            description: "node_memory_MemAvailable_bytes 시리즈가 10 분 이상 부재하다. node-exporter 수집이 끊겨 memory pressure 기반 dominant cause 산출이 조용히 비는 상태다. node-exporter DaemonSet 과 ServiceMonitor 대상 등록을 점검한다."
+
+        - alert: KubeStateMetricsAbsent
+          expr: absent(kube_pod_container_resource_limits)
+          for: 10m
+          labels:
+            severity: warning
+            component: observability
+          annotations:
+            summary: "kube-state-metrics metrics absent"
+            description: "kube_pod_container_resource_limits 시리즈가 10 분 이상 부재하다. kube-state-metrics 수집이 끊겨 limit 기반 ratio 산출 (memory pressure, CPU throttle 계열) 이 조용히 비는 상태다. kube-state-metrics Deployment 와 ServiceMonitor 대상 등록을 점검한다."
+
         # #88 capacity-trends z-score anomaly alert 4종. 본 alert 군은 capacity planning 의 선행
         # 신호 (즉시 대응 불요 의 warning severity) 라 throttle 류 critical alert 와 component
         # 라벨로 분리한다 (gpuobs-capacity, netobs-capacity, cpu-capacity, memory-capacity). |z| > 3
