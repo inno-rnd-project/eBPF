@@ -36,7 +36,7 @@ spec:
                     (
                       histogram_quantile(0.99,
                         sum by(le, src_namespace, src_pod, src_pod_uid) (
-                          rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])
+                          pod:netobs_stage_latency_rate_le:5m
                         )
                       ) > 0.1
                     ) * 0 + 1,

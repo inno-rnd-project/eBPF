@@ -368,11 +368,24 @@ spec:
         # 으로 둬 노드 단위 p99 를 산출한다. 노드 의 모든 pod p99 가 conflate 되어 latency-sensitive
         # workload 식별 력은 흐릿하나 본 시리즈의 raw signal 이며 follow-up 에서 workload-label filter
         # 도입 으로 보강 가능하다.
+        # pod:netobs_stage_latency_rate_le:5m (#412)
+        # 최대 카디널리티 메트릭인 netobs_pod_stage_latency_labeled_seconds_bucket 의 공통 중간
+        # 집계다. 종전에는 세 rule (아래 node p99, cross-correlation 의 pod p99, correlation CR 의
+        # victim latency) 이 서로 다른 by() 로 30초마다 raw bucket 을 중복 전수 스캔했다. 세 소비처의
+        # by() 가 전부 본 라벨 셋 (node, src_namespace, src_pod, src_pod_uid, le) 의 부분집합이고
+        # rate 합산은 선형이라, 여기서 한 번 접은 결과를 재집계해도 산출이 동일하다. stage 와 dst
+        # 계열 라벨은 세 소비처 모두 쓰지 않아 함께 접는다.
+        - record: pod:netobs_stage_latency_rate_le:5m
+          expr: |
+            sum by(node, src_namespace, src_pod, src_pod_uid, le) (
+              rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])
+            )
+
         - record: node:netobs_pod_stage_latency_p99:5m
           expr: |
             histogram_quantile(0.99,
               sum by(node, le) (
-                rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])
+                pod:netobs_stage_latency_rate_le:5m
               )
             )
 
@@ -2104,12 +2117,12 @@ spec:
         # 차원으로 두어 stage 별 분리 없이 Pod 단위 latency 의 worst-case 신호를 단일 시계열로
         # 노출한다. cross-correlation 패널 의 의도는 network pressure 신호 한 가지이므로 stage 분
         # 리 (rcv / xmit / retrans 등) 는 후속 drill-down 자리 (netobs-overview dashboard) 에 위임.
+        # #412 raw bucket 재스캔 대신 공통 중간 rule (pod:netobs_stage_latency_rate_le:5m) 을 소비한다.
+        # 라벨 셋이 중간 rule 과 동일해 재집계 없이 histogram_quantile 만 적용한다.
         - record: pod:network_p99_latency_seconds:5m
           expr: |
             histogram_quantile(0.99,
-              sum by(le, node, src_namespace, src_pod, src_pod_uid) (
-                rate(netobs_pod_stage_latency_labeled_seconds_bucket[5m])
-              )
+              pod:netobs_stage_latency_rate_le:5m
             )
 
         # pod:gpu_network_correlation_score:5m (#120)
