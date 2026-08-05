@@ -1,0 +1,348 @@
+# #412 단일 2300줄 prometheus-rule.yaml 을 도메인별 5 파일로 분리한 것 중 하나다. 분리는 리소스
+# 단위 diff / 리뷰 가시성 확보 목적이며 그룹 내용과 평가 semantics 는 분리 전과 동일하다. 구
+# PrometheusRule (netobs-gpuobs-correlation) 은 본 5 리소스로 대체되어 배포 시 1회 수동 삭제가
+# 필요하다.
+# 본 파일: GPU device 열 상관, cluster health score, GPU-network cross-correlation 사전 집계 recording rule.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: netobs-gpuobs-device
+  namespace: ebpf-project
+  labels:
+    # release 라벨은 servicemonitor.yaml과 동일하게 kube-prometheus-stack Prometheus 인스턴스의
+    # ruleSelector에 매치되도록 둔다. 운영 클러스터의 helm release 이름과 일치시켜야 픽업된다.
+    release: kube-prometheus-stack
+    app.kubernetes.io/name: gpuobs-agent
+    app.kubernetes.io/component: prometheus-rules
+    app.kubernetes.io/part-of: ebpf-project
+spec:
+  groups:
+
+    # netobs-gpuobs.thermal-correlation.recording 그룹은 #68 의 RTX consumer GPU thermal / power /
+    # clock 상관 분석 layer 의 recording rule 을 모은다. 본 그룹의 helper 5종 (temp / throttle 의 avg
+    # 와 stddev, 그리고 temp x throttle 의 avg) 은 Pearson 정의식 r = (avg(xy) - avg(x)avg(y)) /
+    # (stddev(x) * stddev(y)) 를 PromQL 단독으로 산정하기 위한 입력이다. internal/correlation 라이브
+    # 러리는 cross-correlation 관례에 따라 lag step 별 산출 + EnumeratePairs + correlation-exporter
+    # Collector 체인이라 GPU 단위 단일 score 의 본 PR 형태와 다르므로 reuse 대상에서 제외한다. 라벨
+    # 셋은 (node, gpu_uuid) 로 축약해 dashboard cross-reference join 시 group_left() 로 gpu_index 와
+    # gpu_model 을 끌어올 수 있게 한다.
+    - name: netobs-gpuobs.thermal-correlation.recording
+      interval: 30s
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그룹 평가가 실패로 기록되어 폭주가
+      # 조용히 스토리지를 채우는 대신 가시화된다. 현행 최대 그룹이 수백 시리즈라 2000 은
+      # 정상 운영에 닿지 않는다.
+      limit: 2000
+      rules:
+        # gpuobs_thermal_temp_avg:5m
+        # temperature 의 5 분 이동 평균. Pearson 정의식의 avg(x) 항.
+        - record: gpuobs_thermal_temp_avg:5m
+          expr: |
+            avg by(node, gpu_uuid) (
+              avg_over_time(gpuobs_device_temperature_celsius[5m])
+            )
+
+        # gpuobs_thermal_throttle_avg:5m
+        # hw_thermal_slowdown throttle 의 5 분 이동 평균. throttle 이 0/1 binary 라 평균은 [0, 1]
+        # 사이 throttle 활성 비율이다. Pearson 정의식의 avg(y) 항.
+        - record: gpuobs_thermal_throttle_avg:5m
+          expr: |
+            avg by(node, gpu_uuid) (
+              avg_over_time(gpuobs_device_throttle_active{reason="hw_thermal_slowdown"}[5m])
+            )
+
+        # gpuobs_thermal_x_throttle_avg:5m
+        # temperature 와 throttle 곱의 5 분 이동 평균. Pearson 정의식의 avg(xy) 항. throttle 라벨의
+        # reason 차이로 vector matching 이 ignoring(reason) 으로 reason 만 무시하고 나머지 라벨로
+        # 매치된다. subquery [5m:30s] 로 instant 곱을 range vector 로 변환한다.
+        - record: gpuobs_thermal_x_throttle_avg:5m
+          expr: |
+            avg by(node, gpu_uuid) (
+              avg_over_time(
+                (
+                  gpuobs_device_temperature_celsius
+                  * ignoring(reason)
+                  gpuobs_device_throttle_active{reason="hw_thermal_slowdown"}
+                )[5m:30s]
+              )
+            )
+
+        # gpuobs_thermal_temp_stddev:5m
+        # temperature 의 5 분 표준편차. Pearson 정의식의 stddev(x) 항.
+        - record: gpuobs_thermal_temp_stddev:5m
+          expr: |
+            avg by(node, gpu_uuid) (
+              stddev_over_time(gpuobs_device_temperature_celsius[5m])
+            )
+
+        # gpuobs_thermal_throttle_stddev:5m
+        # throttle 의 5 분 표준편차. throttle 이 항상 0 이거나 항상 1 인 평탄 시간대는 0 으로 떨어지며
+        # 본 helper 가 Pearson 분모의 (denom > 0) 가드 입력으로 들어가 score 시리즈가 자연 제외된다.
+        - record: gpuobs_thermal_throttle_stddev:5m
+          expr: |
+            avg by(node, gpu_uuid) (
+              stddev_over_time(gpuobs_device_throttle_active{reason="hw_thermal_slowdown"}[5m])
+            )
+
+        # gpuobs_thermal_correlation_score:5m
+        # temperature 와 hw_thermal_slowdown throttle 의 5 분 윈도우 lag 0 Pearson 상관계수의 절댓값
+        # 이다. throttle 이 0/1 binary 라 엄밀히는 point-biserial correlation 이며, abs() 로 [0, 1]
+        # 단조 score 로 노출해 dashboard 와 alert 는 양상관 강도만 본다. 분모 (stddev_temp x
+        # stddev_throttle) 가 0 인 평탄 시간대는 (denom > 0) 필터로 시리즈 자체가 emit 되지 않아 NaN
+        # 이 라벨 세트에 끼지 않는다.
+        - record: gpuobs_thermal_correlation_score:5m
+          expr: |
+            clamp_max(
+              abs(
+                (
+                  gpuobs_thermal_x_throttle_avg:5m
+                  - (gpuobs_thermal_temp_avg:5m * gpuobs_thermal_throttle_avg:5m)
+                )
+                /
+                (
+                  (gpuobs_thermal_temp_stddev:5m * gpuobs_thermal_throttle_stddev:5m) > 0
+                )
+              ),
+              1
+            )
+
+        # gpuobs_clock_drop_score:5m
+        # graphics clock 의 현재 값 / 5 분 max 비율. 1.0 에 가까우면 정상 boost clock, 임계 미만이면
+        # thermal 또는 power throttle 영향으로 clock 이 하향 조정된 상태다. graphics 도메인 한 가지만
+        # 사용해 sm / mem / video 의 동시 노출이 만드는 score 의 라벨 폭증과 단일 시리즈 의도 어긋남을
+        # 차단한다. 라벨 셋은 (node, gpu_uuid) 로 축약한다. idle GPU 에서 graphics clock 이 0 으로
+        # 떨어지면 5 분 max 도 0 이라 0/0 NaN 잡음이 발생하므로 (max_over_time > 0) 분모 가드를 둬
+        # 시리즈를 자연 skip 한다.
+        - record: gpuobs_clock_drop_score:5m
+          expr: |
+            clamp_max(
+              avg by(node, gpu_uuid) (
+                gpuobs_device_clock_mhz{clock="graphics"}
+                /
+                (max_over_time(gpuobs_device_clock_mhz{clock="graphics"}[5m]) > 0)
+              ),
+              1
+            )
+
+    # netobs-gpuobs.cluster-health.recording 그룹은 cluster 전체 단위의 4 카테고리 health score 를
+    # 산출한다. observability overview dashboard (#53) 의 single-stat 패널이 본 record 4 종을 직접
+    # 참조한다. 각 score 는 0 ~ 1 사이로 정규화되며 1 이 healthy, 0 이 worst 다. cluster 의 어느 노드
+    # 나 Pod 라도 unhealthy 신호가 있으면 score 가 떨어지도록 max / quantile 기반 cluster aggregation
+    # 을 적용한다. GPU 미설치 cluster 또는 traffic 없는 dev cluster 에서는 base series 가 비어 score
+    # 가 산출되지 않을 수 있으며 본 경우 dashboard 에서 N/A 로 표시된다.
+    - name: netobs-gpuobs.cluster-health.recording
+      interval: 30s
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그룹 평가가 실패로 기록되어 폭주가
+      # 조용히 스토리지를 채우는 대신 가시화된다. 현행 최대 그룹이 수백 시리즈라 2000 은
+      # 정상 운영에 닿지 않는다.
+      limit: 2000
+      rules:
+        # node:gpu_health_score:5m (#273 재정의)
+        # 초기에는 "유휴 GPU 가 곧 문제" 전제로 사용률 자체를 health 로 썼으나, 유휴의 문제 여부는
+        # 이후 gpu-idle 원인 귀속 (cluster/node/pod 3 scope) 이 전담하게 되어 전제가 바뀌었다. 사용률
+        # 등식은 놀고 있는 건강한 GPU 를 overview weakest "gpu 0.00 (degraded)" 로 만드는 오도가 있어
+        # 하드웨어 이상 신호 기반으로 재정의한다. unhealth = max(thermal score, 유의미 NVML 오류율
+        # (유휴 GPU 의 양성 코드 Not Found / Not Supported 제외, alert 임계 1/s 정규화), 성능성
+        # throttle 활성 (GPUObsThrottleActive 와 동일 reason 셋, 정보성 gpu_idle 제외)) 이고
+        # health = 1 - unhealth 다. sig 라벨은 or 유니온에서 세 신호가 서로 가려지지 않게 하는
+        # 구분자로 max 가 소거한다. throttle 신호는 avg_over_time 5분 평활 (#389) 이다. 순간 게이지
+        # 원값을 쓰면 소비자 GPU 의 부스트성 sw_power_cap blip (스크레이프 1회) 이 unhealth 1 이 되어
+        # health 0 으로 직행하고 cluster 판의 min() 이 전 클러스터를 0 으로 만들며, 같은 reason 셋의
+        # GPUObsThrottleActive (for: 1m debounce) 보다 health 가 더 과민한 비대칭이 있었다. 평활로
+        # thermal (5분 score) 및 NVML (5분 rate) 과 시간 축이 정합하고, blip 은 지속 비율만큼만
+        # 기여하며 5분 내내 지속된 throttle 만 health 0 이 된다. 다른 node health 3종 (#264 블록)
+        # 보다 앞에 두는 이유는 아래 cluster 판이 같은 그룹 내 순차 평가로 본 rule 을 지연 없이
+        # 참조하기 위함이다. GPU 미설치 노드에서는 base series 가 비어 score 가 산출되지 않는다.
+        - record: node:gpu_health_score:5m
+          expr: |
+            1 - clamp_max(
+              max by(node) (
+                label_replace(node:gpu_thermal_score:5m, "sig", "thermal", "", "")
+                or label_replace(
+                  clamp_max(sum by(node) (rate(gpuobs_nvml_errors_total{error_code!~"Not Supported|Not Found"}[5m])), 1),
+                  "sig", "nvml", "", "")
+                or label_replace(
+                  max by(node) (avg_over_time(gpuobs_device_throttle_active{reason=~"hw_slowdown|hw_thermal_slowdown|hw_power_brake_slowdown|sw_thermal_slowdown|sw_power_cap"}[5m])),
+                  "sig", "throttle", "", "")
+              ),
+              1
+            )
+
+        # cluster:gpu_health_score:5m (#273 재정의)
+        # 노드 gpu health 의 최소값 (worst 노드). 위 node 판과 같은 그룹이라 순차 평가로 지연 없이
+        # 참조하며, 복잡 유니온 산식의 중복을 피한다.
+        - record: cluster:gpu_health_score:5m
+          expr: min(node:gpu_health_score:5m)
+
+        # cluster:cpu_health_score:5m
+        # cluster 전체 Pod 의 cpu_throttle_score p95 의 inversion. p95 가 cluster 의 상위 5 % Pod 만
+        # throttled 면 (대부분의 워크로드가 정상) score 가 높게 유지된다.
+        - record: cluster:cpu_health_score:5m
+          expr: |
+            1 - clamp_max(
+              quantile(0.95, pod:cpu_throttle_score:5m),
+              1
+            )
+
+        # cluster:network_health_score:5m
+        # 노드 단위 drop rate 의 cluster 최대값이 100/s 가 worst case 다. cluster 전체 sum 으로
+        # 산출하면 노드 수가 늘수록 자연스럽게 drop 도 늘어 임계가 의미를 잃는다. max by(node) 로
+        # 가장 압박 받는 노드 기준으로 산출해 cluster 규모와 무관한 health 신호를 만든다.
+        - record: cluster:network_health_score:5m
+          expr: |
+            1 - clamp_max(
+              max by(node) (sum by(node) (rate(netobs_drop_events_labeled_total[5m]))) / 100,
+              1
+            )
+
+        # node:memory_health_score:5m (#274 실측 재정의, #286 위험 구간 매핑)
+        # 기존 pod score p95 inversion 은 tight-limit 관측 인프라 pod 가 지배해 health 가 영구 ~0.2
+        # 로 고정됐다. 노드 실측 압박 (node:memory_pressure_score, node_exporter 기반, #274) 을
+        # 위험 구간으로 매핑한다. 선형 역수 (1 - usage) 는 정상 상주 사용률 (예: 0.58) 을 낮은
+        # health 로 읽게 해 의미론이 어긋나므로 (#286), kubelet eviction 근접 의미로 사용률 0.8
+        # 이하는 1.0, 0.8~0.95 는 선형 하강, 0.95 이상은 0 으로 산정한다. pressure 계열은 원시
+        # 사용률 신호로 유지하고 health 층에서만 매핑한다. gpu 판 (#273) 과 동일하게 다른 node
+        # health (#264 블록) 보다 앞의 본 위치에 두는 이유는 아래 cluster 판이 같은 그룹 내 순차
+        # 평가로 본 rule 을 지연 없이 참조하기 위함이다. 참조 rule (pressure) 이 다른 그룹에 있어
+        # 그룹 간 평가는 최대 1 interval 지연될 수 있으나 기존 rollup 체인들과 동일한 허용 범위다.
+        - record: node:memory_health_score:5m
+          expr: |
+            clamp_max(
+              clamp_min((0.95 - node:memory_pressure_score:5m) / 0.15, 0),
+              1
+            )
+
+        # cluster:memory_health_score:5m (#274 실측 재정의, #286 위험 구간 매핑)
+        # 노드 memory health 의 최소값 (worst 노드). gpu 판과 동일하게 같은 그룹 내 순차 평가로 위
+        # node 판을 지연 없이 참조하며, 매핑 산식의 중복을 피한다.
+        - record: cluster:memory_health_score:5m
+          expr: min(node:memory_health_score:5m)
+
+        # node:*_health_score:5m 4종 (#264)
+        # cluster health 와 동일 산식을 노드 차원으로 이식해 node/{node} 가 노드별 4차원 health 를
+        # 노출하게 한다. cpu 와 memory 는 노드 pod 의 pressure p95 inversion (quantile by(node)),
+        # network 는 노드 drop rate inversion, gpu 는 노드 device 사용률 평균이다. gpu 는
+        # node:gpu_util_ratio:5m 가 gpu_uuid 라벨로 device 별 다중 시리즈라 avg by(node) 로 노드 단위
+        # 집계한다. cluster health rule 은 변경하지 않는다.
+        # cpu limit (CFS quota) 을 가진 pod 가 없는 노드는 pod:cpu_throttle_score:5m 입력이 비어
+        # quantile by(node) 가 그룹 자체를 만들지 않아 시리즈가 결측되고, GetNode API 가 health.cpu 를
+        # 생략해 프론트가 0.00 (최악) 으로 오표시한다 (#347). cpu limit pod 가 없으면 throttle 이
+        # 발생할 수 없어 CPU 공급 정체 없음 = 건강 1.0 이 정확한 판정이다. 전 노드에 존재하는
+        # node:memory_health_score:5m (node_exporter 실측 기반, #274) 를 앵커로 * 0 + 1 로 1.0 을
+        # 만들어 or 로 결합한다. throttle 이 있는 노드는 quantile 값이 or 좌변에 있어 그대로 유지되고,
+        # 없는 노드만 우변의 1.0 을 받는다 (양변 모두 {node} 단일 라벨이라 시그니처 정합). 앵커는 같은
+        # 그룹 상단에 순차 평가되어 지연이 없다. 이 프로젝트의 노드 fallback 관용구 (or on(node)
+        # (... * 0)) 와 동일 축이다.
+        # 결합 유의: 앵커가 memory_health 라 fallback 경로의 cpu health 가 node_exporter 가용성에
+        # 간접 의존한다. node_exporter 가 빠진 노드는 cpu 와 memory health 가 동반 결측되어 일관은
+        # 유지되나, 더 중립적 앵커가 필요하면 kube_node_info (kube-state, node_exporter 무관) 로 교체
+        # 가능하다. 또한 fallback 의 1.0 은 실측이 아닌 "throttle 없음" 상수로, CPU 여유를 뜻하지
+        # 않는다 (memory health 실측과 성격이 다름). cpu limit 없는 pod 의 노드 CPU 폭주는 cpu health
+        # 가 아니라 node status 의 usage 축 (#333) 이 담당한다.
+        - record: node:cpu_health_score:5m
+          expr: |
+            (
+              1 - clamp_max(
+                quantile by(node) (0.95, pod:cpu_throttle_score:5m),
+                1
+              )
+            )
+            or (node:memory_health_score:5m * 0 + 1)
+
+        # node:memory_health_score:5m 는 gpu 판과 동일하게 cluster 판이 참조하는 순서 제약으로
+        # cluster-health 블록 상단 (#286) 에 정의되어 있다.
+
+        - record: node:network_health_score:5m
+          expr: |
+            1 - clamp_max(
+              sum by(node) (rate(netobs_drop_events_labeled_total[5m])) / 100,
+              1
+            )
+
+    # netobs-gpuobs.cross-correlation.recording 그룹은 #86 의 GPU-network cross-correlation 통합
+    # 패널이 직접 참조하는 사전 집계 시계열을 둔다. 패널은 단일 timeseries 에 4 시계열 (GPU
+    # utilization, GPU memory used ratio, network throughput, network p99 latency) 과 correlation
+    # overlay 1 시리즈를 같은 timeline 에 정렬한다. dev cluster spike 결과 gpuobs_pod_* 의 Pod
+    # scope utilization 이 NVML 비지원 환경 (RTX 3090 단일 GPU, MIG / MPS 미적용) 이라 산정 불가
+    # 라 GPU 시계열은 device scope (node, gpu_uuid) 로 강등하고 network 시계열은 Pod scope (node,
+    # src_namespace, src_pod, src_pod_uid) 그대로 둔다. 두 도메인의 join 은 같은 timeline 정렬만
+    # 보장하며 Pod 단위 정합은 본 이슈 범위 밖이다. 본 group 의 4 record 모두 5 분 윈도우 평균 /
+    # rate / histogram_quantile 산정이라 evaluation 직후 즉시 채워지지 않고 최소 5 분의 sample
+    # 누적이 필요하다. Grafana 패널은 unit override (percentunit / bps / s) 로 SI prefix 자동 표기
+    # 를 받으므로 본 record 의 raw 값을 그대로 query 단에서 참조한다.
+    - name: netobs-gpuobs.cross-correlation.recording
+      interval: 30s
+      # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그룹 평가가 실패로 기록되어 폭주가
+      # 조용히 스토리지를 채우는 대신 가시화된다. 현행 최대 그룹이 수백 시리즈라 2000 은
+      # 정상 운영에 닿지 않는다.
+      limit: 2000
+      rules:
+        # node:gpu_util_ratio:5m
+        # device 단위 GPU utilization 의 5 분 평균을 0-1 스케일 percentunit 으로 변환. 기존
+        # node:gpu_util_p95:5m 가 p95 percentile 이라 worst-case 신호인 반면 본 record 는 average
+        # 신호로 GPU 의 sustained 부하 추세를 보여준다. cross-correlation 패널은 spike 보다 sustained
+        # 추세 비교가 의도라 average 를 채택한다. 라벨 셋은 avg by(node, gpu_uuid, gpu_index) 로 명시
+        # 고정해 job / instance / pod 같은 scrape 라벨을 drop 하고 device 단위 cardinality 만 노출한다.
+        # 본 파일의 다른 node:* record (node:gpu_util_p95:5m 등) 와 동일한 by(...) 규약을 따른다.
+        - record: node:gpu_util_ratio:5m
+          expr: avg by(node, gpu_uuid, gpu_index) (avg_over_time(gpuobs_device_utilization_percent[5m])) / 100
+
+        # node:gpu_memory_used_ratio:5m
+        # device 단위 GPU memory used / total 의 5 분 평균. 0-1 percentunit 스케일. Pod scope GPU
+        # memory ratio (pod:gpu_memory_utilization_ratio:5m) 가 base 시리즈 부재로 dev cluster 에서
+        # 산출되지 않는 환경 한계를 우회하는 device scope fallback 이다. 분자 / 분모를 먼저 avg
+        # by(node, gpu_uuid, gpu_index) 로 안정화해 scrape 라벨 (job, instance, pod 등) 을 사전 drop
+        # 한 뒤 ratio 를 계산한다. 안정화 없이 raw 라벨로 division 하면 향후 라벨 추가 시 동일 device
+        # 시그니처 가 다중 sample 로 분기 되어 many-to-many 매칭 에러 가 발생할 위험이 있다. 본 파일의
+        # 다른 node:* record 와 동일한 by(...) 규약 및 cardinality 안정성 을 우선한다.
+        - record: node:gpu_memory_used_ratio:5m
+          expr: |
+            avg by(node, gpu_uuid, gpu_index) (avg_over_time(gpuobs_device_memory_used_bytes[5m]))
+            / on(node, gpu_uuid, gpu_index)
+            avg by(node, gpu_uuid, gpu_index) (avg_over_time(gpuobs_device_memory_total_bytes[5m]))
+
+        # pod:network_throughput_bps:5m
+        # Pod 단위 양방향 network throughput 의 5 분 평균을 bits/sec 로 변환. 기존
+        # pod:network_egress_rate:5m 가 egress 단방향 만 다루고 unit 이 bytes/sec 라 Grafana 의
+        # bps 자동 SI prefix 표기 (Mbps / Gbps) 와 어울리지 않는다. 본 record 는 layer="l4" 의 ingress
+        # + egress 합산을 8 배해 bps 로 직접 노출한다. Pod 라벨 셋은 (node, src_namespace, src_pod,
+        # src_pod_uid) 유지.
+        - record: pod:network_throughput_bps:5m
+          expr: |
+            sum by(node, src_namespace, src_pod, src_pod_uid) (
+              rate(netobs_pod_bytes_total{layer="l4"}[5m])
+            ) * 8
+
+        # pod:network_p99_latency_seconds:5m
+        # Pod 단위 stage latency 의 5 분 윈도우 p99. histogram_quantile 의 le 합산을 Pod 라벨 셋
+        # 차원으로 두어 stage 별 분리 없이 Pod 단위 latency 의 worst-case 신호를 단일 시계열로
+        # 노출한다. cross-correlation 패널 의 의도는 network pressure 신호 한 가지이므로 stage 분
+        # 리 (rcv / xmit / retrans 등) 는 후속 drill-down 자리 (netobs-overview dashboard) 에 위임.
+        # #412 raw bucket 재스캔 대신 공통 중간 rule (pod:netobs_stage_latency_rate_le:5m) 을 소비한다.
+        # 라벨 셋이 중간 rule 과 동일해 재집계 없이 histogram_quantile 만 적용한다.
+        - record: pod:network_p99_latency_seconds:5m
+          expr: |
+            histogram_quantile(0.99,
+              pod:netobs_stage_latency_rate_le:5m
+            )
+
+        # pod:gpu_network_correlation_score:5m (#120)
+        # GPU 사용률과 network 대역폭의 Pod 단위 동조 강도 score. pod:gpu_util_p95:5m 를 100 으로 나눠
+        # 0-1 비율 로 정규화 한 GPU factor 와 pod:network_throughput_bps:5m 를 netobs_node_nic_capacity_
+        # bytes_per_sec * 8 (bytes/sec 의 bps 환산) 으로 나눠 0-1 점유율 로 정규화 한 network factor
+        # 의 곱 형태 다. clamp_max 로 점유율 1.0 상한 두어 burst 시 score 폭주 차단. 라벨 셋은
+        # 4 Pod 라벨 join key (node, src_namespace, src_pod, src_pod_uid) 로 두 도메인 정합 한다.
+        # gpu_uuid 는 max by 로 GPU 1 개 이상 사용 Pod 의 worst GPU 채택 후 라벨에서 drop. 외부 곱셈은
+        # LHS 와 RHS 가 4 Pod 라벨 셋 동일 한 1-to-1 매칭 이라 on(...) 만 사용. 내부 분모 분기 의
+        # / on(node) group_left() 는 4 라벨 LHS 와 1 라벨 RHS 의 many-to-one 매칭 이라 그대로 유지.
+        - record: pod:gpu_network_correlation_score:5m
+          expr: |
+            (
+              max by(node, src_namespace, src_pod, src_pod_uid) (pod:gpu_util_p95:5m) / 100
+            )
+            * on(node, src_namespace, src_pod, src_pod_uid)
+            clamp_max(
+              pod:network_throughput_bps:5m
+                / on(node) group_left()
+                (netobs_node_nic_capacity_bytes_per_sec * 8),
+              1.0
+            )

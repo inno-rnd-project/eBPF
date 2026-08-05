@@ -3,7 +3,7 @@
 # window 동안 Prometheus 의 ALERTS 시리즈 를 query 해 z-score spike alert (CPUThrottleSpikeDetected /
 # MemoryPressureSpikeDetected / NetworkDropSpikeDetected / GPUUtilSpikeDetected) 발화 hit 을
 # status.lastObservedSpikeAlerts 에 기록 한다. 자동 회귀 검증 시나리오 의 base 로 활용 한다.
-# alert 이름 은 deploy/gpuobs/base/prometheus-rule.yaml 의 정의 와 internal/injector/controller/
+# alert 이름 은 deploy/gpuobs/base/prometheus-rule-alerts.yaml 의 정의 와 internal/injector/controller/
 # spike_asserter.go 의 SpikeAlertNames enum 과 정합 한다.
 #
 # 본 시나리오 는 cpu 부하 + 부하 종료 후 5 분 polling window 안 의 CPUThrottleSpikeDetected 발화

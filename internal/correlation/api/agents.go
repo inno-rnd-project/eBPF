@@ -52,7 +52,7 @@ type AgentHealth struct {
 	Issues []string `json:"issues,omitempty"`
 }
 
-// 판정 임계는 deploy/gpuobs/base/prometheus-rule.yaml 의 알림 규칙과 동일 값이다. 규칙이 바뀌면
+// 판정 임계는 deploy/gpuobs/base/prometheus-rule-alerts.yaml 의 알림 규칙과 동일 값이다. 규칙이 바뀌면
 // 함께 갱신한다.
 const (
 	agentInformerStaleSeconds = 300 // ObsAgentInformerStale: lag > 300s

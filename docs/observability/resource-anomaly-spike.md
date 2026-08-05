@@ -87,7 +87,7 @@ prometheus retention 60일(`deploy/monitoring/prometheus-retention-patch.yaml`) 
 
 본 row의 패턴은 다음 절차로 확장 가능하다.
 
-- `deploy/gpuobs/base/prometheus-rule.yaml`의 `netobs-gpuobs.resource-anomaly-spike.recording` group에 신규 record 2종 추가(`cluster:<domain>_<metric>_5m_avg/rate`와 `cluster:<domain>_<metric>_zscore:5m`)
+- `deploy/gpuobs/base/prometheus-rule-capacity-anomaly.yaml`의 `netobs-gpuobs.resource-anomaly-spike.recording` group에 신규 record 2종 추가(`cluster:<domain>_<metric>_5m_avg/rate`와 `cluster:<domain>_<metric>_zscore:5m`)
 - `netobs-gpuobs.alerts` group에 신규 alert 1종 추가(`<Domain>SpikeDetected`, severity warning, component `<domain>-anomaly`)
 - `deploy/dashboards/overview.json`의 `Resource anomaly spike` row(id 700)에 신규 panel 1종 추가
 - `deploy/dashboards/<관련>.json`의 annotation expr에 `<domain>-anomaly` component 추가

@@ -41,7 +41,7 @@
 
 ## 실패 시 진단
 
-- `[fail] resource-anomaly-spike.recording group 미등록` 으로 떨어지면 `kubectl apply -f deploy/gpuobs/base/prometheus-rule.yaml` 재적용
+- `[fail] resource-anomaly-spike.recording group 미등록` 으로 떨어지면 `kubectl apply -f deploy/gpuobs/base/prometheus-rule-capacity-anomaly.yaml` 재적용
 - `[fail] cluster:*_5m_avg: count=0` 으로 떨어지면 base 시리즈(`gpuobs_device_utilization_percent`와 `netobs_drop_events_labeled_total`와 `pod:cpu_throttle_score:5m`와 `pod:memory_pressure_score:5m`) 의 emit 여부 확인
 - `[skip] cluster:*_zscore:5m: count=0` 은 신규 배포 직후 baseline 데이터 부재 케이스 의 정상 동작. base record 가 누적 되면서 자연 활성화
 - `[fail] alert ... 미등록` 으로 떨어지면 prometheus-rule.yaml의 `netobs-gpuobs.alerts` group에 spike alert 4종 추가 확인

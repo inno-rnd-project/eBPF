@@ -387,7 +387,7 @@ netobs와 gpuobs는 동일한 4개 라벨 키 (`node`, `src_namespace`, `src_pod
 
 `netobs_pod_stage_events_total` / `netobs_pod_stage_latency_seconds` 등 workload-level (`src_workload`) 메트릭은 pod-instance 키 셋이 다르므로 본 join 대상이 아니다. gpuobs `_device_*` 메트릭(`gpu_uuid` / `gpu_index` 만 가짐) 은 노드 / GPU 단위 분석용으로 별도 group 처리한다.
 
-### Recording rules (`deploy/gpuobs/base/prometheus-rule.yaml`)
+### Recording rules (`deploy/gpuobs/base/prometheus-rule-*.yaml`)
 
 PrometheusRule CR `netobs-gpuobs-correlation` 에 group `netobs-gpuobs.recording` (interval 30s) 으로 배포한다. agent base kustomization에 포함되어 `make deploy-gpuobs-{dev,prod}` 시 함께 배포된다.
 

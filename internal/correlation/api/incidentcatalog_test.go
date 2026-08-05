@@ -12,7 +12,7 @@ import (
 // 목록 대신 glob 을 써 새 컴포넌트의 rule 파일이 추가돼도 커버리지 검증이 자동 포함한다 (파일
 // 누락으로 그 alert 가 조용히 검증을 빠지는 잠복 방지). 본 테스트 파일은 internal/correlation/api
 // 라 3 단계 상위가 repo 루트다.
-const ruleFileGlob = "../../../deploy/*/base/prometheus-rule.yaml"
+const ruleFileGlob = "../../../deploy/*/base/prometheus-rule*.yaml"
 
 var alertLine = regexp.MustCompile(`(?m)^\s*- alert:\s*([A-Za-z0-9]+)\s*$`)
 
