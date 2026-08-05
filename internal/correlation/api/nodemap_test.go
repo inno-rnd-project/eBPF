@@ -154,3 +154,37 @@ func TestNodeMap_AtParam(t *testing.T) {
 		t.Errorf("status=%d want 400", rec.Code)
 	}
 }
+
+// TestNodeMap_NodeFilterPushdown 은 #411 의 필터 하강을 고정한다. node 파라미터가 있으면 node 라벨을
+// 가진 쿼리에 exact 매처가 실려 Prometheus 단에서 좁혀지고, 라벨 규약이 다른 ALERTS 와 축이 다른
+// netobs pod 계열은 하강 대상이 아니다.
+func TestNodeMap_NodeFilterPushdown(t *testing.T) {
+	// 노드가 존재해야 200 이다 (미등록 노드는 404 로 종전 계약 유지).
+	q := (&fakeQuerier{}).on("kube_node_info", sample(1, "node", "gpu"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNodeMap(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node-map?node=gpu", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	for _, want := range []string{
+		`kube_node_info{node="gpu"}`,
+		`kube_pod_info{node="gpu"}`,
+		`node:pressure_score:5m{node="gpu"}`,
+	} {
+		if !q.sawQuery(want) {
+			t.Errorf("하강 쿼리 %q 미확인: %v", want, q.queries)
+		}
+	}
+	// ALERTS 는 노드 라벨 규약이 alert 별로 달라 하강하지 않는다.
+	if q.sawQuery(`ALERTS{alertstate="firing",node=`) {
+		t.Errorf("ALERTS 에 node 매처가 결합됨: %v", q.queries)
+	}
+	// 필터 미지정이면 종전과 동일한 전 클러스터 쿼리다.
+	q2 := (&fakeQuerier{}).on("kube_node_info", sample(1, "node", "gpu"))
+	h2 := NewSynthesisHandler(q2, nil, nil)
+	h2.GetNodeMap(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/node-map", nil))
+	if !q2.sawQuery("kube_node_info") || q2.sawQuery(`kube_node_info{node=`) {
+		t.Errorf("미지정 시 bare 쿼리가 아님: %v", q2.queries)
+	}
+}

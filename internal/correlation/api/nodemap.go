@@ -85,18 +85,31 @@ func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 	evalCtx, cancel := context.WithTimeout(evalCtx, 5*time.Second)
 	defer cancel()
 
+	// #411 node 필터 하강. 종전에는 전 클러스터를 긁어 Go 측에서 걸렀으므로 노드 1대 조회도 전
+	// 클러스터 시리즈를 전송·파싱했다. node 라벨을 가진 쿼리는 검증된 exact 매처를 selector 에 실어
+	// Prometheus 단에서 좁힌다. ALERTS 는 노드를 가리키는 라벨 규약이 alert 별로 달라 (node,
+	// instance, 없음) 하강 대상이 아니고 종전 Go 측 판정을 유지한다. pod 계열은 kube_pod_info 의
+	// node 라벨로 좁히되 netobs 계열 (src_namespace, src_pod 축) 은 node 라벨이 없어 제외한다.
+	nodeSel := ""
+	if nodeFilter != "" {
+		if _, err := parseNodeParam(nodeFilter); err != nil {
+			apicommon.WriteError(w, http.StatusBadRequest, "invalid_node", err.Error())
+			return
+		}
+		nodeSel = promSelector(nodeMatcher(nodeFilter))
+	}
 	res, qerr := h.queryParallel(evalCtx,
-		"kube_node_info",
-		`kube_node_status_condition{condition="Ready",status="true"}`,
-		"kube_node_role",
-		`kube_node_status_capacity{resource="nvidia_com_gpu"}`,
-		"node:pressure_score:5m",
+		"kube_node_info"+nodeSel,
+		"kube_node_status_condition"+promSelector(`condition="Ready"`, `status="true"`, nodeMatcher(nodeFilter)),
+		"kube_node_role"+nodeSel,
+		"kube_node_status_capacity"+promSelector(`resource="nvidia_com_gpu"`, nodeMatcher(nodeFilter)),
+		"node:pressure_score:5m"+nodeSel,
 		`ALERTS{alertstate="firing"}`,
-		"kube_pod_info",
+		"kube_pod_info"+nodeSel,
 		"kube_pod_status_phase",
 		"count by(src_namespace, src_pod) (netobs_pod_bytes_total)",
 		// #320 미관측 사유 판별용 netobs agent 배치 노드 집합.
-		"count by(node) (netobs_bpf_program_loaded)",
+		"count by(node) (netobs_bpf_program_loaded)"+nodeSel,
 		// #342 무소켓 pod 집합 (no_traffic 판별 입력).
 		"count by(src_namespace, src_pod) (netobs_pod_no_sockets)",
 	)
