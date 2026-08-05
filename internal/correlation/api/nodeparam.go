@@ -2,7 +2,9 @@ package api
 
 import (
 	"fmt"
+	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -74,4 +76,53 @@ func promSelector(matchers ...string) string {
 		return ""
 	}
 	return "{" + strings.Join(nz, ",") + "}"
+}
+
+// parsePageParams 는 #411 의 opt-in 목록 상한이다. limit 과 offset 이 모두 미지정이면 (0, 0, false)
+// 를 돌려줘 호출부가 종전처럼 전량을 노출하고, 하나라도 지정되면 그 값으로 슬라이스를 자른다.
+// 클러스터 규모에 정비례하던 응답 (/pods, /nodes, /node-map) 에 소비자가 상한을 걸 수 있게 하되
+// 기본 동작은 바꾸지 않아 기존 소비자에 무영향이다. limit 상한은 목록 응답의 실질 최대치 (노드 수천,
+// pod 수만) 를 덮는 10000 이고, 형식 위반은 400 으로 거부한다.
+func parsePageParams(r *http.Request) (limit, offset int, paged bool, err error) {
+	q := r.URL.Query()
+	rawLimit := strings.TrimSpace(q.Get("limit"))
+	rawOffset := strings.TrimSpace(q.Get("offset"))
+	if rawLimit == "" && rawOffset == "" {
+		return 0, 0, false, nil
+	}
+	if rawLimit != "" {
+		v, convErr := strconv.Atoi(rawLimit)
+		if convErr != nil || v <= 0 {
+			return 0, 0, false, fmt.Errorf("limit 은 양의 정수여야 합니다")
+		}
+		if v > 10000 {
+			v = 10000
+		}
+		limit = v
+	}
+	if rawOffset != "" {
+		v, convErr := strconv.Atoi(rawOffset)
+		if convErr != nil || v < 0 {
+			return 0, 0, false, fmt.Errorf("offset 은 0 이상 정수여야 합니다")
+		}
+		offset = v
+	}
+	if limit == 0 {
+		limit = 10000
+	}
+	return limit, offset, true, nil
+}
+
+// pageSlice 는 total 개 항목에서 offset 부터 limit 개의 인덱스 구간을 돌려준다. 범위를 벗어난 offset
+// 은 빈 구간이 되어 호출부가 빈 목록을 응답한다.
+func pageSlice(total, limit, offset int) (start, end int) {
+	if offset >= total {
+		return total, total
+	}
+	start = offset
+	end = offset + limit
+	if end > total {
+		end = total
+	}
+	return start, end
 }

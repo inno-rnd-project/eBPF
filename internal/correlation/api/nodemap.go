@@ -24,6 +24,9 @@ type NodeMapResponse struct {
 	GeneratedAt string        `json:"generated_at"`
 	Nodes       []NodeMapNode `json:"nodes"`
 	Summary     string        `json:"summary"`
+	// Page 는 #411 의 opt-in 페이지네이션 additive 필드다. limit 또는 offset 을 지정한 요청에만 실리고
+	// 미지정 요청에는 생략된다. summary 는 절단 전 전체 기준으로 산출해 요약의 의미를 보존한다.
+	Page *apicommon.Page `json:"page,omitempty"`
 }
 
 // NodeMapNode 는 그리드의 한 노드 칸이다. Status 판정은 overview 와 동일 (nodeStatus 공유) 하며
@@ -74,6 +77,11 @@ func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nodeFilter := strings.TrimSpace(r.URL.Query().Get("node"))
+	limit, offset, paged, perr := parsePageParams(r)
+	if perr != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_page", perr.Error())
+		return
+	}
 	resp := NodeMapResponse{GeneratedAt: evalAt.Format(time.RFC3339), Nodes: []NodeMapNode{}}
 	if h.querier == nil {
 		resp.Summary = buildNodeMapSummary(resp)
@@ -235,7 +243,14 @@ func (h *SynthesisHandler) GetNodeMap(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// summary 는 절단 전 전체 기준으로 산출해 요약의 의미를 보존한다 (#411).
 	resp.Summary = buildNodeMapSummary(resp)
+	if paged {
+		total := len(resp.Nodes)
+		start, end := pageSlice(total, limit, offset)
+		resp.Nodes = resp.Nodes[start:end]
+		resp.Page = &apicommon.Page{Limit: limit, Offset: offset, Total: total}
+	}
 	apicommon.WriteJSON(w, resp)
 }
 

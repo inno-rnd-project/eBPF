@@ -102,12 +102,17 @@ func unobservedReasonExempt(phase string) bool {
 type NodesResponse struct {
 	GeneratedAt string          `json:"generated_at"`
 	Nodes       []NodeInventory `json:"nodes"`
+	// Page 는 #411 의 opt-in 페이지네이션 additive 필드다. limit 또는 offset 을 지정한 요청에만 실리고
+	// 미지정 요청에는 생략되어 기존 소비자의 응답 형태가 바뀌지 않는다. Total 은 절단 전 전체 개수다.
+	Page *apicommon.Page `json:"page,omitempty"`
 }
 
 // PodsResponse 는 GET /api/v1/pods 의 typed 응답이다.
 type PodsResponse struct {
 	GeneratedAt string         `json:"generated_at"`
 	Pods        []PodInventory `json:"pods"`
+	// Page 는 #411 의 opt-in 페이지네이션 additive 필드다. limit 또는 offset 을 지정한 요청에만 실린다.
+	Page *apicommon.Page `json:"page,omitempty"`
 }
 
 // queryParallel 은 여러 instant query 를 goroutine 으로 동시에 실행해 결과를 입력 순서대로 돌려준다.
@@ -184,6 +189,11 @@ func (h *SynthesisHandler) queryParallelOptional(ctx context.Context, queries ..
 // @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/nodes [get]
 func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
+	limit, offset, paged, perr := parsePageParams(r)
+	if perr != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_page", perr.Error())
+		return
+	}
 	resp := NodesResponse{GeneratedAt: time.Now().UTC().Format(time.RFC3339), Nodes: []NodeInventory{}}
 	if h.querier == nil {
 		apicommon.WriteJSON(w, resp)
@@ -273,6 +283,13 @@ func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
 		resp.Nodes = append(resp.Nodes, *n)
 	}
 	sort.Slice(resp.Nodes, func(i, j int) bool { return resp.Nodes[i].Name < resp.Nodes[j].Name })
+	// #411 opt-in 절단. 미지정 요청은 종전대로 전량이며 page 필드도 실리지 않는다.
+	if paged {
+		total := len(resp.Nodes)
+		start, end := pageSlice(total, limit, offset)
+		resp.Nodes = resp.Nodes[start:end]
+		resp.Page = &apicommon.Page{Limit: limit, Offset: offset, Total: total}
+	}
 	apicommon.WriteJSON(w, resp)
 }
 
@@ -286,6 +303,11 @@ func (h *SynthesisHandler) GetNodes(w http.ResponseWriter, r *http.Request) {
 // @Failure      500  {object}  apicommon.ErrorBody
 // @Router       /api/v1/pods [get]
 func (h *SynthesisHandler) GetPods(w http.ResponseWriter, r *http.Request) {
+	limit, offset, paged, perr := parsePageParams(r)
+	if perr != nil {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_page", perr.Error())
+		return
+	}
 	nsFilter := strings.TrimSpace(r.URL.Query().Get("namespace"))
 	if _, err := parseNamespaceParam(nsFilter); err != nil {
 		apicommon.WriteError(w, http.StatusBadRequest, "invalid_namespace", err.Error())
@@ -391,5 +413,12 @@ func (h *SynthesisHandler) GetPods(w http.ResponseWriter, r *http.Request) {
 		}
 		return resp.Pods[i].Pod < resp.Pods[j].Pod
 	})
+	// #411 opt-in 절단. 미지정 요청은 종전대로 전량이며 page 필드도 실리지 않는다.
+	if paged {
+		total := len(resp.Pods)
+		start, end := pageSlice(total, limit, offset)
+		resp.Pods = resp.Pods[start:end]
+		resp.Page = &apicommon.Page{Limit: limit, Offset: offset, Total: total}
+	}
 	apicommon.WriteJSON(w, resp)
 }
