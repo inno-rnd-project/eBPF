@@ -2157,8 +2157,12 @@ spec:
     # 본 group 의 4 avg record 는 30s 평가 cycle 이지만 expr 자체가 1시간 윈도우 평균이라 evaluation
     # 직후 즉시 채워지고 30일 / 60일 retention 정합은 Commit 1 의 60일 retention 상향에 의존한다.
     # z-score 4종 은 (stddev > 0) 가드 와 clamp(-5, 5) 로 NaN 과 +Inf 시각화 잡음을 차단한다.
+    # #412 평가 주기 상향 (1m → 5m). 본 그룹의 z-score 4종은 [30d] baseline 을 매 평가마다 전체
+    # 스캔하는데, 신호가 1h 평균 기반의 capacity 선행 지표 (소비 alert 의 for 가 30m) 라 5m 간격
+    # 평가로도 의미가 보존된다. 30d range 스캔 빈도가 1/5 로 줄어 rule 평가 비용의 최대 항목이
+    # 절감된다.
     - name: netobs-gpuobs.capacity-trends.recording
-      interval: 1m
+      interval: 5m
       rules:
         # cluster:gpu_util_1h_avg
         # cluster 단위 GPU utilization 의 1시간 평균. 4주 heatmap 과 multi-series overlay 의 base
@@ -2256,8 +2260,11 @@ spec:
     # 직접 채택한다. z-score 4종 모두 (stddev > 0) 가드와 clamp(-5, 5) 적용 으로 NaN 과 +Inf 시각화
     # 잡음을 차단한다. baseline window 7일 누적 부족 케이스 (신규 배포 직후) 는 stddev 가드로 record
     # 자체 미 emit 되어 graceful degradation 처리.
+    # #412 평가 주기 상향 (30s → 2m). z-score 4종이 [7d] baseline 을 매 평가마다 스캔한다. 즉시
+    # RCA 의도의 spike 신호라 capacity 군 (5m) 만큼 늦출 수는 없어 2m 로 두며, 소비 alert 의
+    # for: 5m 대비 최악 감지 지연 증가가 2m 에 그치면서 7d 스캔 빈도는 1/4 로 준다.
     - name: netobs-gpuobs.resource-anomaly-spike.recording
-      interval: 30s
+      interval: 2m
       rules:
         # cluster:gpu_util_5m_avg
         # cluster 단위 GPU utilization 의 5분 평균. spike 감지 용 baseline 시리즈. 1시간 평균
