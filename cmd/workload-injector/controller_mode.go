@@ -128,6 +128,11 @@ func runControllerMode() int {
 		LockHolder:        holder,
 		SpikeAsserter:     injectorcontroller.NewPromSpikeAsserter(cfg.PrometheusURL),
 		ScoreProvider:     injectorcontroller.NewCorrelationScoreClient(cfg.CorrelationURL),
+		// #418 downward API 주입 자기 pod 식별. 비어 있으면 (수동 실행 등) ownerReference 미부여로
+		// 자연 degrade 한다.
+		SelfPodName:      os.Getenv("POD_NAME"),
+		SelfPodNamespace: os.Getenv("POD_NAMESPACE"),
+		SelfPodUID:       os.Getenv("POD_UID"),
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		log.Printf("controller: reconciler SetupWithManager: %v", err)

@@ -73,6 +73,11 @@ type LoadScenarioReconciler struct {
 	ScoreProvider InterferenceScoreProvider
 	CronParser    cron.Parser
 	Now           func() time.Time
+	// SelfPod* 는 downward API 로 주입된 컨트롤러 자기 pod 식별이다 (#418). spawn 되는 부하 pod
+	// 의 ownerReference 로 부여되어 컨트롤러 삭제 시 Kubernetes GC 가 잔재를 회수한다.
+	SelfPodName      string
+	SelfPodNamespace string
+	SelfPodUID       string
 }
 
 // defaultScoreTriggerMinInterval 은 spec.scoreTrigger.minInterval 이 비었을 때 적용 하는 debounce
@@ -495,6 +500,7 @@ func (r *LoadScenarioReconciler) startRun(ctx context.Context, ls *injectorv1alp
 			"app.kubernetes.io/managed-by": "loadscenario-controller",
 			"loadscenario.name":            ls.Name,
 		},
+		Owner: loadgen.SelfOwnerReference(r.SelfPodName, r.SelfPodNamespace, r.SelfPodUID, ls.Namespace),
 	}
 	if err := gen.Start(ctx, params); err != nil {
 		// stress Pod start 실패 시 lock 해제. 다음 run 의 lock 충돌 회피.
