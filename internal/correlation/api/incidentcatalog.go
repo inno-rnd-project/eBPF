@@ -38,7 +38,8 @@ var incidentCatalog = map[string]incidentInfo{
 	"NetObsBpfProgramUnavailable": {"BPF 프로브 미부착", "netobs BPF 프로브 {{symbol}}가 {{node|instance}}에 부착되지 않음"},
 	"NetObsBpfAttachFailureHigh":  {"BPF attach 실패 급증", "netobs BPF 프로그램 {{program}}의 attach 실패가 {{node|instance}}에서 누적됨"},
 	"NetObsAgentBpfDropsHigh":     {"ringbuf drop 급증", "netobs ringbuf drop이 {{node|instance}}에서 임계를 초과함"},
-	"NetObsBpfMapUtilizationHigh": {"BPF 맵 사용률 임계 초과", "netobs BPF {{map}} 맵 사용률이 {{node|instance}}에서 임계에 근접함"},
+	"NetObsBpfMapUtilizationHigh": {"BPF 맵 사용률 임계 초과", "netobs BPF 페어링 맵 {{map}}의 사용률이 {{node|instance}}에서 임계에 근접함 (미매칭 entry leak 신호)"},
+	"NetObsFlowCounterResets":     {"활성 flow counter reset", "{{node|instance}}에서 활성 flow가 BPF 맵에서 밀려나 counter가 0부터 다시 쌓이고 있음 (flow_bytes 포화 실해)"},
 	"GPUObsCudaSymbolUnavailable": {"CUDA 심볼 미부착", "gpuobs CUDA 심볼 {{symbol}}가 {{node|instance}}에 부착되지 않음"},
 	"GPUObsAgentNvmlErrorsHigh":   {"NVML 호출 오류 급증", "gpuobs NVML 호출 {{call}}이 {{node|instance}}에서 {{error_code}}로 실패함"},
 

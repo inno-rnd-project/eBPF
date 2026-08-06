@@ -86,8 +86,9 @@ struct {
  * worker2) 의 사용률이 0.993~0.995 로 상한에 붙어 실제 flow working set 이 검열 (상한 이상) 상태고,
  * 활성 flow 가 커널 LRU 에 밀려나는 counter reset 이 재발했다. 검열된 관측치 (>= 32768) 에 4 배
  * 헤드룸을 두어 131072 로 올린다. LRU_HASH 단일 instance 라 memory footprint 는 entry 당 수백 byte
- * 수준으로 수십 MB 이내다. 포화 재발 관측 체계 (utilization_ratio + NetObsBpfMapUtilizationHigh)
- * 는 #351 그대로 유지한다. */
+ * 수준으로 수십 MB 이내다. #416 부터 accumulator 맵 점유율은 자연 포화가 정상이라
+ * NetObsBpfMapUtilizationHigh 대상에서 빠지고, 실해 (활성 flow 의 LRU evict) 는
+ * netobs_flow_counter_resets_total 과 NetObsFlowCounterResets 가 커버한다. */
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 131072);

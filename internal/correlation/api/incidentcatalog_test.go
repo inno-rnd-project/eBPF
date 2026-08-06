@@ -90,19 +90,20 @@ func TestIncidentDescribe_RenderAndGraceful(t *testing.T) {
 	}
 
 	// 등록 alert: labels 로 summary 치환.
+	// #416 부터 본 alert 는 페어링 맵 한정이라 fixture 도 starts 를 쓴다.
 	title, summary := incidentDescribe("NetObsBpfMapUtilizationHigh", map[string]string{
-		"map": "flow_bytes", "instance": "10.0.0.1:9810",
+		"map": "starts", "instance": "10.0.0.1:9810",
 	})
 	if title != "BPF 맵 사용률 임계 초과" {
 		t.Errorf("title=%q", title)
 	}
-	if summary != "netobs BPF flow_bytes 맵 사용률이 10.0.0.1:9810에서 임계에 근접함" {
+	if summary != "netobs BPF 페어링 맵 starts의 사용률이 10.0.0.1:9810에서 임계에 근접함 (미매칭 entry leak 신호)" {
 		t.Errorf("summary=%q (치환 실패)", summary)
 	}
 
 	// 라벨 부재 시 unknown 폴백으로 문장 유지.
-	_, summary = incidentDescribe("NetObsBpfMapUtilizationHigh", map[string]string{"map": "starts"})
-	if summary != "netobs BPF starts 맵 사용률이 unknown에서 임계에 근접함" {
+	_, summary = incidentDescribe("NetObsBpfMapUtilizationHigh", map[string]string{"map": "seg_accum"})
+	if summary != "netobs BPF 페어링 맵 seg_accum의 사용률이 unknown에서 임계에 근접함 (미매칭 entry leak 신호)" {
 		t.Errorf("summary=%q want unknown 폴백", summary)
 	}
 

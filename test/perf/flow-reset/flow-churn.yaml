@@ -1,0 +1,40 @@
+# #416 flow_bytes accumulator 맵 포화 재현 부하. 포트 스캔성으로 짧은 TCP 연결을 다수 대상에
+# 반복 생성해 distinct 5-tuple 을 누적시키고, 맵 (131072) 포화 후 활성 flow 의 LRU evict 로
+# netobs_flow_counter_resets_total 의 실측 rate 를 얻는다. NetObsFlowCounterResets 임계 산정용.
+# ephemeral port 공간 (~28k) 이 (dst_ip, dst_port) 당 키 상한이라 대상 6종으로 키 공간을 넓힌다.
+# default namespace 는 NETOBS_FLOW_ALLOW_NAMESPACES 에 있어 본 pod 의 flow 도 admit 되어 reset
+# 계수 대상이 된다. 검증 직후 kubectl delete 로 즉시 정리한다.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: flow-churn
+  namespace: default
+  labels:
+    app: flow-churn
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: ebpf-worker1
+  restartPolicy: Never
+  containers:
+    - name: churn
+      image: busybox:1.36
+      command:
+        - /bin/sh
+        - -c
+        - |
+          targets="10.104.83.156:9830 10.97.134.100:9090 10.101.76.184:80 10.0.0.27:9100 10.0.0.101:9100 10.0.0.21:9100"
+          while true; do
+            for t in $targets; do
+              host=${t%:*}; port=${t#*:}
+              i=0
+              while [ $i -lt 40 ]; do
+                wget -q -T 2 -O /dev/null "http://$host:$port/" 2>/dev/null &
+                i=$((i+1))
+              done
+            done
+            wait
+          done
+      resources:
+        limits:
+          cpu: "2"
+          memory: 256Mi
