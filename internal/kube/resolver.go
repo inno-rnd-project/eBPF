@@ -175,6 +175,13 @@ func (r *Resolver) Start(ctx context.Context) {
 	factory := informers.NewSharedInformerFactoryWithOptions(r.client, r.resyncPeriod, factoryOpts...)
 
 	podInformer := factory.Core().V1().Pods().Informer()
+	// 저장 객체 슬림화 (#413). informer 캐시는 Pod 객체 전체 (spec.containers 의 env / volume /
+	// probe 등) 를 보관하는데 resolver 는 아래 slimPod 가 남기는 필드만 읽는다. transform 은 저장
+	// 전에 적용되어 클러스터 전역 watch 를 유지하는 netobs 의 노드당 상주 메모리를 Pod 수 비례
+	// 항에서 크게 줄인다. 새 필드가 필요해지면 slimPod 에 함께 추가해야 한다.
+	if err := podInformer.SetTransform(slimPod); err != nil {
+		log.Printf("kube resolver: pod transform 미적용: %v", err)
+	}
 
 	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
@@ -479,6 +486,45 @@ func (r *Resolver) onDeleteNode(obj interface{}) {
 			delete(r.nodeByIP, ip)
 		}
 	}
+}
+
+// slimPod 는 informer 가 캐시에 저장하기 전에 Pod 객체를 resolver 가 실제로 읽는 필드만 남긴
+// 사본으로 교체하는 cache.TransformFunc 다 (#413). 보존 필드는 podKey / podIPs / podIdentity /
+// PodsOnNode / AllPods 의 소비 집합과 정확히 일치한다.
+//
+//   - ObjectMeta: Name, Namespace, UID, OwnerReferences, kubernetes.io/config.hash annotation (#341)
+//   - Spec: NodeName, HostNetwork
+//   - Status: PodIP, PodIPs
+//
+// 그 외 (containers 의 env / volumeMounts / probe, managedFields, labels 등) 는 전부 버려진다.
+// Pod 이외 타입 (DeletedFinalStateUnknown tombstone 포함) 은 그대로 통과시켜 삭제 경로의 의미를
+// 보존한다.
+func slimPod(obj interface{}) (interface{}, error) {
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		return obj, nil
+	}
+	slim := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            pod.Name,
+			Namespace:       pod.Namespace,
+			UID:             pod.UID,
+			ResourceVersion: pod.ResourceVersion,
+			OwnerReferences: pod.OwnerReferences,
+		},
+		Spec: corev1.PodSpec{
+			NodeName:    pod.Spec.NodeName,
+			HostNetwork: pod.Spec.HostNetwork,
+		},
+		Status: corev1.PodStatus{
+			PodIP:  pod.Status.PodIP,
+			PodIPs: pod.Status.PodIPs,
+		},
+	}
+	if h, ok := pod.Annotations["kubernetes.io/config.hash"]; ok {
+		slim.Annotations = map[string]string{"kubernetes.io/config.hash": h}
+	}
+	return slim, nil
 }
 
 func extractPod(obj interface{}) (*corev1.Pod, bool) {

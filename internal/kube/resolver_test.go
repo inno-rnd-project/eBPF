@@ -406,3 +406,72 @@ func TestNodeScopedPodsOnly_StartIndexesPodsWithoutServiceInformer(t *testing.T)
 	cancel()
 	<-done
 }
+
+// TestSlimPod_PreservesResolverConsumedFields 는 transform 슬림화 (#413) 가 resolver 소비 함수
+// (podKey / podIPs / podIdentity) 관점에서 원본과 동등함을 단정한다. slimPod 가 필드를 놓치면
+// 본 테스트의 동등성 비교가 깨져 회귀를 막는다.
+func TestSlimPod_PreservesResolverConsumedFields(t *testing.T) {
+	fat := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "p1",
+			Namespace:       "ns1",
+			UID:             "uid-1",
+			ResourceVersion: "42",
+			Labels:          map[string]string{"app": "x"},
+			Annotations: map[string]string{
+				"kubernetes.io/config.hash": "abc123",
+				"other":                     "dropped",
+			},
+			OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "web-5d9c"}},
+		},
+		Spec: corev1.PodSpec{
+			NodeName:    "n1",
+			HostNetwork: false,
+			Containers:  []corev1.Container{{Name: "c", Image: "img"}},
+		},
+		Status: corev1.PodStatus{
+			PodIP:  "10.0.0.1",
+			PodIPs: []corev1.PodIP{{IP: "10.0.0.1"}, {IP: "fd00::1"}},
+		},
+	}
+
+	out, err := slimPod(fat)
+	if err != nil {
+		t.Fatalf("slimPod: %v", err)
+	}
+	slim, ok := out.(*corev1.Pod)
+	if !ok {
+		t.Fatalf("slimPod 반환 타입: %T", out)
+	}
+
+	if podKey(slim) != podKey(fat) {
+		t.Errorf("podKey 불일치: %s != %s", podKey(slim), podKey(fat))
+	}
+	gotIPs, wantIPs := podIPs(*slim), podIPs(*fat)
+	if len(gotIPs) != len(wantIPs) {
+		t.Fatalf("podIPs 불일치: %v != %v", gotIPs, wantIPs)
+	}
+	for i := range gotIPs {
+		if gotIPs[i] != wantIPs[i] {
+			t.Errorf("podIPs[%d] 불일치: %s != %s", i, gotIPs[i], wantIPs[i])
+		}
+	}
+	if podIdentity(*slim) != podIdentity(*fat) {
+		t.Errorf("podIdentity 불일치:\n%+v\n%+v", podIdentity(*slim), podIdentity(*fat))
+	}
+	if len(slim.Spec.Containers) != 0 || len(slim.Labels) != 0 || slim.Annotations["other"] != "" {
+		t.Errorf("슬림화 누락: containers=%d labels=%d other=%q", len(slim.Spec.Containers), len(slim.Labels), slim.Annotations["other"])
+	}
+	if slim.Annotations["kubernetes.io/config.hash"] != "abc123" {
+		t.Errorf("config.hash 유실")
+	}
+}
+
+// TestSlimPod_PassesThroughNonPod 는 tombstone 등 Pod 이외 입력의 통과를 단정한다.
+func TestSlimPod_PassesThroughNonPod(t *testing.T) {
+	in := "not-a-pod"
+	out, err := slimPod(in)
+	if err != nil || out != in {
+		t.Fatalf("passthrough 실패: out=%v err=%v", out, err)
+	}
+}
