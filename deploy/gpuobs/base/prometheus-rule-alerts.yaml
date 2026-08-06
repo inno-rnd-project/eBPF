@@ -565,21 +565,42 @@ spec:
             description: "netobs events ringbuf reserve failed at >10/s for 2 minutes on {{ $labels.instance }}. The userspace reader is falling behind producers. Consider raising the ringbuf size in bpf/netlat.bpf.c or reducing event emit rate."
 
         # NetObsBpfMapUtilizationHigh
-        # netobs_bpf_map_utilization_ratio 는 map 필터 없이 전역 임계라 refresher 가 노출하는 모든 map
-        # (starts / pod_bytes / flow_bytes / netobs_drop_stacks) 의 현재 entry 수가 max_entries 의 80%
-        # 를 5 분 이상 넘으면 발화한다. 특히 flow_bytes 는 5-tuple 키라 노드 규모에 비례해 차므로 (#351)
-        # 본 alert 가 evict 임박의 주 감시 신호다. LRU evict 가 동작해 1.0 도달은 통상 일어나지 않지만
-        # 0.8 안정 초과는 max_entries 가 워크로드 규모를 따라가지 못한다는 신호다. 수용 조건 ("80% 초과
-        # 시 alert 정상 발화") 을 충족한다.
+        # #416 맵 의미론별 분리. 점유율 임계는 페어링 / gated 맵 (starts, netobs_drop_stacks,
+        # seg_accum, recv_starts, connect_starts) 에만 유효하다. 이들은 emit 시점에 entry 를 cleanup
+        # 하므로 우상향 점유율이 미매칭 entry leak 이라는 진짜 신호다 (starts 실측: 재시작 전 0.985,
+        # 재시작 후 0.016). 반면 accumulator 맵 (flow_bytes, pod_bytes) 은 entry 가 만료되지 않아
+        # 점유율이 누적 distinct key 의 단조 증가 함수라 1.0 근처 수렴이 정상 상태고 (#414 이전
+        # flow_bytes 3노드 0.99 안착 실측), 점유율로는 죽은 key 가 채운 것과 활성 key 가 밀리는
+        # 실해를 구분할 수 없어 map 매처로 제외한다. accumulator 의 실해 (활성 flow evict) 는
+        # NetObsFlowCounterResets 가 커버한다. 신규 편입 맵은 명시 제외 전까지 본 임계가 기본
+        # 적용된다 (제외 매처 방식 채택 이유).
         - alert: NetObsBpfMapUtilizationHigh
-          expr: netobs_bpf_map_utilization_ratio > 0.8
+          expr: netobs_bpf_map_utilization_ratio{map!~"flow_bytes|pod_bytes"} > 0.8
           for: 5m
           labels:
             severity: warning
             component: netobs
           annotations:
             summary: "netobs BPF map {{ $labels.map }} {{ $value | humanizePercentage }} full on {{ $labels.instance }}"
-            description: "netobs BPF map {{ $labels.map }} on {{ $labels.instance }} has been >80% full for 5 minutes. LRU evict will start dropping older entries. Inspect max_entries in bpf/netlat.bpf.c and consider raising it."
+            description: "netobs BPF pairing map {{ $labels.map }} on {{ $labels.instance }} has been >80% full for 5 minutes. Pairing maps clean up entries on emit, so sustained growth means unmatched-entry leak and imminent LRU eviction of live tracking state. Inspect max_entries in bpf/netlat.bpf.c and the emit/cleanup path of this map."
+
+        # NetObsFlowCounterResets
+        # #416 accumulator 맵의 실해 신호. netobs_flow_counter_resets_total 은 emit 중인 활성 flow
+        # 시리즈의 bytes 가 직전 scrape 보다 감소한 횟수로, 활성 entry 가 BPF LRU 에 밀려나 0 부터
+        # 다시 쌓였다는 직접 증거다 (counter 과소계상 실해). 임계 0.005/s 는 dev 라이브 재현 실측
+        # 기반이다: 포트 스캔성 부하로 flow_bytes (131072) 를 포화시키면 rate 가 0.01~0.03/s 로
+        # 올라가고 정상 운영은 0 에 고정이다. 0.005 는 10 분 창에서 3 회 이상의 지속 reset 만
+        # 발화시키고 단발 blip (1 회) 은 거른다. LRU 가 최근 touch entry 를 보호해 포화 후에도
+        # 활성 flow evict 는 지연 시작되므로 (실측 약 8 분) for 10m 이 실해 지속성과 정합한다.
+        - alert: NetObsFlowCounterResets
+          expr: rate(netobs_flow_counter_resets_total[10m]) > 0.005
+          for: 10m
+          labels:
+            severity: warning
+            component: netobs
+          annotations:
+            summary: "netobs active flow counters resetting at {{ $value | humanize }}/s on {{ $labels.instance }}"
+            description: "netobs_flow_counter_resets_total on {{ $labels.instance }} indicates active flows are being LRU-evicted from the BPF flow_bytes map and their bytes counters restart from zero (undercounting). The map is saturated with live traffic, not dead keys. Inspect flow cardinality sources (port-scan-like churn) and consider raising flow_bytes max_entries in bpf/netlat.bpf.c."
 
         # GPUObsAgentNvmlErrorsHigh
         # NVML wrapper 호출 실패가 2 분 이상 1/s 를 넘으면 발화. NOT_SUPPORTED 같은 정상 케이스는

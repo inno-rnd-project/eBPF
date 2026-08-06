@@ -36,10 +36,11 @@ var (
 		},
 	)
 
-	// bpfMapUtilizationRatio 는 BPF map 의 current entries / max entries 비율이다. starts 와
-	// pod_bytes 두 LRU 계열 map 의 포화 신호를 운영자에게 노출한다. LRU evict 가 동작해 운영상 1.0
-	// 도달은 통상적으로 일어나지 않지만, 0.8 을 안정적으로 넘으면 max_entries 가 워크로드 규모를
-	// 따라가지 못한다는 신호이며 #70 의 NetObsBpfMapUtilizationHigh alert 가 본 신호에 묶여 있다.
+	// bpfMapUtilizationRatio 는 BPF map 의 current entries / max entries 비율이다. 의미는 맵
+	// 부류별로 다르다 (#416). 페어링 / gated 맵 (starts 등) 은 emit 시 cleanup 되므로 0.8 안정
+	// 초과가 미매칭 entry leak 신호라 NetObsBpfMapUtilizationHigh 가 감시하고, accumulator 맵
+	// (flow_bytes, pod_bytes) 은 entry 가 만료되지 않아 1.0 근처 수렴이 정상이라 임계에서 제외되며
+	// 실해 (활성 flow evict) 는 netobs_flow_counter_resets_total 이 커버한다.
 	bpfMapUtilizationRatio = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "netobs_bpf_map_utilization_ratio",
@@ -62,6 +63,17 @@ var (
 			Name:    "netobs_event_processing_seconds",
 			Help:    "Wall-clock duration of enrich + record for one ringbuf event in the userspace event loop. Compare with netobs_event_channel_depth and netobs_bpf_ringbuf_drops_total to attribute event loss to consumer throughput vs kernel-side bursts.",
 			Buckets: prometheus.ExponentialBuckets(1e-6, 4, 12),
+		},
+	)
+
+	// flowCounterResetsTotal 은 #416 의 accumulator 맵 evict 실해 신호다. flow_bytes 는 누적 맵이라
+	// 점유율이 자연히 1.0 근처에 머무는 것이 정상이고, 실해는 활성 flow 가 LRU 에 밀려나 counter 가
+	// 0 부터 다시 쌓이는 reset 이다. flow collector 가 admit 된 (emit 된) 시리즈의 직전 scrape bytes
+	// 를 기억해 감소 관측 시 계수하므로 죽은 key 가 채운 점유율과 활성 key 가 밀리는 실해가 구분된다.
+	flowCounterResetsTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "netobs_flow_counter_resets_total",
+			Help: "Number of times an emitted netobs_flow_bytes_total series was observed with a smaller value than the previous scrape, meaning an active flow entry was LRU-evicted from the BPF flow_bytes map and restarted from zero. This is the actionable saturation signal for accumulator maps; utilization ratio alone cannot distinguish dead keys from active-key eviction.",
 		},
 	)
 
@@ -189,6 +201,13 @@ func AddBpfRingbufDrops(delta uint64) {
 		return
 	}
 	bpfRingbufDropsTotal.Add(float64(delta))
+}
+
+// AddFlowCounterResets 는 flow collector 가 한 scrape 에서 관측한 counter reset 수를 누적한다 (#416).
+func AddFlowCounterResets(n uint64) {
+	if n > 0 {
+		flowCounterResetsTotal.Add(float64(n))
+	}
 }
 
 // AddFlowGuardRejected 는 flow 계열 가드의 상한 거부 1 회를 기록한다 (#403). guard 는 "flow"

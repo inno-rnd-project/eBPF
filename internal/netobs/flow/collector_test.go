@@ -471,3 +471,28 @@ func TestMergeEntry_SrcPortFullKeepsCurrentBehavior(t *testing.T) {
 		}
 	}
 }
+
+// TestCountResets_DetectsDecreaseAndReplacesSnapshot 은 #416 reset 계수의 세 성질을 단정한다.
+// 감소 시리즈만 계수, 신규 시리즈는 비교 기준 없어 미계수, 스냅샷은 현 세대로 통째 교체.
+func TestCountResets_DetectsDecreaseAndReplacesSnapshot(t *testing.T) {
+	c := &Collector{}
+	k1 := aggKey{srcIP: "10.0.0.1", dstIP: "10.0.0.2", dstPort: 80, protocol: "TCP", direction: "egress"}
+	k2 := aggKey{srcIP: "10.0.0.3", dstIP: "10.0.0.2", dstPort: 80, protocol: "TCP", direction: "egress"}
+
+	// 1세대: 비교 기준이 없어 reset 0.
+	if got := c.countResets(map[aggKey]*aggValue{k1: {bytes: 1000}, k2: {bytes: 500}}); got != 0 {
+		t.Fatalf("first generation resets=%d want 0", got)
+	}
+	// 2세대: k1 증가 (정상), k2 감소 (evict 후 재적재) → reset 1.
+	if got := c.countResets(map[aggKey]*aggValue{k1: {bytes: 2000}, k2: {bytes: 30}}); got != 1 {
+		t.Fatalf("second generation resets=%d want 1", got)
+	}
+	// 3세대: k2 만 존재하며 2세대 값 (30) 대비 증가 → reset 0. k1 은 스냅샷에서 회수됐어야 한다.
+	if got := c.countResets(map[aggKey]*aggValue{k2: {bytes: 100}}); got != 0 {
+		t.Fatalf("third generation resets=%d want 0", got)
+	}
+	// 4세대: k1 재등장이 3세대 스냅샷에 없으므로 낮은 값이어도 미계수 (의도된 축소).
+	if got := c.countResets(map[aggKey]*aggValue{k1: {bytes: 10}, k2: {bytes: 200}}); got != 0 {
+		t.Fatalf("fourth generation resets=%d want 0", got)
+	}
+}

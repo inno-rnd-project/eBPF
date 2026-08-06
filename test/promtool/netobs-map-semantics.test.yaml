@@ -1,0 +1,59 @@
+# netobs-map-semantics.test.yaml 은 #416 의 맵 의미론별 alert 분리 검증이다. accumulator 맵
+# (flow_bytes, pod_bytes) 은 1.0 포화에도 NetObsBpfMapUtilizationHigh 가 침묵하고, 페어링 맵
+# (starts) 은 기존 임계로 발화하며, 활성 flow 의 counter reset rate 는 NetObsFlowCounterResets 가
+# 커버함을 단정한다. rule_files 는 make test-prometheus-rules 가 추출해 마운트하는 gpuobs.yaml.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # accumulator 맵 포화 (1.0) 와 페어링 맵 leak (0.985) 공존: 페어링 맵만 발화한다.
+  - interval: 30s
+    input_series:
+      - series: 'netobs_bpf_map_utilization_ratio{map="flow_bytes",node="n1"}'
+        values: '1+0x40'
+      - series: 'netobs_bpf_map_utilization_ratio{map="pod_bytes",node="n1"}'
+        values: '0.99+0x40'
+      - series: 'netobs_bpf_map_utilization_ratio{map="starts",node="n1"}'
+        values: '0.985+0x40'
+    alert_rule_test:
+      - alertname: NetObsBpfMapUtilizationHigh
+        eval_time: 8m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: netobs
+              map: starts
+              node: n1
+            exp_annotations:
+              summary: "netobs BPF map starts 98.5% full on "
+              description: "netobs BPF pairing map starts on  has been >80% full for 5 minutes. Pairing maps clean up entries on emit, so sustained growth means unmatched-entry leak and imminent LRU eviction of live tracking state. Inspect max_entries in bpf/netlat.bpf.c and the emit/cleanup path of this map."
+
+  # 활성 flow counter reset 지속: NetObsFlowCounterResets 가 발화한다. 입력은 scrape (30s) 당
+  # 3 회 reset 이 지속되는 시나리오로 rate = 0.1/s 라 임계 (0.005) 를 초과한다.
+  - interval: 30s
+    input_series:
+      - series: 'netobs_flow_counter_resets_total{node="n1"}'
+        values: '0+3x50'
+    alert_rule_test:
+      - alertname: NetObsFlowCounterResets
+        eval_time: 22m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: netobs
+              node: n1
+            exp_annotations:
+              summary: "netobs active flow counters resetting at 100m/s on "
+              description: "netobs_flow_counter_resets_total on  indicates active flows are being LRU-evicted from the BPF flow_bytes map and their bytes counters restart from zero (undercounting). The map is saturated with live traffic, not dead keys. Inspect flow cardinality sources (port-scan-like churn) and consider raising flow_bytes max_entries in bpf/netlat.bpf.c."
+
+  # reset 정지 상태 (평탄 카운터): 미발화를 단정한다.
+  - interval: 30s
+    input_series:
+      - series: 'netobs_flow_counter_resets_total{node="n1"}'
+        values: '100+0x50'
+    alert_rule_test:
+      - alertname: NetObsFlowCounterResets
+        eval_time: 22m
+        exp_alerts: []

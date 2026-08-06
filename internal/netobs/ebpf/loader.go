@@ -216,14 +216,13 @@ type Runtime struct {
 	// tcp_cleanup_rbuf 의 inc_flow_bytes 호출 이 5-tuple key 로 본 맵 에 누적 한다. userspace flow.
 	// Collector 가 scrape 시점 에 본 맵 을 iterate 해 netobs_flow_bytes_total counter 로 emit 한다.
 	FlowBytes *cebpf.Map
-	// SegAccum / RecvStarts / ConnectStarts / NicIngress 는 #413 의 utilization 편입 대상 LRU 맵
-	// 4종이다. self-health refresher 가 entry 수를 iterate 해 netobs_bpf_map_utilization_ratio 로
-	// emit 하며, LRU evict 로 인한 표본 누락 (재전송 seq 추적 / 수신·연결 타이머 / NIC ingress
-	// 타임스탬프 유실) 이 무증상으로 진행되지 않게 한다.
+	// SegAccum / RecvStarts / ConnectStarts 는 #413 의 utilization 편입 대상 LRU 맵 3종이다.
+	// self-health refresher 가 entry 수를 iterate 해 netobs_bpf_map_utilization_ratio 로 emit 하며,
+	// LRU evict 로 인한 표본 누락 (재전송 seq 추적 / 수신·연결 타이머 유실) 이 무증상으로 진행되지
+	// 않게 한다. nic_ingress 는 1-entry PERCPU_ARRAY 라 편입 대상이 아니다 (#416).
 	SegAccum      *cebpf.Map
 	RecvStarts    *cebpf.Map
 	ConnectStarts *cebpf.Map
-	NicIngress    *cebpf.Map
 }
 
 // Run은 BPF 오브젝트 로드, 프로브 attach, ringbuf reader 준비가 모두 끝난 시점에
@@ -378,7 +377,6 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 			SegAccum:      objs.SegAccum,
 			RecvStarts:    objs.RecvStarts,
 			ConnectStarts: objs.ConnectStarts,
-			NicIngress:    objs.NicIngress,
 		})
 	}
 
