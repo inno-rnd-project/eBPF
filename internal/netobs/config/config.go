@@ -49,6 +49,12 @@ type Config struct {
 	PodMetricsEnabled    bool
 	NodeName             string
 	MetadataRefresh      time.Duration
+	// InformerResync 는 kube.Resolver informer 의 resync 주기다 (#413). 종전에는 MetadataRefresh
+	// (30s, cgroup 스캐너와 pod cleanup 주기) 에 묶여 30초마다 클러스터 전체 캐시가 핸들러로 재전달
+	// 되며 write lock 이 폭주하고, resync 콜백이 informer_sync_lag 를 갱신해 watch 단절 감지를
+	// 가렸다. 분리 튜너블로 나누고 기본을 controller-runtime 관례인 10h 로 둔다. watch 는 이벤트
+	// 기반이라 resync 없이도 정합이 유지되고, 10h resync 는 핸들러 버그 보정용 안전망이다.
+	InformerResync       time.Duration
 	DropReasonFormatPath string
 
 	// PodFlowDstEnabled는 stage/drop/retrans 메트릭에 dst_namespace/dst_workload 라벨을 emit할지를
@@ -202,6 +208,11 @@ func Parse() (Config, error) {
 		return Config{}, err
 	}
 
+	informerResync, err := getenvDuration("KUBE_INFORMER_RESYNC", 10*time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+
 	nicCapacity, err := getenvFloat("NIC_CAPACITY_BYTES_PER_SEC", 1.25e9)
 	if err != nil {
 		return Config{}, err
@@ -238,6 +249,7 @@ func Parse() (Config, error) {
 		PodMetricsEnabled:            getenvBool("POD_METRICS_ENABLED", true),
 		NodeName:                     getenv("NODE_NAME", hostnameOr("unknown-node")),
 		MetadataRefresh:              metadataRefresh,
+		InformerResync:               informerResync,
 		DropReasonFormatPath:         getenv("DROP_REASON_FORMAT_PATH", "/sys/kernel/tracing/events/skb/kfree_skb/format"),
 		PodFlowDstEnabled:            getenvBool("POD_FLOW_DST_ENABLED", true),
 		PodFlowDstUIDAllowNamespaces: parseNamespaceList(getenv("POD_FLOW_DST_UID_ALLOW_NAMESPACES", "")),
@@ -259,6 +271,7 @@ func Parse() (Config, error) {
 	fs.BoolVar(&cfg.PodMetricsEnabled, "pod-metrics", cfg.PodMetricsEnabled, "emit per-pod-instance metrics (netobs_pod_stage_*); disable on large clusters to cap Prometheus cardinality")
 	fs.StringVar(&cfg.NodeName, "node-name", cfg.NodeName, "observed Kubernetes node name")
 	fs.DurationVar(&cfg.MetadataRefresh, "metadata-refresh", cfg.MetadataRefresh, "Kubernetes metadata refresh interval")
+	fs.DurationVar(&cfg.InformerResync, "informer-resync", cfg.InformerResync, "kube informer resync interval; safety-net replay of the full cache, keep long (default 10h)")
 	fs.StringVar(&cfg.DropReasonFormatPath, "drop-reason-format", cfg.DropReasonFormatPath, "skb:kfree_skb tracepoint format path")
 	fs.BoolVar(&cfg.PodFlowDstEnabled, "pod-flow-dst", cfg.PodFlowDstEnabled, "emit dst_namespace/dst_workload labels on stage/drop/retrans metrics; disable to keep pre-flow-dst cardinality")
 	var dstUIDNs string
@@ -301,6 +314,9 @@ func Parse() (Config, error) {
 
 	if cfg.MetadataRefresh <= 0 {
 		return Config{}, fmt.Errorf("invalid -metadata-refresh: must be > 0")
+	}
+	if cfg.InformerResync <= 0 {
+		return Config{}, fmt.Errorf("invalid -informer-resync: must be > 0")
 	}
 
 	if cfg.NICCapacityBytesPerSec <= 0 {

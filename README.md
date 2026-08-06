@@ -85,7 +85,8 @@ The CI workflow [`integration.yml`](.github/workflows/integration.yml) runs the 
 | `NETOBS_DROP_FLOW_ALLOW_NAMESPACES` | `-drop-flow-allow-namespaces` | *(empty)* | Comma-separated namespace allow-list for `netobs_drop_events_flow_total` 5-tuple emit (#64). Empty disables emit cluster-wide. RFC1123 validated. See [docs/netobs/drop-flow-analysis.md](docs/netobs/drop-flow-analysis.md) |
 | `NETOBS_DROP_FLOW_MAX_ACTIVE` | `-drop-flow-max-active` | `1024` | LRU sampling cap for concurrent active 5-tuple flows in drop flow metric. Older flows are evicted when limit exceeded |
 | `NODE_NAME` | `-node-name` | *(hostname)* | Observed Kubernetes node name |
-| `KUBE_METADATA_REFRESH` | `-metadata-refresh` | `30s` | Kubernetes informer resync interval |
+| `KUBE_METADATA_REFRESH` | `-metadata-refresh` | `30s` | cgroup scanner and stale-series cleanup interval |
+| `KUBE_INFORMER_RESYNC` | `-informer-resync` | `10h` | kube informer resync interval; safety-net full-cache replay, keep long (#413) |
 | `DROP_REASON_FORMAT_PATH` | `-drop-reason-format` | `/sys/kernel/tracing/events/skb/kfree_skb/format` | skb:kfree_skb tracepoint format path. See [docs/netobs/drop-reason.md](docs/netobs/drop-reason.md) for the kernel 6.8 reason code table, the runtime mapping mechanism, the `drop_category` taxonomy, and PromQL examples |
 
 ### gpuobs-agent
@@ -97,7 +98,7 @@ The CI workflow [`integration.yml`](.github/workflows/integration.yml) runs the 
 | `GPU_POLL_INTERVAL` | `-poll-interval` | `5s` | NVML device polling interval; must be > 0 |
 | `GPU_METRICS_ENABLED` | `-gpu-metrics` | `true` | Emit `gpuobs_device_*` metrics; set false to skip device polling entirely |
 | `GPUOBS_POD_METRICS_ENABLED` | `-pod-metrics` | `true` | Emit `gpuobs_pod_*` metrics via PID → Pod resolution; disable on large clusters to cap Prometheus cardinality |
-| `KUBE_METADATA_REFRESH` | `-metadata-refresh` | `30s` | Kubernetes informer resync interval; must be > 0 |
+| `KUBE_METADATA_REFRESH` | `-metadata-refresh` | `30s` | Kubernetes informer resync interval; must be > 0. Cheap after #413 node-scoped pod-only informer, and kept short so `informer_sync_lag` stays under the `ObsAgentInformerStale` threshold on quiet nodes |
 | `GPUOBS_CUDA_UPROBE_ENABLED` | `-cuda-uprobe` | `true` | Enable libcuda.so uprobe module emitting `gpuobs_cuda_*` counters; requires the host capabilities listed under "Host requirements" below and a libcuda hostPath mount. Pair with `GPUOBS_POD_METRICS_ENABLED=false` to fully suppress per-pod cardinality on large clusters |
 | `GPUOBS_CUDA_LIBCUDA_PATH` | `-cuda-libcuda-path` | (empty = auto) | Absolute path to host libcuda.so.1 reachable from inside the container. Empty probes the distro candidate paths (Debian multiarch, RHEL lib64, GPU Operator driver container) under the DaemonSet `/host/usr` and `/host/run/nvidia` mounts (#296) |
 | `GPUOBS_CUDA_DEVICEMAP_REFRESH` | `-cuda-devicemap-refresh` | `1s` | Interval between NVML `RunningProcesses` sweeps that rebuild the PID→GPU map and clean up stale `gpuobs_cuda_*` series; must be > 0 |
