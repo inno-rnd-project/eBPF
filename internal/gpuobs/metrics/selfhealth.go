@@ -35,6 +35,18 @@ var (
 		[]string{"call", "error_code"},
 	)
 
+	// bpfMapUtilizationRatio 는 cuda uprobe 모듈 BPF map 의 current entries / max entries 비율이다
+	// (#413). netobs 측 netobs_bpf_map_utilization_ratio 와 동일 의미로, cuda_tid_device 같은 LRU
+	// map 의 evict 로 인한 표본 누락 (kernel launch 의 device 귀속 유실 등) 이 무증상으로 진행되지
+	// 않게 한다. 판정 alert 는 본 이슈 범위 밖이라 붙이지 않는다.
+	bpfMapUtilizationRatio = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gpuobs_bpf_map_utilization_ratio",
+			Help: "Current/max entry ratio of gpuobs cuda BPF maps (cuda_tid_device, cuctx_to_device, cuctx_create_args, sync_starts). Sustained values near 1.0 mean LRU eviction is discarding samples.",
+		},
+		[]string{"map"},
+	)
+
 	// informerSyncLagSeconds 는 netobs 측 동명 게이지와 같은 의미이며, gpuobs agent 가 kube
 	// Resolver 를 사용할 때 노출한다. PodMetricsEnabled=false 운영 모드에서는 emit 자체가 skip
 	// 된다.
@@ -77,6 +89,12 @@ func ObserveNvmlCall(call string, durationSeconds float64, errCode string) {
 	if errCode != "" {
 		nvmlErrorsTotal.WithLabelValues(call, errCode).Inc()
 	}
+}
+
+// SetBpfMapUtilization 은 map 라벨 별 포화 비율을 emit 한다. ratio 는 호출 측 (cuda refresher)
+// 에서 current / max 로 산정을 마친 값이다.
+func SetBpfMapUtilization(mapName string, ratio float64) {
+	bpfMapUtilizationRatio.WithLabelValues(mapName).Set(ratio)
 }
 
 // SetInformerSyncLag 는 informer staleness 게이지를 갱신한다. netobs 측 동명 함수와 동일 의미.

@@ -300,7 +300,17 @@ func main() {
 				// self-health refresher 는 BPF map handle 이 준비된 시점에 한 번 spawn 한다.
 				// 구성 실패는 self-health 만 disable 하고 agent 전체 기동은 진행해 운영자가
 				// up{} 와 program_loaded 메트릭으로 1 차 진단을 시작할 수 있게 한다.
-				if rf, err := selfhealth.NewRefresher(rt.Starts, rt.PodBytes, rt.EventsDropped, rt.DropStacks, rt.FlowBytes); err != nil {
+				if rf, err := selfhealth.NewRefresher(selfhealth.Maps{
+				Starts:        rt.Starts,
+				PodBytes:      rt.PodBytes,
+				EventsDropped: rt.EventsDropped,
+				DropStacks:    rt.DropStacks,
+				FlowBytes:     rt.FlowBytes,
+				SegAccum:      rt.SegAccum,
+				RecvStarts:    rt.RecvStarts,
+				ConnectStarts: rt.ConnectStarts,
+				NicIngress:    rt.NicIngress,
+			}); err != nil {
 					log.Printf("self-health refresher: %v", err)
 				} else {
 					rf.Start(ctx)

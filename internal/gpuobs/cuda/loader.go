@@ -18,6 +18,7 @@ import (
 	"netobs/internal/gpuobs/nvml"
 	"netobs/internal/gpuobs/types"
 	"netobs/internal/kube"
+	"netobs/internal/selfobs"
 )
 
 // PodResolver 는 cuda 패키지가 PID → PodIdentity 해석에 의존하는 최소 인터페이스다.
@@ -105,6 +106,13 @@ type Reader struct {
 	hostUUIDByIndex map[int]string
 	hostUUIDSet     map[string]struct{}
 	hostUUIDMu      sync.RWMutex
+
+	// mapSizers 는 #413 utilization 편입 대상 cuda BPF map (cuda_tid_device, cuctx_to_device,
+	// cuctx_create_args, sync_starts) 의 sizer 다. Run 이 BPF objs 로드 직후 구성하고 refreshOnce
+	// 가 mapUtilEmitEvery 간격으로 iterate 해 gpuobs_bpf_map_utilization_ratio 를 emit 한다.
+	// refresh 주기 (기본 1s) 마다 iterate 하면 낭비라 별도 간격으로 묶는다.
+	mapSizers   []selfobs.MapSizer
+	lastMapUtil time.Time
 
 	// recordEvent 는 metrics.RecordCudaEvent 를 위한 test seam 이다.
 	// 운영 코드는 New 에서 metrics.RecordCudaEvent 를 기본값으로 받고, 단위 테스트에서는
@@ -309,6 +317,23 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	defer cancel()
+
+	// #413 cuda LRU map utilization sizer. 구성 실패는 해당 map 만 skip (fail-open).
+	for _, cm := range []struct {
+		name string
+		m    *cebpf.Map
+	}{
+		{"cuda_tid_device", objs.CudaTidDevice},
+		{"cuctx_to_device", objs.CuctxToDevice},
+		{"cuctx_create_args", objs.CuctxCreateArgs},
+		{"sync_starts", objs.SyncStarts},
+	} {
+		if sizer, err := selfobs.NewBPFMapSizer(cm.name, cm.m); err == nil {
+			r.mapSizers = append(r.mapSizers, sizer)
+		} else {
+			log.Printf("cuda: %s sizer skipped: %v", cm.name, err)
+		}
+	}
 
 	wg.Add(1)
 	go func() {
@@ -538,6 +563,34 @@ func (r *Reader) refreshOnce(devSet *nvml.DeviceSet, devmap *deviceMap, dropped 
 		baseline.last = current
 	}
 	// current == baseline.last 인 케이스 (drop 변화 없음) 는 모든 분기를 통과하지 않아 자연 no-op.
+
+	r.emitMapUtilization()
+}
+
+// mapUtilEmitEvery 는 cuda BPF map utilization iterate 의 최소 간격이다. refresh 사이클 (기본 1s)
+// 마다 수만 entry iterate 는 낭비라 netobs self-health refresher 와 동일한 30s cadence 로 묶는다.
+const mapUtilEmitEvery = 30 * time.Second
+
+// emitMapUtilization 은 mapUtilEmitEvery 이상 지난 경우에만 sizer 4종을 iterate 해
+// gpuobs_bpf_map_utilization_ratio 를 emit 한다. refreshOnce 단일 goroutine 에서만 호출되어
+// lastMapUtil 에 동기화가 필요 없다.
+func (r *Reader) emitMapUtilization() {
+	if len(r.mapSizers) == 0 || time.Since(r.lastMapUtil) < mapUtilEmitEvery {
+		return
+	}
+	r.lastMapUtil = time.Now()
+	for _, s := range r.mapSizers {
+		entries, err := s.Entries()
+		if err != nil {
+			log.Printf("cuda: map %s entries iterate: %v", s.Name(), err)
+			continue
+		}
+		max := s.MaxEntries()
+		if max == 0 {
+			continue
+		}
+		metrics.SetBpfMapUtilization(s.Name(), float64(entries)/float64(max))
+	}
 }
 
 // readDroppedTotal 은 cuda_dropped percpu array (key=0) 슬롯을 모든 CPU 에서 읽어 합산한다.
