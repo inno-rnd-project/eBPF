@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"os"
@@ -12,10 +13,13 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	injectorv1alpha1 "netobs/api/v1alpha1"
 	injectorcontroller "netobs/internal/injector/controller"
+	"netobs/internal/injector/loadgen"
+	"netobs/internal/injector/safety"
 )
 
 // controllerScheme 은 manager 에 등록되는 scheme 이다. core API 와 #102 의 LoadScenario CRD 가
@@ -136,6 +140,22 @@ func runControllerMode() int {
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		log.Printf("controller: reconciler SetupWithManager: %v", err)
+		return 1
+	}
+
+	// #418 기동 sweep. leader 획득 후 1회 실행되는 runnable 로 등록해 (LeaderElectionRunnable 미구현
+	// runnable 은 leader 그룹에 들어감) 이전 인스턴스가 남긴 고아 부하 pod 를 회수한다. 재개되는
+	// Running 시나리오의 pod 는 age 가드가 보호한다.
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		swept, err := loadgen.SweepOrphans(ctx, k8sClient, "", safety.DurationLimit)
+		if err != nil {
+			log.Printf("controller: orphan sweep: %v (swept=%d)", err, swept)
+		} else if swept > 0 {
+			log.Printf("controller: orphan sweep: reclaimed %d stale stress pods", swept)
+		}
+		return nil
+	})); err != nil {
+		log.Printf("controller: add orphan sweep runnable: %v", err)
 		return 1
 	}
 
