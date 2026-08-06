@@ -121,7 +121,11 @@ func SelfOwnerReference(podName, podNamespace, podUID, spawnNamespace string) *m
 // deadlineGraceSec 는 activeDeadlineSeconds 의 여유분이다 (#418). 부하 duration 에 이미지 pull 과
 // 스케줄 대기와 client 의 server ready polling (최대 수십 초) 을 더해도 남는 상한으로, kubelet 이
 // 컨트롤러 부재 시에도 pod 를 강제 종료하는 최후 방어선이다. 정상 경로 (자체 종료 또는 Stop 의
-// delete) 보다 항상 늦게 걸리도록 duration 대비 충분히 크게 둔다.
+// delete) 보다 항상 늦게 걸리도록 duration 대비 충분히 크게 둔다. 단 deadline 은 pod 시작 시점부터
+// 계산되어 이미지 pull 시간이 여유를 잠식한다. stress / iperf3 이미지는 작고 캐시가 일반적이라
+// 실질 위험이 낮으나, gpu 부하의 nvidia/cuda devel 이미지 (수 GB) 가 미캐시 노드에서 pull 되는
+// 짧은 duration 시나리오는 pull 도중 deadline 이 걸릴 수 있다 (#418 리뷰). 그 경우 pod 가
+// DeadlineExceeded 로 Failed 되며 재시도 또는 이미지 사전 pull 로 대응한다.
 const deadlineGraceSec = 120
 
 // activeDeadlineSeconds 는 부하 duration + 여유의 kubelet 강제 종료 상한을 돌려준다 (#418).
