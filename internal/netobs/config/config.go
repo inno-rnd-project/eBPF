@@ -43,12 +43,12 @@ const (
 )
 
 type Config struct {
-	TargetIP             string
-	ListenAddr           string
-	PrintEvents          bool
-	PodMetricsEnabled    bool
-	NodeName             string
-	MetadataRefresh      time.Duration
+	TargetIP          string
+	ListenAddr        string
+	PrintEvents       bool
+	PodMetricsEnabled bool
+	NodeName          string
+	MetadataRefresh   time.Duration
 	// InformerResync 는 kube.Resolver informer 의 resync 주기다 (#413). 종전에는 MetadataRefresh
 	// (30s, cgroup 스캐너와 pod cleanup 주기) 에 묶여 30초마다 클러스터 전체 캐시가 핸들러로 재전달
 	// 되며 write lock 이 폭주하고, resync 콜백이 informer_sync_lag 를 갱신해 watch 단절 감지를
