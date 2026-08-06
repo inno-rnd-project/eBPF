@@ -388,3 +388,91 @@ func TestNetwork_TrimsIntensityWhitespace(t *testing.T) {
 		t.Errorf("intensity %q 인데 통과함 (내부 공백은 거부)", params.Intensity)
 	}
 }
+
+// TestSpawnedPodsHaveOrphanGuards 는 #418 의 고아 방지 장치 2종을 전 부하 모듈에 대해 단정한다.
+// spawn 된 모든 pod 에 activeDeadlineSeconds (duration + 여유) 가 걸리고, iperf3 server 는 timeout
+// wrapper 로 자체 종료 명령을 갖는다.
+func TestSpawnedPodsHaveOrphanGuards(t *testing.T) {
+	for _, kind := range []Kind{KindCPU, KindMemory, KindNetwork, KindGPU} {
+		client := fake.NewSimpleClientset()
+		gen, err := New(kind, client)
+		if err != nil {
+			t.Fatalf("%s: New: %v", kind, err)
+		}
+		intensity := map[Kind]string{
+			KindCPU:     "2",
+			KindMemory:  "256Mi",
+			KindNetwork: "100M",
+			KindGPU:     "50",
+		}[kind]
+		params := Params{
+			TargetNode:     "n1",
+			TargetPod:      "victim",
+			SpawnNamespace: "ebpf-project",
+			Duration:       60 * time.Second,
+			Intensity:      intensity,
+		}
+		if err := gen.Start(context.Background(), params); err != nil {
+			t.Fatalf("%s: Start: %v", kind, err)
+		}
+		pods, _ := client.CoreV1().Pods("ebpf-project").List(context.Background(), metav1.ListOptions{})
+		if len(pods.Items) == 0 {
+			t.Fatalf("%s: no pods spawned", kind)
+		}
+		for _, p := range pods.Items {
+			if p.Spec.ActiveDeadlineSeconds == nil {
+				t.Errorf("%s: pod %s has no activeDeadlineSeconds", kind, p.Name)
+				continue
+			}
+			if got, want := *p.Spec.ActiveDeadlineSeconds, int64(60+deadlineGraceSec); got != want {
+				t.Errorf("%s: pod %s activeDeadlineSeconds=%d want %d", kind, p.Name, got, want)
+			}
+			if p.Labels["injector.role"] == "server" {
+				cmd := strings.Join(p.Spec.Containers[0].Command, " ")
+				if !strings.Contains(cmd, "timeout") || !strings.Contains(cmd, "iperf3 -s") {
+					t.Errorf("server command lacks timeout wrapper: %q", cmd)
+				}
+			}
+		}
+	}
+}
+
+// TestSelfOwnerReference_NamespaceGuard 는 #418 ownerReference 의 동일 namespace 제약 가드를
+// 단정한다. cross-namespace owner 는 GC 가 소유자 부재로 간주해 pod 를 즉시 회수하므로 nil 로
+// degrade 해야 한다.
+func TestSelfOwnerReference_NamespaceGuard(t *testing.T) {
+	if ref := SelfOwnerReference("ctrl-1", "ebpf-project", "uid-1", "ebpf-project"); ref == nil {
+		t.Fatal("동일 namespace 인데 nil")
+	} else if ref.Kind != "Pod" || ref.Name != "ctrl-1" || string(ref.UID) != "uid-1" {
+		t.Fatalf("ownerReference 필드 불일치: %+v", ref)
+	}
+	if ref := SelfOwnerReference("ctrl-1", "ebpf-project", "uid-1", "other-ns"); ref != nil {
+		t.Fatalf("cross-namespace 인데 부여됨: %+v", ref)
+	}
+	if ref := SelfOwnerReference("", "", "", "ebpf-project"); ref != nil {
+		t.Fatalf("env 부재인데 부여됨: %+v", ref)
+	}
+}
+
+// TestSpawnedPodsCarryOwnerReference 는 Params.Owner 가 spawn 되는 전 pod 에 전파됨을 단정한다.
+func TestSpawnedPodsCarryOwnerReference(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	gen, _ := New(KindNetwork, client)
+	owner := SelfOwnerReference("ctrl-1", "ebpf-project", "uid-1", "ebpf-project")
+	err := gen.Start(context.Background(), Params{
+		TargetNode: "n1", TargetPod: "victim", SpawnNamespace: "ebpf-project",
+		Duration: 30 * time.Second, Intensity: "100M", Owner: owner,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	pods, _ := client.CoreV1().Pods("ebpf-project").List(context.Background(), metav1.ListOptions{})
+	for _, p := range pods.Items {
+		if len(p.OwnerReferences) != 1 || p.OwnerReferences[0].Name != "ctrl-1" {
+			t.Errorf("pod %s ownerReferences=%+v", p.Name, p.OwnerReferences)
+		}
+	}
+	if len(pods.Items) != 2 {
+		t.Fatalf("spawned=%d want 2", len(pods.Items))
+	}
+}

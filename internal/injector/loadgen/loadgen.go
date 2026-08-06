@@ -42,6 +42,11 @@ type Params struct {
 	// Labels 는 spawn 되는 Pod 에 공통으로 부여될 라벨이다. PodMonitor selector 또는 cleanup 식별에
 	// 활용된다.
 	Labels map[string]string
+	// Owner 는 spawn 되는 Pod 의 ownerReference 다 (#418). 컨트롤러 pod 를 소유자로 두면 컨트롤러
+	// (Deployment) 삭제 시 Kubernetes GC 가 부하 pod 를 회수한다. ownerReference 는 동일 namespace
+	// 제약이 있어 (cross-namespace owner 는 GC 가 소유자 부재로 간주해 즉시 회수) 호출자가
+	// SpawnNamespace 와 자신의 namespace 가 일치할 때만 채운다. nil 이면 미부여.
+	Owner *metav1.OwnerReference
 }
 
 // LoadGenerator 는 세 부하 모듈이 공통으로 구현하는 인터페이스다. Start 가 비차단 (Pod 만 띄우고
@@ -86,11 +91,48 @@ func commonPodMeta(name string, params Params) metav1.ObjectMeta {
 	for k, v := range params.Labels {
 		labels[k] = v
 	}
-	return metav1.ObjectMeta{
+	meta := metav1.ObjectMeta{
 		Name:      name,
 		Namespace: params.SpawnNamespace,
 		Labels:    labels,
 	}
+	if params.Owner != nil {
+		meta.OwnerReferences = []metav1.OwnerReference{*params.Owner}
+	}
+	return meta
+}
+
+// SelfOwnerReference 는 downward API env (POD_NAME / POD_NAMESPACE / POD_UID) 로부터 자기 pod 의
+// ownerReference 를 만든다 (#418). spawnNamespace 가 자기 namespace 와 다르거나 env 가 비어 있으면
+// (수동 실행 등) nil 을 돌려줘 미부여로 진행한다. controller=false 로 두어 kubelet / scheduler 의
+// 소유권 판정에 관여하지 않고 GC 회수 용도로만 쓴다.
+func SelfOwnerReference(podName, podNamespace, podUID, spawnNamespace string) *metav1.OwnerReference {
+	if podName == "" || podUID == "" || podNamespace == "" || podNamespace != spawnNamespace {
+		return nil
+	}
+	return &metav1.OwnerReference{
+		APIVersion: "v1",
+		Kind:       "Pod",
+		Name:       podName,
+		UID:        types.UID(podUID),
+	}
+}
+
+// deadlineGraceSec 는 activeDeadlineSeconds 의 여유분이다 (#418). 부하 duration 에 이미지 pull 과
+// 스케줄 대기와 client 의 server ready polling (최대 수십 초) 을 더해도 남는 상한으로, kubelet 이
+// 컨트롤러 부재 시에도 pod 를 강제 종료하는 최후 방어선이다. 정상 경로 (자체 종료 또는 Stop 의
+// delete) 보다 항상 늦게 걸리도록 duration 대비 충분히 크게 둔다. 단 deadline 은 pod 시작 시점부터
+// 계산되어 이미지 pull 시간이 여유를 잠식한다. stress / iperf3 이미지는 작고 캐시가 일반적이라
+// 실질 위험이 낮으나, gpu 부하의 nvidia/cuda devel 이미지 (수 GB) 가 미캐시 노드에서 pull 되는
+// 짧은 duration 시나리오는 pull 도중 deadline 이 걸릴 수 있다 (#418 리뷰). 그 경우 pod 가
+// DeadlineExceeded 로 Failed 되며 재시도 또는 이미지 사전 pull 로 대응한다.
+const deadlineGraceSec = 120
+
+// activeDeadlineSeconds 는 부하 duration + 여유의 kubelet 강제 종료 상한을 돌려준다 (#418).
+// 전 부하 pod 의 PodSpec.ActiveDeadlineSeconds 에 공통 적용된다.
+func activeDeadlineSeconds(params Params) *int64 {
+	d := int64(params.Duration.Seconds()) + deadlineGraceSec
+	return &d
 }
 
 // createPod 는 K8s API 로 Pod 생성을 시도하고 이미 존재하면 NotFound / AlreadyExists 를 무시한다.

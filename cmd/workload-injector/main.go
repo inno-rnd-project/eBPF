@@ -352,6 +352,8 @@ func runInjection(
 		SpawnNamespace:  cfg.SpawnNamespace,
 		Duration:        cfg.Duration,
 		Intensity:       cfg.Intensity,
+		// #418 자기 pod 소유 ownerReference. cluster 밖 수동 실행에서는 env 부재로 미부여.
+		Owner: loadgen.SelfOwnerReference(os.Getenv("POD_NAME"), os.Getenv("POD_NAMESPACE"), os.Getenv("POD_UID"), cfg.SpawnNamespace),
 	})
 	// defer 로 Stop 호출 등록. start 가 부분 spawn 후 실패해도 cleanup.
 	defer func() {
