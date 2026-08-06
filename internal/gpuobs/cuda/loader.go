@@ -662,7 +662,9 @@ func (r *Reader) buildActiveCudaKeys(pidToUUIDs map[uint32][]string) map[metrics
 // (비-Pod / informer 미동기) 는 매 사이클 재해석해 Pod 기동 직후 informer sync 지연이 다음
 // 사이클에서 곧바로 수렴하는 종전 동작을 유지하며, dispatch 의 negative caching (사이클 내
 // 재호출 억제) 도 그대로다. 사이클 사이의 PID 재사용 (종료 후 같은 PID 로 다른 Pod 프로세스
-// 기동) 은 오귀속 여지가 있으나 pid_max 공간에서 1s 창 내 재사용은 실질 확률이 없다.
+// 기동) 은 오귀속 여지가 있으나 pid_max 공간에서 1s 창 내 재사용은 실질 확률이 없다. 단
+// GPUOBS_CUDA_DEVICEMAP_REFRESH 를 크게 늘리면 이 재사용 창이 함께 넓어져 확률이 올라가므로
+// 해당 env 조정 시 본 트레이드오프를 같이 봐야 한다.
 func (r *Reader) resolvePidToPod(pidToUUID map[uint32]string) map[uint32]kube.PodIdentity {
 	if r.resolver == nil {
 		return map[uint32]kube.PodIdentity{}

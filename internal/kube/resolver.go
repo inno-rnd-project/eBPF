@@ -497,6 +497,9 @@ func (r *Resolver) onDeleteNode(obj interface{}) {
 //   - Status: PodIP, PodIPs
 //
 // 그 외 (containers 의 env / volumeMounts / probe, managedFields, labels 등) 는 전부 버려진다.
+// 여기서 버린 필드 (예: Status.Phase, Labels) 를 resolver 코드가 새로 읽기 시작하면 컴파일은
+// 통과하고 런타임에 조용히 zero 값이 되므로, 그 필드를 반드시 본 함수의 보존 목록에 함께
+// 추가해야 한다 (동등성 테스트 TestSlimPod_PreservesResolverConsumedFields 도 함께 갱신).
 // Pod 이외 타입 (DeletedFinalStateUnknown tombstone 포함) 은 그대로 통과시켜 삭제 경로의 의미를
 // 보존한다.
 func slimPod(obj interface{}) (interface{}, error) {
