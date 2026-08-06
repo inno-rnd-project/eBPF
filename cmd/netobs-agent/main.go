@@ -94,7 +94,12 @@ func main() {
 	// stale stack_id 매핑 회귀를 막는다. resolver init 실패 (kallsyms 미접근 등) 케이스는 nil 로 두어
 	// metrics 패키지가 stack 메트릭 emit 만 fail-open 으로 skip 한다.
 	var dropStackResolver atomic.Pointer[symbols.Resolver]
-	kr := kube.NewResolver(cfg.NodeName, cfg.MetadataRefresh)
+	// resync 는 MetadataRefresh (스캐너 / cleanup 주기) 와 분리된 InformerResync 를 쓴다 (#413).
+	// 30s resync 는 클러스터 전체 캐시 재전달로 write lock 을 폭주시키고 informer_sync_lag 의
+	// watch 단절 감지를 가렸다. 10h 기본에서 sync_lag 는 실제 watch 이벤트로만 갱신되고, node
+	// informer 의 status 갱신 (기본 5m 주기 보고) 이 유휴 클러스터의 하한 신호가 되어
+	// ObsAgentInformerStale (300s) 오발화를 막는다.
+	kr := kube.NewResolver(cfg.NodeName, cfg.InformerResync)
 	enricher := metadata.NewEnricher(kr)
 
 	// podbytes collector는 BPF의 pod_bytes 누적 맵을 scrape 시점에 iterate해 netobs_pod_bytes_total
@@ -272,6 +277,9 @@ func main() {
 	// 최종 에러를 errCh로 전달한다.
 	events := make(chan types.Event, 4096)
 	errCh := make(chan error, 1)
+	// #413 채널 depth gauge. ringbuf drop 발생 시 depth 가 용량 근처면 소비자 병목, 0 근처면
+	// 커널 순간 폭주로 유실 원인을 분리한다.
+	metrics.RegisterEventChannelDepth(reg, events, cap(events))
 
 	go func() {
 		errCh <- ebpfx.Run(ctx, cfg.TargetIP, events, func(rt *ebpfx.Runtime) {
@@ -295,7 +303,17 @@ func main() {
 				// self-health refresher 는 BPF map handle 이 준비된 시점에 한 번 spawn 한다.
 				// 구성 실패는 self-health 만 disable 하고 agent 전체 기동은 진행해 운영자가
 				// up{} 와 program_loaded 메트릭으로 1 차 진단을 시작할 수 있게 한다.
-				if rf, err := selfhealth.NewRefresher(rt.Starts, rt.PodBytes, rt.EventsDropped, rt.DropStacks, rt.FlowBytes); err != nil {
+				if rf, err := selfhealth.NewRefresher(selfhealth.Maps{
+					Starts:        rt.Starts,
+					PodBytes:      rt.PodBytes,
+					EventsDropped: rt.EventsDropped,
+					DropStacks:    rt.DropStacks,
+					FlowBytes:     rt.FlowBytes,
+					SegAccum:      rt.SegAccum,
+					RecvStarts:    rt.RecvStarts,
+					ConnectStarts: rt.ConnectStarts,
+					NicIngress:    rt.NicIngress,
+				}); err != nil {
 					log.Printf("self-health refresher: %v", err)
 				} else {
 					rf.Start(ctx)
@@ -319,8 +337,10 @@ func main() {
 				continue
 			}
 
+			processStart := time.Now()
 			enriched := enricher.Enrich(ev, mapper)
 			metrics.Record(enriched)
+			metrics.ObserveEventProcessing(time.Since(processStart))
 
 			if cfg.PrintEvents {
 				log.Printf(

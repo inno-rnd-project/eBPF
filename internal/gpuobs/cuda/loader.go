@@ -18,6 +18,7 @@ import (
 	"netobs/internal/gpuobs/nvml"
 	"netobs/internal/gpuobs/types"
 	"netobs/internal/kube"
+	"netobs/internal/selfobs"
 )
 
 // PodResolver 는 cuda 패키지가 PID → PodIdentity 해석에 의존하는 최소 인터페이스다.
@@ -105,6 +106,13 @@ type Reader struct {
 	hostUUIDByIndex map[int]string
 	hostUUIDSet     map[string]struct{}
 	hostUUIDMu      sync.RWMutex
+
+	// mapSizers 는 #413 utilization 편입 대상 cuda BPF map (cuda_tid_device, cuctx_to_device,
+	// cuctx_create_args, sync_starts) 의 sizer 다. Run 이 BPF objs 로드 직후 구성하고 refreshOnce
+	// 가 mapUtilEmitEvery 간격으로 iterate 해 gpuobs_bpf_map_utilization_ratio 를 emit 한다.
+	// refresh 주기 (기본 1s) 마다 iterate 하면 낭비라 별도 간격으로 묶는다.
+	mapSizers   []selfobs.MapSizer
+	lastMapUtil time.Time
 
 	// recordEvent 는 metrics.RecordCudaEvent 를 위한 test seam 이다.
 	// 운영 코드는 New 에서 metrics.RecordCudaEvent 를 기본값으로 받고, 단위 테스트에서는
@@ -309,6 +317,23 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	defer cancel()
+
+	// #413 cuda LRU map utilization sizer. 구성 실패는 해당 map 만 skip (fail-open).
+	for _, cm := range []struct {
+		name string
+		m    *cebpf.Map
+	}{
+		{"cuda_tid_device", objs.CudaTidDevice},
+		{"cuctx_to_device", objs.CuctxToDevice},
+		{"cuctx_create_args", objs.CuctxCreateArgs},
+		{"sync_starts", objs.SyncStarts},
+	} {
+		if sizer, err := selfobs.NewBPFMapSizer(cm.name, cm.m); err == nil {
+			r.mapSizers = append(r.mapSizers, sizer)
+		} else {
+			log.Printf("cuda: %s sizer skipped: %v", cm.name, err)
+		}
+	}
 
 	wg.Add(1)
 	go func() {
@@ -538,6 +563,34 @@ func (r *Reader) refreshOnce(devSet *nvml.DeviceSet, devmap *deviceMap, dropped 
 		baseline.last = current
 	}
 	// current == baseline.last 인 케이스 (drop 변화 없음) 는 모든 분기를 통과하지 않아 자연 no-op.
+
+	r.emitMapUtilization()
+}
+
+// mapUtilEmitEvery 는 cuda BPF map utilization iterate 의 최소 간격이다. refresh 사이클 (기본 1s)
+// 마다 수만 entry iterate 는 낭비라 netobs self-health refresher 와 동일한 30s cadence 로 묶는다.
+const mapUtilEmitEvery = 30 * time.Second
+
+// emitMapUtilization 은 mapUtilEmitEvery 이상 지난 경우에만 sizer 4종을 iterate 해
+// gpuobs_bpf_map_utilization_ratio 를 emit 한다. refreshOnce 단일 goroutine 에서만 호출되어
+// lastMapUtil 에 동기화가 필요 없다.
+func (r *Reader) emitMapUtilization() {
+	if len(r.mapSizers) == 0 || time.Since(r.lastMapUtil) < mapUtilEmitEvery {
+		return
+	}
+	r.lastMapUtil = time.Now()
+	for _, s := range r.mapSizers {
+		entries, err := s.Entries()
+		if err != nil {
+			log.Printf("cuda: map %s entries iterate: %v", s.Name(), err)
+			continue
+		}
+		max := s.MaxEntries()
+		if max == 0 {
+			continue
+		}
+		metrics.SetBpfMapUtilization(s.Name(), float64(entries)/float64(max))
+	}
 }
 
 // readDroppedTotal 은 cuda_dropped percpu array (key=0) 슬롯을 모든 CPU 에서 읽어 합산한다.
@@ -603,14 +656,25 @@ func (r *Reader) buildActiveCudaKeys(pidToUUIDs map[uint32][]string) map[metrics
 // resolver 가 nil 인 경우 빈 매핑을 반환해 podMap 도 빈 상태로 통째 교체된다 (dispatch 가
 // resolver==nil 분기로 분기되므로 lookup 결과가 사용되지 않는다).
 //
-// negative result (비-Pod) 도 zero PodIdentity 그대로 적재해 dispatch 가 동일 PID 에 대해
-// ResolvePID 를 다시 호출하지 않게 한다 (lazy fill 경로의 negative caching 과 동일 의미).
+// #413 부터 직전 사이클의 podMap 결과를 carry-over 한다. 살아 있는 PID 의 /proc/<pid>/cgroup
+// 경로는 프로세스 수명 동안 불변이라 Pod 해석 결과 (positive) 는 재파싱 없이 재사용해도 안전
+// 하고, 기본 1s 주기에서 전 활성 PID 의 procfs 재파싱이 신규 PID 한정으로 준다. negative result
+// (비-Pod / informer 미동기) 는 매 사이클 재해석해 Pod 기동 직후 informer sync 지연이 다음
+// 사이클에서 곧바로 수렴하는 종전 동작을 유지하며, dispatch 의 negative caching (사이클 내
+// 재호출 억제) 도 그대로다. 사이클 사이의 PID 재사용 (종료 후 같은 PID 로 다른 Pod 프로세스
+// 기동) 은 오귀속 여지가 있으나 pid_max 공간에서 1s 창 내 재사용은 실질 확률이 없다. 단
+// GPUOBS_CUDA_DEVICEMAP_REFRESH 를 크게 늘리면 이 재사용 창이 함께 넓어져 확률이 올라가므로
+// 해당 env 조정 시 본 트레이드오프를 같이 봐야 한다.
 func (r *Reader) resolvePidToPod(pidToUUID map[uint32]string) map[uint32]kube.PodIdentity {
 	if r.resolver == nil {
 		return map[uint32]kube.PodIdentity{}
 	}
 	fresh := make(map[uint32]kube.PodIdentity, len(pidToUUID))
 	for pid := range pidToUUID {
+		if id, ok := r.pods.lookup(pid); ok && id.IsPod() {
+			fresh[pid] = id
+			continue
+		}
 		fresh[pid] = r.resolver.ResolvePID(pid)
 	}
 	return fresh

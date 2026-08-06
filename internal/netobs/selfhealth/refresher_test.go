@@ -3,6 +3,8 @@ package selfhealth
 import (
 	"errors"
 	"testing"
+
+	"netobs/internal/selfobs"
 )
 
 // fakeDropSource 는 dropSource 의 in-memory 구현이다. test 가 사이클 단위로 카운터를 조작해
@@ -11,7 +13,7 @@ type fakeDropSource struct{ v uint64 }
 
 func (f *fakeDropSource) Total() uint64 { return f.v }
 
-// fakeSizer 는 mapSizer 의 in-memory 구현이다.
+// fakeSizer 는 selfobs.MapSizer 의 in-memory 구현이다.
 type fakeSizer struct {
 	name    string
 	entries uint64
@@ -85,7 +87,7 @@ func TestRefresher_DropsResetSkipsAccumulation(t *testing.T) {
 func TestRefresher_MapUtilizationCallsSizer(t *testing.T) {
 	starts := &fakeSizer{name: "starts", entries: 4096, max: 16384}
 	pb := &fakeSizer{name: "pod_bytes", entries: 8000, max: 16384}
-	r := &Refresher{drops: &fakeDropSource{}, sizers: []mapSizer{starts, pb}}
+	r := &Refresher{drops: &fakeDropSource{}, sizers: []selfobs.MapSizer{starts, pb}}
 	var b baseline
 	r.refreshOnce(&b)
 
@@ -102,7 +104,7 @@ func TestRefresher_MapUtilizationCallsSizer(t *testing.T) {
 func TestRefresher_MapUtilizationContinuesOnError(t *testing.T) {
 	starts := &fakeSizer{name: "starts", err: errors.New("iterate failed")}
 	pb := &fakeSizer{name: "pod_bytes", entries: 8000, max: 16384}
-	r := &Refresher{drops: &fakeDropSource{}, sizers: []mapSizer{starts, pb}}
+	r := &Refresher{drops: &fakeDropSource{}, sizers: []selfobs.MapSizer{starts, pb}}
 	var b baseline
 	r.refreshOnce(&b)
 
@@ -116,7 +118,7 @@ func TestRefresher_MapUtilizationContinuesOnError(t *testing.T) {
 func TestRefresher_MapUtilizationZeroMaxIsNoop(t *testing.T) {
 	broken := &fakeSizer{name: "broken", entries: 1, max: 0}
 	ok := &fakeSizer{name: "ok", entries: 100, max: 1000}
-	r := &Refresher{drops: &fakeDropSource{}, sizers: []mapSizer{broken, ok}}
+	r := &Refresher{drops: &fakeDropSource{}, sizers: []selfobs.MapSizer{broken, ok}}
 	var b baseline
 	r.refreshOnce(&b)
 

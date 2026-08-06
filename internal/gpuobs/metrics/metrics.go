@@ -777,6 +777,7 @@ func Register(reg prometheus.Registerer) {
 		cudaPidMultiGPUCount,
 		cudaLaunchBaselinePerSec,
 		nvmlCallDuration,
+		bpfMapUtilizationRatio,
 		nvmlErrorsTotal,
 		informerSyncLagSeconds,
 		dcgmAvailable,

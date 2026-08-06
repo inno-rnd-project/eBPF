@@ -105,13 +105,14 @@ func main() {
 	defer func() { _ = ncclProfiler.Close() }()
 	metrics.SetNcclProfilerAvailable(ncclProfiler.Available())
 
-	// kube.Resolver는 Pod/Service/Node informer를 띄우고 IP/UID 인덱스를 유지한다.
-	// gpuobs는 ResolvePID 경로만 사용하므로, PodMetricsEnabled가 false인 경우에는
-	// informer 자체를 기동하지 않아 RBAC/메모리 비용을 발생시키지 않고 /readyz도 kube sync에 묶이지 않는다.
-	// 토글 on 시에는 pods/services/nodes 모두에 대해 RBAC가 필요하다 (deploy/gpuobs/base/clusterrole.yaml 참조).
+	// kube.Resolver는 Pod informer를 띄우고 UID 인덱스를 유지한다. gpuobs는 ResolvePID (로컬 PID
+	// 한정) 경로만 사용하므로 #413 부터 spec.nodeName 필드셀렉터의 Pod 단독 informer 로 스코프를
+	// 줄인다. 캐시와 watch 가 클러스터 크기에 비례하지 않고 RBAC 도 pods 만 필요하다
+	// (deploy/gpuobs/base/clusterrole.yaml 참조). PodMetricsEnabled가 false인 경우에는 informer
+	// 자체를 기동하지 않아 RBAC/메모리 비용을 발생시키지 않고 /readyz도 kube sync에 묶이지 않는다.
 	var kr *kube.Resolver
 	if cfg.PodMetricsEnabled {
-		kr = kube.NewResolver(cfg.NodeName, cfg.MetadataRefresh)
+		kr = kube.NewResolver(cfg.NodeName, cfg.MetadataRefresh, kube.WithNodeScopedPodsOnly())
 	}
 
 	var collectorReady atomic.Bool

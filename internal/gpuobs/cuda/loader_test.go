@@ -507,3 +507,36 @@ func TestReaderDispatch_SyncKindsCarryLatency(t *testing.T) {
 		}
 	}
 }
+
+// TestReaderResolvePidToPod_CarryOverSkipsKnownPods 는 #413 carry-over 를 단정한다. 직전 사이클에
+// Pod 로 해석된 PID 는 procfs 재해석 (ResolvePID) 없이 재사용되고, 신규 PID 와 직전 negative PID
+// 만 ResolvePID 를 탄다.
+func TestReaderResolvePidToPod_CarryOverSkipsKnownPods(t *testing.T) {
+	resolver := &countingResolver{
+		PodResolver: fakeResolver{table: map[uint32]kube.PodIdentity{
+			1: samplePod("ml", "p1", "u1"),
+			2: samplePod("ml", "p2", "u2"),
+		}},
+	}
+	r := New("/unused", "", "node-A", nil, resolver, 0)
+
+	// 1 사이클: 전 PID 해석 (positive 1, 2 와 negative 3).
+	first := r.resolvePidToPod(map[uint32]string{1: "G", 2: "G", 3: "G"})
+	r.pods.replace(first)
+	if resolver.count != 3 {
+		t.Fatalf("first cycle ResolvePID count=%d want 3", resolver.count)
+	}
+
+	// 2 사이클: 동일 PID 셋 + 신규 4. positive (1, 2) 는 재사용, negative (3) 재해석 + 신규 (4)
+	// 해석으로 ResolvePID 는 2 회만 추가된다.
+	second := r.resolvePidToPod(map[uint32]string{1: "G", 2: "G", 3: "G", 4: "G"})
+	if resolver.count != 5 {
+		t.Errorf("second cycle ResolvePID count=%d want 5 (carry-over miss)", resolver.count)
+	}
+	if second[1].PodName != "p1" || second[2].PodName != "p2" {
+		t.Errorf("carry-over identity 손실: %+v", second)
+	}
+	if len(second) != 4 {
+		t.Errorf("result size=%d want 4", len(second))
+	}
+}

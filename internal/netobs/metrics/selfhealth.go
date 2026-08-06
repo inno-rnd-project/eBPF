@@ -1,6 +1,13 @@
 package metrics
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"strconv"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+
+	"netobs/internal/netobs/types"
+)
 
 // self-health 메트릭은 netobs agent 자체의 내부 상태를 노출한다. correlation-exporter 와 workload-
 // injector 가 *_reconcile_*, *_runs_total, *_errors_total 패턴으로 컴포넌트 건강성을 가시화하는
@@ -39,6 +46,23 @@ var (
 			Help: "Ratio of current entries to max_entries for tracked BPF maps. Sampled every refresh cycle by iterating the map. Useful as an early warning before LRU evict pressure starts surfacing as visible data loss.",
 		},
 		[]string{"map"},
+	)
+
+	// eventChannelDepth 는 ringbuf reader 와 이벤트 루프 사이 userspace 채널의 현재 적체 깊이다
+	// (#413). 스크레이프 시점의 len(chan) 을 읽는 GaugeFunc 로, ringbuf drop (bpfRingbufDropsTotal)
+	// 발생 시 본 값이 용량 근처면 소비자 병목, 0 근처면 커널 버퍼 순간 폭주로 유실 원인을 분리할
+	// 수 있다. main 이 채널 생성 후 RegisterEventChannelDepth 로 등록한다.
+
+	// eventProcessingSeconds 는 이벤트 1건의 enrich + Record 처리 wall-clock 분포다 (#413).
+	// 버킷은 1µs 부터 약 4s 까지 4배 exponential 12단계로, 통상 수 µs 의 hot path 와 lock 경합 /
+	// GC 로 인한 tail 을 함께 커버한다. rate(sum) / rate(count) 와 채널 depth 를 겹쳐 보면 소비
+	// 처리량 한계를 정량화할 수 있다.
+	eventProcessingSeconds = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "netobs_event_processing_seconds",
+			Help:    "Wall-clock duration of enrich + record for one ringbuf event in the userspace event loop. Compare with netobs_event_channel_depth and netobs_bpf_ringbuf_drops_total to attribute event loss to consumer throughput vs kernel-side bursts.",
+			Buckets: prometheus.ExponentialBuckets(1e-6, 4, 12),
+		},
 	)
 
 	// flowGuardRejectedTotal 은 #403 의 emit 상한 계약 카운터다. FlowGuard (스크레이프당 emit
@@ -136,6 +160,25 @@ func SetBpfProgramLoaded(symbol string, loaded bool) {
 		v = 1.0
 	}
 	bpfProgramLoaded.WithLabelValues(symbol).Set(v)
+}
+
+// RegisterEventChannelDepth 는 이벤트 채널의 len 을 읽는 GaugeFunc 를 등록한다. 채널은 main 이
+// 소유하고 수명이 프로세스와 같아 closure capture 가 안전하다. len(chan) 은 락 없는 근사 스냅샷
+// 이라 스크레이프 hot path 에 무해하다.
+func RegisterEventChannelDepth(reg prometheus.Registerer, ch chan types.Event, capacity int) {
+	reg.MustRegister(prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name:        "netobs_event_channel_depth",
+			Help:        "Current number of events buffered in the userspace channel between the ringbuf reader and the event loop. Values near the capacity indicate a consumer bottleneck.",
+			ConstLabels: prometheus.Labels{"capacity": strconv.Itoa(capacity)},
+		},
+		func() float64 { return float64(len(ch)) },
+	))
+}
+
+// ObserveEventProcessing 은 이벤트 1건의 처리 소요를 히스토그램에 기록한다.
+func ObserveEventProcessing(d time.Duration) {
+	eventProcessingSeconds.Observe(d.Seconds())
 }
 
 // AddBpfRingbufDrops 는 BPF percpu events_dropped 의 baseline-then-delta 산정 결과를 누적한다.

@@ -1,11 +1,13 @@
 package kube
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 // newSeededResolver는 informer 없이 IP 인덱스만 직접 채운 Resolver를 만든다.
@@ -355,5 +357,121 @@ func TestPodIdentity_StaticPodCgroupUID(t *testing.T) {
 	})
 	if regular.CgroupUID != "uid-r" {
 		t.Errorf("regular CgroupUID=%q want PodUID 와 동일", regular.CgroupUID)
+	}
+}
+
+// TestNodeScopedPodsOnly_StartIndexesPodsWithoutServiceInformer 는 #413 스코프 축소 모드에서
+// Pod informer 만 동작하고 Service 가 인덱스되지 않음을 fake clientset 으로 검증한다. fake 는
+// 필드셀렉터 필터링을 수행하지 않으므로 셀렉터 문자열 자체의 노드 한정은 apiserver 계약에
+// 위임하고, 여기서는 informer 구성 (pod 단독) 과 sync 완료를 단정한다.
+func TestNodeScopedPodsOnly_StartIndexesPodsWithoutServiceInformer(t *testing.T) {
+	client := fake.NewSimpleClientset(
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "ns1", UID: "uid-1"},
+			Spec:       corev1.PodSpec{NodeName: "test-node"},
+			Status:     corev1.PodStatus{PodIP: "10.0.0.1"},
+		},
+		&corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "s1", Namespace: "ns1", UID: "uid-s1"},
+			Spec:       corev1.ServiceSpec{ClusterIP: "10.96.0.1"},
+		},
+	)
+	r := NewResolverWithClient(client, "test-node", 0, WithNodeScopedPodsOnly())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		r.Start(ctx)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !r.HasSynced() {
+		if time.Now().After(deadline) {
+			t.Fatal("informer sync timeout")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	r.mu.RLock()
+	got, ok := r.podByUID["uid-1"]
+	r.mu.RUnlock()
+	if !ok || got.PodName != "p1" {
+		t.Errorf("podByUID miss: got %+v ok=%v", got, ok)
+	}
+	if got := r.ResolveIP("10.96.0.1"); got.IdentityClass == IdentityClassService {
+		t.Errorf("service informer must not run in node-scoped mode, got %+v", got)
+	}
+
+	cancel()
+	<-done
+}
+
+// TestSlimPod_PreservesResolverConsumedFields 는 transform 슬림화 (#413) 가 resolver 소비 함수
+// (podKey / podIPs / podIdentity) 관점에서 원본과 동등함을 단정한다. slimPod 가 필드를 놓치면
+// 본 테스트의 동등성 비교가 깨져 회귀를 막는다.
+func TestSlimPod_PreservesResolverConsumedFields(t *testing.T) {
+	fat := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "p1",
+			Namespace:       "ns1",
+			UID:             "uid-1",
+			ResourceVersion: "42",
+			Labels:          map[string]string{"app": "x"},
+			Annotations: map[string]string{
+				"kubernetes.io/config.hash": "abc123",
+				"other":                     "dropped",
+			},
+			OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "web-5d9c"}},
+		},
+		Spec: corev1.PodSpec{
+			NodeName:    "n1",
+			HostNetwork: false,
+			Containers:  []corev1.Container{{Name: "c", Image: "img"}},
+		},
+		Status: corev1.PodStatus{
+			PodIP:  "10.0.0.1",
+			PodIPs: []corev1.PodIP{{IP: "10.0.0.1"}, {IP: "fd00::1"}},
+		},
+	}
+
+	out, err := slimPod(fat)
+	if err != nil {
+		t.Fatalf("slimPod: %v", err)
+	}
+	slim, ok := out.(*corev1.Pod)
+	if !ok {
+		t.Fatalf("slimPod 반환 타입: %T", out)
+	}
+
+	if podKey(slim) != podKey(fat) {
+		t.Errorf("podKey 불일치: %s != %s", podKey(slim), podKey(fat))
+	}
+	gotIPs, wantIPs := podIPs(*slim), podIPs(*fat)
+	if len(gotIPs) != len(wantIPs) {
+		t.Fatalf("podIPs 불일치: %v != %v", gotIPs, wantIPs)
+	}
+	for i := range gotIPs {
+		if gotIPs[i] != wantIPs[i] {
+			t.Errorf("podIPs[%d] 불일치: %s != %s", i, gotIPs[i], wantIPs[i])
+		}
+	}
+	if podIdentity(*slim) != podIdentity(*fat) {
+		t.Errorf("podIdentity 불일치:\n%+v\n%+v", podIdentity(*slim), podIdentity(*fat))
+	}
+	if len(slim.Spec.Containers) != 0 || len(slim.Labels) != 0 || slim.Annotations["other"] != "" {
+		t.Errorf("슬림화 누락: containers=%d labels=%d other=%q", len(slim.Spec.Containers), len(slim.Labels), slim.Annotations["other"])
+	}
+	if slim.Annotations["kubernetes.io/config.hash"] != "abc123" {
+		t.Errorf("config.hash 유실")
+	}
+}
+
+// TestSlimPod_PassesThroughNonPod 는 tombstone 등 Pod 이외 입력의 통과를 단정한다.
+func TestSlimPod_PassesThroughNonPod(t *testing.T) {
+	in := "not-a-pod"
+	out, err := slimPod(in)
+	if err != nil || out != in {
+		t.Fatalf("passthrough 실패: out=%v err=%v", out, err)
 	}
 }

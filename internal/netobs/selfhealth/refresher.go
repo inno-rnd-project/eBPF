@@ -11,13 +11,13 @@ package selfhealth
 
 import (
 	"context"
-	"errors"
 	"log"
 	"time"
 
 	cebpf "github.com/cilium/ebpf"
 
 	"netobs/internal/netobs/metrics"
+	"netobs/internal/selfobs"
 )
 
 // DefaultRefreshInterval 은 refresher ticker 의 기본 주기다. Prometheus scrape 의 기본 30s 와 정합
@@ -32,76 +32,12 @@ type dropSource interface {
 	Total() uint64
 }
 
-// mapSizer 는 BPF map 의 현재 entry 수와 max_entries 를 노출한다. cilium/ebpf 의 *cebpf.Map 이 두
-// 메서드 (Iterate + MaxEntries via Info) 를 그대로 제공하지만 test seam 을 위해 인터페이스로 둔다.
-type mapSizer interface {
-	Entries() (uint64, error)
-	MaxEntries() uint64
-	Name() string
-}
-
 // bpfDropSource 는 production 의 events_dropped 어댑터다.
 type bpfDropSource struct {
 	m *cebpf.Map
 }
 
 func (b bpfDropSource) Total() uint64 { return readDroppedTotal(b.m) }
-
-// bpfMapSizer 는 cilium/ebpf 의 *cebpf.Map 을 mapSizer 로 감싼다. Entries 는 next-key iterate 로
-// 현재 entry 수를 세고, MaxEntries 는 MapInfo 의 정적 값을 그대로 반환해 BPF 정의가 바뀌어도 Go
-// 측 상수 수정 없이 자동 추종된다.
-type bpfMapSizer struct {
-	m       *cebpf.Map
-	name    string
-	max     uint64
-	keySize uint32
-}
-
-func newBpfMapSizer(name string, m *cebpf.Map) (*bpfMapSizer, error) {
-	if m == nil {
-		return nil, errors.New("nil bpf map")
-	}
-	info, err := m.Info()
-	if err != nil {
-		return nil, err
-	}
-	return &bpfMapSizer{m: m, name: name, max: uint64(info.MaxEntries), keySize: info.KeySize}, nil
-}
-
-func (s *bpfMapSizer) Name() string       { return s.name }
-func (s *bpfMapSizer) MaxEntries() uint64 { return s.max }
-
-// Entries 는 BPF map 의 현재 entry 수를 NextKey iterate 로 센다. cilium/ebpf 의 NextKey 가 input
-// key 의 길이를 m.keySize 와 정확히 일치시켜 marshal 하므로 cursor / next 두 buffer 를 본 함수
-// 진입에서 keySize 만큼 미리 할당해 두고 매 호출마다 copy 로 cursor 를 갱신한다. value lookup 은
-// 수행하지 않아 LRU_HASH 와 LRU_PERCPU_HASH 양쪽에 동일 코드가 동작하며, iterate 비용은 단일
-// ticker 사이클당 1 회 (최대 16384 entry) 라 scrape hot path 와 분리된 본 자리에서 무해하다.
-func (s *bpfMapSizer) Entries() (uint64, error) {
-	if s.keySize == 0 {
-		return 0, errors.New("invalid map key size")
-	}
-	var count uint64
-	cursor := make([]byte, s.keySize)
-	next := make([]byte, s.keySize)
-	firstCall := true
-	for {
-		// 첫 호출은 nil interface 로 NULL 포인터 syscall 을 유도해 첫 키를 받고, 이후 호출은
-		// 이전 키를 keySize 정확한 길이의 cursor buffer 로 전달해 marshal length 검증을 통과한다.
-		var inKey interface{}
-		if !firstCall {
-			inKey = cursor
-		}
-		if err := s.m.NextKey(inKey, &next); err != nil {
-			if errors.Is(err, cebpf.ErrKeyNotExist) {
-				return count, nil
-			}
-			return 0, err
-		}
-		count++
-		copy(cursor, next)
-		firstCall = false
-	}
-}
 
 // baseline 은 cuda 측 droppedBaseline (cuda/loader.go:456) 와 동일한 baseline-then-delta 추적기다.
 // 첫 호출은 baseline 만 저장하고 add 를 건너뛰며, current < last 인 reset 케이스는 거짓 spike 회피
@@ -116,8 +52,24 @@ type baseline struct {
 // goroutine 을 spawn 하고, ctx cancel 시 ticker 가 정리된다.
 type Refresher struct {
 	drops    dropSource
-	sizers   []mapSizer
+	sizers   []selfobs.MapSizer
 	interval time.Duration
+}
+
+// Maps 는 NewRefresher 입력의 BPF map handle 묶음이다. Starts 와 PodBytes 는 필수 (구성 실패 시
+// 에러) 이고 나머지는 nil 허용의 optional 로, sizer 구성 실패 시 해당 map 만 log + skip 된다.
+type Maps struct {
+	Starts        *cebpf.Map
+	PodBytes      *cebpf.Map
+	EventsDropped *cebpf.Map
+	DropStacks    *cebpf.Map
+	FlowBytes     *cebpf.Map
+	// #413 편입 4종. LRU evict 로 인한 표본 누락 (seg_accum 의 seq 추적 유실 등) 이 무증상으로
+	// 진행되지 않도록 나머지 LRU map 도 utilization 을 노출한다.
+	SegAccum      *cebpf.Map
+	RecvStarts    *cebpf.Map
+	ConnectStarts *cebpf.Map
+	NicIngress    *cebpf.Map
 }
 
 // NewRefresher 는 production 경로의 refresher 를 만든다. starts 와 pod_bytes 두 map 의 sizer 구성
@@ -127,33 +79,39 @@ type Refresher struct {
 // 자체는 Info 호출이라 항상 성공하며, Entries() 의 iterate 가 실패하면 refreshOnce 의 기존 log
 // + skip 패턴으로 utilization 메트릭만 emit 되지 않는다 (docs/netobs/drop-stack-capture.md 의 fallback
 // 명세와 정합).
-func NewRefresher(starts, podBytes, eventsDropped, dropStacks, flowBytes *cebpf.Map) (*Refresher, error) {
-	startsSizer, err := newBpfMapSizer("starts", starts)
+func NewRefresher(m Maps) (*Refresher, error) {
+	startsSizer, err := selfobs.NewBPFMapSizer("starts", m.Starts)
 	if err != nil {
 		return nil, err
 	}
-	podBytesSizer, err := newBpfMapSizer("pod_bytes", podBytes)
+	podBytesSizer, err := selfobs.NewBPFMapSizer("pod_bytes", m.PodBytes)
 	if err != nil {
 		return nil, err
 	}
-	sizers := []mapSizer{startsSizer, podBytesSizer}
-	if dropStacks != nil {
-		if stacksSizer, err := newBpfMapSizer("netobs_drop_stacks", dropStacks); err == nil {
-			sizers = append(sizers, stacksSizer)
-		} else {
-			log.Printf("selfhealth: drop stacks sizer skipped: %v", err)
+	sizers := []selfobs.MapSizer{startsSizer, podBytesSizer}
+	optional := []struct {
+		name string
+		m    *cebpf.Map
+	}{
+		{"netobs_drop_stacks", m.DropStacks},
+		{"flow_bytes", m.FlowBytes},
+		{"seg_accum", m.SegAccum},
+		{"recv_starts", m.RecvStarts},
+		{"connect_starts", m.ConnectStarts},
+		{"nic_ingress", m.NicIngress},
+	}
+	for _, o := range optional {
+		if o.m == nil {
+			continue
 		}
-	}
-	// #85 flow_bytes map utilization 노출. LRU_HASH (non-percpu) 라 NextKey iterate 가 안정적이다.
-	if flowBytes != nil {
-		if flowSizer, err := newBpfMapSizer("flow_bytes", flowBytes); err == nil {
-			sizers = append(sizers, flowSizer)
+		if sizer, err := selfobs.NewBPFMapSizer(o.name, o.m); err == nil {
+			sizers = append(sizers, sizer)
 		} else {
-			log.Printf("selfhealth: flow_bytes sizer skipped: %v", err)
+			log.Printf("selfhealth: %s sizer skipped: %v", o.name, err)
 		}
 	}
 	return &Refresher{
-		drops:    bpfDropSource{m: eventsDropped},
+		drops:    bpfDropSource{m: m.EventsDropped},
 		sizers:   sizers,
 		interval: DefaultRefreshInterval,
 	}, nil

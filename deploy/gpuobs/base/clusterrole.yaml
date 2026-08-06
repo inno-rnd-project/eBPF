@@ -6,15 +6,14 @@ metadata:
     app.kubernetes.io/name: gpuobs-agent
     app.kubernetes.io/part-of: ebpf-project
     app.kubernetes.io/component: gpu-observer
-# kube.Resolver(internal/kube)는 Pod/Service/Node informer 세 가지를 동시에 띄워 IP/UID 인덱스를 유지한다.
-# gpuobs는 ResolvePID 경로(Pod 인덱스)만 직접 활용하지만, 동일 Resolver를 netobs와 공유하기 위해
-# Service/Node informer도 함께 기동되므로 RBAC도 그에 맞춰 셋 모두 list/watch 권한을 부여한다.
+# gpuobs는 #413 부터 kube.Resolver 를 spec.nodeName 필드셀렉터의 Pod 단독 informer 로 기동한다
+# (ResolvePID 경로가 로컬 노드 Pod 의 UID 인덱스만 사용). Service / Node informer 가 뜨지 않으므로
+# RBAC 도 pods 만 부여한다. 노드 한정은 필드셀렉터가 수행하며 RBAC 의 resourceNames 로는 field
+# selector 를 강제할 수 없어 리소스 종류 축소까지만 반영한다.
 rules:
   - apiGroups: [""]
     resources:
       - pods
-      - services
-      - nodes
     verbs:
       - get
       - list
