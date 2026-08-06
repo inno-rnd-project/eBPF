@@ -64,12 +64,13 @@ type Maps struct {
 	EventsDropped *cebpf.Map
 	DropStacks    *cebpf.Map
 	FlowBytes     *cebpf.Map
-	// #413 편입 4종. LRU evict 로 인한 표본 누락 (seg_accum 의 seq 추적 유실 등) 이 무증상으로
-	// 진행되지 않도록 나머지 LRU map 도 utilization 을 노출한다.
+	// #413 편입 LRU 3종. LRU evict 로 인한 표본 누락 (seg_accum 의 seq 추적 유실 등) 이 무증상으로
+	// 진행되지 않도록 나머지 LRU map 도 utilization 을 노출한다. nic_ingress 는 max_entries 1 의
+	// PERCPU_ARRAY (per-CPU 상태 슬롯) 라 entry 수 / max 비율이 상시 1.0 으로 의미가 없어 편입
+	// 대상이 아니다 (#416, #413 의 잘못 편입으로 전 노드 오발화 실측).
 	SegAccum      *cebpf.Map
 	RecvStarts    *cebpf.Map
 	ConnectStarts *cebpf.Map
-	NicIngress    *cebpf.Map
 }
 
 // NewRefresher 는 production 경로의 refresher 를 만든다. starts 와 pod_bytes 두 map 의 sizer 구성
@@ -98,7 +99,6 @@ func NewRefresher(m Maps) (*Refresher, error) {
 		{"seg_accum", m.SegAccum},
 		{"recv_starts", m.RecvStarts},
 		{"connect_starts", m.ConnectStarts},
-		{"nic_ingress", m.NicIngress},
 	}
 	for _, o := range optional {
 		if o.m == nil {

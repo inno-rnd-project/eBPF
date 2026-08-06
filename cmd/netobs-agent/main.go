@@ -312,7 +312,6 @@ func main() {
 					SegAccum:      rt.SegAccum,
 					RecvStarts:    rt.RecvStarts,
 					ConnectStarts: rt.ConnectStarts,
-					NicIngress:    rt.NicIngress,
 				}); err != nil {
 					log.Printf("self-health refresher: %v", err)
 				} else {
