@@ -13,6 +13,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -28,6 +29,13 @@ type Resolver struct {
 	client       kubernetes.Interface
 	startupErr   error
 	resyncPeriod time.Duration
+
+	// nodeScopedPodsOnly 는 #413 의 informer 스코프 축소다. true 면 Pod informer 하나만 띄우고
+	// spec.nodeName 필드셀렉터로 로컬 노드의 Pod 만 watch 한다. gpuobs 처럼 ResolvePID (podByUID,
+	// 로컬 PID 한정) 경로만 쓰는 소비자를 위한 것으로, 클러스터 전체 Pod 객체 중복 보관과
+	// Service / Node informer 의 메모리 / watch 비용을 제거한다. netobs 는 ResolveIP 의 remote
+	// pod IP 귀속과 AllPods (#407 stale 정리) 가 클러스터 전역 인덱스를 요구하므로 켜면 안 된다.
+	nodeScopedPodsOnly bool
 
 	synced atomic.Bool
 
@@ -63,38 +71,48 @@ type serviceCacheEntry struct {
 	id  PodIdentity
 }
 
+// Option 은 Resolver 구성 옵션이다. NewResolver / NewResolverWithClient 의 가변 인자로 전달한다.
+type Option func(*Resolver)
+
+// WithNodeScopedPodsOnly 는 Pod informer 하나만 spec.nodeName 필드셀렉터로 띄우는 스코프 축소
+// 옵션이다 (#413). ResolvePID / PodsOnNode 같은 로컬 노드 경로만 쓰는 gpuobs 용이며, ResolveIP 의
+// remote pod 귀속이나 AllPods 를 쓰는 netobs 에는 적용하면 안 된다.
+func WithNodeScopedPodsOnly() Option {
+	return func(r *Resolver) { r.nodeScopedPodsOnly = true }
+}
+
 // NewResolver는 in-cluster 또는 kubeconfig에서 client를 구성한 Resolver를 반환한다.
 // client 초기화에 실패해도 Resolver 자체는 비활성 상태로 반환되며, Start 시 disabled 로그를 남긴다.
 // 이 graceful 동작은 클러스터 외부 개발 환경에서 바이너리가 멈추지 않게 한다.
-func NewResolver(localNode string, resyncPeriod time.Duration) *Resolver {
+func NewResolver(localNode string, resyncPeriod time.Duration, opts ...Option) *Resolver {
 	cfg, err := kubeConfig()
 	if err != nil {
-		r := newEmptyResolver(localNode, resyncPeriod)
+		r := newEmptyResolver(localNode, resyncPeriod, opts...)
 		r.startupErr = err
 		return r
 	}
 	clientset, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		r := newEmptyResolver(localNode, resyncPeriod)
+		r := newEmptyResolver(localNode, resyncPeriod, opts...)
 		r.startupErr = err
 		return r
 	}
-	return NewResolverWithClient(clientset, localNode, resyncPeriod)
+	return NewResolverWithClient(clientset, localNode, resyncPeriod, opts...)
 }
 
 // NewResolverWithClient 는 외부에서 미리 구성한 kubernetes 클라이언트로 Resolver 를 만든다.
 // envtest 기반 통합 테스트가 in-process kube-apiserver 의 *rest.Config 로 만든 clientset 을
 // 그대로 주입해 informer 경로 전체를 검증할 때 사용한다.
-func NewResolverWithClient(client kubernetes.Interface, localNode string, resyncPeriod time.Duration) *Resolver {
-	r := newEmptyResolver(localNode, resyncPeriod)
+func NewResolverWithClient(client kubernetes.Interface, localNode string, resyncPeriod time.Duration, opts ...Option) *Resolver {
+	r := newEmptyResolver(localNode, resyncPeriod, opts...)
 	r.client = client
 	return r
 }
 
 // newEmptyResolver 는 empty cache map 만 초기화한 Resolver 를 반환한다. NewResolver / NewResolverWithClient
 // 가 공유하는 초기화 로직이며, 외부에는 노출하지 않는다.
-func newEmptyResolver(localNode string, resyncPeriod time.Duration) *Resolver {
-	return &Resolver{
+func newEmptyResolver(localNode string, resyncPeriod time.Duration, opts ...Option) *Resolver {
+	r := &Resolver{
 		localNode:       localNode,
 		resyncPeriod:    resyncPeriod,
 		podByIP:         make(map[string]podCacheEntry),
@@ -105,6 +123,10 @@ func newEmptyResolver(localNode string, resyncPeriod time.Duration) *Resolver {
 		nodeByIP:        make(map[string]string),
 		nodeIPsByKey:    make(map[string][]string),
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // LocalNode는 NewResolver에 전달된 관측 노드 이름을 반환한다.
@@ -141,11 +163,18 @@ func (r *Resolver) Start(ctx context.Context) {
 		return
 	}
 
-	factory := informers.NewSharedInformerFactory(r.client, r.resyncPeriod)
+	// 스코프 축소 모드 (#413) 는 spec.nodeName 필드셀렉터로 apiserver 가 로컬 노드의 Pod 만
+	// 내려주게 해 informer 캐시가 클러스터 크기에 비례하지 않게 한다.
+	var factoryOpts []informers.SharedInformerOption
+	if r.nodeScopedPodsOnly {
+		fieldSelector := "spec.nodeName=" + r.localNode
+		factoryOpts = append(factoryOpts, informers.WithTweakListOptions(func(o *metav1.ListOptions) {
+			o.FieldSelector = fieldSelector
+		}))
+	}
+	factory := informers.NewSharedInformerFactoryWithOptions(r.client, r.resyncPeriod, factoryOpts...)
 
 	podInformer := factory.Core().V1().Pods().Informer()
-	serviceInformer := factory.Core().V1().Services().Informer()
-	nodeInformer := factory.Core().V1().Nodes().Informer()
 
 	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
@@ -161,6 +190,21 @@ func (r *Resolver) Start(ctx context.Context) {
 			r.onDeletePod(obj)
 		},
 	})
+
+	if r.nodeScopedPodsOnly {
+		factory.Start(ctx.Done())
+		if !cache.WaitForCacheSync(ctx.Done(), podInformer.HasSynced) {
+			log.Printf("kube resolver initial sync failed")
+			return
+		}
+		r.synced.Store(true)
+		log.Printf("kube resolver informer sync completed (node-scoped pods only)")
+		<-ctx.Done()
+		return
+	}
+
+	serviceInformer := factory.Core().V1().Services().Informer()
+	nodeInformer := factory.Core().V1().Nodes().Informer()
 
 	serviceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
