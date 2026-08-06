@@ -388,3 +388,51 @@ func TestNetwork_TrimsIntensityWhitespace(t *testing.T) {
 		t.Errorf("intensity %q 인데 통과함 (내부 공백은 거부)", params.Intensity)
 	}
 }
+
+// TestSpawnedPodsHaveOrphanGuards 는 #418 의 고아 방지 장치 2종을 전 부하 모듈에 대해 단정한다.
+// spawn 된 모든 pod 에 activeDeadlineSeconds (duration + 여유) 가 걸리고, iperf3 server 는 timeout
+// wrapper 로 자체 종료 명령을 갖는다.
+func TestSpawnedPodsHaveOrphanGuards(t *testing.T) {
+	for _, kind := range []Kind{KindCPU, KindMemory, KindNetwork, KindGPU} {
+		client := fake.NewSimpleClientset()
+		gen, err := New(kind, client)
+		if err != nil {
+			t.Fatalf("%s: New: %v", kind, err)
+		}
+		intensity := map[Kind]string{
+			KindCPU:     "2",
+			KindMemory:  "256Mi",
+			KindNetwork: "100M",
+			KindGPU:     "50",
+		}[kind]
+		params := Params{
+			TargetNode:     "n1",
+			TargetPod:      "victim",
+			SpawnNamespace: "ebpf-project",
+			Duration:       60 * time.Second,
+			Intensity:      intensity,
+		}
+		if err := gen.Start(context.Background(), params); err != nil {
+			t.Fatalf("%s: Start: %v", kind, err)
+		}
+		pods, _ := client.CoreV1().Pods("ebpf-project").List(context.Background(), metav1.ListOptions{})
+		if len(pods.Items) == 0 {
+			t.Fatalf("%s: no pods spawned", kind)
+		}
+		for _, p := range pods.Items {
+			if p.Spec.ActiveDeadlineSeconds == nil {
+				t.Errorf("%s: pod %s has no activeDeadlineSeconds", kind, p.Name)
+				continue
+			}
+			if got, want := *p.Spec.ActiveDeadlineSeconds, int64(60+deadlineGraceSec); got != want {
+				t.Errorf("%s: pod %s activeDeadlineSeconds=%d want %d", kind, p.Name, got, want)
+			}
+			if p.Labels["injector.role"] == "server" {
+				cmd := strings.Join(p.Spec.Containers[0].Command, " ")
+				if !strings.Contains(cmd, "timeout") || !strings.Contains(cmd, "iperf3 -s") {
+					t.Errorf("server command lacks timeout wrapper: %q", cmd)
+				}
+			}
+		}
+	}
+}

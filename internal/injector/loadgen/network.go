@@ -18,6 +18,11 @@ import (
 // 임의 명령 실행 경로가 조용히 열리므로, 문자열 결합의 당사자인 본 패키지 경계에서 재검증한다.
 var bandwidthPattern = regexp.MustCompile(`^[0-9]+[KkMmGg]?$`)
 
+// serverTimeoutGraceSec 는 iperf3 server 의 timeout wrapper 여유분이다 (#418). client 의 ready
+// polling 과 트래픽 꼬리를 덮은 뒤 스스로 종료한다. activeDeadlineSeconds (동일 여유) 보다 먼저
+// 프로세스 단에서 끝나는 1차 장치이며 deadline 은 이미지 pull 지연 등까지 덮는 2차 장치다.
+const serverTimeoutGraceSec = 90
+
 // networkGen 은 iperf3 server 를 target node 에 두고 client 를 다른 노드에 두어 server 로 트래픽을
 // 발사한다. server Pod 의 hostIP 를 사용하면 Service 없이도 client 가 직접 접근 가능하지만 본 모듈은
 // 단순화를 위해 server Pod 의 Pod IP 를 사용하지 않고 hostNetwork 도 쓰지 않는다. 대신 server 가
@@ -62,17 +67,24 @@ func (g *networkGen) Start(ctx context.Context, params Params) error {
 		Spec: corev1.PodSpec{
 			NodeName:      params.TargetNode,
 			RestartPolicy: corev1.RestartPolicyNever,
-			Subdomain:     "workload-injector",
-			Hostname:      serverName,
+			// #418 컨트롤러 부재 시에도 kubelet 이 강제 종료하는 고아 방지 상한.
+			ActiveDeadlineSeconds: activeDeadlineSeconds(params),
+			Subdomain:             "workload-injector",
+			Hostname:              serverName,
 			Containers: []corev1.Container{
 				{
 					Name:  "iperf3",
 					Image: "mlabbe/iperf3:3.16-r0",
-					// -1 (one-off) 옵션은 첫 connection 종료 후 server process 가 즉시 종료된다.
-					// client 의 nc -z probe 가 첫 connection 으로 인식되어 server 가 종료된 뒤
-					// 실제 iperf3 -c 가 실패하므로 제거하고 injector binary 의 Stop 호출이 Pod
-					// delete 로 정상 cleanup 한다.
-					Command: []string{"iperf3", "-s"},
+					// #418 timeout wrapper 로 duration + 여유 뒤 스스로 종료한다. -1 (one-off)
+					// 은 첫 connection 종료 후 server process 가 즉시 죽어 client 의 nc -z probe
+					// 가 그 첫 connection 을 소비하는 문제로 제거됐는데 (#253 이전), timeout 방식
+					// 은 multi-connection 을 유지하므로 probe 는 종전대로 안전하다. 정상 경로는
+					// injector 의 Stop delete 가 먼저 오고 본 wrapper 는 컨트롤러 부재 시의 자체
+					// 종료 장치다. grace (90s) 는 client 의 ready polling 을 덮으면서
+					// activeDeadlineSeconds (120s 여유) 보다 먼저 프로세스 단에서 끝나게 둔다.
+					Command: []string{"sh", "-c", fmt.Sprintf(
+						"exec timeout %d iperf3 -s", int(params.Duration.Seconds())+serverTimeoutGraceSec,
+					)},
 					Ports: []corev1.ContainerPort{
 						{ContainerPort: 5201, Name: "iperf3", Protocol: corev1.ProtocolTCP},
 					},
@@ -111,6 +123,8 @@ func (g *networkGen) Start(ctx context.Context, params Params) error {
 		ObjectMeta: clientMeta,
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
+			// #418 컨트롤러 부재 시에도 kubelet 이 강제 종료하는 고아 방지 상한.
+			ActiveDeadlineSeconds: activeDeadlineSeconds(params),
 			// client 가 우연히 target node 에 스케줄되면 두 Pod 사이 트래픽이 노드 NIC 를 거치지
 			// 않아 network 부하의 의미 (cross-node bandwidth 경쟁) 가 사라진다. nodeAffinity 의
 			// NotIn 으로 target node 를 명시적 회피한다. multi-node cluster 가 전제이며 다른 노드가

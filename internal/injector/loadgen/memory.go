@@ -52,6 +52,8 @@ func (g *memoryGen) Start(ctx context.Context, params Params) error {
 		Spec: corev1.PodSpec{
 			NodeName:      params.TargetNode,
 			RestartPolicy: corev1.RestartPolicyNever,
+			// #418 컨트롤러 부재 시에도 kubelet 이 강제 종료하는 고아 방지 상한.
+			ActiveDeadlineSeconds: activeDeadlineSeconds(params),
 			Containers: []corev1.Container{
 				{
 					Name:  "stress",

@@ -93,6 +93,19 @@ func commonPodMeta(name string, params Params) metav1.ObjectMeta {
 	}
 }
 
+// deadlineGraceSec 는 activeDeadlineSeconds 의 여유분이다 (#418). 부하 duration 에 이미지 pull 과
+// 스케줄 대기와 client 의 server ready polling (최대 수십 초) 을 더해도 남는 상한으로, kubelet 이
+// 컨트롤러 부재 시에도 pod 를 강제 종료하는 최후 방어선이다. 정상 경로 (자체 종료 또는 Stop 의
+// delete) 보다 항상 늦게 걸리도록 duration 대비 충분히 크게 둔다.
+const deadlineGraceSec = 120
+
+// activeDeadlineSeconds 는 부하 duration + 여유의 kubelet 강제 종료 상한을 돌려준다 (#418).
+// 전 부하 pod 의 PodSpec.ActiveDeadlineSeconds 에 공통 적용된다.
+func activeDeadlineSeconds(params Params) *int64 {
+	d := int64(params.Duration.Seconds()) + deadlineGraceSec
+	return &d
+}
+
 // createPod 는 K8s API 로 Pod 생성을 시도하고 이미 존재하면 NotFound / AlreadyExists 를 무시한다.
 // 부하 모듈은 Pod 생성 실패를 startError 로 분류해 cleanup 흐름으로 전이한다.
 func createPod(ctx context.Context, client kubernetes.Interface, pod *corev1.Pod) error {
