@@ -298,6 +298,7 @@ func Register(reg prometheus.Registerer) {
 		bpfRingbufDropsTotal,
 		bpfMapUtilizationRatio,
 		flowGuardRejectedTotal,
+		eventProcessingSeconds,
 		informerSyncLagSeconds,
 		cgroup2Available,
 		podNoSockets,

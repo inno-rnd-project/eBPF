@@ -277,6 +277,9 @@ func main() {
 	// 최종 에러를 errCh로 전달한다.
 	events := make(chan types.Event, 4096)
 	errCh := make(chan error, 1)
+	// #413 채널 depth gauge. ringbuf drop 발생 시 depth 가 용량 근처면 소비자 병목, 0 근처면
+	// 커널 순간 폭주로 유실 원인을 분리한다.
+	metrics.RegisterEventChannelDepth(reg, events, cap(events))
 
 	go func() {
 		errCh <- ebpfx.Run(ctx, cfg.TargetIP, events, func(rt *ebpfx.Runtime) {
@@ -334,8 +337,10 @@ func main() {
 				continue
 			}
 
+			processStart := time.Now()
 			enriched := enricher.Enrich(ev, mapper)
 			metrics.Record(enriched)
+			metrics.ObserveEventProcessing(time.Since(processStart))
 
 			if cfg.PrintEvents {
 				log.Printf(
