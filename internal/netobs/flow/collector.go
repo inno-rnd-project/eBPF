@@ -7,6 +7,7 @@ package flow
 
 import (
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -72,6 +73,15 @@ type Collector struct {
 	bytesDesc *prometheus.Desc
 
 	lastIterErrLogNs atomic.Int64
+
+	// prevBytes 는 직전 scrape 세대에 emit 된 aggKey 별 bytes 스냅샷이다 (#416). 현 세대 값이
+	// 직전보다 작으면 활성 flow 의 BPF entry 가 LRU evict 후 재생성되어 0 부터 다시 쌓인 것이라
+	// netobs_flow_counter_resets_total 로 계수한다. admit 된 (emit budget 이내) 시리즈만 담아
+	// 크기가 FlowMaxActive (기본 1024) 로 bounded 되고, 매 scrape 통째 교체라 사라진 flow 의
+	// entry 는 자연 회수된다 (한 scrape 이상 사라졌다 재등장하는 reset 은 비교 기준이 없어 놓치며,
+	// 이는 "지속 활성 flow 가 밀려나는" 신호에 집중하는 의도된 축소다).
+	prevMu    sync.Mutex
+	prevBytes map[aggKey]uint64
 }
 
 // New 는 Collector 를 구성 한다. guard 가 nil 또는 allow-list 가 비어 있으면 본 collector 는 어떤
@@ -154,6 +164,12 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 
+	// #416 직전 세대 대비 counter reset 계수. iterate 성공 세대에서만 수행해 부분 iterate 로 인한
+	// 거짓 감소가 계수되지 않는다.
+	if resets := c.countResets(agg); resets > 0 {
+		metrics.AddFlowCounterResets(resets)
+	}
+
 	// 2단계: aggregate 결과를 ch 채널로 emit. iter.Err 가 nil 인 경우에만 도달 하므로 부분 결과 가
 	// 노출 되지 않는다.
 	for k, v := range agg {
@@ -171,6 +187,24 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			k.ipVersion,
 		)
 	}
+}
+
+// countResets 는 현 세대 agg 를 직전 세대 스냅샷과 비교해 bytes 감소 시리즈 수를 세고 스냅샷을
+// 현 세대로 통째 교체한다. Collect 가 동시 실행될 수 있어 (복수 scraper) 스냅샷 교체를 mutex 로
+// 직렬화한다.
+func (c *Collector) countResets(agg map[aggKey]*aggValue) uint64 {
+	cur := make(map[aggKey]uint64, len(agg))
+	var resets uint64
+	c.prevMu.Lock()
+	defer c.prevMu.Unlock()
+	for k, v := range agg {
+		cur[k] = v.bytes
+		if prev, ok := c.prevBytes[k]; ok && v.bytes < prev {
+			resets++
+		}
+	}
+	c.prevBytes = cur
+	return resets
 }
 
 // aggKey 는 emitted label 셋 중 fixed 부분 (5-tuple + direction + protocol + ip_version) 의 합성 키 다.

@@ -65,6 +65,17 @@ var (
 		},
 	)
 
+	// flowCounterResetsTotal 은 #416 의 accumulator 맵 evict 실해 신호다. flow_bytes 는 누적 맵이라
+	// 점유율이 자연히 1.0 근처에 머무는 것이 정상이고, 실해는 활성 flow 가 LRU 에 밀려나 counter 가
+	// 0 부터 다시 쌓이는 reset 이다. flow collector 가 admit 된 (emit 된) 시리즈의 직전 scrape bytes
+	// 를 기억해 감소 관측 시 계수하므로 죽은 key 가 채운 점유율과 활성 key 가 밀리는 실해가 구분된다.
+	flowCounterResetsTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "netobs_flow_counter_resets_total",
+			Help: "Number of times an emitted netobs_flow_bytes_total series was observed with a smaller value than the previous scrape, meaning an active flow entry was LRU-evicted from the BPF flow_bytes map and restarted from zero. This is the actionable saturation signal for accumulator maps; utilization ratio alone cannot distinguish dead keys from active-key eviction.",
+		},
+	)
+
 	// flowGuardRejectedTotal 은 #403 의 emit 상한 계약 카운터다. FlowGuard (스크레이프당 emit
 	// budget) 와 DropFlowGuard (라벨셋 sticky 상한) 가 상한 도달로 신규 flow 의 admit 을 거부한
 	// 횟수를 guard 라벨로 노출한다. 지속 증가는 max-active 상한이 관측 수요 대비 작다는 신호로,
@@ -189,6 +200,13 @@ func AddBpfRingbufDrops(delta uint64) {
 		return
 	}
 	bpfRingbufDropsTotal.Add(float64(delta))
+}
+
+// AddFlowCounterResets 는 flow collector 가 한 scrape 에서 관측한 counter reset 수를 누적한다 (#416).
+func AddFlowCounterResets(n uint64) {
+	if n > 0 {
+		flowCounterResetsTotal.Add(float64(n))
+	}
 }
 
 // AddFlowGuardRejected 는 flow 계열 가드의 상한 거부 1 회를 기록한다 (#403). guard 는 "flow"
