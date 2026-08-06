@@ -603,14 +603,23 @@ func (r *Reader) buildActiveCudaKeys(pidToUUIDs map[uint32][]string) map[metrics
 // resolver 가 nil 인 경우 빈 매핑을 반환해 podMap 도 빈 상태로 통째 교체된다 (dispatch 가
 // resolver==nil 분기로 분기되므로 lookup 결과가 사용되지 않는다).
 //
-// negative result (비-Pod) 도 zero PodIdentity 그대로 적재해 dispatch 가 동일 PID 에 대해
-// ResolvePID 를 다시 호출하지 않게 한다 (lazy fill 경로의 negative caching 과 동일 의미).
+// #413 부터 직전 사이클의 podMap 결과를 carry-over 한다. 살아 있는 PID 의 /proc/<pid>/cgroup
+// 경로는 프로세스 수명 동안 불변이라 Pod 해석 결과 (positive) 는 재파싱 없이 재사용해도 안전
+// 하고, 기본 1s 주기에서 전 활성 PID 의 procfs 재파싱이 신규 PID 한정으로 준다. negative result
+// (비-Pod / informer 미동기) 는 매 사이클 재해석해 Pod 기동 직후 informer sync 지연이 다음
+// 사이클에서 곧바로 수렴하는 종전 동작을 유지하며, dispatch 의 negative caching (사이클 내
+// 재호출 억제) 도 그대로다. 사이클 사이의 PID 재사용 (종료 후 같은 PID 로 다른 Pod 프로세스
+// 기동) 은 오귀속 여지가 있으나 pid_max 공간에서 1s 창 내 재사용은 실질 확률이 없다.
 func (r *Reader) resolvePidToPod(pidToUUID map[uint32]string) map[uint32]kube.PodIdentity {
 	if r.resolver == nil {
 		return map[uint32]kube.PodIdentity{}
 	}
 	fresh := make(map[uint32]kube.PodIdentity, len(pidToUUID))
 	for pid := range pidToUUID {
+		if id, ok := r.pods.lookup(pid); ok && id.IsPod() {
+			fresh[pid] = id
+			continue
+		}
 		fresh[pid] = r.resolver.ResolvePID(pid)
 	}
 	return fresh
