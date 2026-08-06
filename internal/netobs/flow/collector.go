@@ -191,7 +191,10 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 
 // countResets 는 현 세대 agg 를 직전 세대 스냅샷과 비교해 bytes 감소 시리즈 수를 세고 스냅샷을
 // 현 세대로 통째 교체한다. Collect 가 동시 실행될 수 있어 (복수 scraper) 스냅샷 교체를 mutex 로
-// 직렬화한다.
+// 직렬화한다. evict 외 오탐 경로로 동일 5-tuple 의 짧은 재사용 (연결 종료 후 같은 ephemeral
+// port 재할당) 이 정상적으로도 0 부터 시작해 감소로 관측될 수 있으나, alert 의 rate[10m] > 0.005
+// (10 분 창 3 회 이상) 와 for 10m 이 이런 산발 오탐을 흡수한다. 임계 조정 시 본 경로를 함께
+// 고려한다 (#416 리뷰).
 func (c *Collector) countResets(agg map[aggKey]*aggValue) uint64 {
 	cur := make(map[aggKey]uint64, len(agg))
 	var resets uint64
