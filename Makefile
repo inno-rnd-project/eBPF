@@ -26,6 +26,11 @@ PREREQS_gpuobs-agent := generate-gpuobs
 CGO_netobs-agent := 0
 CGO_gpuobs-agent := 1
 
+# #421 이미지 기본 실행 사용자 매핑. BPF 에이전트 2종은 kubelet capabilities 가 root 프로세스에만
+# effective 로 실려 0 (root) 을 유지하고, 그 외는 Dockerfile 기본 (65532) 을 쓴다.
+UID_netobs-agent := 0
+UID_gpuobs-agent := 0
+
 # ============================================================================
 # Overlay registry — 기본은 <agent-domain>-<rollout-stage> 형식이지만 dev/prod 분기가
 # 없는 클러스터 공용 패키지는 단일 이름 (예: dashboards) 으로 등록한다.
@@ -332,6 +337,7 @@ image-build-%-agent: $$(PREREQS_$$*-agent)
 		--build-arg TARGET_AGENT=$*-agent \
 		--build-arg AGENT_PORT=$(PORT_$*-agent) \
 		--build-arg CGO_ENABLED=$(CGO_$*-agent) \
+		--build-arg RUNTIME_UID=$(UID_$*-agent) \
 		-t $*-agent:$(VERSION) .
 
 image-push-%-agent: image-build-%-agent

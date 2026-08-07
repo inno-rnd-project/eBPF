@@ -388,6 +388,14 @@ netobs와 gpuobs는 동일한 4개 라벨 키 (`node`, `src_namespace`, `src_pod
 
 `netobs_pod_stage_events_total` / `netobs_pod_stage_latency_seconds` 등 workload-level (`src_workload`) 메트릭은 pod-instance 키 셋이 다르므로 본 join 대상이 아니다. gpuobs `_device_*` 메트릭(`gpu_uuid` / `gpu_index` 만 가짐) 은 노드 / GPU 단위 분석용으로 별도 group 처리한다.
 
+### Base image 갱신 (#421)
+
+Dockerfile 의 base 이미지 2종 (`golang:1.24-bookworm`, `debian:bookworm-slim`) 은 digest 로 고정되어 같은 커밋이 항상 같은 이미지로 빌드된다. 보안 패치 등으로 갱신할 때는 다음 절차를 따른다.
+
+1. `docker buildx imagetools inspect <image>:<tag>` 로 최신 digest 를 조회한다
+2. Dockerfile 의 두 `FROM ...@sha256:` 값을 교체한다
+3. `make image-build-netobs-agent` 등으로 빌드가 성립하는지 확인 후 커밋한다
+
 ### Recording rules (`deploy/gpuobs/base/prometheus-rule-*.yaml`)
 
 PrometheusRule CR `netobs-gpuobs-correlation` 에 group `netobs-gpuobs.recording` (interval 30s) 으로 배포한다. agent base kustomization에 포함되어 `make deploy-gpuobs-{dev,prod}` 시 함께 배포된다.
