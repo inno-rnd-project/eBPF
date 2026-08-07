@@ -69,7 +69,7 @@ BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 # .PHONY에 넣지 않는다. GNU make는 .PHONY 타깃에 대해 implicit rule(pattern rule 포함)
 # 탐색을 건너뛰므로 매치가 일어나지 않는다. 해당 타깃들은 동일 이름의 실제 파일이
 # 없어 매 호출마다 recipe가 재실행되므로 phony와 동등 동작이다.
-.PHONY: deps generate generate-gpuobs generate-nccl clean tree bump \
+.PHONY: deps generate generate-gpuobs generate-nccl clean tree bump lint check-version-alignment \
 	deploy-cluster \
 	build-all image-build-all image-push-all \
 	test test-integration setup-envtest \
@@ -259,6 +259,20 @@ yaml.safe_dump(merged, open('docs/api/openapi.yaml', 'w'), allow_unicode=True, s
 # 한다. 재생성을 실제 수행한 뒤 산출물 경로에 git diff 가 남으면 실패하므로, 커밋 전 working tree
 # 가 깨끗한 상태에서 실행해야 한다. openapi.yaml 의 info.version 이 VERSION 파일을 따르므로 bump
 # 후에도 본 타깃이 재생성 누락을 잡아낸다.
+# lint - golangci-lint 를 도커로 실행한다 (#421). 버전은 .golangci.yml 의 룰셋과 함께 고정되어
+#        로컬과 CI 가 같은 결과를 낸다. BPF .o embed 가 필요하므로 generate 계열이 선행돼야 한다
+#        (로컬은 통상 생성돼 있고, CI 는 워크플로가 생성 단계를 선행한다).
+GOLANGCI_IMAGE ?= golangci/golangci-lint:v2.12.2
+lint:
+	docker run --rm -v $(CURDIR):/src -w /src 		-e GOCACHE=/tmp/gocache -e GOLANGCI_LINT_CACHE=/tmp/lintcache 		$(GOLANGCI_IMAGE) golangci-lint run --timeout 5m
+	@echo "golangci-lint: OK"
+
+# check-version-alignment - VERSION 과 kustomize overlay (_template 포함) 의 image newTag 가 전부
+#                           일치하는지 검사한다 (#421). bump 누락 overlay 가 릴리스에 흘러가는
+#                           버전 불일치를 CI 에서 차단한다.
+check-version-alignment:
+	@v=$$(cat VERSION); fail=0; 	for f in deploy/*/overlays/*/kustomization.yaml; do 		for t in $$(grep -oE 'newTag: *"?[0-9][0-9.]*"?' $$f | grep -oE '[0-9][0-9.]*'); do 			if [ "$$t" != "$$v" ]; then echo "$$f: newTag $$t != VERSION $$v"; fail=1; fi; 		done; 	done; 	if [ $$fail -ne 0 ]; then exit 1; fi; 	echo "버전 정합: VERSION=$$v 와 전체 overlay newTag 일치"
+
 check-swagger-drift: swag-init swag-merge
 	@git diff --exit-code -- internal/correlation/api/docs docs/api/openapi.yaml \
 		|| (echo "swagger 산출물이 어노테이션과 어긋났습니다. make swag-init swag-merge 결과를 커밋하세요."; exit 1)
