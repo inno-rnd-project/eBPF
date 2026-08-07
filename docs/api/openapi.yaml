@@ -764,7 +764,10 @@ paths:
         면 pod pressure 가 elevated 임계(0.4) 이상인 pod 만 남기고 dominant severity 가 low(정상)면
         목록을 비워 낮은 수치 pod 가 원인으로 오인되지 않게 한다(#380). 미전달 기본은 전 pod 를 노출한다. top_pods 의
         pod 는 ns/pod 결합 id 표현으로 불변이며, 슬래시 파싱 없이 신원을 읽는 분리 필드 namespace 와 pod_name
-        이 additive 로 병기된다(#383, namespace 미상이면 생략).'
+        이 additive 로 병기된다(#383, namespace 미상이면 생략). health_notes 는 health 차원의 산출 불가·비실측
+        사유(additive, #430)로 no_cpu_limit_pods(cpu 가 fallback 상수 1.0, CPU limit pod
+        없음), no_gpu(GPU 미보유 노드의 정상 결측), scrape_gap(입력 시리즈 소실)을 구분해 담으며, 프론트가 결측 차원을
+        0.00 대신 측정 불가로 렌더하는 근거다. 항목이 없으면 생략된다.'
       produces:
       - application/json
       tags:
@@ -2446,6 +2449,15 @@ definitions:
         type: object
         additionalProperties:
           type: number
+      health_notes:
+        description: "HealthNotes 는 health 차원의 산출 불가 / 비실측 사유다 (#430 additive, 기존\
+          \ 필드와 enum 불변).\n값 도메인은 세 가지로 폐쇄된다.\n  - no_cpu_limit_pods: cpu 가 fallback\
+          \ 상수 1.0 으로 채워짐 (CPU limit pod 없음, 실측 아님)\n  - no_gpu: gpu 차원 결측이 GPU 미보유\
+          \ 노드의 정상 상태\n  - scrape_gap: 그 외 결측 (입력 시리즈 소실, scrape 실패 계열)\n프론트가 결측 차원을\
+          \ 0.00 (최악) 대신 측정 불가로 렌더하는 근거이며, 항목이 없으면 생략된다."
+        type: object
+        additionalProperties:
+          type: string
       node:
         type: string
       overall:
