@@ -188,7 +188,10 @@ deps:
 # 전에 본 타겟 을 한 번 실행 해 OpenAPI 스펙 을 갱신 한다. --outputTypes 로 json 과 yaml 동시
 # 생성을 강제 해 둘 사이의 drift 를 차단 한다. swag CLI 가 GOPATH/bin 에 설치 되어 있어야 한다
 # (go install github.com/swaggo/swag/cmd/swag@latest).
-SWAG ?= $(shell go env GOPATH)/bin/swag
+# #421 swag 를 GOPATH 바이너리가 아니라 모듈 버전 고정 실행으로 호출한다. GOPATH 의 swag 는
+# 같은 버전을 자칭해도 빌드 시점 커밋이 달라 산출물이 어긋날 수 있고 (CI 에서 format 필드
+# 유무 drift 실측), go run @버전 은 로컬과 CI 가 문자 그대로 같은 빌드를 쓰게 한다.
+SWAG ?= go run github.com/swaggo/swag/cmd/swag@v1.16.4
 
 # controller-gen 은 #102 의 LoadScenario CRD 신설에 사용한다. kubebuilder marker 가 붙은
 # api/v1alpha1/*.go 로부터 CRD YAML (deploy/injector/base/<group>_<plural>.yaml, controller-gen
@@ -236,7 +239,6 @@ generate-crd: controller-gen-install
 	fi
 
 swag-init:
-	@if [ ! -x "$(SWAG)" ]; then echo "swag CLI 가 없습니다. go install github.com/swaggo/swag/cmd/swag@latest 를 실행하세요."; exit 1; fi
 	# correlation 은 PodIdentity 같은 cross-package 타입 까지 OpenAPI schema 에 포함 시키려고
 	# parseDependency 와 repo 루트 scope 채택. netobs 와 gpuobs 의 REST API 는 미사용 scaffold 라
 	# #171 에서 제거 했고, REST API 는 소비처 (injector) 가 있는 correlation-exporter 만 유지 한다.

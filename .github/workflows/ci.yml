@@ -72,11 +72,9 @@ jobs:
       - name: golangci-lint
         run: make lint
 
-      # swagger 산출물이 어노테이션과 어긋난 채 커밋되지 않았는지 검사한다. swag 버전은 로컬
-      # 관행 (v1.16.4) 과 동일하게 고정해 버전 차이로 인한 위양성 drift 를 막는다.
-      - name: Install swag
-        run: go install github.com/swaggo/swag/cmd/swag@v1.16.4
-
+      # swagger 산출물이 어노테이션과 어긋난 채 커밋되지 않았는지 검사한다. swag 는 Makefile 이
+      # go run @v1.16.4 로 모듈 버전 고정 실행하므로 별도 설치가 필요 없고 로컬과 동일 빌드가
+      # 보장된다 (GOPATH 바이너리는 같은 버전을 자칭해도 산출이 어긋날 수 있음을 실측).
       - name: Swagger drift check
         run: make check-swagger-drift
 
