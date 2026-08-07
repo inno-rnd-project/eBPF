@@ -1,7 +1,7 @@
 # gpuobs-node-health.test.yaml 은 #264 의 노드 차원 health rule 4종 검증 promtool unit test 다.
 # cluster health 와 동일 산식을 노드 차원으로 이식했는지, 노드별로 독립 산출되는지 단정한다.
 # n1 은 cpu throttle 이 높아 cpu health 가 낮고, n2 는 정상이라 높다. network 는 n1 의 drop rate
-# 로 낮아진다. n3 은 cpu limit pod 가 없어 throttle 입력이 비지만 (#347), memory_health 앵커
+# 로 낮아진다. n3 은 cpu limit pod 가 없어 throttle 입력이 비지만 (#347), kube_node_info 앵커 (#430)
 # fallback 으로 cpu health 1.0 을 받는다.
 rule_files:
   - gpuobs.yaml
@@ -38,9 +38,12 @@ tests:
         values: '1000x20'
       - series: 'node_uname_info{instance="10.0.0.3:9100",nodename="n3"}'
         values: '1x20'
+      # #430 cpu fallback 앵커. n3 처럼 throttle 입력이 없는 노드의 1.0 판정이 본 시리즈에서 온다.
+      - series: 'kube_node_info{node="n3"}'
+        values: '1+0x40'
 
     promql_expr_test:
-      # cpu health: 노드별 독립. n1 0.4, n2 0.9. n3 (#347) 은 throttle 입력이 없어도 memory_health
+      # cpu health: 노드별 독립. n1 0.4, n2 0.9. n3 (#347) 은 throttle 입력이 없어도 kube_node_info
       # 앵커 fallback 으로 1.0 을 받는다 (cpu limit pod 없음 = throttle 불가 = 공급 정체 없음).
       - expr: node:cpu_health_score:5m
         eval_time: 5m
@@ -52,7 +55,7 @@ tests:
           - labels: 'node:cpu_health_score:5m{node="n3"}'
             value: 1
       # memory health: n1 1.0, n3 1.0 (위험 구간 매핑 #286, n2 는 node_exporter 시리즈 없어 산출
-      # 안 됨). n3 은 #347 cpu fallback 앵커로도 쓰이는 node_exporter 실측 노드다.
+      # 안 됨). cpu fallback 앵커는 #430 부터 memory 가 아니라 kube_node_info 다.
       - expr: node:memory_health_score:5m
         eval_time: 5m
         exp_samples:

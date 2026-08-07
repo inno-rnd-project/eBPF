@@ -234,12 +234,18 @@ spec:
         # 없는 노드만 우변의 1.0 을 받는다 (양변 모두 {node} 단일 라벨이라 시그니처 정합). 앵커는 같은
         # 그룹 상단에 순차 평가되어 지연이 없다. 이 프로젝트의 노드 fallback 관용구 (or on(node)
         # (... * 0)) 와 동일 축이다.
-        # 결합 유의: 앵커가 memory_health 라 fallback 경로의 cpu health 가 node_exporter 가용성에
-        # 간접 의존한다. node_exporter 가 빠진 노드는 cpu 와 memory health 가 동반 결측되어 일관은
-        # 유지되나, 더 중립적 앵커가 필요하면 kube_node_info (kube-state, node_exporter 무관) 로 교체
-        # 가능하다. 또한 fallback 의 1.0 은 실측이 아닌 "throttle 없음" 상수로, CPU 여유를 뜻하지
-        # 않는다 (memory health 실측과 성격이 다름). cpu limit 없는 pod 의 노드 CPU 폭주는 cpu health
-        # 가 아니라 node status 의 usage 축 (#333) 이 담당한다.
+        # #430 앵커를 memory_health 에서 kube_node_info 로 교체해 fallback 을 자기 완결화했다.
+        # 종전 앵커는 다른 차원인 memory health 시리즈를 참조해, node-exporter scrape 실패로 memory
+        # health 가 결측되면 cpu health 까지 연쇄 결측됐다 (dev 실측: 노드 간 모니터링 포트 차단으로
+        # 두 노드의 cpu 와 memory health 동반 소실). kube_node_info 는 노드 존재 그 자체의 시리즈라
+        # health 차원 간 결합이 없고, 유일한 의존인 kube-state-metrics 전손은 #412 의
+        # KubeStateMetricsAbsent 가 감시한다. group by(node) 로 값 1 과 node 단일 라벨을 만들어 or
+        # 양변의 라벨 시그니처를 정합시킨다. 타 차원 health 를 fallback 근거로 쓰는 rule 은 전수
+        # 점검 결과 본 rule 하나였다 (idle-cause 계열 앵커는 자기 체인 내 참조).
+        # fallback 의 1.0 은 실측이 아닌 "throttle 없음" 상수로, CPU 여유를 뜻하지 않는다 (memory
+        # health 실측과 성격이 다름). cpu limit 없는 pod 의 노드 CPU 폭주는 cpu health 가 아니라
+        # node status 의 usage 축 (#333) 이 담당한다. API 는 fallback 채움을 health_notes 의
+        # no_cpu_limit_pods 로 구분 노출한다 (#430).
         - record: node:cpu_health_score:5m
           expr: |
             (
@@ -248,7 +254,7 @@ spec:
                 1
               )
             )
-            or (node:memory_health_score:5m * 0 + 1)
+            or group by(node) (kube_node_info)
 
         # node:memory_health_score:5m 는 gpu 판과 동일하게 cluster 판이 참조하는 순서 제약으로
         # cluster-health 블록 상단 (#286) 에 정의되어 있다.

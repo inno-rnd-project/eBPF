@@ -1,0 +1,50 @@
+# gpuobs-health-fallback.test.yaml 은 #430 의 cpu health fallback 자기 완결성 검증이다. 종전
+# fallback 은 memory health 시리즈를 앵커로 써서 node-exporter 결측 시 cpu health 가 연쇄 결측
+# 됐다. 세 시나리오를 단정한다: memory health 전면 결측에서도 cpu health 가 1.0 으로 산출 (핵심
+# 회귀), throttle 실측 노드는 primary 값 유지, kube_node_info 까지 없는 노드는 결측 (앵커 한계
+# 의 명시적 고정). rule_files 는 make test-prometheus-rules 가 추출해 마운트하는 gpuobs.yaml.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # memory health 의 입력 (node:memory_pressure_score:5m) 이 전면 결측이고 cpu throttle pod 도
+  # 없는 노드: 종전 rule 이면 cpu health 도 연쇄 결측됐지만, kube_node_info 앵커로 1.0 이 산출된다.
+  - interval: 30s
+    input_series:
+      - series: 'kube_node_info{node="n1"}'
+        values: '1+0x40'
+    promql_expr_test:
+      - expr: node:cpu_health_score:5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'node:cpu_health_score:5m{node="n1"}'
+            value: 1
+      - expr: node:memory_health_score:5m
+        eval_time: 10m
+        exp_samples: []
+
+  # throttle 실측이 있는 노드는 primary (quantile p95 inversion) 값이 유지되고 fallback 이
+  # 개입하지 않는다. pod score 0.4 단일 pod 라 p95 = 0.4, health = 0.6.
+  - interval: 30s
+    input_series:
+      - series: 'kube_node_info{node="n1"}'
+        values: '1+0x40'
+      - series: 'pod:cpu_throttle_score:5m{node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
+        values: '0.4+0x40'
+    promql_expr_test:
+      - expr: node:cpu_health_score:5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'node:cpu_health_score:5m{node="n1"}'
+            value: 0.6
+
+  # kube_node_info 조차 없으면 (kube-state-metrics 전손) cpu health 는 결측된다. 이 케이스는
+  # KubeStateMetricsAbsent (#412) 가 감시하며, 본 단정은 앵커 의존의 한계를 명시적으로 고정한다.
+  - interval: 30s
+    input_series: []
+    promql_expr_test:
+      - expr: node:cpu_health_score:5m
+        eval_time: 10m
+        exp_samples: []
