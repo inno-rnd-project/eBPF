@@ -46,9 +46,12 @@ const webhookDispatchWorkers = 4
 
 // dedupeWindow 는 Alertmanager 재전송 멱등 창이다 (#419). Alertmanager 는 응답을 못 받으면 수초
 // 간격으로 같은 payload 를 재전송하는데, 동일 alert (labels 지문 동일) 가 본 창 안에 다시 오면
-// 하류 조회 없이 억제한다. 정상 재알림 주기 (group_interval 5m, repeat_interval 수 시간) 보다
-// 충분히 짧아 갱신 흐름은 검열하지 않는다.
-const dedupeWindow = 60 * time.Second
+// 하류 조회 없이 억제한다. 본 서비스의 실제 라우트 설정 (deploy/rca-summarizer/base/
+// alertmanagerconfig.yaml: groupWait 15s, groupInterval 1m, repeatInterval 30m) 기준으로, 창을
+// groupInterval 과 같게 두면 60초 주기의 정상 갱신 통보가 지터에 따라 경계에서 임의로 억제되므로
+// 그 절반인 30s 로 둔다. 응답 실패 재전송 (수초 간격) 은 여전히 잡히고 정상 갱신 (60s 이상 간격)
+// 은 항상 통과한다. alertmanagerconfig 의 주기를 줄이면 본 상수와의 간격을 함께 확인해야 한다.
+const dedupeWindow = 30 * time.Second
 
 // dedupeMaxKeys 는 멱등 캐시의 키 상한이다. 초과 시 전체를 비워 무제한 증가를 막는 backstop 으로,
 // 정상 운영의 동시 고유 alert 수 (수십) 대비 충분히 크다.
@@ -118,6 +121,7 @@ func NewWebhookHandler(reg *registry.Registry, src registry.Sources, st *store.S
 		// firing + alertname 보유 alert 만 후보로 거른 뒤 멱등 창과 상한을 차례로 적용한다.
 		now := time.Now()
 		var candidates []alertmanagerAlert
+		var overCapNames []string
 		var overCap, duplicates int
 		for _, a := range p.Alerts {
 			if a.Status != "firing" || a.Labels["alertname"] == "" {
@@ -129,6 +133,7 @@ func NewWebhookHandler(reg *registry.Registry, src registry.Sources, st *store.S
 			}
 			if len(candidates) >= MaxAlertsPerWebhook {
 				overCap++
+				overCapNames = append(overCapNames, a.Labels["alertname"])
 				continue
 			}
 			candidates = append(candidates, a)
@@ -138,7 +143,13 @@ func NewWebhookHandler(reg *registry.Registry, src registry.Sources, st *store.S
 		}
 		if overCap > 0 {
 			met.RecordWebhookDropped("over_cap", overCap)
-			log.Printf("rca: webhook alert cap exceeded, dropped %d of %d firing alerts", overCap, overCap+len(candidates))
+			// 누락 추적을 위해 어느 alert 가 빠졌는지 alertname 단위로 남긴다 (#419 리뷰). 표기는
+			// 20개에서 자르며 계수는 dropped_total 이 담당한다.
+			names := overCapNames
+			if len(names) > 20 {
+				names = append(append([]string(nil), names[:20]...), "...")
+			}
+			log.Printf("rca: webhook alert cap exceeded, dropped %d of %d firing alerts (dropped alertnames: %s)", overCap, overCap+len(candidates), strings.Join(names, ","))
 		}
 
 		// 유계 동시성 dispatch. 요청 컨텍스트가 끝나면 (클라이언트 취소 / 서버 WriteTimeout) 잔여
