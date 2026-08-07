@@ -1,5 +1,7 @@
 package registry
 
+import "context"
+
 // registerIdle 은 gpu-idle 그룹의 7 종 mapping 을 등록한다. 앞 5 종은 src_namespace 와 src_pod 라벨로
 // victim 을 식별 가능하고, cause 별로 dominant_dimension 이 alert 이름에 인코딩되어 있어 mapping 흐름이
 // 동일하다 (cause 만 다름). 뒤 2 종 (dcgm_pcie_replay, nccl_collective_stall) 은 node 단위 alert 라
@@ -44,7 +46,7 @@ func registerIdle(r *Registry) {
 // Top-N 의 [0] 으로 top_suspect 를 갱신한다. #122 의 multi-source cross-reference 산출 시 세 source 의 raw 결과
 // 를 모아 EvaluateConfidence 로 ConfidenceScore 를 채운다.
 func idleMapping(dimension string, evidence []string) Mapping {
-	return func(labels map[string]string, sources Sources) RCASummary {
+	return func(ctx context.Context, labels map[string]string, sources Sources) RCASummary {
 		srcNS := labelOr(labels, "src_namespace", "")
 		srcPod := labelOr(labels, "src_pod", "")
 		node := labelOr(labels, "node", "")
@@ -58,17 +60,17 @@ func idleMapping(dimension string, evidence []string) Mapping {
 			var neighbors []NeighborInfo
 			var dropFlows []DropFlowInfo
 			if srcNS != "" && srcPod != "" {
-				neighbors = sources.TopNeighbors(srcNS, srcPod)
+				neighbors = sources.TopNeighbors(ctx, srcNS, srcPod)
 				if len(neighbors) > 0 {
 					summary.TopSuspect = formatPod(neighbors[0].SuspectNamespace, neighbors[0].SuspectPod)
 				}
 			}
 			if srcNS != "" {
-				dropFlows = sources.TopDropFlows(srcNS)
+				dropFlows = sources.TopDropFlows(ctx, srcNS)
 			}
 			gpuSignal := 0.0
 			if node != "" {
-				gpuSignal = sources.GPUSignal(node)
+				gpuSignal = sources.GPUSignal(ctx, node)
 			}
 			summary.ConfidenceScore = sources.EvaluateConfidence(neighbors, dropFlows, gpuSignal)
 		}

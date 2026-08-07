@@ -40,7 +40,7 @@ type Sources struct {
 // gpuobsSource 는 GPU 신호 fetch 의 추상 인터페이스다. test 가 in-memory fake 를 주입할 수 있게
 // 한다.
 type gpuobsSource interface {
-	fetchGPUSignal(node string) float64
+	fetchGPUSignal(ctx context.Context, node string) float64
 }
 
 // New 는 production Sources 를 만든다. snapshotURL 은 correlation-exporter 의 /snapshot URL,
@@ -69,11 +69,11 @@ func New(snapshotURL, prometheusURL string, fetchTimeout, snapshotTTL time.Durat
 // confidence 가 자연 감쇠 된다. 테스트 또는 부분 초기화 환경 에서 gpuobs 가 nil 인 경우 panic
 // 회피 위해 0 을 돌려준다. 본 가드 는 다른 두 source (snapshot 과 promql) 의 빈 결과 처리 와
 // 동일 한 graceful empty 계약 을 유지 한다.
-func (s *Sources) GPUSignal(node string) float64 {
+func (s *Sources) GPUSignal(ctx context.Context, node string) float64 {
 	if s.gpuobs == nil {
 		return 0
 	}
-	return s.gpuobs.fetchGPUSignal(node)
+	return s.gpuobs.fetchGPUSignal(ctx, node)
 }
 
 // Probe 는 readiness 용 초기 connectivity 검사다. correlation-exporter snapshot 또는 Prometheus
@@ -114,8 +114,8 @@ func (s *Sources) EvaluateConfidence(neighbors []registry.NeighborInfo, dropFlow
 // dispatch 측 (registry idle / gpuobs mapping) 은 [0] 만 참조하므로 본 자리에서 정렬을 강제해야
 // 진짜 dominant suspect 가 채택된다. snapshot fetch / parse 실패 시 빈 슬라이스를 돌려주어
 // mapping 이 fallback 경로로 진입한다.
-func (s *Sources) TopNeighbors(victimNamespace, victimPod string) []registry.NeighborInfo {
-	snap := s.snapshot.fetch()
+func (s *Sources) TopNeighbors(ctx context.Context, victimNamespace, victimPod string) []registry.NeighborInfo {
+	snap := s.snapshot.fetch(ctx)
 	candidates := make([]registry.NeighborInfo, 0, len(snap))
 	for _, n := range snap {
 		if n.VictimNamespace != victimNamespace || n.VictimPod != victimPod {
@@ -152,8 +152,8 @@ func absScore(v float64) float64 {
 
 // TopDropFlows 는 promQLSource 에 namespace 필터 instant query 를 위임한다. fetch 실패 시 빈
 // 슬라이스를 돌려준다.
-func (s *Sources) TopDropFlows(namespace string) []registry.DropFlowInfo {
-	flows := s.promql.fetchTopDropFlows(namespace, s.topN)
+func (s *Sources) TopDropFlows(ctx context.Context, namespace string) []registry.DropFlowInfo {
+	flows := s.promql.fetchTopDropFlows(ctx, namespace, s.topN)
 	return flows
 }
 
@@ -173,13 +173,13 @@ type snapshotEntry struct {
 // snapshotSource 는 snapshot fetch 의 추상 인터페이스다. test 가 in-memory fake 를 주입할 수
 // 있게 한다. probe 는 readiness 용 connectivity 검사로 cache 를 우회 해 연결 성공 여부만 돌려준다.
 type snapshotSource interface {
-	fetch() []snapshotEntry
+	fetch(ctx context.Context) []snapshotEntry
 	probe(ctx context.Context) error
 }
 
 // promQLSource 는 Prometheus query 의 추상 인터페이스다.
 type promQLSource interface {
-	fetchTopDropFlows(namespace string, n int) []registry.DropFlowInfo
+	fetchTopDropFlows(ctx context.Context, namespace string, n int) []registry.DropFlowInfo
 	probe(ctx context.Context) error
 }
 
@@ -188,17 +188,17 @@ type promQLSource interface {
 // 항상 연결 성공 (nil) 을 돌려준다.
 type noopSnapshot struct{}
 
-func (noopSnapshot) fetch() []snapshotEntry      { return nil }
-func (noopSnapshot) probe(context.Context) error { return nil }
+func (noopSnapshot) fetch(context.Context) []snapshotEntry { return nil }
+func (noopSnapshot) probe(context.Context) error           { return nil }
 
 type noopPromQL struct{}
 
-func (noopPromQL) fetchTopDropFlows(string, int) []registry.DropFlowInfo { return nil }
-func (noopPromQL) probe(context.Context) error                           { return nil }
+func (noopPromQL) fetchTopDropFlows(context.Context, string, int) []registry.DropFlowInfo { return nil }
+func (noopPromQL) probe(context.Context) error                                            { return nil }
 
 type noopGpuobs struct{}
 
-func (noopGpuobs) fetchGPUSignal(string) float64 { return 0 }
+func (noopGpuobs) fetchGPUSignal(context.Context, string) float64 { return 0 }
 
 // staleCache 는 snapshot 의 TTL 기반 in-memory cache 다. fetch 시 cache hit 이면 mu 잠금만으로
 // stale-OK 반환, miss 면 caller 가 backing fetcher 호출 후 store 한다.

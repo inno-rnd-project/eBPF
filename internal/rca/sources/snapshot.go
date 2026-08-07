@@ -38,12 +38,14 @@ func newHTTPSnapshotSource(url string, fetchTimeout, ttl time.Duration) *httpSna
 // fetch 는 cache fresh 면 즉시 반환, cache stale 또는 miss 면 HTTP 호출 후 cache 갱신한다.
 // HTTP 실패 시에는 cache 의 stale 값을 그대로 돌려준다 (fallback). cache 가 비어 있고 HTTP 도
 // 실패하면 빈 슬라이스를 돌려준다.
-func (s *httpSnapshotSource) fetch() []snapshotEntry {
+func (s *httpSnapshotSource) fetch(ctx context.Context) []snapshotEntry {
 	if cached, fresh := s.cache.get(); fresh {
 		return cached
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+	// #419 요청 컨텍스트 파생. 클라이언트 취소 / 서버 타임아웃이 하류 fetch 까지 전파되고,
+	// timeout 은 남은 요청 예산과 per-fetch 상한 중 먼저 오는 쪽이 걸린다.
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
 	entries, err := s.doFetch(ctx)

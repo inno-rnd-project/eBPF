@@ -41,12 +41,13 @@ func newHTTPGpuobsSource(prometheusURL string, timeout time.Duration) *httpGpuob
 
 // fetchGPUSignal 은 node 단위 GPU 신호 강도 를 0-1 범위 로 돌려준다. Prometheus instant query
 // 가 timeout 또는 빈 결과 면 0 을 돌려주어 confidence 산출 이 graceful empty 로 진행 된다.
-func (s *httpGpuobsSource) fetchGPUSignal(node string) float64 {
+func (s *httpGpuobsSource) fetchGPUSignal(ctx context.Context, node string) float64 {
 	if s.prometheusURL == "" || node == "" {
 		return 0
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+	// #419 요청 컨텍스트 파생 (snapshot.fetch 와 동일).
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
 	query := fmt.Sprintf(gpuSignalQueryTemplate, escapePromLabel(node))

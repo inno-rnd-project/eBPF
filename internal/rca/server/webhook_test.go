@@ -1,12 +1,16 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -107,13 +111,15 @@ func TestWebhook_ResolvedAlertSkipped(t *testing.T) {
 }
 
 // TestWebhook_EmittedCounterIncrements 는 emit 카운터가 alert 발화마다 1 씩 증가하는지 검증한다.
+// #419 부터 동일 labels 의 짧은 창 내 재전송은 멱등 억제되므로 발화마다 라벨 (src_pod) 을 다르게
+// 둬 서로 다른 alert 3건임을 명시한다.
 func TestWebhook_EmittedCounterIncrements(t *testing.T) {
 	mux, _, met, _ := fixtures(t)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	payload := `{"alerts":[{"status":"firing","labels":{"alertname":"GPUIdleWithCPUThrottle","src_namespace":"perf","src_pod":"p","node":"gpu"}}]}`
 	for i := 0; i < 3; i++ {
+		payload := fmt.Sprintf(`{"alerts":[{"status":"firing","labels":{"alertname":"GPUIdleWithCPUThrottle","src_namespace":"perf","src_pod":"p%d","node":"gpu"}}]}`, i)
 		resp, _ := http.Post(srv.URL+"/webhook", "application/json", strings.NewReader(payload))
 		resp.Body.Close()
 	}
@@ -269,5 +275,210 @@ func TestWebhook_OversizedPayloadRejected(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusOK {
 		t.Errorf("status=%d; want non-200 (oversized payload must be rejected)", resp.StatusCode)
+	}
+}
+
+// ctxCapturingSources 는 #419 컨텍스트 전파 검증용 fake 다. Dispatch 경유로 받은 ctx 를 보관해
+// 테스트가 요청 컨텍스트와의 연결 (취소 전파) 을 단정할 수 있게 한다.
+type ctxCapturingSources struct {
+	mu   sync.Mutex
+	ctxs []context.Context
+}
+
+func (f *ctxCapturingSources) TopNeighbors(ctx context.Context, _, _ string) []registry.NeighborInfo {
+	f.mu.Lock()
+	f.ctxs = append(f.ctxs, ctx)
+	f.mu.Unlock()
+	return nil
+}
+func (f *ctxCapturingSources) TopDropFlows(ctx context.Context, _ string) []registry.DropFlowInfo {
+	f.mu.Lock()
+	f.ctxs = append(f.ctxs, ctx)
+	f.mu.Unlock()
+	return nil
+}
+func (f *ctxCapturingSources) GPUSignal(ctx context.Context, _ string) float64 {
+	f.mu.Lock()
+	f.ctxs = append(f.ctxs, ctx)
+	f.mu.Unlock()
+	return 0
+}
+func (f *ctxCapturingSources) EvaluateConfidence([]registry.NeighborInfo, []registry.DropFlowInfo, float64) float64 {
+	return 1
+}
+
+// TestWebhook_RequestContextPropagatesToSources 는 #419 의 취소 전파를 단정한다. 요청 컨텍스트를
+// 취소하면 하류 source 가 받은 ctx 도 즉시 Done 이어야 한다.
+func TestWebhook_RequestContextPropagatesToSources(t *testing.T) {
+	src := &ctxCapturingSources{}
+	st := store.New()
+	met := rcametrics.New()
+	h := NewWebhookHandler(registry.New(), src, st, met, 0.0)
+
+	body := `{"alerts":[{"status":"firing","labels":{"alertname":"NetObsDropBurst","src_namespace":"ns1","src_pod":"p1"}}]}`
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body)).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	src.mu.Lock()
+	captured := append([]context.Context(nil), src.ctxs...)
+	src.mu.Unlock()
+	if len(captured) == 0 {
+		t.Fatal("source 가 호출되지 않음 (mapping 이 source 를 타지 않음)")
+	}
+	select {
+	case <-captured[0].Done():
+		t.Fatal("요청 취소 전에 ctx 가 이미 Done")
+	default:
+	}
+	cancel()
+	select {
+	case <-captured[0].Done():
+	default:
+		t.Fatal("요청 컨텍스트 취소가 source ctx 로 전파되지 않음")
+	}
+}
+
+// countingSources 는 하류 호출 수와 동시 실행 수를 계수하는 fake 다 (#419).
+type countingSources struct {
+	mu          sync.Mutex
+	calls       int
+	inFlight    int
+	maxInFlight int
+	block       time.Duration
+}
+
+func (f *countingSources) enter() {
+	f.mu.Lock()
+	f.calls++
+	f.inFlight++
+	if f.inFlight > f.maxInFlight {
+		f.maxInFlight = f.inFlight
+	}
+	f.mu.Unlock()
+	if f.block > 0 {
+		time.Sleep(f.block)
+	}
+	f.mu.Lock()
+	f.inFlight--
+	f.mu.Unlock()
+}
+func (f *countingSources) TopNeighbors(_ context.Context, _, _ string) []registry.NeighborInfo {
+	f.enter()
+	return nil
+}
+func (f *countingSources) TopDropFlows(_ context.Context, _ string) []registry.DropFlowInfo {
+	f.enter()
+	return nil
+}
+func (f *countingSources) GPUSignal(_ context.Context, _ string) float64 {
+	f.enter()
+	return 0
+}
+func (f *countingSources) EvaluateConfidence([]registry.NeighborInfo, []registry.DropFlowInfo, float64) float64 {
+	return 1
+}
+
+// webhookFixture 는 counting fake 를 물린 webhook 핸들러를 만든다.
+func webhookFixture(src registry.Sources, met *rcametrics.Metrics) http.Handler {
+	return NewWebhookHandler(registry.New(), src, store.New(), met, 0.0)
+}
+
+// bulkPayload 는 서로 다른 라벨의 firing alert n건 payload 를 만든다.
+func bulkPayload(n int) string {
+	var b strings.Builder
+	b.WriteString(`{"alerts":[`)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"status":"firing","labels":{"alertname":"NetObsDropBurst","src_namespace":"ns1","src_pod":"p%d"}}`, i)
+	}
+	b.WriteString("]}")
+	return b.String()
+}
+
+// TestWebhook_AlertCapBoundsDownstreamCalls 는 #419 의 상한을 단정한다. 상한 초과 payload 에서
+// dispatch 가 MaxAlertsPerWebhook 건으로 잘리고 초과분이 over_cap 으로 계수되며, 하류 호출 수가
+// 상한 x alert 당 최대 3회 이하로 유계임을 함께 확인한다.
+func TestWebhook_AlertCapBoundsDownstreamCalls(t *testing.T) {
+	src := &countingSources{}
+	met := rcametrics.New()
+	h := webhookFixture(src, met)
+
+	n := MaxAlertsPerWebhook + 16
+	start := time.Now()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(bulkPayload(n))))
+	elapsed := time.Since(start)
+
+	var resp struct {
+		Processed int `json:"processed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response decode: %v", err)
+	}
+	if resp.Processed != MaxAlertsPerWebhook {
+		t.Errorf("processed=%d want %d", resp.Processed, MaxAlertsPerWebhook)
+	}
+	if src.calls > MaxAlertsPerWebhook*3 {
+		t.Errorf("downstream calls=%d exceeds cap x 3 = %d", src.calls, MaxAlertsPerWebhook*3)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("processing took %v; want well under timeout budget", elapsed)
+	}
+}
+
+// TestWebhook_DispatchConcurrencyBounded 는 유계 동시성을 단정한다. blocking fake 로 동시 실행
+// 최대치가 webhookDispatchWorkers 이하임을 확인한다.
+func TestWebhook_DispatchConcurrencyBounded(t *testing.T) {
+	src := &countingSources{block: 30 * time.Millisecond}
+	met := rcametrics.New()
+	h := webhookFixture(src, met)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(bulkPayload(16))))
+
+	if src.maxInFlight > webhookDispatchWorkers {
+		t.Errorf("max in-flight=%d exceeds workers=%d", src.maxInFlight, webhookDispatchWorkers)
+	}
+	if src.maxInFlight < 2 {
+		t.Errorf("max in-flight=%d; 직렬 처리로 보임 (동시성 미동작)", src.maxInFlight)
+	}
+}
+
+// TestWebhook_RetransmissionDeduped 는 멱등 억제를 단정한다. 동일 payload 재전송은 하류 호출
+// 없이 duplicate 로 계수되고, 라벨이 다른 alert 는 억제되지 않는다.
+func TestWebhook_RetransmissionDeduped(t *testing.T) {
+	src := &countingSources{}
+	met := rcametrics.New()
+	h := webhookFixture(src, met)
+
+	payload := `{"alerts":[{"status":"firing","labels":{"alertname":"NetObsDropBurst","src_namespace":"ns1","src_pod":"p1"}}]}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload)))
+	callsAfterFirst := src.calls
+
+	// 재전송 (동일 labels): 하류 호출이 늘지 않아야 한다.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload)))
+	if src.calls != callsAfterFirst {
+		t.Errorf("재전송이 하류 호출을 유발: calls %d -> %d", callsAfterFirst, src.calls)
+	}
+	var resp struct {
+		Processed int `json:"processed"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Processed != 0 {
+		t.Errorf("재전송 processed=%d want 0", resp.Processed)
+	}
+
+	// 다른 라벨: 억제되지 않는다.
+	other := `{"alerts":[{"status":"firing","labels":{"alertname":"NetObsDropBurst","src_namespace":"ns1","src_pod":"p2"}}]}`
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(other)))
+	if src.calls <= callsAfterFirst {
+		t.Errorf("다른 라벨 alert 가 억제됨: calls=%d", src.calls)
 	}
 }

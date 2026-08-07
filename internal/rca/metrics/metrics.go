@@ -18,8 +18,12 @@ type Metrics struct {
 	lastInfo        *prometheus.GaugeVec
 	confidenceScore *prometheus.GaugeVec
 	skippedTotal    *prometheus.CounterVec
-	mu              sync.Mutex
-	lastLabels      map[string]prometheus.Labels // alertname → 가장 최근 emit 한 라벨 셋
+	// webhookDropped 는 #419 의 webhook 처리 상한 계수다. reason 라벨은 over_cap (alert 수 상한
+	// 초과) / canceled (요청 예산 소진으로 잔여 미처리) / duplicate (재전송 멱등 억제) 세 값으로
+	// 폐쇄된다.
+	webhookDropped *prometheus.CounterVec
+	mu             sync.Mutex
+	lastLabels     map[string]prometheus.Labels // alertname → 가장 최근 emit 한 라벨 셋
 }
 
 // New 는 메트릭들을 만들어 반환한다. Register 는 호출 측이 별도로 한다 (테스트 격리 용이).
@@ -51,6 +55,13 @@ func New() *Metrics {
 		),
 		// #122 false positive guard 가 skip 한 alert 카운터. reason 라벨 은 항상 "below_threshold"
 		// 로 두어 향후 다른 skip 사유 추가 시 enum 확장 여지 를 남긴다.
+		webhookDropped: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "rca_webhook_alerts_dropped_total",
+				Help: "Alerts in a webhook payload that were not dispatched: over_cap (payload exceeded the per-webhook alert cap), canceled (request budget exhausted before dispatch), duplicate (identical alert suppressed within the idempotency window). Downstream fetch load stays bounded because dropped alerts never reach the sources.",
+			},
+			[]string{"reason"},
+		),
 		skippedTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "rca_summary_skipped_total",
@@ -64,7 +75,7 @@ func New() *Metrics {
 
 // Collectors 는 prometheus.Registerer.MustRegister 에 전달할 collector 슬라이스를 돌려준다.
 func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.emitted, m.lastInfo, m.confidenceScore, m.skippedTotal}
+	return []prometheus.Collector{m.emitted, m.lastInfo, m.confidenceScore, m.skippedTotal, m.webhookDropped}
 }
 
 // Record 는 한 RCASummary 가 산출됐을 때 호출된다. emitted_total 을 증가시키고 last_summary_info
@@ -119,6 +130,14 @@ func (m *Metrics) Record(summary registry.RCASummary) {
 // RecordSkipped 는 #122 false positive guard 가 ConfidenceScore 미달 으로 RCA emit 을 skip 할 때
 // 호출 한다. alert_name 라벨 카디널리티 는 등록 alert 9 종 으로 폐쇄 되며 reason 라벨 은 현재
 // "below_threshold" 단일 값 이다.
+// RecordWebhookDropped 는 webhook 처리 상한 / 취소 / 멱등 억제로 dispatch 되지 않은 alert 수를
+// 누적한다 (#419). reason 은 over_cap / canceled / duplicate 로 폐쇄된다.
+func (m *Metrics) RecordWebhookDropped(reason string, n int) {
+	if n > 0 {
+		m.webhookDropped.WithLabelValues(reason).Add(float64(n))
+	}
+}
+
 func (m *Metrics) RecordSkipped(alertname, reason string) {
 	m.skippedTotal.WithLabelValues(alertname, reason).Inc()
 }

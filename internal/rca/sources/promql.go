@@ -57,11 +57,12 @@ func (p *httpPromQLSource) probe(ctx context.Context) error {
 // fetchTopDropFlows 는 namespace 필터를 거친 5-tuple 별 drop rate Top-N 을 돌려준다. namespace
 // 가 빈 문자열이면 전체 namespace 가 대상이다. 외부 호출 실패 시 빈 슬라이스를 돌려주어
 // mapping 의 fallback 경로로 진입한다.
-func (p *httpPromQLSource) fetchTopDropFlows(namespace string, n int) []registry.DropFlowInfo {
+func (p *httpPromQLSource) fetchTopDropFlows(ctx context.Context, namespace string, n int) []registry.DropFlowInfo {
 	if n <= 0 {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
+	// #419 요청 컨텍스트 파생 (snapshot.fetch 와 동일).
+	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 
 	// topk + sum by 5-tuple. namespace 가 비어 있으면 src_namespace 필터를 생략한다.

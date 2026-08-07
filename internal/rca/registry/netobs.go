@@ -1,6 +1,10 @@
 package registry
 
-import "fmt"
+import (
+	"context"
+
+	"fmt"
+)
 
 // registerNetobs 는 netobs 그룹의 1 종 mapping 을 등록한다. NetObsHighStageLatencyP99 와
 // NetObsHighDropRate 는 victim 식별 라벨 (src_pod 또는 dst_pod) 이 없어 RCA 대상에서 제외했고,
@@ -13,7 +17,7 @@ func registerNetobs(r *Registry) {
 // 을 network 로 두어 RCASummary 를 만든다. #122 의 multi-source cross-reference 산출 을 위해 victim
 // 매칭 noisy neighbor 와 drop flow Top-N 과 node 단위 GPU signal 을 동시 조회 후 EvaluateConfidence
 // 의 결과 를 ConfidenceScore 필드 에 채운다.
-func mapNetObsDropBurst(labels map[string]string, sources Sources) RCASummary {
+func mapNetObsDropBurst(ctx context.Context, labels map[string]string, sources Sources) RCASummary {
 	srcNS := labelOr(labels, "src_namespace", "")
 	srcPod := labelOr(labels, "src_pod", "")
 	dstIP := labelOr(labels, "dst_ip", "")
@@ -36,14 +40,14 @@ func mapNetObsDropBurst(labels map[string]string, sources Sources) RCASummary {
 		var neighbors []NeighborInfo
 		var dropFlows []DropFlowInfo
 		if srcNS != "" && srcPod != "" {
-			neighbors = sources.TopNeighbors(srcNS, srcPod)
+			neighbors = sources.TopNeighbors(ctx, srcNS, srcPod)
 		}
 		if srcNS != "" {
-			dropFlows = sources.TopDropFlows(srcNS)
+			dropFlows = sources.TopDropFlows(ctx, srcNS)
 		}
 		gpuSignal := 0.0
 		if node != "" {
-			gpuSignal = sources.GPUSignal(node)
+			gpuSignal = sources.GPUSignal(ctx, node)
 		}
 		summary.ConfidenceScore = sources.EvaluateConfidence(neighbors, dropFlows, gpuSignal)
 	}

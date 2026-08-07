@@ -17,13 +17,15 @@ import (
 // 그대로 돌려준다.
 type probeSnap struct{ err error }
 
-func (p probeSnap) fetch() []snapshotEntry      { return nil }
-func (p probeSnap) probe(context.Context) error { return p.err }
+func (p probeSnap) fetch(context.Context) []snapshotEntry { return nil }
+func (p probeSnap) probe(context.Context) error           { return p.err }
 
 type probePromQL struct{ err error }
 
-func (p probePromQL) fetchTopDropFlows(string, int) []registry.DropFlowInfo { return nil }
-func (p probePromQL) probe(context.Context) error                           { return p.err }
+func (p probePromQL) fetchTopDropFlows(context.Context, string, int) []registry.DropFlowInfo {
+	return nil
+}
+func (p probePromQL) probe(context.Context) error { return p.err }
 
 // TestSources_Probe_SnapshotOK 는 snapshot probe 가 성공 하면 promql 을 조회 하지 않고 nil 을
 // 돌려주는지 검증 한다.
@@ -105,7 +107,7 @@ func TestHttpSnapshotSource_FetchAndCache(t *testing.T) {
 
 	src := newHTTPSnapshotSource(srv.URL, time.Second, time.Minute)
 
-	first := src.fetch()
+	first := src.fetch(context.Background())
 	if len(first) != 1 {
 		t.Fatalf("first fetch len=%d; want 1", len(first))
 	}
@@ -113,7 +115,7 @@ func TestHttpSnapshotSource_FetchAndCache(t *testing.T) {
 		t.Errorf("first[0]=%+v", first[0])
 	}
 
-	second := src.fetch()
+	second := src.fetch(context.Background())
 	if len(second) != 1 {
 		t.Errorf("second fetch len=%d", len(second))
 	}
@@ -126,7 +128,7 @@ func TestHttpSnapshotSource_FetchAndCache(t *testing.T) {
 // stale 값을 돌려주고 cache 가 비었으면 nil 을 돌려주는지 검증한다.
 func TestHttpSnapshotSource_FetchErrorReturnsStaleOrEmpty(t *testing.T) {
 	src := newHTTPSnapshotSource("http://127.0.0.1:1", 50*time.Millisecond, time.Minute)
-	got := src.fetch()
+	got := src.fetch(context.Background())
 	if got != nil {
 		t.Errorf("fetch=%v with no cache; want nil", got)
 	}
@@ -145,7 +147,7 @@ func TestSources_TopNeighborsFiltersByVictim(t *testing.T) {
 	defer srv.Close()
 
 	s := New(srv.URL, "", time.Second, time.Minute, 5)
-	got := s.TopNeighbors("default", "v")
+	got := s.TopNeighbors(context.Background(), "default", "v")
 	if len(got) != 2 {
 		t.Fatalf("got %d neighbors; want 2 (other victim filtered)", len(got))
 	}
@@ -170,7 +172,7 @@ func TestSources_TopNeighborsSortedByScoreDesc(t *testing.T) {
 	defer srv.Close()
 
 	s := New(srv.URL, "", time.Second, time.Minute, 5)
-	got := s.TopNeighbors("default", "v")
+	got := s.TopNeighbors(context.Background(), "default", "v")
 	if len(got) != 2 {
 		t.Fatalf("got %d neighbors; want 2", len(got))
 	}
@@ -211,7 +213,7 @@ func TestHttpPromQLSource_DecodesTopkResult(t *testing.T) {
 	defer srv.Close()
 
 	p := newHTTPPromQLSource(srv.URL, time.Second)
-	flows := p.fetchTopDropFlows("ns1", 5)
+	flows := p.fetchTopDropFlows(context.Background(), "ns1", 5)
 	if len(flows) != 1 {
 		t.Fatalf("got %d flows; want 1", len(flows))
 	}
@@ -224,7 +226,7 @@ func TestHttpPromQLSource_DecodesTopkResult(t *testing.T) {
 // 검증한다.
 func TestHttpPromQLSource_FetchErrorReturnsNil(t *testing.T) {
 	p := newHTTPPromQLSource("http://127.0.0.1:1", 50*time.Millisecond)
-	if got := p.fetchTopDropFlows("ns", 5); got != nil {
+	if got := p.fetchTopDropFlows(context.Background(), "ns", 5); got != nil {
 		t.Errorf("got=%v; want nil on unreachable", got)
 	}
 }
@@ -233,13 +235,13 @@ func TestHttpPromQLSource_FetchErrorReturnsNil(t *testing.T) {
 // 검증한다 (간이 통합).
 func TestSources_TopDropFlowsForwards(t *testing.T) {
 	s := &Sources{snapshot: noopSnapshot{}, promql: noopPromQL{}, topN: 5}
-	if got := s.TopDropFlows("ns"); got != nil {
+	if got := s.TopDropFlows(context.Background(), "ns"); got != nil {
 		t.Errorf("noop got=%v; want nil", got)
 	}
 
 	// fake promql 결과 주입
 	s.promql = stubPromQL{flows: []registry.DropFlowInfo{{SrcPod: "p1"}, {SrcPod: "p2"}}}
-	got := s.TopDropFlows("ns")
+	got := s.TopDropFlows(context.Background(), "ns")
 	if len(got) != 2 || got[0].SrcPod != "p1" {
 		t.Errorf("got=%+v", got)
 	}
@@ -249,7 +251,7 @@ type stubPromQL struct {
 	flows []registry.DropFlowInfo
 }
 
-func (s stubPromQL) fetchTopDropFlows(string, int) []registry.DropFlowInfo {
+func (s stubPromQL) fetchTopDropFlows(context.Context, string, int) []registry.DropFlowInfo {
 	return s.flows
 }
 
