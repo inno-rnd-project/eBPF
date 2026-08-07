@@ -1,14 +1,34 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: ebpf-project
-
+# #420 전역 namespace transformer 를 제거했다. base 의 모든 namespaced 리소스가 명시 namespace
+# 를 갖고 있고, 전역 필드는 default namespace 의 추가 Role (role-default.yaml) 까지 ebpf-project
+# 로 덮어써 ID 충돌을 일으킨다.
 resources:
   - ../../base
+  - role-default.yaml
+
+# #420 dev 는 default namespace 도 부하 대상으로 허용한다 (role-default.yaml 의 RBAC 과 정합).
+# strategic merge 라 env 는 name 키 기준으로 병합된다.
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: workload-injector-controller
+        namespace: ebpf-project
+      spec:
+        template:
+          spec:
+            containers:
+              - name: controller
+                env:
+                  - name: INJECTOR_ALLOWED_TARGET_NAMESPACES
+                    value: "ebpf-project,default"
 
 images:
   - name: workload-injector
-    newTag: "3.2.0"
+    newTag: "3.2.1"
 # base 가 Job 매니페스트를 두지 않으므로 dev overlay 도 patch-job 을 두지 않는다. 운영자는
 # test/injector-examples/{cpu,network,gpu}.yaml 을 직접 edit (TARGET_POD / INTENSITY / DURATION) 후
 # kubectl apply -f 로 단일 injection 을 실행한다. dev 의 imagePullPolicy: Never 는 example yaml 의

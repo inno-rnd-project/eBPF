@@ -23,6 +23,22 @@ import (
 // 도구의 사용 패턴 (dev cluster 한 cycle 검증) 을 벗어나는 misuse 로 본다.
 const DurationLimit = 30 * time.Minute
 
+// CheckNamespaceAllowed 는 #420 의 허용 namespace 게이트다. allowed 가 비어 있으면 구성 오류로
+// 전부 거부한다 (fail-closed: RBAC 축소 후 목록 미설정 배포가 조용히 전 namespace 를 허용하는
+// 역전을 막는다). 부하 대상 (targetRef.namespace) 과 부하 pod 생성 위치 (CR namespace) 양쪽에
+// 같은 목록이 적용된다.
+func CheckNamespaceAllowed(allowed []string, namespace string) error {
+	if namespace == "" {
+		return fmt.Errorf("namespace is empty")
+	}
+	for _, a := range allowed {
+		if a == namespace {
+			return nil
+		}
+	}
+	return fmt.Errorf("namespace %q is outside the allowed list %v (INJECTOR_ALLOWED_TARGET_NAMESPACES)", namespace, allowed)
+}
+
 // CheckDuration 은 duration 이 양수이고 DurationLimit 이하인지 검증한다.
 func CheckDuration(d time.Duration) error {
 	if d <= 0 {

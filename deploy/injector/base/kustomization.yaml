@@ -9,6 +9,7 @@ namespace: ebpf-project
 resources:
   - serviceaccount.yaml
   - clusterrole.yaml
+  - role.yaml
   - clusterrolebinding.yaml
   - configmap.yaml
   - service.yaml

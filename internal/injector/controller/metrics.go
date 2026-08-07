@@ -50,8 +50,20 @@ var (
 
 func init() {
 	// controller-runtime 의 manager 가 노출 하는 metrics endpoint 에 본 메트릭 4 종 을 함께 등록.
-	ctrlmetrics.Registry.MustRegister(ReconcileTotal, ActiveCount, LastRunStatus, ReconcileTimestamp)
+	ctrlmetrics.Registry.MustRegister(ReconcileTotal, ActiveCount, LastRunStatus, ReconcileTimestamp, NamespaceDeniedTotal)
 }
+
+// NamespaceDeniedTotal 은 #420 의 허용 namespace 게이트 거부 계수다. scope 라벨은 target
+// (spec.targetRef.namespace 거부) / spawn (CR namespace, 즉 부하 pod 생성 위치 거부) 으로
+// 폐쇄된다. RBAC 는 최후 방어선이고 본 게이트가 1차 방어라, 거부가 조용히 requeue 루프로
+// 숨지 않도록 카운터와 CR condition (NamespaceDenied) 양쪽에 노출한다.
+var NamespaceDeniedTotal = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "loadscenario_namespace_denied_total",
+		Help: "LoadScenario runs refused by the allowed-namespace gate (#420). scope=target means spec.targetRef.namespace is outside INJECTOR_ALLOWED_TARGET_NAMESPACES; scope=spawn means the CR namespace (where stress pods would spawn) is outside the list.",
+	},
+	[]string{"scope"},
+)
 
 // RecordReconcileResult 는 reconcile 단계 종료 시 ReconcileTotal 과 LastRunStatus 와 Reconcile
 // Timestamp 를 일괄 갱신 하는 helper 다. result 는 "success" / "error" / "skip" 중 하나.

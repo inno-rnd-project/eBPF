@@ -78,6 +78,10 @@ type LoadScenarioReconciler struct {
 	SelfPodName      string
 	SelfPodNamespace string
 	SelfPodUID       string
+	// AllowedNamespaces 는 #420 의 허용 namespace 목록이다. 부하 대상 (spec.targetRef.namespace)
+	// 과 부하 pod 생성 위치 (CR namespace) 가 목록 밖이면 run 을 거부한다. RBAC 의 namespace 한정
+	// Role 과 같은 목록으로 배포되어 본 게이트가 1차, RBAC forbidden 이 최후 방어선이 된다.
+	AllowedNamespaces []string
 }
 
 // defaultScoreTriggerMinInterval 은 spec.scoreTrigger.minInterval 이 비었을 때 적용 하는 debounce
@@ -135,6 +139,28 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return ctrl.Result{}, updateErr
 		}
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	}
+
+	// #420 허용 namespace 게이트. 부하 pod 생성 위치 (CR namespace) 와 부하 대상
+	// (targetRef.namespace) 이 허용 목록 밖이면 거부하고 카운터와 condition 으로 노출한다.
+	// spec 변경 없이는 해소되지 않으므로 requeue 하지 않는다 (spec 변경 이벤트가 재평가를 유발).
+	if err := safety.CheckNamespaceAllowed(r.AllowedNamespaces, ls.Namespace); err != nil {
+		logger.Info("namespace gate refused spawn namespace", "error", err.Error())
+		NamespaceDeniedTotal.WithLabelValues("spawn").Inc()
+		setCondition(&ls, "Ready", metav1.ConditionFalse, "NamespaceDenied", "spawn: "+err.Error())
+		if updateErr := r.Status().Update(ctx, &ls); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, nil
+	}
+	if err := safety.CheckNamespaceAllowed(r.AllowedNamespaces, ls.Spec.TargetRef.Namespace); err != nil {
+		logger.Info("namespace gate refused target namespace", "error", err.Error())
+		NamespaceDeniedTotal.WithLabelValues("target").Inc()
+		setCondition(&ls, "Ready", metav1.ConditionFalse, "NamespaceDenied", "target: "+err.Error())
+		if updateErr := r.Status().Update(ctx, &ls); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, nil
 	}
 
 	// suspend 검사. spec.suspend 또는 maxFailures 초과 시 skip. controller 는 spec 을 mutation 하지

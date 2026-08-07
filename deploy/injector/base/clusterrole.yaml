@@ -1,3 +1,5 @@
+# #420 cluster-scoped 로 남는 최소 권한만 보유한다. pod 와 configmap 조작은 namespace 한정
+# Role (role.yaml) 로 분리되어 kube-system 을 포함한 무관 namespace 에 대한 조작 권한이 없다.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -6,19 +8,15 @@ metadata:
     app.kubernetes.io/name: workload-injector
     app.kubernetes.io/part-of: ebpf-project
 rules:
-  # target Pod 식별과 nodeName 조회. cluster 전체 namespace 가 target 일 수 있어 cluster-scope.
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "watch", "create", "delete"]
-  # cluster label gate (CheckClusterLabel) 가 Node 라벨로 매칭.
+  # cluster label gate (safety.CheckClusterLabel) 가 Node 라벨을 조회한다. Node 는 cluster-scoped
+  # 리소스라 namespace Role 로 내릴 수 없다.
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["list", "watch", "get"]
-  # 동시 injection lock 의 ConfigMap annotation lease.
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["get", "create", "update", "delete"]
-  # #102 controller mode 의 LoadScenario CRD reconcile 권한.
+  # controller mode 의 LoadScenario CRD reconcile. controller-runtime manager 가 CR 을 cluster
+  # 전역 watch 하므로 (CR 이 어느 namespace 에 있어도 발견돼야 허용 목록 게이트가 거부를 status
+  # 로 노출할 수 있다) cluster-scoped 를 유지한다. CR 발견과 status 갱신만 가능하고 pod 조작은
+  # namespace Role 밖에서 불가능하다.
   - apiGroups: ["injector.netobs.io"]
     resources: ["loadscenarios"]
     verbs: ["get", "list", "watch", "update", "patch", "delete"]
@@ -28,11 +26,3 @@ rules:
   - apiGroups: ["injector.netobs.io"]
     resources: ["loadscenarios/finalizers"]
     verbs: ["update"]
-  # #102 controller mode 의 leader election lease.
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # #102 controller mode 의 leader election event emit.
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["create", "patch"]

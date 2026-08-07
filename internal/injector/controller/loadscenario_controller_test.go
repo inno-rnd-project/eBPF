@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	injectorv1alpha1 "netobs/api/v1alpha1"
+	"netobs/internal/injector/safety"
 )
 
 // fakeScoreProvider 는 InterferenceScoreProvider 의 테스트 더블 이다. 호출 횟수 를 기록 해 safety gate
@@ -78,6 +79,7 @@ func newScoreReconciler(ls *injectorv1alpha1.LoadScenario, provider Interference
 		K8sClient:         k8s,
 		AllowClusterLabel: "environment=dev",
 		LockNamespace:     "ebpf-project",
+		AllowedNamespaces: []string{"ebpf-project", "default"},
 		LockHolder:        "test",
 		ScoreProvider:     provider,
 		CronParser:        defaultCronParser,
@@ -242,5 +244,37 @@ func TestReconcile_ScoreTrigger_SuspendBlocksEval(t *testing.T) {
 	}
 	if st, _ := conditionReason(got, "Suspended"); st != metav1.ConditionTrue {
 		t.Errorf("Suspended=%s want True", st)
+	}
+}
+
+// TestReconcile_NamespaceGate 는 #420 의 허용 namespace 게이트를 단정한다. 목록 밖 target 은
+// NamespaceDenied condition 과 함께 거부되어 stress pod 이 생기지 않고, fail-closed (빈 목록
+// 전부 거부) 도 함께 고정한다.
+func TestReconcile_NamespaceGate(t *testing.T) {
+	ls := scoreTriggerScenario()
+	ls.Spec.ScoreTrigger = nil
+	ls.Spec.TargetRef.Namespace = "kube-system"
+	r, crClient := newScoreReconciler(ls, &fakeScoreProvider{score: 1, found: true}, time.Now())
+
+	reconcileOnce(t, r, ls)
+
+	got := getScenario(t, crClient, ls)
+	var denied bool
+	for _, c := range got.Status.Conditions {
+		if c.Type == "Ready" && c.Reason == "NamespaceDenied" {
+			denied = true
+		}
+	}
+	if !denied {
+		t.Errorf("NamespaceDenied condition 미설정: %+v", got.Status.Conditions)
+	}
+	pods, _ := r.K8sClient.CoreV1().Pods("ebpf-project").List(context.Background(), metav1.ListOptions{LabelSelector: "app.kubernetes.io/component=stress"})
+	if len(pods.Items) != 0 {
+		t.Errorf("거부된 run 이 stress pod %d개 생성", len(pods.Items))
+	}
+
+	// fail-closed: 빈 허용 목록은 spawn namespace 부터 거부한다 (safety 단위 검증).
+	if err := safety.CheckNamespaceAllowed(nil, "ebpf-project"); err == nil {
+		t.Error("빈 허용 목록이 거부되지 않음 (fail-closed 위반)")
 	}
 }
