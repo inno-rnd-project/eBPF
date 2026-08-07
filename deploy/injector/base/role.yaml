@@ -1,0 +1,49 @@
+# #420 pod 와 configmap 조작 권한을 namespace 한정 Role 로 분리한다. 부하 pod spawn / 삭제와
+# 동시 injection lock 은 허용 namespace 안에서만 일어나므로 cluster 전역 권한이 필요 없고,
+# 컨트롤러가 침해되거나 잘못된 대상이 지정돼도 파급이 본 목록 namespace 로 제한된다. 허용
+# namespace 를 늘리려면 본 Role / RoleBinding 쌍을 해당 namespace 이름으로 복제해 overlay 에
+# 추가하고, 컨트롤러 env INJECTOR_ALLOWED_TARGET_NAMESPACES 목록을 함께 갱신한다 (env 게이트가
+# 1차, RBAC 이 최후 방어선).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workload-injector
+  namespace: ebpf-project
+  labels:
+    app.kubernetes.io/name: workload-injector
+    app.kubernetes.io/part-of: ebpf-project
+rules:
+  # target Pod 의 nodeName 조회 (get), 기동 sweep 과 cleanup 의 라벨 조회 (list/watch), 부하 pod
+  # spawn (create) 과 정리 (delete).
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # 동시 injection lock 의 ConfigMap annotation lease (safety.AcquireLock, LOCK_NAMESPACE).
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update", "delete"]
+  # controller mode 의 leader election lease (CONTROLLER_LEADER_ELECTION_NAMESPACE).
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # leader election event emit (lease namespace 에 기록됨).
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: workload-injector
+  namespace: ebpf-project
+  labels:
+    app.kubernetes.io/name: workload-injector
+    app.kubernetes.io/part-of: ebpf-project
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: workload-injector
+subjects:
+  - kind: ServiceAccount
+    name: workload-injector
+    namespace: ebpf-project

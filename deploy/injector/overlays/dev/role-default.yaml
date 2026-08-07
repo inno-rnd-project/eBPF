@@ -1,0 +1,35 @@
+# #420 dev 의 추가 허용 namespace (default). 예제 시나리오와 수동 테스트가 default namespace 의
+# pod 를 대상으로 쓸 수 있게 base 의 Role / RoleBinding 쌍을 default namespace 로 복제한 것이다.
+# 컨트롤러 env INJECTOR_ALLOWED_TARGET_NAMESPACES 의 목록 (kustomization patch) 과 정합해야 한다.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workload-injector
+  namespace: default
+  labels:
+    app.kubernetes.io/name: workload-injector
+    app.kubernetes.io/part-of: ebpf-project
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: workload-injector
+  namespace: default
+  labels:
+    app.kubernetes.io/name: workload-injector
+    app.kubernetes.io/part-of: ebpf-project
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: workload-injector
+subjects:
+  - kind: ServiceAccount
+    name: workload-injector
+    namespace: ebpf-project
