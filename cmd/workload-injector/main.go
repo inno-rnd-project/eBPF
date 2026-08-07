@@ -345,6 +345,17 @@ func runInjection(
 	// 2. 부하 시작 + active=1.
 	collector.SetActive(cfg.TargetNamespace, cfg.TargetPod, cfg.TargetNode, loadgen.Kind(cfg.Kind), 1)
 	loadStart := time.Now()
+	// #420 허용 namespace 게이트 (one-shot 경로). 컨트롤러 게이트와 동일 목록으로 검증한다.
+	allowed := splitNamespaces(envOr("INJECTOR_ALLOWED_TARGET_NAMESPACES", "ebpf-project"))
+	if err := safety.CheckNamespaceAllowed(allowed, cfg.SpawnNamespace); err != nil {
+		health.RecordError(loadgen.Kind(cfg.Kind), "namespace_gate")
+		return fmt.Errorf("spawn namespace gate: %w", err)
+	}
+	if err := safety.CheckNamespaceAllowed(allowed, cfg.TargetNamespace); err != nil {
+		health.RecordError(loadgen.Kind(cfg.Kind), "namespace_gate")
+		return fmt.Errorf("target namespace gate: %w", err)
+	}
+
 	startErr := gen.Start(ctx, loadgen.Params{
 		TargetNode:      cfg.TargetNode,
 		TargetNamespace: cfg.TargetNamespace,
@@ -506,6 +517,18 @@ func countOK(results []exporter.BlastResult) int {
 		}
 	}
 	return n
+}
+
+// splitNamespaces 는 comma 구분 namespace 목록 env 를 파싱한다. 공백은 trim 하고 빈 항목은
+// 버린다 (#420).
+func splitNamespaces(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if ns := strings.TrimSpace(part); ns != "" {
+			out = append(out, ns)
+		}
+	}
+	return out
 }
 
 func envOr(key, fallback string) string {

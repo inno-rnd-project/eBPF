@@ -42,6 +42,9 @@ type controllerConfig struct {
 	PrometheusURL     string
 	CorrelationURL    string
 	AllowClusterLabel string
+	// AllowedNamespaces 는 #420 의 허용 namespace 목록이다 (comma 구분). RBAC namespace 한정
+	// Role 과 같은 목록으로 배포한다.
+	AllowedNamespaces []string
 }
 
 // loadControllerConfig 는 controller mode 전용 flag/env 를 파싱한다. CLI mode 의 loadConfig 와
@@ -56,6 +59,7 @@ func loadControllerConfig() *controllerConfig {
 		PrometheusURL:     envOr("PROMETHEUS_URL", "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"),
 		CorrelationURL:    envOr("CORRELATION_URL", "http://correlation-exporter.ebpf-project.svc.cluster.local:9830"),
 		AllowClusterLabel: envOr("INJECTOR_ALLOW_CLUSTER_LABEL", "environment=dev"),
+		AllowedNamespaces: splitNamespaces(envOr("INJECTOR_ALLOWED_TARGET_NAMESPACES", "ebpf-project")),
 	}
 
 	fs := flag.NewFlagSet("workload-injector-controller", flag.ContinueOnError)
@@ -134,9 +138,10 @@ func runControllerMode() int {
 		ScoreProvider:     injectorcontroller.NewCorrelationScoreClient(cfg.CorrelationURL),
 		// #418 downward API 주입 자기 pod 식별. 비어 있으면 (수동 실행 등) ownerReference 미부여로
 		// 자연 degrade 한다.
-		SelfPodName:      os.Getenv("POD_NAME"),
-		SelfPodNamespace: os.Getenv("POD_NAMESPACE"),
-		SelfPodUID:       os.Getenv("POD_UID"),
+		SelfPodName:       os.Getenv("POD_NAME"),
+		SelfPodNamespace:  os.Getenv("POD_NAMESPACE"),
+		SelfPodUID:        os.Getenv("POD_UID"),
+		AllowedNamespaces: cfg.AllowedNamespaces,
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		log.Printf("controller: reconciler SetupWithManager: %v", err)
@@ -147,11 +152,15 @@ func runControllerMode() int {
 	// runnable 은 leader 그룹에 들어감) 이전 인스턴스가 남긴 고아 부하 pod 를 회수한다. 재개되는
 	// Running 시나리오의 pod 는 age 가드가 보호한다.
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
-		swept, err := loadgen.SweepOrphans(ctx, k8sClient, "", safety.DurationLimit)
-		if err != nil {
-			log.Printf("controller: orphan sweep: %v (swept=%d)", err, swept)
-		} else if swept > 0 {
-			log.Printf("controller: orphan sweep: reclaimed %d stale stress pods", swept)
+		// #420 RBAC 가 namespace 한정 Role 로 축소되어 전 namespace list 는 forbidden 이다.
+		// 부하 pod 는 허용 목록 namespace 에만 생길 수 있으므로 목록 순회가 완전 커버다.
+		for _, ns := range cfg.AllowedNamespaces {
+			swept, err := loadgen.SweepOrphans(ctx, k8sClient, ns, safety.DurationLimit)
+			if err != nil {
+				log.Printf("controller: orphan sweep ns=%s: %v (swept=%d)", ns, err, swept)
+			} else if swept > 0 {
+				log.Printf("controller: orphan sweep ns=%s: reclaimed %d stale stress pods", ns, swept)
+			}
 		}
 		return nil
 	})); err != nil {
