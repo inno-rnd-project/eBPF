@@ -43,6 +43,9 @@ var incidentCatalog = map[string]incidentInfo{
 	"GPUObsCudaSymbolUnavailable": {"CUDA 심볼 미부착", "gpuobs CUDA 심볼 {{symbol}}가 {{node|instance}}에 부착되지 않음"},
 	"GPUObsAgentNvmlErrorsHigh":   {"NVML 호출 오류 급증", "gpuobs NVML 호출 {{call}}이 {{node|instance}}에서 {{error_code}}로 실패함"},
 
+	// scrape 대상 감시 (#430)
+	"ScrapeTargetDown": {"scrape 대상 down", "{{job}}의 target {{instance}}가 지속 scrape 실패 상태로 파생 신호가 조용히 비고 있음"},
+
 	// 외부 exporter 입력 부재 가드 계열 (#412)
 	"CadvisorMetricsAbsent":                   {"cAdvisor 관측 두절", "cAdvisor (kubelet) 메트릭이 수집되지 않아 CPU throttle 파생 신호가 조용히 비어 있음"},
 	"NodeExporterMetricsAbsent":               {"node-exporter 관측 두절", "node-exporter 메트릭이 수집되지 않아 memory pressure 파생 신호가 조용히 비어 있음"},

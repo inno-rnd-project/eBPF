@@ -1,0 +1,42 @@
+# gpuobs-scrape-target-down.test.yaml 은 #430 의 scrape 대상 down 감시 검증이다. 외부 exporter
+# target 의 up == 0 지속은 발화하고, 전용 up 감시가 있는 자사 job (netobs-agent 등) 은 제외되며,
+# 정상 target 과 짧은 down (for 10m 미만) 은 발화하지 않음을 단정한다. rule_files 는
+# make test-prometheus-rules 가 추출해 마운트하는 gpuobs.yaml.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # node-exporter target 이 지속 down: 12m 시점 (for 10m 경과 후) 발화. 같은 시각 netobs-agent 의
+  # up == 0 은 본 alert 에서 제외된다 (ObsAgentDown 전담).
+  - interval: 30s
+    input_series:
+      - series: 'up{job="node-exporter",instance="10.0.0.126:9100"}'
+        values: '0+0x40'
+      - series: 'up{job="netobs-agent",instance="10.0.0.126:9810"}'
+        values: '0+0x40'
+      - series: 'up{job="kubelet",instance="10.0.0.27:10250"}'
+        values: '1+0x40'
+    alert_rule_test:
+      - alertname: ScrapeTargetDown
+        eval_time: 12m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: observability
+              job: node-exporter
+              instance: "10.0.0.126:9100"
+            exp_annotations:
+              summary: "scrape target node-exporter/10.0.0.126:9100 down"
+              description: "node-exporter 의 target 10.0.0.126:9100 가 10 분 이상 scrape 실패 상태다. 해당 exporter 의 파생 신호 (health, disk usage, dominant cause 등) 가 조용히 비고 있다. 노드 간 모니터링 포트 차단 (docs/deploy/cluster-onboarding.md 의 포트 목록) 과 exporter 프로세스 상태를 점검한다."
+
+  # 짧은 down (5분 뒤 복구, 정상 재시작 / 롤아웃 양상): for 10m 을 채우지 못해 발화하지 않는다.
+  - interval: 30s
+    input_series:
+      - series: 'up{job="node-exporter",instance="10.0.0.126:9100"}'
+        values: '0+0x10 1+0x30'
+    alert_rule_test:
+      - alertname: ScrapeTargetDown
+        eval_time: 20m
+        exp_alerts: []
