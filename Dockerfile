@@ -6,7 +6,10 @@
 # 인자 없이 `docker build .`를 실행했을 때 기존 동작을 보존하기 위한 fallback이며,
 # Makefile의 image-build-<name>-agent 패턴 룰은 항상 --build-arg로 명시 전달한다.
 # ============================================================================
-FROM golang:1.24-bookworm AS builder
+# #421 base 이미지 digest 고정. 부동 태그는 같은 커밋이 시점에 따라 다른 이미지로 빌드되어
+# 재현성이 없다. 갱신 절차: `docker buildx imagetools inspect <image>:<tag>` 의 Digest 로 아래
+# 두 FROM 의 @sha256 을 교체하고 빌드 검증 후 커밋한다 (README 의 "Base image 갱신" 절 참조).
+FROM golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac AS builder
 ARG TARGETARCH=amd64
 ARG TARGET_AGENT=netobs-agent
 # CGO_ENABLED 기본값은 0(정적 바이너리). go-nvml처럼 CGO `import "C"` 경로로 구현된
@@ -32,7 +35,11 @@ RUN CGO_ENABLED=${CGO_ENABLED} GOOS=linux GOARCH=${TARGETARCH} \
 # ============================================================================
 # Runtime stage
 # ============================================================================
-FROM debian:bookworm-slim
+# #421 distroless 전환 검토 결론: 채택 보류. gpuobs 의 NVML 이 host libnvidia-ml.so dlopen 에
+# 의존해 glibc 동적 로더가 필요하고 (distroless/base 로는 가능하나 static 불가), 단일 Dockerfile
+# 이 5 이미지를 공용하는 구조에서 셸 부재가 장애 시 컨테이너 내 진단 (readlink, ldd 등) 을 막아
+# 이득 대비 위험이 크다. 대신 digest 고정과 non-root USER 로 이미지 측 방어를 확보한다.
+FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
 
 # Docker 문법상 ARG는 FROM 경계를 넘어 전파되지 않으므로 재선언이 필요하다.
 # 기본값은 builder stage와 동일하게 유지해 drift를 차단한다.
@@ -41,6 +48,12 @@ ARG TARGET_AGENT=netobs-agent
 # 매핑에서 꺼내 --build-arg AGENT_PORT=<port>로 주입한다. 기본값 9810은
 # `docker build .`만 실행했을 때 netobs-agent 기존 동작을 보존하기 위한 fallback이다.
 ARG AGENT_PORT=9810
+# #421 이미지 기본 실행 사용자. 기본 65532 (nonroot 관례) 로 두어 USER 미지정 root 실행이라는
+# 이미지 측 공백을 없앤다. Deployment 3종 (correlation / rca / injector) 의 runAsUser 65532 와
+# 정합하며, BPF 에이전트 2종 (netobs / gpuobs) 은 kubelet 이 부여하는 capabilities 가 root 프로세스
+# 에만 effective 로 실리므로 Makefile 의 UID_<agent> 매핑이 0 을 명시 전달한다 (DaemonSet 은
+# runAsUser 를 지정하지 않아 이미지 USER 가 그대로 적용된다).
+ARG RUNTIME_UID=65532
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
@@ -59,6 +72,8 @@ RUN ln -s /${TARGET_AGENT} /agent
 # K8s Pod spec의 ports 또는 `docker run -p`가 결정하며, EXPOSE는 이미지 inspect와
 # `docker run -P` 자동 발행에만 영향을 준다.
 EXPOSE ${AGENT_PORT}
+
+USER ${RUNTIME_UID}
 
 # ENTRYPOINT는 symlink를 고정 경로로 가리켜 에이전트에 독립적이다.
 ENTRYPOINT ["/agent"]

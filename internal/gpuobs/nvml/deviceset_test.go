@@ -393,8 +393,6 @@ func TestDeviceSet_UUIDMismatchRaceClosesDevAndSkips(t *testing.T) {
 	// DeviceUUID(i) 와 Device(i) 사이 race 시뮬: NVML 이 idx=0 의 UUID 로 GPU-A 를 보고했지만
 	// Device(i) 가 돌려준 핸들의 Info().UUID 는 GPU-X (race 로 바뀐 상태). DeviceSet 은 dev 를 close 하고 등록을 거부해야 한다.
 	nv := newFakeDeviceSetNVML("GPU-A")
-	// indexUUIDs 는 GPU-A 라고 보고하지만, fakeDevice 의 Info() 가 다른 UUID 를 돌려주도록 후처리.
-	set := NewDeviceSet(nv)
 
 	// 첫 sync 가 device 를 Open 한 직후, race 시뮬을 위해 그 device 의 infoUUID 를 GPU-X 로 바꾼다.
 	// 단, DeviceSet 은 첫 sync 에서 mismatch 를 감지하기 위해 sync 도중에 mismatch 가 발생해야 한다.
@@ -406,7 +404,7 @@ func TestDeviceSet_UUIDMismatchRaceClosesDevAndSkips(t *testing.T) {
 		fakeInfoUUID: "GPU-X",
 		parent:       nv,
 	}
-	set = NewDeviceSet(nv2)
+	set := NewDeviceSet(nv2)
 	if err := set.Sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}

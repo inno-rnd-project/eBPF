@@ -410,7 +410,6 @@ definitions:
         type: number
       clocks_mhz:
         additionalProperties:
-          format: float64
           type: number
         description: |-
           ClocksMhz 는 clock 라벨 (sm / mem / graphics) 별 클럭이고, TemperatureThresholdsCelsius 는
@@ -494,7 +493,6 @@ definitions:
         type: number
       temperature_thresholds_celsius:
         additionalProperties:
-          format: float64
           type: number
         type: object
       throttle_reasons:
@@ -1100,7 +1098,6 @@ definitions:
         type: string
       health:
         additionalProperties:
-          format: float64
           type: number
         description: |-
           Health 는 차원별 health score (0-1, #264) 다. node:*_health_score:5m 룰 기반이며 cluster
@@ -1112,7 +1109,6 @@ definitions:
         type: number
       pressure:
         additionalProperties:
-          format: float64
           type: number
         type: object
       status:
@@ -1350,7 +1346,6 @@ definitions:
         type: string
       health:
         additionalProperties:
-          format: float64
           type: number
         description: |-
           Health 는 차원별 health (0-1, 1 이 healthy) 다. pod 단위 pressure score rule 의 1 - score
@@ -1655,7 +1650,6 @@ definitions:
         type: string
       pressure:
         additionalProperties:
-          format: float64
           type: number
         type: object
       status:

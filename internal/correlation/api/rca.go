@@ -73,7 +73,7 @@ func (h *RCAProxyHandler) GetRCA(w http.ResponseWriter, r *http.Request) {
 		apicommon.WriteError(w, http.StatusBadGateway, "rca_unreachable", "rca-summarizer 호출 실패: "+err.Error())
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// 상류의 Content-Type 을 그대로 전달해 비JSON 에러 본문이 JSON 으로 오표기되지 않게 하고,
 	// 헤더 부재 시에만 기본 JSON 으로 둔다.

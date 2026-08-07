@@ -1,0 +1,18 @@
+# #421 lint 게이트의 초기 룰셋이다. 기존 코드가 통과하는 수준 (golangci-lint v2 표준 5종) 에서
+# 시작해 점진 확대한다. 버전은 Makefile 의 GOLANGCI_IMAGE 와 CI 워크플로에 v2.12.2 로 고정된다.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+# 같은 유형 이슈의 표기 상한 (기본 3) 을 해제해 위반 전량이 한 번에 드러나게 한다. 상한이 있으면
+# 수정 후 재실행마다 다음 3건이 나타나는 whack-a-mole 이 된다.
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

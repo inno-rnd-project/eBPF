@@ -69,7 +69,7 @@ func TestCollector_SnapshotReturnsIndependentCopy(t *testing.T) {
 
 	// 호출자가 반환값을 mutate 해도 내부 상태가 보존되어야 한다.
 	snap[0].Score = -1
-	snap = snap[:0]
+	_ = snap[:0]
 
 	again := c.Snapshot()
 	if len(again) != 2 {

@@ -1,7 +1,7 @@
 swagger: '2.0'
 info:
   title: netobs unified API
-  version: 3.0.8
+  version: 3.2.3
 paths:
   /api/v1/agents:
     get:
@@ -1717,7 +1717,6 @@ definitions:
         type: object
         additionalProperties:
           type: number
-          format: float64
       compute_mode:
         type: number
       decoder_utilization_percent:
@@ -1807,7 +1806,6 @@ definitions:
         type: object
         additionalProperties:
           type: number
-          format: float64
       throttle_reasons:
         description: 'ThrottleReasons 는 값이 1 (활성) 인 throttle reason 라벨 목록이다. gpu_idle
           같은 정보성 사유도
@@ -2448,7 +2446,6 @@ definitions:
         type: object
         additionalProperties:
           type: number
-          format: float64
       node:
         type: string
       overall:
@@ -2457,7 +2454,6 @@ definitions:
         type: object
         additionalProperties:
           type: number
-          format: float64
       status:
         type: string
       status_alerts:
@@ -2711,7 +2707,6 @@ definitions:
         type: object
         additionalProperties:
           type: number
-          format: float64
       namespace:
         type: string
       network:
@@ -3027,7 +3022,6 @@ definitions:
         type: object
         additionalProperties:
           type: number
-          format: float64
       status:
         type: string
   internal_correlation_api.TopologyResponse:

@@ -158,7 +158,7 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 	if err := LoadCudaUprobeObjects(&objs, nil); err != nil {
 		return fmt.Errorf("load cuda uprobe objects: %w", err)
 	}
-	defer objs.Close()
+	defer func() { _ = objs.Close() }()
 
 	progBySymbol := map[string]*cebpf.Program{
 		"cuLaunchKernel":            objs.HandleCuLaunchKernel,
@@ -305,7 +305,7 @@ func (r *Reader) Run(ctx context.Context, onReady func()) error {
 	if err != nil {
 		return fmt.Errorf("ringbuf reader: %w", err)
 	}
-	defer rd.Close()
+	defer func() { _ = rd.Close() }()
 
 	// runCtx 는 reader / device map refresher 두 goroutine 의 공유 종료 시그널이다.
 	// Run 이 어떤 경로로 빠지든 (ctx Done / 에러 return / 정상 종료) defer cancel 이 모두를 깨운다.

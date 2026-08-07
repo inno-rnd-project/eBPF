@@ -362,7 +362,7 @@ func (r *LoadScenarioReconciler) handleRunning(ctx context.Context, ls *injector
 		}
 		return ctrl.Result{Requeue: true}, nil
 	}
-	runEnd := ls.Status.RunStartTime.Time.Add(ls.Spec.Duration.Duration)
+	runEnd := ls.Status.RunStartTime.Add(ls.Spec.Duration.Duration)
 	now := r.Now()
 	if now.Before(runEnd) {
 		return ctrl.Result{RequeueAfter: runEnd.Sub(now)}, nil

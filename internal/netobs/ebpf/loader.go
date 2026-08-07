@@ -264,7 +264,7 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 	if err := LoadNetObsObjects(&objs, nil); err != nil {
 		return err
 	}
-	defer objs.Close()
+	defer func() { _ = objs.Close() }()
 
 	if targetIP != "" {
 		val, err := ipToU32(targetIP)
@@ -360,7 +360,7 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 	if err != nil {
 		return err
 	}
-	defer rd.Close()
+	defer func() { _ = rd.Close() }()
 
 	go func() {
 		<-ctx.Done()

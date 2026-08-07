@@ -2312,8 +2312,7 @@ const docTemplatecorrelation = `{
                     "description": "ClocksMhz 는 clock 라벨 (sm / mem / graphics) 별 클럭이고, TemperatureThresholdsCelsius 는\nthreshold 라벨 (slowdown / shutdown / mem_max / gpu_max) 별 임계다. 서브라벨로 device 당\n다중 시리즈라 단일 필드가 아닌 map 으로 담는다.",
                     "type": "object",
                     "additionalProperties": {
-                        "type": "number",
-                        "format": "float64"
+                        "type": "number"
                     }
                 },
                 "compute_mode": {
@@ -2411,8 +2410,7 @@ const docTemplatecorrelation = `{
                 "temperature_thresholds_celsius": {
                     "type": "object",
                     "additionalProperties": {
-                        "type": "number",
-                        "format": "float64"
+                        "type": "number"
                     }
                 },
                 "throttle_reasons": {
@@ -3258,8 +3256,7 @@ const docTemplatecorrelation = `{
                     "description": "Health 는 차원별 health score (0-1, #264) 다. node:*_health_score:5m 룰 기반이며 cluster\nhealth 와 동일 산식의 노드 차원 판이라 GPU 와 비GPU 노드가 같은 해석을 공유한다.",
                     "type": "object",
                     "additionalProperties": {
-                        "type": "number",
-                        "format": "float64"
+                        "type": "number"
                     }
                 },
                 "node": {
@@ -3271,8 +3268,7 @@ const docTemplatecorrelation = `{
                 "pressure": {
                     "type": "object",
                     "additionalProperties": {
-                        "type": "number",
-                        "format": "float64"
+                        "type": "number"
                     }
                 },
                 "status": {
@@ -3610,8 +3606,7 @@ const docTemplatecorrelation = `{
                     "description": "Health 는 차원별 health (0-1, 1 이 healthy) 다. pod 단위 pressure score rule 의 1 - score\n환산이며, score 미산출 차원은 엔트리가 생략된다.",
                     "type": "object",
                     "additionalProperties": {
-                        "type": "number",
-                        "format": "float64"
+                        "type": "number"
                     }
                 },
                 "namespace": {
@@ -4019,8 +4014,7 @@ const docTemplatecorrelation = `{
                 "pressure": {
                     "type": "object",
                     "additionalProperties": {
-                        "type": "number",
-                        "format": "float64"
+                        "type": "number"
                     }
                 },
                 "status": {

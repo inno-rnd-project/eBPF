@@ -26,6 +26,11 @@ PREREQS_gpuobs-agent := generate-gpuobs
 CGO_netobs-agent := 0
 CGO_gpuobs-agent := 1
 
+# #421 이미지 기본 실행 사용자 매핑. BPF 에이전트 2종은 kubelet capabilities 가 root 프로세스에만
+# effective 로 실려 0 (root) 을 유지하고, 그 외는 Dockerfile 기본 (65532) 을 쓴다.
+UID_netobs-agent := 0
+UID_gpuobs-agent := 0
+
 # ============================================================================
 # Overlay registry — 기본은 <agent-domain>-<rollout-stage> 형식이지만 dev/prod 분기가
 # 없는 클러스터 공용 패키지는 단일 이름 (예: dashboards) 으로 등록한다.
@@ -69,7 +74,7 @@ BPF_CFLAGS := -O2 -g -D__TARGET_ARCH_$(TARGET_ARCH)
 # .PHONY에 넣지 않는다. GNU make는 .PHONY 타깃에 대해 implicit rule(pattern rule 포함)
 # 탐색을 건너뛰므로 매치가 일어나지 않는다. 해당 타깃들은 동일 이름의 실제 파일이
 # 없어 매 호출마다 recipe가 재실행되므로 phony와 동등 동작이다.
-.PHONY: deps generate generate-gpuobs generate-nccl clean tree bump \
+.PHONY: deps generate generate-gpuobs generate-nccl clean tree bump lint check-version-alignment \
 	deploy-cluster \
 	build-all image-build-all image-push-all \
 	test test-integration setup-envtest \
@@ -183,7 +188,10 @@ deps:
 # 전에 본 타겟 을 한 번 실행 해 OpenAPI 스펙 을 갱신 한다. --outputTypes 로 json 과 yaml 동시
 # 생성을 강제 해 둘 사이의 drift 를 차단 한다. swag CLI 가 GOPATH/bin 에 설치 되어 있어야 한다
 # (go install github.com/swaggo/swag/cmd/swag@latest).
-SWAG ?= $(shell go env GOPATH)/bin/swag
+# #421 swag 를 GOPATH 바이너리가 아니라 모듈 버전 고정 실행으로 호출한다. GOPATH 의 swag 는
+# 같은 버전을 자칭해도 빌드 시점 커밋이 달라 산출물이 어긋날 수 있고 (CI 에서 format 필드
+# 유무 drift 실측), go run @버전 은 로컬과 CI 가 문자 그대로 같은 빌드를 쓰게 한다.
+SWAG ?= go run github.com/swaggo/swag/cmd/swag@v1.16.4
 
 # controller-gen 은 #102 의 LoadScenario CRD 신설에 사용한다. kubebuilder marker 가 붙은
 # api/v1alpha1/*.go 로부터 CRD YAML (deploy/injector/base/<group>_<plural>.yaml, controller-gen
@@ -231,7 +239,6 @@ generate-crd: controller-gen-install
 	fi
 
 swag-init:
-	@if [ ! -x "$(SWAG)" ]; then echo "swag CLI 가 없습니다. go install github.com/swaggo/swag/cmd/swag@latest 를 실행하세요."; exit 1; fi
 	# correlation 은 PodIdentity 같은 cross-package 타입 까지 OpenAPI schema 에 포함 시키려고
 	# parseDependency 와 repo 루트 scope 채택. netobs 와 gpuobs 의 REST API 는 미사용 scaffold 라
 	# #171 에서 제거 했고, REST API 는 소비처 (injector) 가 있는 correlation-exporter 만 유지 한다.
@@ -259,6 +266,20 @@ yaml.safe_dump(merged, open('docs/api/openapi.yaml', 'w'), allow_unicode=True, s
 # 한다. 재생성을 실제 수행한 뒤 산출물 경로에 git diff 가 남으면 실패하므로, 커밋 전 working tree
 # 가 깨끗한 상태에서 실행해야 한다. openapi.yaml 의 info.version 이 VERSION 파일을 따르므로 bump
 # 후에도 본 타깃이 재생성 누락을 잡아낸다.
+# lint - golangci-lint 를 도커로 실행한다 (#421). 버전은 .golangci.yml 의 룰셋과 함께 고정되어
+#        로컬과 CI 가 같은 결과를 낸다. BPF .o embed 가 필요하므로 generate 계열이 선행돼야 한다
+#        (로컬은 통상 생성돼 있고, CI 는 워크플로가 생성 단계를 선행한다).
+GOLANGCI_IMAGE ?= golangci/golangci-lint:v2.12.2
+lint:
+	docker run --rm -v $(CURDIR):/src -w /src 		-e GOCACHE=/tmp/gocache -e GOLANGCI_LINT_CACHE=/tmp/lintcache 		$(GOLANGCI_IMAGE) golangci-lint run --timeout 5m
+	@echo "golangci-lint: OK"
+
+# check-version-alignment - VERSION 과 kustomize overlay (_template 포함) 의 image newTag 가 전부
+#                           일치하는지 검사한다 (#421). bump 누락 overlay 가 릴리스에 흘러가는
+#                           버전 불일치를 CI 에서 차단한다.
+check-version-alignment:
+	@v=$$(cat VERSION); fail=0; 	for f in deploy/*/overlays/*/kustomization.yaml; do 		for t in $$(grep -oE 'newTag: *"?[0-9][0-9.]*"?' $$f | grep -oE '[0-9][0-9.]*'); do 			if [ "$$t" != "$$v" ]; then echo "$$f: newTag $$t != VERSION $$v"; fail=1; fi; 		done; 	done; 	if [ $$fail -ne 0 ]; then exit 1; fi; 	echo "버전 정합: VERSION=$$v 와 전체 overlay newTag 일치"
+
 check-swagger-drift: swag-init swag-merge
 	@git diff --exit-code -- internal/correlation/api/docs docs/api/openapi.yaml \
 		|| (echo "swagger 산출물이 어노테이션과 어긋났습니다. make swag-init swag-merge 결과를 커밋하세요."; exit 1)
@@ -318,6 +339,7 @@ image-build-%-agent: $$(PREREQS_$$*-agent)
 		--build-arg TARGET_AGENT=$*-agent \
 		--build-arg AGENT_PORT=$(PORT_$*-agent) \
 		--build-arg CGO_ENABLED=$(CGO_$*-agent) \
+		--build-arg RUNTIME_UID=$(UID_$*-agent) \
 		-t $*-agent:$(VERSION) .
 
 image-push-%-agent: image-build-%-agent

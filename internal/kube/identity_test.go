@@ -137,7 +137,7 @@ func TestPodIdentity_Rank(t *testing.T) {
 	ext := PodIdentity{IdentityClass: IdentityClassExternal}
 	un := PodIdentity{IdentityClass: IdentityClassUnresolved}
 
-	if !(pod.Rank() > svc.Rank() && svc.Rank() > node.Rank() && node.Rank() > ext.Rank() && ext.Rank() > un.Rank()) {
+	if pod.Rank() <= svc.Rank() || svc.Rank() <= node.Rank() || node.Rank() <= ext.Rank() || ext.Rank() <= un.Rank() {
 		t.Fatalf("rank ordering broken: pod=%d svc=%d node=%d ext=%d un=%d",
 			pod.Rank(), svc.Rank(), node.Rank(), ext.Rank(), un.Rank())
 	}

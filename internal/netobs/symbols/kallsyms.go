@@ -35,7 +35,7 @@ func loadKallsyms(path string) (*kallsymsTable, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open kallsyms %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	syms := make([]symbol, 0, 1<<16)
 	var base uint64

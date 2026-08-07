@@ -3,7 +3,9 @@ name: promtool
 # 본 워크플로우는 PrometheusRule yaml의 PromQL 문법과 rule 정의 정합성을 promtool로 검증해
 # PR 단계에서 잘못된 표현식이 prod에 흘러가지 않도록 차단한다. promtool은 prom/prometheus
 # 공식 이미지에서 실행되며 버전은 Makefile의 PROMTOOL_IMAGE 변수로 pin되어 재현성을 확보한다.
-# 실행 시간 예산: docker pull 캐시 hit 시 30초 이내, 미스 시에도 90초 이내.
+# #421 부터 rule 단위 테스트 (test-prometheus-rules) 도 함께 강제해 로컬 실행 관행에만 있던
+# promtool 테스트가 기계 검증이 된다.
+# 실행 시간 예산: docker pull 캐시 hit 시 30초 이내, 미스 시에도 5분 이내 (테스트 19개 파일).
 
 on:
   pull_request:
@@ -11,6 +13,7 @@ on:
     paths:
       - 'deploy/**/prometheus-rule*.yaml'
       - 'deploy/**/prometheusrule*.yaml'
+      - 'test/promtool/**'
       - 'Makefile'
       - '.github/workflows/promtool.yml'
   push:
@@ -18,16 +21,20 @@ on:
     paths:
       - 'deploy/**/prometheus-rule*.yaml'
       - 'deploy/**/prometheusrule*.yaml'
+      - 'test/promtool/**'
       - 'Makefile'
       - '.github/workflows/promtool.yml'
 
 jobs:
   check-rules:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Run promtool check rules
         run: make check-prometheus-rules
+
+      - name: Run promtool unit tests
+        run: make test-prometheus-rules
