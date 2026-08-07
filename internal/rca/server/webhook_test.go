@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -269,5 +271,67 @@ func TestWebhook_OversizedPayloadRejected(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusOK {
 		t.Errorf("status=%d; want non-200 (oversized payload must be rejected)", resp.StatusCode)
+	}
+}
+
+// ctxCapturingSources 는 #419 컨텍스트 전파 검증용 fake 다. Dispatch 경유로 받은 ctx 를 보관해
+// 테스트가 요청 컨텍스트와의 연결 (취소 전파) 을 단정할 수 있게 한다.
+type ctxCapturingSources struct {
+	mu   sync.Mutex
+	ctxs []context.Context
+}
+
+func (f *ctxCapturingSources) TopNeighbors(ctx context.Context, _, _ string) []registry.NeighborInfo {
+	f.mu.Lock()
+	f.ctxs = append(f.ctxs, ctx)
+	f.mu.Unlock()
+	return nil
+}
+func (f *ctxCapturingSources) TopDropFlows(ctx context.Context, _ string) []registry.DropFlowInfo {
+	f.mu.Lock()
+	f.ctxs = append(f.ctxs, ctx)
+	f.mu.Unlock()
+	return nil
+}
+func (f *ctxCapturingSources) GPUSignal(ctx context.Context, _ string) float64 {
+	f.mu.Lock()
+	f.ctxs = append(f.ctxs, ctx)
+	f.mu.Unlock()
+	return 0
+}
+func (f *ctxCapturingSources) EvaluateConfidence([]registry.NeighborInfo, []registry.DropFlowInfo, float64) float64 {
+	return 1
+}
+
+// TestWebhook_RequestContextPropagatesToSources 는 #419 의 취소 전파를 단정한다. 요청 컨텍스트를
+// 취소하면 하류 source 가 받은 ctx 도 즉시 Done 이어야 한다.
+func TestWebhook_RequestContextPropagatesToSources(t *testing.T) {
+	src := &ctxCapturingSources{}
+	st := store.New()
+	met := rcametrics.New()
+	h := NewWebhookHandler(registry.New(), src, st, met, 0.0)
+
+	body := `{"alerts":[{"status":"firing","labels":{"alertname":"NetObsDropBurst","src_namespace":"ns1","src_pod":"p1"}}]}`
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body)).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	src.mu.Lock()
+	captured := append([]context.Context(nil), src.ctxs...)
+	src.mu.Unlock()
+	if len(captured) == 0 {
+		t.Fatal("source 가 호출되지 않음 (mapping 이 source 를 타지 않음)")
+	}
+	select {
+	case <-captured[0].Done():
+		t.Fatal("요청 취소 전에 ctx 가 이미 Done")
+	default:
+	}
+	cancel()
+	select {
+	case <-captured[0].Done():
+	default:
+		t.Fatal("요청 컨텍스트 취소가 source ctx 로 전파되지 않음")
 	}
 }

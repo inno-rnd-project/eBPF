@@ -1,5 +1,7 @@
 package registry
 
+import "context"
+
 // registerGpuobs 는 gpuobs 그룹의 2 종 mapping 을 등록한다. GPUObsCudaStreamWaitHigh 는 src_pod
 // 라벨로 victim 을 식별 가능하고, GPUObsThermalThrottleSustained 는 node + gpu_uuid 만 노출되어
 // pod 단위 victim 이 없다.
@@ -13,7 +15,7 @@ func registerGpuobs(r *Registry) {
 // dominant_dimension 을 gpu 로 두지만, neighbor 의 dimension 이 다른 경우 (예: cpu) 그 dimension
 // 으로 overwrite 해 진짜 원인 차원을 노출한다. #122 의 multi-source cross-reference 산출 시 세
 // source 의 raw 결과 를 모아 EvaluateConfidence 로 ConfidenceScore 를 채운다.
-func mapGPUObsCudaStreamWaitHigh(labels map[string]string, sources Sources) RCASummary {
+func mapGPUObsCudaStreamWaitHigh(ctx context.Context, labels map[string]string, sources Sources) RCASummary {
 	srcNS := labelOr(labels, "src_namespace", "")
 	srcPod := labelOr(labels, "src_pod", "")
 	node := labelOr(labels, "node", "")
@@ -31,7 +33,7 @@ func mapGPUObsCudaStreamWaitHigh(labels map[string]string, sources Sources) RCAS
 		var neighbors []NeighborInfo
 		var dropFlows []DropFlowInfo
 		if srcNS != "" && srcPod != "" {
-			neighbors = sources.TopNeighbors(srcNS, srcPod)
+			neighbors = sources.TopNeighbors(ctx, srcNS, srcPod)
 			if len(neighbors) > 0 {
 				summary.TopSuspect = formatPod(neighbors[0].SuspectNamespace, neighbors[0].SuspectPod)
 				if neighbors[0].Dimension != "" {
@@ -40,11 +42,11 @@ func mapGPUObsCudaStreamWaitHigh(labels map[string]string, sources Sources) RCAS
 			}
 		}
 		if srcNS != "" {
-			dropFlows = sources.TopDropFlows(srcNS)
+			dropFlows = sources.TopDropFlows(ctx, srcNS)
 		}
 		gpuSignal := 0.0
 		if node != "" {
-			gpuSignal = sources.GPUSignal(node)
+			gpuSignal = sources.GPUSignal(ctx, node)
 		}
 		summary.ConfidenceScore = sources.EvaluateConfidence(neighbors, dropFlows, gpuSignal)
 	}
@@ -55,7 +57,7 @@ func mapGPUObsCudaStreamWaitHigh(labels map[string]string, sources Sources) RCAS
 // 하므로 top_suspect 는 node 단위 식별자 ("node/<name>") 로 둔다. dimension 은 thermal 로 둬
 // dashboard 가 throttle 신호임을 구분 가능하게 한다. #122 의 multi-source cross-reference 산출
 // 시 GPU signal 만 활용 한다 (victim Pod 미식별 으로 correlation 과 netobs factor 는 자연 0).
-func mapGPUObsThermalThrottleSustained(labels map[string]string, sources Sources) RCASummary {
+func mapGPUObsThermalThrottleSustained(ctx context.Context, labels map[string]string, sources Sources) RCASummary {
 	node := labelOr(labels, "node", "")
 	gpuUUID := labelOr(labels, "gpu_uuid", "")
 
@@ -80,7 +82,7 @@ func mapGPUObsThermalThrottleSustained(labels map[string]string, sources Sources
 	if sources != nil {
 		gpuSignal := 0.0
 		if node != "" {
-			gpuSignal = sources.GPUSignal(node)
+			gpuSignal = sources.GPUSignal(ctx, node)
 		}
 		summary.ConfidenceScore = sources.EvaluateConfidence(nil, nil, gpuSignal)
 	}

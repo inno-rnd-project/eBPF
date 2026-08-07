@@ -1,5 +1,7 @@
 package registry
 
+import "context"
+
 // registerCorrelation 은 correlation 그룹의 1 종 mapping 을 등록한다. CorrelationStrongNoisyNeighbor
 // 의 alert 라벨에 victim 과 suspect 가 모두 노출되어 있어 외부 Sources 조회 없이도 RCASummary
 // 가 정확히 채워진다.
@@ -13,7 +15,7 @@ func registerCorrelation(r *Registry) {
 // 의 결과 를 ConfidenceScore 필드 에 채운다. correlation alert 가 이미 victim/suspect 라벨 을
 // 노출 하므로 neighbor lookup 은 cross-validation 목적 이며 RCASummary 의 TopSuspect 는 alert
 // 라벨 의 suspect 를 그대로 유지 한다.
-func mapCorrelationStrongNoisyNeighbor(labels map[string]string, sources Sources) RCASummary {
+func mapCorrelationStrongNoisyNeighbor(ctx context.Context, labels map[string]string, sources Sources) RCASummary {
 	victimNS := labelOr(labels, "victim_namespace", "")
 	victimPod := labelOr(labels, "victim_pod", "")
 	suspectNS := labelOr(labels, "suspect_namespace", "")
@@ -34,14 +36,14 @@ func mapCorrelationStrongNoisyNeighbor(labels map[string]string, sources Sources
 		var neighbors []NeighborInfo
 		var dropFlows []DropFlowInfo
 		if victimNS != "" && victimPod != "" {
-			neighbors = sources.TopNeighbors(victimNS, victimPod)
+			neighbors = sources.TopNeighbors(ctx, victimNS, victimPod)
 		}
 		if victimNS != "" {
-			dropFlows = sources.TopDropFlows(victimNS)
+			dropFlows = sources.TopDropFlows(ctx, victimNS)
 		}
 		gpuSignal := 0.0
 		if node != "" {
-			gpuSignal = sources.GPUSignal(node)
+			gpuSignal = sources.GPUSignal(ctx, node)
 		}
 		summary.ConfidenceScore = sources.EvaluateConfidence(neighbors, dropFlows, gpuSignal)
 	}

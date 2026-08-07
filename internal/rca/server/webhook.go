@@ -49,7 +49,7 @@ func NewWebhookHandler(reg *registry.Registry, src registry.Sources, st *store.S
 			if alertname == "" {
 				continue
 			}
-			summary, ok := reg.Dispatch(alertname, a.Labels, src)
+			summary, ok := reg.Dispatch(r.Context(), alertname, a.Labels, src)
 			// store.Set 의 두 번째 인자 (registered) 에 ok 를 전달한다. 등록 alert 9 종은 cap
 			// 무관하게 항상 store 에 자리가 보장되어 적대적 webhook 으로 미등록 alertname 이 cap
 			// 을 채워도 핵심 alert 의 진단 흐름이 차단되지 않는다. 미등록 alert 의 store.Set 두

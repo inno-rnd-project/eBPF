@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"testing"
@@ -16,13 +17,13 @@ type fakeSources struct {
 	gpuSignal         float64
 }
 
-func (f *fakeSources) TopNeighbors(ns, pod string) []NeighborInfo {
+func (f *fakeSources) TopNeighbors(_ context.Context, ns, pod string) []NeighborInfo {
 	return f.neighborsByVictim[ns+"/"+pod]
 }
-func (f *fakeSources) TopDropFlows(namespace string) []DropFlowInfo {
+func (f *fakeSources) TopDropFlows(_ context.Context, namespace string) []DropFlowInfo {
 	return f.dropFlows
 }
-func (f *fakeSources) GPUSignal(node string) float64 {
+func (f *fakeSources) GPUSignal(_ context.Context, node string) float64 {
 	return f.gpuSignal
 }
 
@@ -64,7 +65,7 @@ func TestNew_RegistersExactlyElevenMappings(t *testing.T) {
 // 돌려주는지 검증한다. 호출 측이 본 결과를 raw label echo back 으로 silent drop 회피한다.
 func TestDispatch_UnknownAlertReturnsFalse(t *testing.T) {
 	r := New()
-	summary, ok := r.Dispatch("NonExistentAlert", map[string]string{"foo": "bar"}, nil)
+	summary, ok := r.Dispatch(context.Background(), "NonExistentAlert", map[string]string{"foo": "bar"}, nil)
 	if ok {
 		t.Errorf("ok=true for unknown alert; want false")
 	}
@@ -84,7 +85,7 @@ func TestDispatch_NetObsDropBurst(t *testing.T) {
 		"protocol":      "tcp",
 		"drop_reason":   "TCP_RESET",
 	}
-	summary, ok := r.Dispatch("NetObsDropBurst", labels, nil)
+	summary, ok := r.Dispatch(context.Background(), "NetObsDropBurst", labels, nil)
 	if !ok {
 		t.Fatalf("ok=false; want true")
 	}
@@ -118,7 +119,7 @@ func TestDispatch_GPUObsCudaStreamWaitHighOverridesDimension(t *testing.T) {
 		"src_namespace": "default",
 		"src_pod":       "victim",
 	}
-	summary, ok := r.Dispatch("GPUObsCudaStreamWaitHigh", labels, sources)
+	summary, ok := r.Dispatch(context.Background(), "GPUObsCudaStreamWaitHigh", labels, sources)
 	if !ok {
 		t.Fatalf("ok=false; want true")
 	}
@@ -139,7 +140,7 @@ func TestDispatch_GPUObsCudaStreamWaitHighFallbackToVictim(t *testing.T) {
 		"src_namespace": "default",
 		"src_pod":       "victim",
 	}
-	summary, _ := r.Dispatch("GPUObsCudaStreamWaitHigh", labels, sources)
+	summary, _ := r.Dispatch(context.Background(), "GPUObsCudaStreamWaitHigh", labels, sources)
 	if summary.DominantDimension != "gpu" {
 		t.Errorf("DominantDimension=%q; want gpu (no neighbor override)", summary.DominantDimension)
 	}
@@ -157,7 +158,7 @@ func TestDispatch_GPUIdleWithCPUThrottleHasDimensionCPU(t *testing.T) {
 		"src_pod":       "stress-cpu",
 		"node":          "gpu",
 	}
-	summary, ok := r.Dispatch("GPUIdleWithCPUThrottle", labels, nil)
+	summary, ok := r.Dispatch(context.Background(), "GPUIdleWithCPUThrottle", labels, nil)
 	if !ok {
 		t.Fatalf("ok=false")
 	}
@@ -180,7 +181,7 @@ func TestDispatch_CorrelationStrongNoisyNeighborUsesResourceDimension(t *testing
 		"suspect_pod":        "s",
 		"resource_dimension": "gpu",
 	}
-	summary, _ := r.Dispatch("CorrelationStrongNoisyNeighbor", labels, nil)
+	summary, _ := r.Dispatch(context.Background(), "CorrelationStrongNoisyNeighbor", labels, nil)
 	if summary.DominantDimension != "gpu" {
 		t.Errorf("DominantDimension=%q; want gpu", summary.DominantDimension)
 	}
@@ -197,7 +198,7 @@ func TestDispatch_GPUObsThermalThrottleNodeIdentity(t *testing.T) {
 		"node":     "gpu",
 		"gpu_uuid": "GPU-1234",
 	}
-	summary, _ := r.Dispatch("GPUObsThermalThrottleSustained", labels, nil)
+	summary, _ := r.Dispatch(context.Background(), "GPUObsThermalThrottleSustained", labels, nil)
 	if !strings.Contains(summary.TopSuspect, "node/gpu") {
 		t.Errorf("TopSuspect=%q; want to contain node/gpu", summary.TopSuspect)
 	}

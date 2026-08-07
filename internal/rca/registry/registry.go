@@ -4,6 +4,8 @@
 // false 를 돌려주어 호출 측이 raw label echo back 으로 silent drop 을 회피한다.
 package registry
 
+import "context"
+
 // RCASummary 는 한 alert 발화의 root cause analysis 요약 출력이다. JSON 직렬화되어 /rca endpoint
 // 응답 본문과 /rca-summary 메트릭의 *_info 라벨 셋에 사용된다.
 type RCASummary struct {
@@ -31,22 +33,24 @@ type RCASummary struct {
 
 // Mapping 은 alert labels 를 받아 RCASummary 를 만들어 내는 단위 함수다. Sources 인터페이스를
 // 받아 correlation Top-N 과 drop flow Top-N 같은 외부 자료를 활용한다.
-type Mapping func(labels map[string]string, sources Sources) RCASummary
+type Mapping func(ctx context.Context, labels map[string]string, sources Sources) RCASummary
 
 // Sources 는 mapping 이 RCA 산정에 활용하는 외부 자료 접근자다. 구체 구현은 internal/rca/sources
 // 패키지가 제공하며 본 패키지는 인터페이스만 의존해 순환 import 와 테스트 mock 양쪽을 허용한다.
 type Sources interface {
 	// TopNeighbors 는 victim Pod 의 가장 강한 noisy neighbor N 종을 돌려준다. Sources 구현체가
 	// caching 한 correlation-exporter snapshot 에서 victim 매칭 후 score 내림차순으로 잘라 준다.
-	TopNeighbors(victimNamespace, victimPod string) []NeighborInfo
+	// ctx 는 webhook 요청 컨텍스트에서 파생되어 (#419) 클라이언트 취소와 서버 타임아웃이 하류
+	// fetch 까지 전파된다 (아래 두 메서드 동일).
+	TopNeighbors(ctx context.Context, victimNamespace, victimPod string) []NeighborInfo
 	// TopDropFlows 는 namespace 의 가장 빈번한 drop flow N 종을 돌려준다. 본 PR 의 registry 가
 	// 사용하는 mapping 은 단일 flow 만 필요해 [0] 만 참조한다.
-	TopDropFlows(namespace string) []DropFlowInfo
+	TopDropFlows(ctx context.Context, namespace string) []DropFlowInfo
 	// GPUSignal 은 #122 의 multi-source cross-reference 산출 시 GPU 도메인 신호 강도 (0-1) 를
 	// 돌려준다. node 단위 GPU dominant cause weight 또는 GPU idle cause weight 의 Prometheus
 	// instant query 결과를 활용 한다. 매칭 시리즈 가 없 거나 fetch 실패 시 0 을 돌려주어
 	// confidence 산출 이 자연 감쇠 된다.
-	GPUSignal(node string) float64
+	GPUSignal(ctx context.Context, node string) float64
 	// EvaluateConfidence 는 #122 의 multi-source cross-reference confidence score 산출 진입점
 	// 이다. mapping 이 각 source 의 raw 결과를 모은 뒤 본 메서드를 호출 해 0-1 정규화 점수를
 	// 받는다. 가중치 정책 과 정규화 식 은 sources 패키지의 ComputeConfidenceScore 가 single
@@ -92,12 +96,12 @@ func New() *Registry {
 
 // Dispatch 는 alert 이름에 등록된 mapping 을 찾아 호출한다. mapping 미등록 시 (RCASummary{}, false)
 // 를 돌려주며 호출 측은 raw label echo back 으로 silent drop 을 회피한다.
-func (r *Registry) Dispatch(alertname string, labels map[string]string, sources Sources) (RCASummary, bool) {
+func (r *Registry) Dispatch(ctx context.Context, alertname string, labels map[string]string, sources Sources) (RCASummary, bool) {
 	m, ok := r.mappings[alertname]
 	if !ok {
 		return RCASummary{AlertName: alertname}, false
 	}
-	summary := m(labels, sources)
+	summary := m(ctx, labels, sources)
 	summary.AlertName = alertname
 	return summary, true
 }
