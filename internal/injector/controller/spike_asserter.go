@@ -55,7 +55,7 @@ func (a *PromSpikeAsserter) Observe(ctx context.Context, sinceRunEnd time.Time) 
 	if err != nil {
 		return nil, fmt.Errorf("prometheus query: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("prometheus query status=%d", resp.StatusCode)
 	}

@@ -115,7 +115,7 @@ func TestPrometheusInstantQuerier_QueryTime(t *testing.T) {
 // range 용 100MiB 와 분리) 을 넘으면 에러로 격상되는지 검증한다 (#406).
 func TestPrometheusInstantQuerier_ResponseSizeLimit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(make([]byte, maxInstantResponseBytes+1024))
+		_, _ = w.Write(make([]byte, maxInstantResponseBytes+1024))
 	}))
 	defer srv.Close()
 	q, err := NewPrometheusInstantQuerier(srv.URL, 5*time.Second)

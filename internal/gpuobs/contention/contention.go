@@ -99,7 +99,7 @@ func readPSISomeAvg10(path string) (float64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return parsePSISomeAvg10(f)
 }
 

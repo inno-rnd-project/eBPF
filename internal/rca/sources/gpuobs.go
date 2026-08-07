@@ -61,7 +61,7 @@ func (s *httpGpuobsSource) fetchGPUSignal(ctx context.Context, node string) floa
 	if err != nil {
 		return 0
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return 0
 	}

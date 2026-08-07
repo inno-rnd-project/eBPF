@@ -89,7 +89,7 @@ func (f *PrometheusFetcher) Fetch(ctx context.Context, query string, start, end 
 	if err != nil {
 		return nil, fmt.Errorf("http get %s: %w", u.String(), err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// io.LimitReader 로 응답 body 크기를 maxFetchResponseBytes+1 까지 읽어 정확히 "한도 초과" 여부를
 	// 판별. 정확히 maxFetchResponseBytes 인 응답은 허용하고 그보다 큰 경우에만 에러로 격상한다.

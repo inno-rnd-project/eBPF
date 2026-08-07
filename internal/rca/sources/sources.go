@@ -196,10 +196,6 @@ type noopPromQL struct{}
 func (noopPromQL) fetchTopDropFlows(context.Context, string, int) []registry.DropFlowInfo { return nil }
 func (noopPromQL) probe(context.Context) error                                            { return nil }
 
-type noopGpuobs struct{}
-
-func (noopGpuobs) fetchGPUSignal(context.Context, string) float64 { return 0 }
-
 // staleCache 는 snapshot 의 TTL 기반 in-memory cache 다. fetch 시 cache hit 이면 mu 잠금만으로
 // stale-OK 반환, miss 면 caller 가 backing fetcher 호출 후 store 한다.
 type staleCache struct {

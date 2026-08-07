@@ -23,7 +23,7 @@ func TestNewMux_HealthAndReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("healthz: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("healthz status=%d; want 200", resp.StatusCode)
 	}
@@ -32,7 +32,7 @@ func TestNewMux_HealthAndReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readyz: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("readyz status=%d before ready; want 503", resp.StatusCode)
 	}
@@ -42,7 +42,7 @@ func TestNewMux_HealthAndReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readyz after ready: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("readyz status=%d after ready; want 200", resp.StatusCode)
 	}
@@ -59,7 +59,7 @@ func TestNewMux_WebhookMethodGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /webhook: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("GET /webhook status=%d; want 405", resp.StatusCode)
 	}
@@ -68,7 +68,7 @@ func TestNewMux_WebhookMethodGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /webhook: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNotImplemented {
 		t.Errorf("POST /webhook stub status=%d; want 501", resp.StatusCode)
 	}
@@ -85,7 +85,7 @@ func TestNewMux_RCAMethodGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /rca: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("POST /rca status=%d; want 405", resp.StatusCode)
 	}
@@ -94,7 +94,7 @@ func TestNewMux_RCAMethodGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /rca: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNotImplemented {
 		t.Errorf("GET /rca stub status=%d; want 501", resp.StatusCode)
 	}
@@ -116,7 +116,7 @@ func TestNewMux_WebhookInvokesInner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /webhook: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if !called {
 		t.Errorf("inner webhook not invoked")
 	}

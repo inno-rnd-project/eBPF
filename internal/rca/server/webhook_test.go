@@ -59,7 +59,7 @@ func TestWebhook_NetObsDropBurstPersistsSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d; want 200", resp.StatusCode)
 	}
@@ -80,7 +80,7 @@ func TestWebhook_NetObsDropBurstPersistsSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /rca: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("/rca status=%d", resp.StatusCode)
 	}
@@ -104,7 +104,7 @@ func TestWebhook_ResolvedAlertSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if _, ok := st.Get("NetObsDropBurst"); ok {
 		t.Errorf("resolved alert should not have been stored")
 	}
@@ -121,7 +121,7 @@ func TestWebhook_EmittedCounterIncrements(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		payload := fmt.Sprintf(`{"alerts":[{"status":"firing","labels":{"alertname":"GPUIdleWithCPUThrottle","src_namespace":"perf","src_pod":"p%d","node":"gpu"}}]}`, i)
 		resp, _ := http.Post(srv.URL+"/webhook", "application/json", strings.NewReader(payload))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	// emit_total 은 alert당 누적이므로 3 이어야 한다
@@ -149,7 +149,7 @@ func TestWebhook_LastSummaryInfoCardinalityCollapsed(t *testing.T) {
 		"dst_ip":"10.0.0.5","dst_port":"8080","protocol":"tcp","drop_reason":"TCP_RESET"
 	}}]}`
 	r1, _ := http.Post(srv.URL+"/webhook", "application/json", strings.NewReader(p1))
-	r1.Body.Close()
+	_ = r1.Body.Close()
 
 	// 두 번째 발화 (다른 dst_port)
 	p2 := `{"alerts":[{"status":"firing","labels":{
@@ -157,7 +157,7 @@ func TestWebhook_LastSummaryInfoCardinalityCollapsed(t *testing.T) {
 		"dst_ip":"10.0.0.5","dst_port":"9090","protocol":"tcp","drop_reason":"TCP_RESET"
 	}}]}`
 	r2, _ := http.Post(srv.URL+"/webhook", "application/json", strings.NewReader(p2))
-	r2.Body.Close()
+	_ = r2.Body.Close()
 
 	// last_summary_info 의 NetObsDropBurst 시리즈 수 == 1
 	gv, ok := met.Collectors()[1].(*prometheus.GaugeVec)
@@ -196,13 +196,13 @@ func TestRCAHandler_AllReturnsArray(t *testing.T) {
 
 	p := `{"alerts":[{"status":"firing","labels":{"alertname":"GPUIdleWithCPUThrottle","src_namespace":"perf","src_pod":"p"}}]}`
 	r, _ := http.Post(srv.URL+"/webhook", "application/json", strings.NewReader(p))
-	r.Body.Close()
+	_ = r.Body.Close()
 
 	resp, err := http.Get(srv.URL + "/rca")
 	if err != nil {
 		t.Fatalf("GET /rca: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var got []store.Entry
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -218,7 +218,7 @@ func TestRCAHandler_UnknownAlertReturns404(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	resp, _ := http.Get(srv.URL + "/rca?alert=NoSuchAlert")
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status=%d; want 404", resp.StatusCode)
 	}
@@ -232,7 +232,7 @@ func TestWebhook_UnknownAlertEchoesRawLabels(t *testing.T) {
 	defer srv.Close()
 	p := `{"alerts":[{"status":"firing","labels":{"alertname":"NotMapped","foo":"bar"}}]}`
 	r, _ := http.Post(srv.URL+"/webhook", "application/json", strings.NewReader(p))
-	r.Body.Close()
+	_ = r.Body.Close()
 	if _, ok := st.Get("NotMapped"); !ok {
 		t.Errorf("unmapped alert should still be stored for diagnostic")
 	}
@@ -248,7 +248,7 @@ func TestWebhook_UnknownAlertSkipsMetricsEmit(t *testing.T) {
 
 	p := `{"alerts":[{"status":"firing","labels":{"alertname":"AdversarialNoise","foo":"bar"}}]}`
 	r, _ := http.Post(srv.URL+"/webhook", "application/json", strings.NewReader(p))
-	r.Body.Close()
+	_ = r.Body.Close()
 
 	cv, ok := met.Collectors()[0].(*prometheus.CounterVec)
 	if !ok {
@@ -272,7 +272,7 @@ func TestWebhook_OversizedPayloadRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusOK {
 		t.Errorf("status=%d; want non-200 (oversized payload must be rejected)", resp.StatusCode)
 	}

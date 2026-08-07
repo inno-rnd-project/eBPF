@@ -47,7 +47,7 @@ func (p *httpPromQLSource) probe(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("do: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
@@ -94,7 +94,7 @@ func (p *httpPromQLSource) fetchTopDropFlows(ctx context.Context, namespace stri
 		log.Printf("promql do %s: %v", endpoint, err)
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("promql status %d for %s", resp.StatusCode, endpoint)
 		return nil

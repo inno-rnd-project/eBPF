@@ -101,7 +101,7 @@ func (q *PrometheusInstantQuerier) Query(ctx context.Context, query string) ([]I
 	if err != nil {
 		return nil, fmt.Errorf("http get %s: %w", u.String(), err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxInstantResponseBytes+1))
 	if err != nil {

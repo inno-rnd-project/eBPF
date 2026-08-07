@@ -183,7 +183,7 @@ func (r *Resolver) Start(ctx context.Context) {
 		log.Printf("kube resolver: pod transform 미적용: %v", err)
 	}
 
-	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	_, _ = podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			r.markWatchEvent()
 			r.onUpsertPod(obj)
@@ -213,7 +213,7 @@ func (r *Resolver) Start(ctx context.Context) {
 	serviceInformer := factory.Core().V1().Services().Informer()
 	nodeInformer := factory.Core().V1().Nodes().Informer()
 
-	serviceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	_, _ = serviceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			r.markWatchEvent()
 			r.onUpsertService(obj)
@@ -228,7 +228,7 @@ func (r *Resolver) Start(ctx context.Context) {
 		},
 	})
 
-	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	_, _ = nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			r.markWatchEvent()
 			r.onUpsertNode(obj)

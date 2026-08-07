@@ -76,7 +76,7 @@ func (c *CorrelationScoreClient) MaxScore(ctx context.Context, victim, suspect P
 	if err != nil {
 		return 0, false, fmt.Errorf("correlation query: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		// keep-alive 커넥션 재사용 을 위해 body 를 비운 뒤 종료 한다.
 		_, _ = io.Copy(io.Discard, resp.Body)
