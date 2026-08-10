@@ -742,9 +742,16 @@ type NodeResponse struct {
 	Pressure    map[string]float64 `json:"pressure"`
 	// Health 는 차원별 health score (0-1, #264) 다. node:*_health_score:5m 룰 기반이며 cluster
 	// health 와 동일 산식의 노드 차원 판이라 GPU 와 비GPU 노드가 같은 해석을 공유한다.
-	Health  map[string]float64 `json:"health"`
-	Overall *float64           `json:"overall"`
-	Status  string             `json:"status"`
+	Health map[string]float64 `json:"health"`
+	// HealthNotes 는 health 차원의 산출 불가 / 비실측 사유다 (#430 additive, 기존 필드와 enum 불변).
+	// 값 도메인은 세 가지로 폐쇄된다.
+	//   - no_cpu_limit_pods: cpu 가 fallback 상수 1.0 으로 채워짐 (CPU limit pod 없음, 실측 아님)
+	//   - no_gpu: gpu 차원 결측이 GPU 미보유 노드의 정상 상태
+	//   - scrape_gap: 그 외 결측 (입력 시리즈 소실, scrape 실패 계열)
+	// 프론트가 결측 차원을 0.00 (최악) 대신 측정 불가로 렌더하는 근거이며, 항목이 없으면 생략된다.
+	HealthNotes map[string]string `json:"health_notes,omitempty"`
+	Overall     *float64          `json:"overall"`
+	Status      string            `json:"status"`
 	// StatusUnified 는 status 와 같은 판정을 노드 상태 단일 규약 어휘 (#381, healthy/warning/critical/
 	// unknown) 로 노출하는 additive 필드다. 산정은 규약 어휘로 하고 기존 status (ok/warn/degraded/
 	// unknown) 는 correlation.NodeDetailStatus 환원으로 불변 유지한다. down 은 ready 신호를 조회하지
@@ -780,7 +787,7 @@ type NodePodPressure struct {
 
 // GetNode godoc
 // @Summary      노드 1대 전체 압박 상황
-// @Description  노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 차원별 pressure 등급(전 차원 worst, memory 는 node_exporter 실측 사용률이라 일반 임계 대신 usage 임계 0.85/0.95 로 환산해 health 불감대·usage 축 설계와 정합)과 노드 사용량(CPU/memory 점유율, allocatable 분모, 0.85 warn/0.95 degraded) 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(severity critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis 가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서 제외한다. status 는 종전 어휘(ok/warn/degraded/unknown)를 유지하고, 같은 판정을 노드 상태 단일 규약 어휘(#381, healthy/warning/critical/unknown)로 노출하는 status_unified 필드가 additive 로 함께 실린다(ok 는 healthy, warn 은 warning, degraded 는 critical 대응). down(ready 기반) 판정은 ready 신호를 조회하지 않아 방출하지 않으며 node-map 소관이다. top_pods 는 dominant 압박의 원인 후보이며 is_filtered=true 면 pod pressure 가 elevated 임계(0.4) 이상인 pod 만 남기고 dominant severity 가 low(정상)면 목록을 비워 낮은 수치 pod 가 원인으로 오인되지 않게 한다(#380). 미전달 기본은 전 pod 를 노출한다. top_pods 의 pod 는 ns/pod 결합 id 표현으로 불변이며, 슬래시 파싱 없이 신원을 읽는 분리 필드 namespace 와 pod_name 이 additive 로 병기된다(#383, namespace 미상이면 생략).
+// @Description  노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 차원별 pressure 등급(전 차원 worst, memory 는 node_exporter 실측 사용률이라 일반 임계 대신 usage 임계 0.85/0.95 로 환산해 health 불감대·usage 축 설계와 정합)과 노드 사용량(CPU/memory 점유율, allocatable 분모, 0.85 warn/0.95 degraded) 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(severity critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis 가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서 제외한다. status 는 종전 어휘(ok/warn/degraded/unknown)를 유지하고, 같은 판정을 노드 상태 단일 규약 어휘(#381, healthy/warning/critical/unknown)로 노출하는 status_unified 필드가 additive 로 함께 실린다(ok 는 healthy, warn 은 warning, degraded 는 critical 대응). down(ready 기반) 판정은 ready 신호를 조회하지 않아 방출하지 않으며 node-map 소관이다. top_pods 는 dominant 압박의 원인 후보이며 is_filtered=true 면 pod pressure 가 elevated 임계(0.4) 이상인 pod 만 남기고 dominant severity 가 low(정상)면 목록을 비워 낮은 수치 pod 가 원인으로 오인되지 않게 한다(#380). 미전달 기본은 전 pod 를 노출한다. top_pods 의 pod 는 ns/pod 결합 id 표현으로 불변이며, 슬래시 파싱 없이 신원을 읽는 분리 필드 namespace 와 pod_name 이 additive 로 병기된다(#383, namespace 미상이면 생략). health_notes 는 health 차원의 산출 불가·비실측 사유(additive, #430)로 no_cpu_limit_pods(cpu 가 fallback 상수 1.0, CPU limit pod 없음), no_gpu(GPU 미보유 노드의 정상 결측), scrape_gap(입력 시리즈 소실)을 구분해 담으며, 프론트가 결측 차원을 0.00 대신 측정 불가로 렌더하는 근거다. 항목이 없으면 생략된다.
 // @Tags         interference
 // @Produce      json
 // @Param        node  path  string  true  "노드 이름"
@@ -820,7 +827,7 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
-		// #404 17개 쿼리는 전부 상호 독립이라 단일 queryParallel 라운드로 실행한다. 종전 완전 순차
+		// #404 19개 쿼리 (#430 에서 health_notes 입력 2종 추가) 는 전부 상호 독립이라 단일 queryParallel 라운드로 실행한다. 종전 완전 순차
 		// 실행은 쿼리당 300ms 면 5s 예산을 초과했고, 초과 시점 이후 쿼리가 조용히 버려져 응답 내용이
 		// Prometheus 지연에 따라 요청마다 달라졌다. pressure·health·alert·usage 는 status worst-of
 		// 합성의 입력이고 topk pod 4종은 top_pods 표시의 입력이라, 어느 쿼리의 실패도 응답 내용을
@@ -828,7 +835,7 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 		// 다 (데이터 부재로 결과가 빈 것은 종전대로 graceful 생략). ALERTS_FOR_STATE 는 종전에 firing
 		// 존재 시에만 2차 조회했으나 병렬화로 무조건 조회하고 결과만 조건부 사용한다 (동일 의미).
 		nDims := len(synthDimensions)
-		queries := make([]string, 0, nDims*3+5)
+		queries := make([]string, 0, nDims*3+7)
 		for _, d := range synthDimensions {
 			queries = append(queries, fmt.Sprintf("%s{node=%q}", d.nodePressure, node))
 		}
@@ -839,6 +846,12 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 		for _, d := range synthDimensions {
 			queries = append(queries, fmt.Sprintf("topk(3, %s{node=%q})", d.podPressure, node))
 		}
+		// #430 health_notes 판정 입력 2종. cpu primary (throttle 실측) 존재 여부로 fallback 채움을
+		// 구분하고, GPU capacity 로 gpu 차원 결측의 정상 여부 (no_gpu) 를 구분한다.
+		cpuPrimaryIdx := len(queries)
+		queries = append(queries, fmt.Sprintf("count(pod:cpu_throttle_score:5m{node=%q})", node))
+		gpuCapIdx := len(queries)
+		queries = append(queries, fmt.Sprintf(`max(kube_node_status_capacity{node=%q, resource="nvidia_com_gpu"})`, node))
 		overallIdx := len(queries)
 		queries = append(queries, fmt.Sprintf("node:pressure_score:5m{node=%q}", node))
 		alertsIdx := len(queries)
@@ -881,6 +894,27 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		// #430 health_notes 조립. 결측 차원과 cpu fallback 채움을 사유와 함께 노출한다.
+		notes := map[string]string{}
+		cpuPrimaryMeasured := len(res[cpuPrimaryIdx]) > 0 && !math.IsNaN(res[cpuPrimaryIdx][0].Value) && res[cpuPrimaryIdx][0].Value > 0
+		hasGPU := len(res[gpuCapIdx]) > 0 && !math.IsNaN(res[gpuCapIdx][0].Value) && res[gpuCapIdx][0].Value > 0
+		for _, d := range synthDimensions {
+			if _, ok := resp.Health[d.name]; ok {
+				if d.name == "cpu" && !cpuPrimaryMeasured {
+					notes["cpu"] = "no_cpu_limit_pods"
+				}
+				continue
+			}
+			if d.name == "gpu" && !hasGPU {
+				notes["gpu"] = "no_gpu"
+				continue
+			}
+			notes[d.name] = "scrape_gap"
+		}
+		if len(notes) > 0 {
+			resp.HealthNotes = notes
+		}
+
 		resp.Confidence = pressureConfidence(resp.Pressure)
 		if s := res[overallIdx]; len(s) > 0 && !math.IsNaN(s[0].Value) {
 			v := s[0].Value

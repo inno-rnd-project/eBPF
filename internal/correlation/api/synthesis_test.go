@@ -873,3 +873,53 @@ func TestGetNode_InvalidNodeRejected(t *testing.T) {
 		}
 	}
 }
+
+// TestSynthesis_GetNode_HealthNotes 는 #430 의 산출 불가 / 비실측 사유 노출을 단정한다. cpu 가
+// fallback 상수로 채워진 노드 (throttle 실측 없음) 는 no_cpu_limit_pods, GPU 미보유 노드의 gpu
+// 결측은 no_gpu, 그 외 결측 (memory, network) 은 scrape_gap 으로 구분된다.
+func TestSynthesis_GetNode_HealthNotes(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("node:cpu_health_score:5m", sample(1.0, "node", "master"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/master", nil))
+	var resp NodeResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	want := map[string]string{
+		"cpu":     "no_cpu_limit_pods",
+		"gpu":     "no_gpu",
+		"memory":  "scrape_gap",
+		"network": "scrape_gap",
+	}
+	for dim, reason := range want {
+		if resp.HealthNotes[dim] != reason {
+			t.Errorf("health_notes[%s]=%q want %q (전체: %v)", dim, resp.HealthNotes[dim], reason, resp.HealthNotes)
+		}
+	}
+	if resp.Health["cpu"] != 1.0 {
+		t.Errorf("fallback cpu health=%v want 1.0 (notes 와 별개로 값은 유지)", resp.Health["cpu"])
+	}
+}
+
+// TestSynthesis_GetNode_HealthNotes_GPUNodeScrapeGap 은 GPU 보유 노드 (capacity > 0) 의 gpu
+// health 결측이 no_gpu 가 아니라 scrape_gap 으로 구분됨을 단정한다. 실측이 있어야 하는 노드의
+// 결측을 정상 상태로 오표기하지 않는 경계다.
+func TestSynthesis_GetNode_HealthNotes_GPUNodeScrapeGap(t *testing.T) {
+	q := (&fakeQuerier{}).
+		on("kube_node_status_capacity", sample(1, "node", "gpu")).
+		on("node:cpu_health_score:5m", sample(0.9, "node", "gpu")).
+		on("pod:cpu_throttle_score", sample(0.1, "node", "gpu", "src_namespace", "ns", "src_pod", "p"))
+	h := NewSynthesisHandler(q, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/gpu", nil))
+	var resp NodeResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	if resp.HealthNotes["gpu"] != "scrape_gap" {
+		t.Errorf("health_notes[gpu]=%q want scrape_gap (GPU 보유 노드)", resp.HealthNotes["gpu"])
+	}
+	if _, ok := resp.HealthNotes["cpu"]; ok {
+		t.Errorf("throttle 실측 노드의 cpu 에 note 가 붙음: %v", resp.HealthNotes)
+	}
+}

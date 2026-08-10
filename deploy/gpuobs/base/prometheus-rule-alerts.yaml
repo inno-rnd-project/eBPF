@@ -630,6 +630,23 @@ spec:
             summary: "{{ $labels.job }} informer stale {{ $value | humanizeDuration }} on {{ $labels.instance }}"
             description: "{{ $labels.job }} on {{ $labels.instance }} has not received any kube watch event for {{ $value | humanizeDuration }}. Check API server reachability, NetworkPolicy, and the agent ServiceAccount RBAC (pods/services/nodes watch verbs)."
 
+        # #430 scrape 대상 down 감시. 15개 target 이 down 인 상태가 지속돼도 어떤 alert 도 발화하지
+        # 않았던 감시 공백을 메운다 (node-exporter, cilium, hubble, kube-proxy 등 외부 exporter 는
+        # up == 0 감시가 없었다). job 과 instance 단위로 발화해 어느 target 이 죽었는지 즉시 특정
+        # 된다. 자사 컴포넌트 중 이미 전용 up 감시가 있는 것만 제외한다: netobs-agent 와 gpuobs-agent
+        # 는 ObsAgentDown (2m, critical), correlation-exporter 는 CorrelationExporterMetricsAbsent
+        # (absent 기반) 이 담당. injector 와 rca-summarizer 는 전용 감시가 없어 본 alert 가 커버한다.
+        # for 10m 는 정상 재시작 (수십 초) 과 롤아웃 (수 분) 을 오발화하지 않는 지속 시간이다.
+        - alert: ScrapeTargetDown
+          expr: up{job!~"netobs-agent|gpuobs-agent|correlation-exporter"} == 0
+          for: 10m
+          labels:
+            severity: warning
+            component: observability
+          annotations:
+            summary: "scrape target {{ $labels.job }}/{{ $labels.instance }} down"
+            description: "{{ $labels.job }} 의 target {{ $labels.instance }} 가 10 분 이상 scrape 실패 상태다. 해당 exporter 의 파생 신호 (health, disk usage, dominant cause 등) 가 조용히 비고 있다. 노드 간 모니터링 포트 차단 (docs/deploy/cluster-onboarding.md 의 포트 목록) 과 exporter 프로세스 상태를 점검한다."
+
         # #412 외부 exporter 입력 부재 가드 3종. gpu-idle dominant cause 와 capacity z-score 군은
         # cAdvisor / node-exporter / kube-state-metrics 메트릭을 조인 입력으로 쓰는데, 이들 exporter
         # 가 죽으면 파생 rule 이 에러 없이 시리즈 미존재로 조용히 비어 관측 공백을 아무도 감지하지

@@ -87,6 +87,27 @@ kube-state-metrics 와 cadvisor 와 node_exporter 는 kube-prometheus-stack 번�
    curl -s "http://127.0.0.1:9830/api/v1/overview"
    ```
 
+## 노드 간 모니터링 포트 개방 (#430)
+
+Prometheus가 상주하는 gpu 노드에서 나머지 노드의 host-network 엔드포인트를 scrape하므로, gpu 노드로부터의 인바운드가 노드 간 네트워크 계층(allowlist)에서 개방되어 있어야 한다. 2026-08 장애에서 gpu 노드가 나머지 3대보다 늦게 합류해 allowlist에서 누락됐고, 52개 target 중 15개(전부 타 노드 host-network 엔드포인트)가 down인 상태가 alert 없이 지속됐다. 양쪽 호스트의 iptables INPUT은 ACCEPT였고 SYN이 정상 송출되는데 대상 노드에 패킷이 0개 도달해, 차단 지점이 OS 방화벽이 아니라 노드 사이 네트워크 계층임이 진단됐다.
+
+개방된 포트(gpu 노드 발신 기준 인바운드):
+
+- 3대 공통: `9100`(node-exporter), `9962`(cilium-agent), `9965`(hubble-metrics), `10249`(kube-proxy)
+- master와 worker2: `9963`
+- master: `2381`(etcd 메트릭. `2379`가 아니라 `2381`이다)
+
+노드를 추가할 때는 위 포트를 신규 노드에도 개방하고, Prometheus 노드가 바뀌면 발신 기준을 그 노드로 갱신해야 한다. 검증 명령:
+
+```sh
+# target 전수 up 확인 (0 이어야 정상. ScrapeTargetDown alert 가 10분 지속 down 을 발화한다)
+kubectl --context <ctx> get --raw \
+  "/api/v1/namespaces/<monitoring-ns>/services/prometheus-operated:9090/proxy/api/v1/query?query=count(up%20%3D%3D%200)"
+# 노드별 health 4종 보유 확인 (GPU 미보유 노드는 gpu 차원이 no_gpu 로 생략되는 것이 정상,
+# health_notes 로 사유가 구분된다)
+curl -s "http://<correlation-exporter>:9830/api/v1/node/<node>" | jq '{health, health_notes}'
+```
+
 ## 마이그레이션: 단일 PrometheusRule에서 도메인별 5 리소스로 전환 (#412)
 
 3.0.9부터 gpuobs rule이 단일 `netobs-gpuobs-correlation` 리소스에서 `netobs-gpuobs-{network,idle-cause,device,capacity-anomaly,alerts}` 5 리소스로 분리됐다. kustomize apply는 prune을 하지 않으므로 3.0.8 이하에서 올라오는 클러스터는 구 리소스를 1회 수동 삭제해야 한다. 삭제하지 않으면 동일 record가 구/신 두 그룹에서 중복 평가되어 시리즈와 rule 평가에 혼선이 생긴다. 신규 클러스터는 해당 없다.

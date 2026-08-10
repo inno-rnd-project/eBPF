@@ -82,8 +82,11 @@ done
 
 # 4) release 라벨 대조. 기대값은 하드코딩하지 않고 gpuobs overlay 렌더 결과의 ServiceMonitor
 #    release 라벨에서 추출한다. operator 의 두 selector 와 어긋나면 조용한 누락이라 fail-fast.
+# awk 의 조기 exit 는 kustomize 출력이 크면 kubectl 에 SIGPIPE (pipefail 로 exit 141) 를 보낸다
+# (#430 실측, #412 의 rule 5파일 분리로 출력이 커지며 간헐 발현). 스트림을 끝까지 읽고 첫 매치만
+# 출력한다.
 expected_release="$(kubectl kustomize "deploy/gpuobs/overlays/$ENV_NAME" \
-  | awk '/^    release:/ {print $2; exit}')"
+  | awk '/^    release:/ && !found {print $2; found=1}')"
 [ -n "$expected_release" ] || fail "렌더 결과에서 release 라벨을 찾지 못했다"
 # 첫 Prometheus CR 의 selector 를 필드별로 개별 조회한다. 한 줄 공백 구분 파싱은 빈 필드에서
 # 필드 밀림 (field shifting) 이 나므로 쓰지 않는다. 빈 selector ({}) 는 전체 채택이라 일치 검사
