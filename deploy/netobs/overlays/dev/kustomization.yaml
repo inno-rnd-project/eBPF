@@ -12,7 +12,7 @@ resources:
 images:
   - name: netobs-agent
     newName: ghcr.io/inno-rnd-project/netobs-agent
-    newTag: "3.2.6"
+    newTag: "3.2.7"
 
 patches:
   - path: patch-daemonset.yaml
