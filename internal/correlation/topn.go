@@ -252,13 +252,16 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		}
 		// same-pod cross-metric pair 는 noisy neighbor 모델 (이웃 Pod 의 자원 압박) 에 부합하지
 		// 않는다. EnumeratePairs 가 동일 Pod 의 두 다른 metric series 도 페어로 만들어 victim 의
-		// 자기 자신이 suspect rank 1 을 차지할 수 있어 본 단계에서 명시 제외한다. PodUID 가 있으면
-		// UID 기준이 가장 정확하고 둘 다 비어 있으면 namespace/pod 로 보수적 비교한다.
-		if r.Pair.SrcPodUID != "" && r.Pair.DstPodUID != "" {
-			if r.Pair.SrcPodUID == r.Pair.DstPodUID {
-				continue
-			}
-		} else if r.Pair.SrcNamespace == r.Pair.DstNamespace && r.Pair.SrcPod == r.Pair.DstPod {
+		// 자기 자신이 suspect rank 1 을 차지할 수 있어 본 단계에서 명시 제외한다. #440 종전에는
+		// UID 양쪽 존재 시 UID 만 비교하고 (namespace, pod) 비교를 건너뛰어, window 내 pod 재시작
+		// 으로 같은 pod 가 두 UID 시리즈를 가지면 자기 자신이 rank 1 로 emit 되고 impact graph 의
+		// 자기 루프가 net-source 판정 (prunedOut / prunedIn) 을 오염시켰다. 두 비교를 순차 적용해
+		// UID churn 에서도 같은 pod 가 걸러지게 한다. (namespace, pod) 비교는 pod 이름이 있을 때만
+		// 수행해 이름 없는 페어의 공집합 동치 오제외를 막는다.
+		if r.Pair.SrcPodUID != "" && r.Pair.SrcPodUID == r.Pair.DstPodUID {
+			continue
+		}
+		if r.Pair.SrcPod != "" && r.Pair.SrcNamespace == r.Pair.DstNamespace && r.Pair.SrcPod == r.Pair.DstPod {
 			continue
 		}
 		candidates = append(candidates, candidate{

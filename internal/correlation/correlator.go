@@ -189,16 +189,25 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 			impactMin = 2
 		}
 		victimSignal := classifyVictimSignal(p.Key.DstMetric)
-		alignedSrc, alignedDst := alignByLag(srcVals, dstVals, r.MaxAbsLag)
-		es := EffectSize(alignedSrc, alignedDst, victimSignal, impactMin)
-		r.ImpactMagnitude = es.Magnitude
-		r.ImpactMagnitudeOK = es.OK
-		r.ImpactPValue = es.PValue
-		r.ImpactPValueOK = es.PValueOK
-		// impact_seconds 는 latency 전용 legacy 로 유지한다 (#146 호환, seconds 단위 정합).
-		if victimSignal == SignalLatency {
-			r.Impact = es.Magnitude
-			r.ImpactOK = es.OK
+		// #440 lag 방향 게이트. Granger 는 lag < 1 을 차단하지만 EffectSize 는 alignByLag 가 음수
+		// lag (victim 이 suspect 를 선행하는 역방향) 을 그대로 받아 magnitude 와 pvalue 를 산출했고,
+		// 역방향 페어가 causal_strength 의 effect 경로 (0.5|corr| + 0.2(1-p) ≈ 0.65) 로 증거 게이트
+		// (0.6) 를 통과할 수 있었다. suspect 선행 (lag > 0) 과 동시 간섭 (lag = 0, Granger 불가
+		// 케이스의 effect 유일 경로, #366) 만 산정하고 역방향 (lag < 0) 은 effect 항을 0 (증거
+		// 부재) 으로 둔다. 신호별 유효 방향 (victimDegradesUp 의 magnitude 부호 가드) 은 EffectSize
+		// 내부가 종전대로 담당해 Granger 와 같은 방향 규약을 공유한다.
+		if r.MaxAbsLag >= 0 {
+			alignedSrc, alignedDst := alignByLag(srcVals, dstVals, r.MaxAbsLag)
+			es := EffectSize(alignedSrc, alignedDst, victimSignal, impactMin)
+			r.ImpactMagnitude = es.Magnitude
+			r.ImpactMagnitudeOK = es.OK
+			r.ImpactPValue = es.PValue
+			r.ImpactPValueOK = es.PValueOK
+			// impact_seconds 는 latency 전용 legacy 로 유지한다 (#146 호환, seconds 단위 정합).
+			if victimSignal == SignalLatency {
+				r.Impact = es.Magnitude
+				r.ImpactOK = es.OK
+			}
 		}
 		return r
 	}

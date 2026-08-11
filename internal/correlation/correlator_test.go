@@ -634,3 +634,60 @@ func TestCorrelator_CrossNodeCapKeepsStrongPairs(t *testing.T) {
 		t.Errorf("생존 페어 score=%v want >0.9", cross[0].MaxAbsValue)
 	}
 }
+
+// patternSeries 는 자기상관이 낮은 결정적 패턴 f(i) = (i*37) mod 101 을 shift 해 만든다. shift
+// 만큼 늦게 시작하는 시계열이라 두 시계열의 shift 차가 곧 최적 lag 이 된다.
+func patternSeries(labels map[string]string, n, shift int) LabeledSeries {
+	out := LabeledSeries{Series: TimeSeries{Labels: labels, Samples: make([]Sample, n)}}
+	for i := 0; i < n; i++ {
+		out.Series.Samples[i] = Sample{TimestampMs: int64(i) * 1000, Value: float64(((i-shift)*37%101 + 101) % 101)}
+	}
+	return out
+}
+
+// TestCorrelator_ReverseLagSuppressesEffect 는 #440 의 lag 방향 게이트를 단정한다. victim 이
+// suspect 를 2 step 선행하는 역방향 페어 (Pearson 채택 lag < 0) 는 effect 항이 산출되지 않고,
+// 동일 패턴의 정방향 페어 (suspect 선행, lag > 0) 는 종전대로 산출된다.
+func TestCorrelator_ReverseLagSuppressesEffect(t *testing.T) {
+	run := func(suspectShift, victimShift int) CorrelationResult {
+		t.Helper()
+		a := patternSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p1"}, 60, suspectShift)
+		a.Metric = "pod:cpu_throttle_score:5m"
+		b := patternSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "p2"}, 60, victimShift)
+		b.Metric = "pod:stage_latency_p99:5m"
+		fetcher := &mockFetcher{responses: map[string][]LabeledSeries{
+			"pod:cpu_throttle_score:5m": {a},
+			"pod:stage_latency_p99:5m":  {b},
+		}}
+		cfg := Config{
+			Window:         60 * time.Second,
+			Step:           1 * time.Second,
+			MinSamples:     8,
+			LagSteps:       []int{-2, 0, 2},
+			DefaultMetrics: []string{"pod:cpu_throttle_score:5m", "pod:stage_latency_p99:5m"},
+		}
+		results, err := New(fetcher, cfg).Correlate(context.Background(), time.Now())
+		if err != nil || len(results) != 1 {
+			t.Fatalf("Correlate: err=%v results=%d want 1", err, len(results))
+		}
+		return results[0]
+	}
+
+	// 역방향: victim (shift 0) 이 suspect (shift 2) 를 선행 → 채택 lag -2, effect 항 억제.
+	rev := run(2, 0)
+	if rev.MaxAbsLag >= 0 {
+		t.Fatalf("역방향 구성인데 채택 lag=%d (음수여야 게이트 검증이 성립)", rev.MaxAbsLag)
+	}
+	if rev.ImpactMagnitudeOK || rev.ImpactPValueOK {
+		t.Errorf("역방향 lag 에서 effect 산출됨: magnitudeOK=%v pvalueOK=%v", rev.ImpactMagnitudeOK, rev.ImpactPValueOK)
+	}
+
+	// 정방향: suspect (shift 0) 가 victim (shift 2) 을 선행 → 채택 lag +2, effect 산출 유지.
+	fwd := run(0, 2)
+	if fwd.MaxAbsLag <= 0 {
+		t.Fatalf("정방향 구성인데 채택 lag=%d", fwd.MaxAbsLag)
+	}
+	if !fwd.ImpactMagnitudeOK {
+		t.Errorf("정방향 lag 에서 effect 미산출 (게이트 과잉)")
+	}
+}
