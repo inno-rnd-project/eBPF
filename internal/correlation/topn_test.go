@@ -376,3 +376,25 @@ func TestSelectTopN_DirectionGate_GPUNegativeKept(t *testing.T) {
 		t.Errorf("suspect=%s score=%v signal=%s want noisy/0.8/gpu", got[0].Suspect.Pod, got[0].Score, got[0].VictimSignal)
 	}
 }
+
+// TestSelectTopN_ExcludesSamePodAcrossUIDChurn 은 #440 의 자기 제외 우회 수정을 단정한다. window
+// 내 pod 재시작으로 같은 (namespace, pod) 가 서로 다른 UID 시리즈 두 개를 가질 때, 종전에는 UID
+// 만 비교해 자기 자신이 rank 1 neighbor 로 emit 됐다. 순차 적용 (UID 동일 제외 후 ns/pod 동일
+// 제외) 으로 걸러지고, 진짜 이웃 (다른 pod) 은 종전대로 통과한다.
+func TestSelectTopN_ExcludesSamePodAcrossUIDChurn(t *testing.T) {
+	results := []CorrelationResult{
+		// 재시작 churn: 같은 default/p1 이 old-uid (suspect 시리즈) 와 new-uid (victim 시리즈) 로 공존.
+		makeResult("default", "p1", "old-uid", "pod:cpu_throttle_score:5m",
+			"default", "p1", "new-uid", latencyMetric, 0.99, 2, StatusOK),
+		// 진짜 이웃: 다른 pod 는 UID 가 달라도 통과해야 한다.
+		makeResult("default", "p2", "uid-p2", "pod:cpu_throttle_score:5m",
+			"default", "p1", "new-uid", latencyMetric, 0.7, 2, StatusOK),
+	}
+	got := SelectTopN(results, 10)
+	if len(got) != 1 {
+		t.Fatalf("neighbors=%d want 1 (재시작 자기 페어 제외)", len(got))
+	}
+	if got[0].Suspect.Pod != "p2" {
+		t.Errorf("suspect=%s want p2 (자기 자신이 rank 를 차지)", got[0].Suspect.Pod)
+	}
+}
