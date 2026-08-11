@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -161,5 +162,74 @@ func TestTrends_NilFetcher(t *testing.T) {
 	}
 	if len(resp.Series) != 0 {
 		t.Errorf("series=%d want 0 (nil fetcher)", len(resp.Series))
+	}
+}
+
+// TestTrends_NaNFiltered 는 #439 의 핵심 회귀다. 무관측 창의 NaN 과 Inf 가 낀 시리즈에서 500 이
+// 아니라 200 과 부분 시리즈 (유한 값만) 가 반환되고, 전 시점 결측 시리즈는 제외됨을 단정한다.
+func TestTrends_NaNFiltered(t *testing.T) {
+	f := &fakeFetcher{series: []correlation.LabeledSeries{
+		{Series: correlation.TimeSeries{
+			Labels: map[string]string{"kind": "mixed"},
+			Samples: []correlation.Sample{
+				{TimestampMs: 1000, Value: 0.5},
+				{TimestampMs: 2000, Value: math.NaN()},
+				{TimestampMs: 3000, Value: math.Inf(1)},
+				{TimestampMs: 4000, Value: 0.7},
+			},
+		}},
+		{Series: correlation.TimeSeries{
+			Labels: map[string]string{"kind": "all-nan"},
+			Samples: []correlation.Sample{
+				{TimestampMs: 1000, Value: math.NaN()},
+			},
+		}},
+	}}
+	h := NewTrendsHandler(f)
+	rec := httptest.NewRecorder()
+	h.GetTrends(rec, httptest.NewRequest(http.MethodGet, "/api/v1/trends?signal=latency_p99", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 (NaN 무필터 500 회귀)", rec.Code)
+	}
+	var resp TrendsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Series) != 1 {
+		t.Fatalf("series=%d want 1 (전 시점 결측 시리즈 제외)", len(resp.Series))
+	}
+	if len(resp.Series[0].Points) != 2 {
+		t.Errorf("points=%d want 2 (NaN/Inf 시점 제외)", len(resp.Series[0].Points))
+	}
+	for _, p := range resp.Series[0].Points {
+		if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) {
+			t.Errorf("비유한 값이 남음: %+v", p)
+		}
+	}
+}
+
+// TestTrends_DeterministicOrder 는 점 수 동률 시리즈의 라벨 사전순 tie-break 를 단정한다. 입력
+// 순서를 뒤집어도 출력 순서가 같아 summary 의 대표 시리즈 (Series[0]) 가 결정적이다.
+func TestTrends_DeterministicOrder(t *testing.T) {
+	mk := func(name string) correlation.LabeledSeries {
+		return correlation.LabeledSeries{Series: correlation.TimeSeries{
+			Labels:  map[string]string{"kind": name},
+			Samples: []correlation.Sample{{TimestampMs: 1000, Value: 1}},
+		}}
+	}
+	for _, order := range [][]correlation.LabeledSeries{
+		{mk("beta"), mk("alpha")},
+		{mk("alpha"), mk("beta")},
+	} {
+		f := &fakeFetcher{series: order}
+		h := NewTrendsHandler(f)
+		rec := httptest.NewRecorder()
+		h.GetTrends(rec, httptest.NewRequest(http.MethodGet, "/api/v1/trends?signal=drop_rate", nil))
+		var resp TrendsResponse
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		if len(resp.Series) != 2 || resp.Series[0].Labels["kind"] != "alpha" {
+			t.Errorf("입력 순서 %v 에서 첫 시리즈=%v want alpha (결정적 tie-break)", order[0].Series.Labels, resp.Series[0].Labels)
+		}
 	}
 }

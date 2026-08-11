@@ -1,7 +1,7 @@
 swagger: '2.0'
 info:
   title: netobs unified API
-  version: 3.2.4
+  version: 3.2.5
 paths:
   /api/v1/agents:
     get:
