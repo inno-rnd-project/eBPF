@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -171,15 +172,54 @@ func buildTrendSeries(series []correlation.LabeledSeries) []TrendSeries {
 	for _, ls := range series {
 		pts := make([]TrendPoint, 0, len(ls.Series.Samples))
 		for _, s := range ls.Series.Samples {
+			// #439 NaN / Inf 필터. fetcher 가 Prometheus 의 "NaN" 문자열을 float NaN 으로 보존하고
+			// latency_p99 (histogram_quantile) 는 관측 없는 창에서 NaN 이 정의된 동작인데, NaN 은
+			// JSON marshal 이 불가라 무필터면 응답 전체가 500 internal_error 가 됐다. 본 패키지의
+			// 다른 전 핸들러와 동일하게 결측 시점을 점에서 제외한다.
+			if math.IsNaN(s.Value) || math.IsInf(s.Value, 0) {
+				continue
+			}
 			pts = append(pts, TrendPoint{TimestampMs: s.TimestampMs, Value: s.Value})
+		}
+		// 전 시점이 결측인 시리즈는 제외한다. 빈 points 시리즈는 프론트에 그릴 것이 없고 summary
+		// 의 시리즈 수만 부풀린다.
+		if len(pts) == 0 {
+			continue
 		}
 		out = append(out, TrendSeries{Labels: ls.Series.Labels, Points: pts})
 	}
-	sort.Slice(out, func(i, j int) bool { return len(out[i].Points) > len(out[j].Points) })
+	// #439 결정적 정렬. 점 수 내림차순이 1차 키이고 (데이터가 가장 충실한 시리즈가 대표), 동률은
+	// 라벨 canonical 문자열 사전순으로 tie-break 해 같은 입력이 항상 같은 순서를 낸다. summary 의
+	// 대표 시리즈 (Series[0]) 선정 기준이 본 정렬이다.
+	sort.Slice(out, func(i, j int) bool {
+		if len(out[i].Points) != len(out[j].Points) {
+			return len(out[i].Points) > len(out[j].Points)
+		}
+		return trendLabelsKey(out[i].Labels) < trendLabelsKey(out[j].Labels)
+	})
 	return out
 }
 
-// buildTrendsSummary 는 시리즈 수와 최근 값을 한 줄로 적는다.
+// trendLabelsKey 는 라벨 맵의 결정적 canonical 문자열이다 (키 정렬 후 k=v 결합). 정렬 tie-break
+// 전용이라 구분자 충돌의 실질 영향이 없다.
+func trendLabelsKey(labels map[string]string) string {
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(labels[k])
+		b.WriteByte(',')
+	}
+	return b.String()
+}
+
+// buildTrendsSummary 는 시리즈 수와 최근 값을 한 줄로 적는다. 대표 시리즈는 buildTrendSeries
+// 정렬의 첫 항목 (점 수 최다, 동률 시 라벨 canonical 사전순) 으로 결정적이다 (#439).
 func buildTrendsSummary(r TrendsResponse) string {
 	if len(r.Series) == 0 || len(r.Series[0].Points) == 0 {
 		return fmt.Sprintf("추이 데이터 없음 (%s, %s)", r.Signal, r.Range)
