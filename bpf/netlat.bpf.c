@@ -825,7 +825,10 @@ int BPF_KPROBE(handle_tcp_retransmit_skb, struct sock *sk, struct sk_buff *skb, 
     __u64 pid_tgid = bpf_get_current_pid_tgid();
 
     s.ts_ns     = bpf_ktime_get_ns();
-    s.cgroup_id = bpf_get_current_cgroup_id();
+    /* #441 재전송은 RTO 타이머 / ACK 처리의 softirq 컨텍스트라 bpf_get_current_cgroup_id() 가
+     * 인터럽트당한 임의 task 의 cgroup 을 돌려준다. 수신 경로 (sock_cgroup_id 주석) 와 동일한
+     * 이유로 이미 확보한 sk 의 cgroup 을 쓴다. */
+    s.cgroup_id = sock_cgroup_id(sk);
     s.pid       = pid_tgid >> 32;
     s.tid       = (__u32)pid_tgid;
 
@@ -1428,7 +1431,10 @@ int BPF_KPROBE(handle_kfree_skb_reason, struct sk_buff *skb, int reason)
         return 0;
 
     s.ts_ns     = bpf_ktime_get_ns();
-    s.cgroup_id = bpf_get_current_cgroup_id();
+    /* #441 drop 훅은 softirq 컨텍스트라 bpf_get_current_cgroup_id() 가 인터럽트당한 임의 task 의
+     * cgroup 을 돌려준다. 확보한 sk 의 cgroup 으로 귀속해, hostNetwork pod 의 drop 이 IP 해석
+     * 실패로 cgroup 힌트 폴백을 탈 때 무관 pod 로 붙는 경로를 막는다 (수신 경로와 동일 규약). */
+    s.cgroup_id = sock_cgroup_id(sk);
     s.pid       = pid_tgid >> 32;
     s.tid       = (__u32)pid_tgid;
 
