@@ -608,7 +608,14 @@ int BPF_KRETPROBE(handle_tcp_sendmsg_ret, int ret)
                        s->protocol, NETOBS_DIR_EGRESS, (__u64)ret);
     }
 
-    if (s->seen_veth && s->seen_devq)
+    /* #441 stash 삭제 조건 정합. 종전 (seen_veth && seen_devq) 은 veth 를 타지 않는 hostNetwork
+     * pod 의 stash 를 영구 잔존시켜 tid 재사용 시 다른 pod 의 NIC bytes / latency 가 잔존 stash
+     * 로 계상됐다. devq 와 veth 는 같은 sendmsg 콜스택에서 devq → veth 순으로 연속 발화하므로,
+     * ret 시점에 devq 가 보였다면 veth pod 은 veth 도 이미 보인 상태고 hostNetwork 는 애초에
+     * veth 가 오지 않는다. seen_devq 단독 조건이 양쪽 모두에서 정확한 완료 판정이다. cwnd 지연
+     * 등으로 devq 자체가 softirq 로 밀린 흐름은 종전과 동일하게 다음 sendmsg 의 stash 덮어쓰기
+     * 또는 LRU evict 로 회수된다. */
+    if (s->seen_devq)
         bpf_map_delete_elem(&starts, &tid);
 
     return 0;
@@ -761,11 +768,20 @@ int BPF_KPROBE(handle_veth_xmit, struct sk_buff *skb)
 {
     __u32 tid = (__u32)bpf_get_current_pid_tgid();
     struct netobs_start_info *s;
+    struct sock *skb_sk;
     __u64 now;
     __u32 latency_us;
 
     s = bpf_map_lookup_elem(&starts, &tid);
     if (!s || s->seen_veth)
+        return 0;
+
+    /* #441 socket cookie 가드 (tcp_write_xmit 와 동일 규약). 본 훅은 포워딩 / deferred tx 의
+     * softirq 에서도 호출되어 인터럽트당한 task 의 tid 로 무관 stash 를 집을 수 있고, hostNetwork
+     * 잔존 stash 가 tid 재사용으로 다른 pod 의 latency 를 받을 수 있다. skb 소유 socket 의 cookie
+     * 를 stash 와 대조하고, sk 미보유 skb 는 검증 불가라 보수적으로 skip 한다. */
+    skb_sk = BPF_CORE_READ(skb, sk);
+    if (!skb_sk || get_socket_cookie(skb_sk) != s->socket_cookie)
         return 0;
 
     fill_dev_from_skb(skb, s);
@@ -787,12 +803,19 @@ int BPF_KPROBE(handle_dev_queue_xmit, struct sk_buff *skb)
 {
     __u32 tid = (__u32)bpf_get_current_pid_tgid();
     struct netobs_start_info *s;
+    struct sock *skb_sk;
     __u64 now;
     __u32 latency_us;
     __u64 skb_len;
 
     s = bpf_map_lookup_elem(&starts, &tid);
     if (!s)
+        return 0;
+
+    /* #441 socket cookie 가드 (veth_xmit 와 동일). NIC bytes 누적이 매 진입 수행되므로 가드는
+     * 누적보다 앞서야 무관 skb 의 bytes 가 stash 의 pod 로 계상되지 않는다. */
+    skb_sk = BPF_CORE_READ(skb, sk);
+    if (!skb_sk || get_socket_cookie(skb_sk) != s->socket_cookie)
         return 0;
 
     /* NIC layer egress 바이트는 sendmsg 한 번이 만들어내는 모든 segment에 대해 누적해야 cAdvisor의
