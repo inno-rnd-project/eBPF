@@ -39,8 +39,8 @@ spec:
         # 로컬 커널 처리 stage의 5분 윈도우 p99 latency가 0.4초를 초과하고 동시에 해당 stage의
         # 이벤트 발생률이 1event/s 이상일 때만 발화한다. 발생률 필터는 sparse 시리즈에서 +Inf 버킷
         # fallback이 만드는 노이즈를 차단한다. netobs_stage_latency_labeled_seconds의 버킷은
-        # ExponentialBuckets(1e-6, 2, 20)이라 최상위 finite 경계가 0.524288s이고,
-        # histogram_quantile은 이 경계를 넘는 값을 낼 수 없다. 기존 임계 1.0s는 이 천장 위라
+        # #442 부터 ExponentialBuckets(1e-6, 2, 25)로 최상위 finite 경계가 16.777216s다 (#362
+        # 당시에는 20단계 0.524288s). 기존 임계 1.0s는 당시 천장(0.524288s) 위라
         # 어떤 부하에서도 도달 불가한 dead alert였다(#362). 임계 0.4s는 최상위 finite 버킷
         # [0.262144s, 0.524288s] 안이라 도달 가능하며, 처리 stage의 실측 baseline p99(최대 약
         # 0.014s) 위로 충분한 여유를 둔다. 관측 상한은 0.524288s로 유지되어 그보다 큰 latency는
@@ -710,18 +710,19 @@ spec:
             summary: "node-exporter metrics missing on some nodes"
             description: "node-exporter 의 per-node 메트릭 (node_memory_MemAvailable_bytes) 이 kube_node_info 대비 일부 노드에서 10 분 이상 결측이다. 해당 노드의 memory pressure 기반 dominant cause 산출이 조용히 비는 상태다. node-exporter DaemonSet pod 상태에서 빠진 노드를 특정한다."
 
-        # #412 리뷰 반영: 그룹 limit 2000 의 최대 산출원인 stage latency 중간 rule (dev 실측 903
-        # 시리즈) 은 pod 수에 비례해 커져 한계 도달 시 세 파생 rule 이 함께 조용히 빈다. 80% 임계
-        # (1600) 에서 선행 발화해 limit 상향 또는 카디널리티 절감을 준비할 시간을 준다.
+        # #412 리뷰 반영: 그룹 limit (#442 부터 4000) 의 최대 산출원인 stage latency 중간 rule
+        # (dev 실측 1456 시리즈, #442 rcv stage 와 26 le 확장 반영) 은 pod 수에 비례해 커져 한계
+        # 도달 시 세 파생 rule 이 함께 조용히 빈다. 80% 임계 (3200) 에서 선행 발화해 limit 상향
+        # 또는 카디널리티 절감을 준비할 시간을 준다.
         - alert: StageLatencyIntermediateSeriesNearLimit
-          expr: count(pod:netobs_stage_latency_rate_le:5m) > 1600
+          expr: count(pod:netobs_stage_latency_rate_le:5m) > 3200
           for: 30m
           labels:
             severity: warning
             component: observability
           annotations:
             summary: "stage latency intermediate rule nearing group limit ({{ $value }} series)"
-            description: "pod:netobs_stage_latency_rate_le:5m 의 산출 시리즈가 {{ $value }} 개로 그룹 limit 2000 의 80% 를 30 분 이상 초과했다. 한계 도달 시 본 rule과 node p99, pod p99, correlation victim latency pressure 파생이 함께 소실된다. pod 증가 추세를 확인하고 limit 상향 또는 stage 라벨 축소를 검토한다."
+            description: "pod:netobs_stage_latency_rate_le:5m 의 산출 시리즈가 {{ $value }} 개로 그룹 limit 4000 의 80% 를 30 분 이상 초과했다. 한계 도달 시 본 rule과 node p99, pod p99, correlation victim latency pressure 파생이 함께 소실된다. pod 증가 추세를 확인하고 limit 상향 또는 stage 라벨 축소를 검토한다."
 
         # #88 capacity-trends z-score anomaly alert 4종. 본 alert 군은 capacity planning 의 선행
         # 신호 (즉시 대응 불요 의 warning severity) 라 throttle 류 critical alert 와 component
