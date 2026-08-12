@@ -391,8 +391,16 @@ func Record(ev types.EnrichedEvent) {
 		podStageEventsLabeled.WithLabelValues(podCommon...).Inc()
 
 		switch ev.Raw.Stage {
+		// #442 수신 stage 5종 (rcv_nic / rcv_demux / rcv_established / rcv_app / ack_wait) 을 노드
+		// 단위 histogram 과 동일한 stage 집합으로 관측한다. 종전에는 송신 6종과 connect 만 Observe
+		// 해 카운터 (podStageEventsLabeled) 는 수신 stage 에 증가하는데 latency 버킷만 비는 비대칭
+		// 이었고, pod-drilldown 대시보드와 latency-breakdown API 의 pod 차원 수신 지연이 구조적으로
+		// 비었다. stage 의미와 0 sample 처리 는 노드 단위 case (stageLatencyLabeled 의 rcv 블록
+		// 주석) 와 동일하다.
 		case types.StageSendmsgRet, types.StageToVeth, types.StageToDevQ,
-			types.StageTcpWriteXmit, types.StageTcpTransmitSkb, types.StageConnect:
+			types.StageTcpWriteXmit, types.StageTcpTransmitSkb, types.StageConnect,
+			types.StageRcvNic, types.StageRcvDemux, types.StageRcvEstablished,
+			types.StageRcvApp, types.StageAckWait:
 			latencySec := float64(ev.Raw.LatencyUs) / 1_000_000.0
 			podStageLatencyLabeled.WithLabelValues(podCommon...).Observe(latencySec)
 		}

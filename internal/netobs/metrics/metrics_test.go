@@ -466,3 +466,34 @@ func TestRecord_SockTeardownSeparatedFromDrop(t *testing.T) {
 		t.Errorf("teardown series=%d want 0 for a real drop", got)
 	}
 }
+
+// TestRecord_PodRecvPathStageLatency 는 #442 의 pod 차원 수신 stage 관측을 단정한다. 종전에는
+// 카운터만 증가하고 pod latency 히스토그램의 수신 stage 가 구조적으로 비었다.
+func TestRecord_PodRecvPathStageLatency(t *testing.T) {
+	cases := []struct {
+		stage     uint8
+		stageName string
+	}{
+		{types.StageRcvNic, "rcv_nic"},
+		{types.StageRcvDemux, "rcv_demux"},
+		{types.StageRcvEstablished, "rcv_established"},
+		{types.StageRcvApp, "rcv_app"},
+		{types.StageAckWait, "ack_wait"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.stageName, func(t *testing.T) {
+			resetMetrics()
+			SetPodMetricsEnabled(true)
+			reg := prometheus.NewPedanticRegistry()
+			reg.MustRegister(podStageLatencyLabeled)
+
+			ev := sampleEvent(podID("ns-src", "src-pod", "uid-src"), podID("ns-dst", "dst-pod", "uid-dst"), tc.stage, tc.stageName)
+			Record(ev)
+
+			got := labelValue(t, reg, "netobs_pod_stage_latency_labeled_seconds", "stage")
+			if got != tc.stageName {
+				t.Errorf("stage label=%q want %q (pod 수신 latency 미Observe)", got, tc.stageName)
+			}
+		})
+	}
+}
