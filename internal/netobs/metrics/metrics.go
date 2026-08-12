@@ -104,7 +104,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "netobs_stage_latency_seconds",
 			Help:    "Latency of selected kernel stages",
-			Buckets: prometheus.ExponentialBuckets(1e-6, 2, 20),
+			Buckets: prometheus.ExponentialBuckets(1e-6, 2, 25),
 		},
 		[]string{"stage"},
 	)
@@ -129,11 +129,18 @@ var (
 		[]string{"stage", "node", "src_namespace", "src_workload", "traffic_scope", "direction", "dst_namespace", "dst_workload"},
 	)
 
+	// #442 latency 히스토그램 4종의 버킷을 20 → 25 단계로 확대했다. 종전 최상위 유한 경계
+	// 0.524288s 는 BPF 가 10s 까지 유효 샘플로 채택하고 rcv_app / ack_wait / connect 가 초 단위
+	// 정상 범위인 것과 어긋나, 0.5~10s 의 실제 악화가 +Inf 버킷에만 쌓여 histogram_quantile 이
+	// 0.524s 로 평평해졌다. 25 단계의 최상위 유한 경계는 16.777216s 로 BPF 채택 상한 (10s) 을
+	// 담는다. 버킷 증가 (+5 le/시리즈) 의 카디널리티는 dev 실측 기준 노드 버킷 35847 → 약 44382,
+	// pod 버킷 (rcv stage 추가 포함) 18753 → 약 30550 이며, #412 중간 rule 은 stage 를 합산으로
+	// 접어 le 만 영향받아 882 → 약 1092 로 limit (2000) 과 임박 임계 (1600) 안이다.
 	stageLatencyLabeled = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "netobs_stage_latency_labeled_seconds",
 			Help:    "Enriched latency by stage, node, workload, traffic scope, and dst peer. See netobs_stage_events_labeled_total help for src/dst semantics.",
-			Buckets: prometheus.ExponentialBuckets(1e-6, 2, 20),
+			Buckets: prometheus.ExponentialBuckets(1e-6, 2, 25),
 		},
 		[]string{"stage", "node", "src_namespace", "src_workload", "traffic_scope", "direction", "dst_namespace", "dst_workload"},
 	)
@@ -207,7 +214,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "netobs_pod_stage_latency_labeled_seconds",
 			Help:    "Enriched latency by stage, source pod instance, and dst peer.",
-			Buckets: prometheus.ExponentialBuckets(1e-6, 2, 20),
+			Buckets: prometheus.ExponentialBuckets(1e-6, 2, 25),
 		},
 		[]string{"stage", "node", "src_namespace", "src_pod", "src_pod_uid", "traffic_scope", "direction", "dst_namespace", "dst_workload", "dst_pod_uid"},
 	)
@@ -220,7 +227,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "netobs_send_path_full_latency_seconds",
 			Help:    "TSO/GSO 환경 send path 의 segment 누적 latency 합산 (seconds). tcp_transmit_skb 의 모든 segment 호출 latency 합산이며 sendmsg 사이클 1회 당 1 sample emit 된다. raw netobs_pod_stage_latency_labeled_seconds 의 첫 segment 만 측정 하는 한계 를 보완 한다.",
-			Buckets: prometheus.ExponentialBuckets(1e-6, 2, 20),
+			Buckets: prometheus.ExponentialBuckets(1e-6, 2, 25),
 		},
 		[]string{"node", "src_namespace", "src_pod", "src_pod_uid", "traffic_scope", "direction", "dst_namespace", "dst_workload", "dst_pod_uid"},
 	)
