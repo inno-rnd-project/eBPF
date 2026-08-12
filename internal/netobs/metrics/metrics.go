@@ -134,8 +134,9 @@ var (
 	// 정상 범위인 것과 어긋나, 0.5~10s 의 실제 악화가 +Inf 버킷에만 쌓여 histogram_quantile 이
 	// 0.524s 로 평평해졌다. 25 단계의 최상위 유한 경계는 16.777216s 로 BPF 채택 상한 (10s) 을
 	// 담는다. 버킷 증가 (+5 le/시리즈) 의 카디널리티는 dev 실측 기준 노드 버킷 35847 → 약 44382,
-	// pod 버킷 (rcv stage 추가 포함) 18753 → 약 30550 이며, #412 중간 rule 은 stage 를 합산으로
-	// 접어 le 만 영향받아 882 → 약 1092 로 limit (2000) 과 임박 임계 (1600) 안이다.
+	// pod 버킷 (rcv stage 추가 포함) 18753 → 29224 다. #412 중간 rule 은 stage 를 합산으로 접지만
+	// 수신 전용 pod 조합이 새로 편입되어 882 → 1456 (실측) 이 됐고, 종전 임박 임계 (1600) 에
+	// 근접해 그룹 limit 을 4000, 임계를 3200 으로 상향했다 (#442).
 	stageLatencyLabeled = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "netobs_stage_latency_labeled_seconds",
