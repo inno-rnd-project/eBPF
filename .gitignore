@@ -89,6 +89,7 @@ vendor/
 # --------------------------
 # Test / benchmark
 # --------------------------
+/labs/
 coverage/
 *.gcda
 *.gcno
