@@ -54,11 +54,14 @@ spec:
 
         # pod:network_egress_rate:5m
         # #47 머지로 도입된 netobs_pod_bytes_total을 분자로 써서 pod 단위 egress 트래픽을 bytes/sec로
-        # 산출한다. direction / layer 차원은 본 record에서 합산해 pod 단위 단일 시리즈로 만든다.
-        # cAdvisor의 container_network_*_bytes 와 비교 가능한 단위이며 correlation 진단에서 network
-        # throughput score의 양적 기준으로 활용된다.
+        # 산출한다. cAdvisor의 container_network_*_bytes 와 비교 가능한 단위이며 correlation 진단에서
+        # network throughput score의 양적 기준으로 활용된다. #443부터 pod:network_mbps:5m과 동일하게
+        # layer="nic"로 고정한다. 종전 layer 무필터 합산은 같은 바이트를 l4(syscall)와 nic(dev_queue)
+        # 양 단계에서 이중 계상해 실전송의 약 2배를 냈다(dev 실측 6.9MB/s vs nic 3.5MB/s). caveat:
+        # UDP는 NIC 단계 계상이 없어(dev_queue_xmit 훅이 TCP starts stash 경유) 본 시리즈에서 제외
+        # 되며, UDP 포함 syscall 관점 egress는 layer="l4" 원시 시리즈로 조회한다.
         - record: pod:network_egress_rate:5m
-          expr: sum by(node, src_namespace, src_pod, src_pod_uid) (rate(netobs_pod_bytes_total{direction="egress"}[5m]))
+          expr: sum by(node, src_namespace, src_pod, src_pod_uid) (rate(netobs_pod_bytes_total{direction="egress",layer="nic"}[5m]))
 
         # node:gpu_throttle_seconds:rate5m
         # reason별 누적 throttle 시간(seconds counter)의 5분 rate. 단위는 seconds/sec — 1.0이면 해당 reason이

@@ -209,6 +209,28 @@ struct {
     __type(value, struct netobs_nic_ingress);
 } nic_ingress SEC(".maps");
 
+/* #443 UDP recvmsg의 실수신 바이트 계상용 stash. 종전 entry-only 누적은 RX에서 user buffer
+ * 크기(size 인자)를 실었는데, 이는 실제 수신량이 아니라 버퍼 용량이라 CoreDNS처럼 큰 버퍼
+ * (65535)로 작은 응답(수십 byte)을 받는 워크로드에서 수백 배 과대 계상됐다. entry에서 식별
+ * (cgroup / 5-tuple)만 stash하고 kretprobe의 ret(실제 복사 바이트, TCP의 tcp_cleanup_rbuf
+ * copied와 동일 의미론)로 누적한다. key는 tid(syscall은 thread당 동시 1개)이고, LRU라 비정상
+ * 종료(ret 미발화) entry는 자연 evict된다. max_entries 8192는 recv_starts와 동일 예산. */
+struct netobs_udp_rcv_stash {
+    __u64 cgroup_id;
+    __u8  family;
+    __u8  flow_ok;
+    __u16 sport, dport;
+    __u8  saddr[NETOBS_ADDR_LEN];
+    __u8  daddr[NETOBS_ADDR_LEN];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 8192);
+    __type(key, __u32);
+    __type(value, struct netobs_udp_rcv_stash);
+} udp_rcv_starts SEC(".maps");
+
 static __always_inline int match_target(__u32 daddr_net)
 {
     __u32 key = 0;
@@ -1214,8 +1236,9 @@ int BPF_KPROBE(handle_tcp_v6_do_rcv, struct sock *sk, struct sk_buff *skb)
  * unconnected UDP 볼륨 이 통째 로 누락 되던 #103 의 connected-only 한계 를 보완 한다. 5-tuple flow 는
  * connected 는 sk peer (skc_daddr / skc_dport), unconnected TX 는 msghdr->msg_name (sendto 목적지) 을
  * 파싱 해 emit 한다. unconnected RX 의 소스 는 udp_recvmsg 진입 시점 에 msg_name 이 아직 비어 있고 skb
- * 파싱 이 필요 해 flow 는 미emit (볼륨 은 pod_bytes 로 계상). entry-only 누적 이라 TX 는 size 인자 정확,
- * RX 는 user buffer size 라 partial recv 시 과대 계상 가능 (docs/netobs/protocol-coverage.md 참조). */
+ * 파싱 이 필요 해 flow 는 미emit (볼륨 은 pod_bytes 로 계상). TX는 entry size가 성공 시 ret와 동일
+ * (datagram all-or-nothing)해 entry 누적이고, RX는 #443부터 kretprobe의 ret(실수신 바이트)로 누적해
+ * user buffer 크기 과대 계상을 제거했다(docs/netobs/protocol-coverage.md 참조). */
 static __always_inline void handle_udp_msg(struct sock *sk, struct msghdr *msg,
                                            size_t size, __u8 direction)
 {
@@ -1242,9 +1265,12 @@ static __always_inline void handle_udp_msg(struct sock *sk, struct msghdr *msg,
     else
         return;
 
-    /* #197 볼륨 은 connected / unconnected 구분 없이 누적. connected 경로 의 기존 동작 은 불변 이고
-     * unconnected UDP 볼륨 이 추가 로 계상 된다 (순수 additive). */
-    inc_pod_bytes(cgroup_id, direction, NETOBS_LAYER_L4, (__u64)size, 0);
+    /* #197 볼륨은 connected / unconnected 구분 없이 누적한다. #443부터 INGRESS는 여기서 누적
+     * 하지 않고 kretprobe의 ret(실수신 바이트)로 누적한다(아래 stash). EGRESS는 datagram 전송이
+     * all-or-nothing이라 entry size가 성공 시 ret와 동일해 종전 누적을 유지한다(실패 -errno의
+     * 과대 계상만 남고 실측상 무시 가능). */
+    if (direction == NETOBS_DIR_EGRESS)
+        inc_pod_bytes(cgroup_id, direction, NETOBS_LAYER_L4, (__u64)size, 0);
 
     sk_state = BPF_CORE_READ(sk, __sk_common.skc_state);
     sport = BPF_CORE_READ(sk, __sk_common.skc_num);
@@ -1291,13 +1317,74 @@ static __always_inline void handle_udp_msg(struct sock *sk, struct msghdr *msg,
             bpf_core_read(saddr, sizeof(saddr), &sk->__sk_common.skc_v6_rcv_saddr);
             dport = bpf_ntohs(BPF_CORE_READ(sin6, sin6_port));
         }
+    } else if (direction == NETOBS_DIR_INGRESS) {
+        /* #197 unconnected RX: 소스가 skb에만 있어 flow 미emit. 볼륨은 kretprobe가 ret로
+         * 계상하도록 flow_ok=0 stash만 남긴다(#443). */
+        struct netobs_udp_rcv_stash st = {};
+        __u32 tid = (__u32)bpf_get_current_pid_tgid();
+        st.cgroup_id = cgroup_id;
+        st.family    = family;
+        st.flow_ok   = 0;
+        bpf_map_update_elem(&udp_rcv_starts, &tid, &st, BPF_ANY);
+        return;
     } else {
-        /* #197 unconnected RX: 소스 가 skb 에만 있어 flow 미emit (볼륨 은 위 pod_bytes 로 계상). */
+        return;
+    }
+
+    if (direction == NETOBS_DIR_INGRESS) {
+        /* #443 connected RX: 식별을 stash하고 실수신 바이트는 kretprobe의 ret로 누적한다. */
+        struct netobs_udp_rcv_stash st = {};
+        __u32 tid = (__u32)bpf_get_current_pid_tgid();
+        st.cgroup_id = cgroup_id;
+        st.family    = family;
+        st.flow_ok   = 1;
+        st.sport     = sport;
+        st.dport     = dport;
+        __builtin_memcpy(st.saddr, saddr, NETOBS_ADDR_LEN);
+        __builtin_memcpy(st.daddr, daddr, NETOBS_ADDR_LEN);
+        bpf_map_update_elem(&udp_rcv_starts, &tid, &st, BPF_ANY);
         return;
     }
 
     inc_flow_bytes(cgroup_id, family, saddr, daddr, sport, dport,
                    17 /* IPPROTO_UDP */, direction, (__u64)size);
+}
+
+/* #443 UDP recvmsg 완료. ret가 실제 user로 복사된 바이트(초과분 truncate 반영)라 TCP의
+ * tcp_cleanup_rbuf copied와 동일 의미론으로 L4 ingress를 누적한다. ret <= 0(에러 / 빈 수신)
+ * 은 누적 없이 stash만 정리한다. udp_recvmsg의 반환형은 int라 ret도 int로 받는다. long으로
+ * 받으면 x86_64에서 RAX 상위 32bit 미정의 값이 섞여 GB/s 단위 쓰레기 누적이 실측됐다
+ * (handle_tcp_sendmsg_ret와 동일 관례). */
+static __always_inline int udp_recvmsg_ret(int ret)
+{
+    __u32 tid = (__u32)bpf_get_current_pid_tgid();
+    struct netobs_udp_rcv_stash *st;
+
+    st = bpf_map_lookup_elem(&udp_rcv_starts, &tid);
+    if (!st)
+        return 0;
+
+    if (ret > 0) {
+        inc_pod_bytes(st->cgroup_id, NETOBS_DIR_INGRESS, NETOBS_LAYER_L4, (__u64)ret, 0);
+        if (st->flow_ok)
+            inc_flow_bytes(st->cgroup_id, st->family, st->saddr, st->daddr,
+                           st->sport, st->dport, 17 /* IPPROTO_UDP */,
+                           NETOBS_DIR_INGRESS, (__u64)ret);
+    }
+    bpf_map_delete_elem(&udp_rcv_starts, &tid);
+    return 0;
+}
+
+SEC("kretprobe/udp_recvmsg")
+int BPF_KRETPROBE(handle_udp_recvmsg_ret, int ret)
+{
+    return udp_recvmsg_ret(ret);
+}
+
+SEC("kretprobe/udpv6_recvmsg")
+int BPF_KRETPROBE(handle_udpv6_recvmsg_ret, int ret)
+{
+    return udp_recvmsg_ret(ret);
 }
 
 SEC("kprobe/udp_sendmsg")

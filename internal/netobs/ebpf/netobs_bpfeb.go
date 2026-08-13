@@ -94,6 +94,17 @@ type NetObsNetobsStartInfo struct {
 	Pad82          [5]uint8
 }
 
+type NetObsNetobsUdpRcvStash struct {
+	CgroupId uint64
+	Family   uint8
+	FlowOk   uint8
+	Sport    uint16
+	Dport    uint16
+	Saddr    [16]uint8
+	Daddr    [16]uint8
+	_        [2]byte
+}
+
 // LoadNetObs returns the embedded CollectionSpec for NetObs.
 func LoadNetObs() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_NetObsBytes)
@@ -158,8 +169,10 @@ type NetObsProgramSpecs struct {
 	HandleTcpWriteXmit      *ebpf.ProgramSpec `ebpf:"handle_tcp_write_xmit"`
 	HandleTcpWriteXmitRet   *ebpf.ProgramSpec `ebpf:"handle_tcp_write_xmit_ret"`
 	HandleUdpRecvmsg        *ebpf.ProgramSpec `ebpf:"handle_udp_recvmsg"`
+	HandleUdpRecvmsgRet     *ebpf.ProgramSpec `ebpf:"handle_udp_recvmsg_ret"`
 	HandleUdpSendmsg        *ebpf.ProgramSpec `ebpf:"handle_udp_sendmsg"`
 	HandleUdpv6Recvmsg      *ebpf.ProgramSpec `ebpf:"handle_udpv6_recvmsg"`
+	HandleUdpv6RecvmsgRet   *ebpf.ProgramSpec `ebpf:"handle_udpv6_recvmsg_ret"`
 	HandleUdpv6Sendmsg      *ebpf.ProgramSpec `ebpf:"handle_udpv6_sendmsg"`
 	HandleVethXmit          *ebpf.ProgramSpec `ebpf:"handle_veth_xmit"`
 }
@@ -179,6 +192,7 @@ type NetObsMapSpecs struct {
 	SegAccum      *ebpf.MapSpec `ebpf:"seg_accum"`
 	Starts        *ebpf.MapSpec `ebpf:"starts"`
 	TargetDaddr   *ebpf.MapSpec `ebpf:"target_daddr"`
+	UdpRcvStarts  *ebpf.MapSpec `ebpf:"udp_rcv_starts"`
 }
 
 // NetObsVariableSpecs contains global variables before they are loaded into the kernel.
@@ -218,6 +232,7 @@ type NetObsMaps struct {
 	SegAccum      *ebpf.Map `ebpf:"seg_accum"`
 	Starts        *ebpf.Map `ebpf:"starts"`
 	TargetDaddr   *ebpf.Map `ebpf:"target_daddr"`
+	UdpRcvStarts  *ebpf.Map `ebpf:"udp_rcv_starts"`
 }
 
 func (m *NetObsMaps) Close() error {
@@ -233,6 +248,7 @@ func (m *NetObsMaps) Close() error {
 		m.SegAccum,
 		m.Starts,
 		m.TargetDaddr,
+		m.UdpRcvStarts,
 	)
 }
 
@@ -268,8 +284,10 @@ type NetObsPrograms struct {
 	HandleTcpWriteXmit      *ebpf.Program `ebpf:"handle_tcp_write_xmit"`
 	HandleTcpWriteXmitRet   *ebpf.Program `ebpf:"handle_tcp_write_xmit_ret"`
 	HandleUdpRecvmsg        *ebpf.Program `ebpf:"handle_udp_recvmsg"`
+	HandleUdpRecvmsgRet     *ebpf.Program `ebpf:"handle_udp_recvmsg_ret"`
 	HandleUdpSendmsg        *ebpf.Program `ebpf:"handle_udp_sendmsg"`
 	HandleUdpv6Recvmsg      *ebpf.Program `ebpf:"handle_udpv6_recvmsg"`
+	HandleUdpv6RecvmsgRet   *ebpf.Program `ebpf:"handle_udpv6_recvmsg_ret"`
 	HandleUdpv6Sendmsg      *ebpf.Program `ebpf:"handle_udpv6_sendmsg"`
 	HandleVethXmit          *ebpf.Program `ebpf:"handle_veth_xmit"`
 }
@@ -298,8 +316,10 @@ func (p *NetObsPrograms) Close() error {
 		p.HandleTcpWriteXmit,
 		p.HandleTcpWriteXmitRet,
 		p.HandleUdpRecvmsg,
+		p.HandleUdpRecvmsgRet,
 		p.HandleUdpSendmsg,
 		p.HandleUdpv6Recvmsg,
+		p.HandleUdpv6RecvmsgRet,
 		p.HandleUdpv6Sendmsg,
 		p.HandleVethXmit,
 	)

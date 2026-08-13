@@ -223,6 +223,9 @@ type Runtime struct {
 	SegAccum      *cebpf.Map
 	RecvStarts    *cebpf.Map
 	ConnectStarts *cebpf.Map
+	// UdpRcvStarts는 #443의 UDP recvmsg 식별 stash(LRU, max_entries=8192)다. 페어링 stash라
+	// evict는 해당 recv 표본의 볼륨 유실로 이어져 utilization 편입 대상이다.
+	UdpRcvStarts *cebpf.Map
 }
 
 // Run은 BPF 오브젝트 로드, 프로브 attach, ringbuf reader 준비가 모두 끝난 시점에
@@ -347,6 +350,9 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 	attachOptionalKprobe("udp_recvmsg", objs.HandleUdpRecvmsg, &links)
 	attachOptionalKprobe("udpv6_sendmsg", objs.HandleUdpv6Sendmsg, &links)
 	attachOptionalKprobe("udpv6_recvmsg", objs.HandleUdpv6Recvmsg, &links)
+	// #443 RX는 kretprobe의 ret(실수신 바이트)로 계상한다. entry kprobe는 식별 stash만 남긴다.
+	attachOptionalKretprobe("udp_recvmsg", objs.HandleUdpRecvmsgRet, &links)
+	attachOptionalKretprobe("udpv6_recvmsg", objs.HandleUdpv6RecvmsgRet, &links)
 
 	// #105 fake symbol attach 시뮬. NETOBS_BPF_FAKE_ATTACH_SYMBOLS env 명시 시에만 진입. 본 경로는
 	// kernel 부재 symbol 이라 attach 자연 실패 → attach_total{result="failure"} 와 attach_retry_total
@@ -377,6 +383,7 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 			SegAccum:      objs.SegAccum,
 			RecvStarts:    objs.RecvStarts,
 			ConnectStarts: objs.ConnectStarts,
+			UdpRcvStarts:  objs.UdpRcvStarts,
 		})
 	}
 

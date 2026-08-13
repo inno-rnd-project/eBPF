@@ -70,6 +70,7 @@ type Maps struct {
 	// 대상이 아니다 (#416, #413 의 잘못 편입으로 전 노드 오발화 실측).
 	SegAccum      *cebpf.Map
 	RecvStarts    *cebpf.Map
+	UdpRcvStarts  *cebpf.Map
 	ConnectStarts *cebpf.Map
 }
 
@@ -99,6 +100,7 @@ func NewRefresher(m Maps) (*Refresher, error) {
 		{"seg_accum", m.SegAccum},
 		{"recv_starts", m.RecvStarts},
 		{"connect_starts", m.ConnectStarts},
+		{"udp_rcv_starts", m.UdpRcvStarts},
 	}
 	for _, o := range optional {
 		if o.m == nil {
