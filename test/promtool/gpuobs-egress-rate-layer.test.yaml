@@ -1,0 +1,26 @@
+# gpuobs-egress-rate-layer.test.yaml은 #443의 pod:network_egress_rate:5m layer 고정 검증이다.
+# 종전 layer 무필터 합산은 같은 바이트를 l4(syscall)와 nic(dev_queue) 양 단계에서 이중 계상해
+# 실전송의 약 2배를 냈다. nic 단독 값이 산출되고 l4 시리즈가 합산에 들어가지 않음을 단정한다.
+# rule_files는 make test-prometheus-rules가 추출해 마운트하는 gpuobs.yaml.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # 같은 pod가 l4와 nic 양쪽에 egress를 계상하는 TCP 워크로드: 종전 rule이면 200 B/s(이중 계상),
+  # nic 고정이면 100 B/s. l4 전용인 UDP pod(p2)는 본 시리즈에서 제외된다(캐비어트 고정).
+  - interval: 30s
+    input_series:
+      - series: 'netobs_pod_bytes_total{direction="egress",layer="l4",node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
+        values: '0+3000x20'
+      - series: 'netobs_pod_bytes_total{direction="egress",layer="nic",node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
+        values: '0+3000x20'
+      - series: 'netobs_pod_bytes_total{direction="egress",layer="l4",node="n1",src_namespace="ns1",src_pod="p2",src_pod_uid="u2"}'
+        values: '0+3000x20'
+    promql_expr_test:
+      - expr: pod:network_egress_rate:5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'pod:network_egress_rate:5m{node="n1",src_namespace="ns1",src_pod="p1",src_pod_uid="u1"}'
+            value: 100
