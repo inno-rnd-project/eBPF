@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -39,34 +40,83 @@ func TestTCPStateAggregator_BasicAggregation(t *testing.T) {
 	}
 }
 
-// TestTCPStateAggregator_ResetOnCollect 는 Collect 호출 후 누적치가 reset 되어 다음 scrape 가
-// 직전 결과를 끌고 오지 않는지 검증한다. 동일 Pod 의 후속 sample 만 다음 window 에 반영되어야 한다.
-func TestTCPStateAggregator_ResetOnCollect(t *testing.T) {
+// gatherMinCwnd는 registry를 gather해 netobs_tcp_state_min_cwnd의 시리즈 수와 첫 값을 돌려주는
+// 테스트 헬퍼다.
+func gatherMinCwnd(t *testing.T, reg *prometheus.Registry) (int, float64) {
+	t.Helper()
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == "netobs_tcp_state_min_cwnd" {
+			if len(mf.Metric) == 0 {
+				return 0, 0
+			}
+			return len(mf.Metric), mf.Metric[0].GetGauge().GetValue()
+		}
+	}
+	return 0, 0
+}
+
+// TestTCPStateAggregator_NonDestructiveCollect는 연속 Collect가 같은 값을 재관측하는지 검증한다
+// (#443). 종전 파괴적 리셋은 진단 curl 같은 추가 reader가 정규 scrape의 값을 소거했다.
+func TestTCPStateAggregator_NonDestructiveCollect(t *testing.T) {
 	agg := NewTCPStateAggregator()
 	l := TCPStateLabels{Namespace: "ns", Pod: "p1", Node: "n1"}
 
 	agg.Observe(l, 100, 5_000, 50)
-	// 1 차 scrape 후 reset.
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(agg)
-	if _, err := reg.Gather(); err != nil {
-		t.Fatalf("first gather: %v", err)
-	}
 
-	// 2 차 sample 은 sample 1 보다 큰 cwnd. reset 안 되면 100 이 그대로 min 으로 남는다.
-	agg.Observe(l, 200, 10_000, 70)
-	mfs, err := reg.Gather()
-	if err != nil {
-		t.Fatalf("second gather: %v", err)
-	}
-	got := map[string]float64{}
-	for _, mf := range mfs {
-		for _, m := range mf.Metric {
-			got[mf.GetName()] = m.GetGauge().GetValue()
+	for i := 0; i < 3; i++ {
+		if n, v := gatherMinCwnd(t, reg); n != 1 || v != 100 {
+			t.Fatalf("gather %d: series=%d value=%v, want 1개 100 유지", i+1, n, v)
 		}
 	}
-	if got["netobs_tcp_state_min_cwnd"] != 200 {
-		t.Errorf("min_cwnd=%v want 200 (reset 후 신규 sample 만 반영)", got["netobs_tcp_state_min_cwnd"])
+}
+
+// TestTCPStateAggregator_WindowRotation은 tcpStateWindow 경과 후의 Observe가 누적치를 새 창으로
+// 리셋하는지 검증한다. 회전이 없으면 직전 창의 min=100이 영구히 남는다.
+func TestTCPStateAggregator_WindowRotation(t *testing.T) {
+	agg := NewTCPStateAggregator()
+	now := time.Unix(1_700_000_000, 0)
+	agg.now = func() time.Time { return now }
+	l := TCPStateLabels{Namespace: "ns", Pod: "p1", Node: "n1"}
+
+	agg.Observe(l, 100, 5_000, 50)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(agg)
+	if _, v := gatherMinCwnd(t, reg); v != 100 {
+		t.Fatalf("회전 전 min_cwnd=%v want 100", v)
+	}
+
+	// 창(60s) 경과 후 더 큰 cwnd sample. 회전되면 200이 새 창의 min이다.
+	now = now.Add(tcpStateWindow)
+	agg.Observe(l, 200, 10_000, 70)
+	if _, v := gatherMinCwnd(t, reg); v != 200 {
+		t.Errorf("회전 후 min_cwnd=%v want 200 (새 창만 반영)", v)
+	}
+}
+
+// TestTCPStateAggregator_IdlePruning은 sample이 tcpStateIdleTTL 이상 끊긴 entry를 Collect가
+// 삭제하는지 검증한다. 비파괴 전환으로 종전 파괴적 리셋의 죽은 pod 정리를 대체하는 경로다.
+func TestTCPStateAggregator_IdlePruning(t *testing.T) {
+	agg := NewTCPStateAggregator()
+	now := time.Unix(1_700_000_000, 0)
+	agg.now = func() time.Time { return now }
+	l := TCPStateLabels{Namespace: "ns", Pod: "p1", Node: "n1"}
+
+	agg.Observe(l, 100, 5_000, 50)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(agg)
+	if n, _ := gatherMinCwnd(t, reg); n != 1 {
+		t.Fatalf("프루닝 전 series=%d want 1", n)
+	}
+
+	now = now.Add(tcpStateIdleTTL)
+	if n, _ := gatherMinCwnd(t, reg); n != 0 {
+		t.Errorf("idle TTL 경과 후 series=%d want 0 (프루닝)", n)
 	}
 }
 
