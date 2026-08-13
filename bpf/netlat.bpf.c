@@ -1352,8 +1352,10 @@ static __always_inline void handle_udp_msg(struct sock *sk, struct msghdr *msg,
 
 /* #443 UDP recvmsg 완료. ret가 실제 user로 복사된 바이트(초과분 truncate 반영)라 TCP의
  * tcp_cleanup_rbuf copied와 동일 의미론으로 L4 ingress를 누적한다. ret <= 0(에러 / 빈 수신)
- * 은 누적 없이 stash만 정리한다. */
-static __always_inline int udp_recvmsg_ret(long ret)
+ * 은 누적 없이 stash만 정리한다. udp_recvmsg의 반환형은 int라 ret도 int로 받는다. long으로
+ * 받으면 x86_64에서 RAX 상위 32bit 미정의 값이 섞여 GB/s 단위 쓰레기 누적이 실측됐다
+ * (handle_tcp_sendmsg_ret와 동일 관례). */
+static __always_inline int udp_recvmsg_ret(int ret)
 {
     __u32 tid = (__u32)bpf_get_current_pid_tgid();
     struct netobs_udp_rcv_stash *st;
@@ -1374,13 +1376,13 @@ static __always_inline int udp_recvmsg_ret(long ret)
 }
 
 SEC("kretprobe/udp_recvmsg")
-int BPF_KRETPROBE(handle_udp_recvmsg_ret, long ret)
+int BPF_KRETPROBE(handle_udp_recvmsg_ret, int ret)
 {
     return udp_recvmsg_ret(ret);
 }
 
 SEC("kretprobe/udpv6_recvmsg")
-int BPF_KRETPROBE(handle_udpv6_recvmsg_ret, long ret)
+int BPF_KRETPROBE(handle_udpv6_recvmsg_ret, int ret)
 {
     return udp_recvmsg_ret(ret);
 }
