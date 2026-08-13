@@ -68,7 +68,7 @@ cardinality 추정.
 
 BPF LRU map `flow_bytes` 의 `max_entries=1024` 가 자연 evict 정책 으로 cardinality 폭발 차단. 운영 모니터링 (`netobs_bpf_map_utilization_ratio{map="flow_bytes"}`) 가 0.8 초과 시 sampling 또는 map size 증대 follow-up 결정.
 
-RX limitation: `udp_recvmsg`/`udpv6_recvmsg` 의 size 인자는 user buffer size 라 partial recv 시 실수신 byte 와 어긋날 수 있다. UDP 는 packet 단위 fragment 가 드물어 실 영향은 작지만 정확도 가 TX (sendmsg size 인자 = 실전송 byte) 보다 낮다. 향후 `skb_consume_udp` 또는 `udp_queue_rcv_one_skb` hook 기반 정확 byte 추적 follow-up.
+RX 정확도: #443부터 `udp_recvmsg`/`udpv6_recvmsg` kretprobe의 ret(실제 user로 복사된 byte)로 누적한다. 종전 entry size 인자는 user buffer 크기라 CoreDNS처럼 큰 버퍼(65535)로 작은 응답을 받는 워크로드에서 수백 배 과대 계상됐고, 이 결함이 제거됐다. TX는 datagram 전송이 all-or-nothing이라 entry size 누적을 유지한다(성공 시 ret와 동일).
 
 ## self-filter IPv6 확장
 
