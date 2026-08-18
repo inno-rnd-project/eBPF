@@ -186,6 +186,56 @@ func TestIncidents_PodNodeFilter(t *testing.T) {
 	}
 }
 
+// TestIncidents_NamespaceAwareFilter는 #444의 namespace 인지 필터를 검증한다. 동명 pod가 두
+// namespace에 있을 때 pod+namespace 결합이 해당 namespace의 이력만 남기는지, namespace 단독이
+// 귀속 alert만 남기는지, pod 단독은 종전 계약(namespace 무제약, 동명 전부)대로인지 단정한다.
+func TestIncidents_NamespaceAwareFilter(t *testing.T) {
+	now := time.Now()
+	ts := now.Add(-10 * time.Minute).UnixMilli()
+	mk := func(labels map[string]string) correlation.LabeledSeries {
+		return correlation.LabeledSeries{Series: correlation.TimeSeries{
+			Labels:  labels,
+			Samples: []correlation.Sample{{TimestampMs: ts, Value: 1}},
+		}}
+	}
+	f := &fakeFetcher{series: []correlation.LabeledSeries{
+		mk(map[string]string{"alertname": "NetObsDropBurst", "src_namespace": "team-a", "src_pod": "web"}),
+		mk(map[string]string{"alertname": "NetObsRetransBurst", "src_namespace": "team-b", "src_pod": "web"}),
+		mk(map[string]string{"alertname": "CorrelationStrongNoisyNeighbor", "victim_namespace": "team-a", "victim_pod": "trainer"}),
+		mk(map[string]string{"alertname": "KubeNodeNotReady", "node": "worker1"}),
+	}}
+	h := NewIncidentsHandler(f)
+
+	get := func(target string) IncidentsResponse {
+		rec := httptest.NewRecorder()
+		h.GetIncidents(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		var resp IncidentsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return resp
+	}
+
+	// pod+namespace 결합: team-a의 web만 남는다. 종전에는 namespace가 빈 문자열로 전달되어 동명
+	// pod의 이력이 namespace를 넘어 섞였다.
+	resp := get("/api/v1/incidents?pod=web&namespace=team-a")
+	if len(resp.Incidents) != 1 || resp.Incidents[0].Alertname != "NetObsDropBurst" {
+		t.Fatalf("pod=web&namespace=team-a incidents=%+v want NetObsDropBurst 1건", resp.Incidents)
+	}
+	// namespace 단독: team-a 귀속 2건(web과 trainer). node/cluster scope는 제외된다.
+	if resp = get("/api/v1/incidents?namespace=team-a"); len(resp.Incidents) != 2 {
+		t.Fatalf("namespace=team-a incidents=%d want 2: %+v", len(resp.Incidents), resp.Incidents)
+	}
+	// pod 단독: 종전 계약 유지로 동명 pod 전부 2건.
+	if resp = get("/api/v1/incidents?pod=web"); len(resp.Incidents) != 2 {
+		t.Fatalf("pod=web incidents=%d want 2 (하위 호환)", len(resp.Incidents))
+	}
+	// 미매칭 namespace는 빈 결과.
+	if resp = get("/api/v1/incidents?pod=web&namespace=absent"); len(resp.Incidents) != 0 {
+		t.Errorf("namespace=absent incidents=%d want 0", len(resp.Incidents))
+	}
+}
+
 // TestIncidents_InvalidRange 는 파싱 불가 range 가 400 인지 검증한다.
 func TestIncidents_InvalidRange(t *testing.T) {
 	h := NewIncidentsHandler(&fakeFetcher{})

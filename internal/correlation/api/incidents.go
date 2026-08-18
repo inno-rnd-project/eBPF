@@ -100,6 +100,14 @@ func alertTargetsPod(labels map[string]string, namespace, pod string) bool {
 	return match("namespace", "pod") || match("src_namespace", "src_pod") || match("victim_namespace", "victim_pod")
 }
 
+// alertTargetsNamespace는 alert 라벨이 해당 namespace를 가리키는지 판정한다(#444). alertTargetsPod의
+// 규약 쌍과 동일한 세 namespace 라벨(namespace/src_namespace/victim_namespace)을 본다. pod 결합
+// 필터와 달리 단독 namespace 조회는 "이 namespace의 이력"이 목적이라, 세 라벨이 전부 없는 alert
+// (node/cluster scope)는 매칭하지 않는다.
+func alertTargetsNamespace(labels map[string]string, namespace string) bool {
+	return labels["namespace"] == namespace || labels["src_namespace"] == namespace || labels["victim_namespace"] == namespace
+}
+
 // alertTargetsNode 는 alert 라벨이 해당 node 를 가리키는지 판정한다 (#248).
 func alertTargetsNode(labels map[string]string, node string) bool {
 	return labels["node"] == node
@@ -137,7 +145,7 @@ var incidentDropLabels = map[string]bool{
 
 // GetIncidents godoc
 // @Summary      alert 발화 이력
-// @Description  Prometheus 의 ALERTS 시계열을 range 합성해 기간 내 alert 발화 이력을 돌려준다. 동일 alert 의 재발화는 샘플 간극으로 별개 에피소드로 분리되고, range 끝까지 발화 중이면 status=firing, 중간에 끊겼으면 status=resolved 와 종료 시각이 채워진다. starts_at 은 synthesis API 의 at 파라미터에 그대로 넣어 발화 시점 상태를 재구성하는 진입점이다. 상시 발화 heartbeat (Watchdog) 는 overview issues 와 공용 필터로 제외되어 발화 중 목록의 alertname dedup 수가 카드 total 과 일치한다 (#332). 각 항목의 scope (pod/node/cluster, overview 와 동일 분류) 와 귀속 entity (node 와 namespace 와 pod) 는 프론트가 이슈에서 해당 화면으로 라우팅하는 입력이며, cluster scope 는 라우팅 대상이 없어 전역 알림 목록에서 표시한다. title 과 summary 는 사람이 읽을 설명으로 (#349), title 은 alertname 의 한국어 제목이고 summary 는 항목 labels 로 치환된 설명이다. 카탈로그 미등록 alertname (kube-prometheus-stack 내장 alert 등) 은 title 에 alertname 을 그대로 쓰고 summary 를 생략한다.
+// @Description  Prometheus 의 ALERTS 시계열을 range 합성해 기간 내 alert 발화 이력을 돌려준다. 동일 alert 의 재발화는 샘플 간극으로 별개 에피소드로 분리되고, range 끝까지 발화 중이면 status=firing, 중간에 끊겼으면 status=resolved 와 종료 시각이 채워진다. starts_at 은 synthesis API 의 at 파라미터에 그대로 넣어 발화 시점 상태를 재구성하는 진입점이다. 상시 발화 heartbeat (Watchdog) 는 overview issues 와 공용 필터로 제외되어 발화 중 목록의 alertname dedup 수가 카드 total 과 일치한다 (#332). 각 항목의 scope (pod/node/cluster, overview 와 동일 분류) 와 귀속 entity (node 와 namespace 와 pod) 는 프론트가 이슈에서 해당 화면으로 라우팅하는 입력이며, cluster scope 는 라우팅 대상이 없어 전역 알림 목록에서 표시한다. title 과 summary 는 사람이 읽을 설명으로 (#349), title 은 alertname 의 한국어 제목이고 summary 는 항목 labels 로 치환된 설명이다. 카탈로그 미등록 alertname (kube-prometheus-stack 내장 alert 등) 은 title 에 alertname 을 그대로 쓰고 summary 를 생략한다. namespace 파라미터는 pod 필터에 namespace 제약을 더해 동명 pod 의 이력이 namespace 를 넘어 섞이지 않게 하며 (#444), pod 없이 단독으로 주면 해당 namespace 귀속 에피소드만 남긴다. pod 단독 조회는 종전 계약 (namespace 무제약) 을 유지한다.
 // @Tags         interference
 // @Produce      json
 // @Param        range  query  string  false  "조회 기간 (예: 1h, 6h, 최대 24h, 기본 1h)"
@@ -145,6 +153,7 @@ var incidentDropLabels = map[string]bool{
 // @Param        limit  query  int     false  "상위 N 에피소드 (1-200, 기본 50)"
 // @Param        node   query  string  false  "node 라벨이 이 노드를 가리키는 에피소드만 조회"
 // @Param        pod    query  string  false  "pod/src_pod/victim_pod 라벨이 이 pod 를 가리키는 에피소드만 조회"
+// @Param        namespace  query  string  false  "pod 와 함께 주면 해당 namespace 의 동명 pod 로 한정하고, 단독으로 주면 namespace/src_namespace/victim_namespace 라벨이 이 namespace 를 가리키는 에피소드만 조회"
 // @Success      200  {object}  IncidentsResponse
 // @Failure      400  {object}  apicommon.ErrorBody
 // @Failure      500  {object}  apicommon.ErrorBody
@@ -197,9 +206,17 @@ func (h *IncidentsHandler) GetIncidents(w http.ResponseWriter, r *http.Request) 
 				return alertTargetsNode(labels, node)
 			})
 		}
+		// #444 namespace 인지. pod와 함께 주면 alertTargetsPod의 규약 쌍별 namespace 제약으로 동명
+		// pod의 이력이 namespace를 넘어 섞이지 않게 하고, 단독으로 주면 해당 namespace 귀속 alert만
+		// 남긴다. pod 단독은 종전 계약(namespace 무제약) 그대로다.
+		namespace := strings.TrimSpace(q.Get("namespace"))
 		if pod := strings.TrimSpace(q.Get("pod")); pod != "" {
 			series = filterIncidentSeries(series, func(labels map[string]string) bool {
-				return alertTargetsPod(labels, "", pod)
+				return alertTargetsPod(labels, namespace, pod)
+			})
+		} else if namespace != "" {
+			series = filterIncidentSeries(series, func(labels map[string]string) bool {
+				return alertTargetsNamespace(labels, namespace)
 			})
 		}
 		all := buildIncidents(series, start, end, step)
