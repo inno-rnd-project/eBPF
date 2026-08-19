@@ -116,15 +116,25 @@ func buildTopologyNodes(res [][]correlation.InstantSample) []TopologyNode {
 
 	out := make([]TopologyNode, 0, len(nodes))
 	for _, n := range nodes {
-		domDim, domVal := "", math.Inf(-1)
-		for dim, v := range n.Pressure {
-			if v > domVal {
-				domVal, domDim = v, dim
+		// #444 dominant와 status를 /health와 동일한 척도 규약으로 판정한다. 종전 raw 최대값 선정은
+		// memory(실측 사용률)와 나머지(문제 신호 score)의 척도 차이로 사용률 0.6의 건강한 노드가
+		// dominant=memory, status=warning이 됐고, map 순회라 동률 시 dominant가 요청마다 흔들렸다.
+		// severity 우선 + severityProgress tie-break(dimensionMoreDominant)로 고르고, strict 비교
+		// + synthDimensions 고정 순서 순회라 완전 동률은 앞선 차원이 결정적으로 유지된다. status는
+		// nodeStatusForDim(memory는 usage 임계 0.85/0.95)으로 환산한다.
+		domDim, domVal := "", 0.0
+		for _, d := range synthDimensions {
+			v, ok := n.Pressure[d.name]
+			if !ok {
+				continue
+			}
+			if domDim == "" || dimensionMoreDominant(d.name, v, domDim, domVal) {
+				domDim, domVal = d.name, v
 			}
 		}
 		if domDim != "" {
 			n.DominantDimension = domDim
-			n.Status = correlation.NodeStatusFromPressure(domVal)
+			n.Status = nodeStatusForDim(domDim, domVal)
 		}
 		out = append(out, *n)
 	}

@@ -356,12 +356,32 @@ func severityProgress(dim string, v float64) float64 {
 // 비교한다. severity 환산 (#359) 이 tier 는 정합시켰지만 동률 구간의 raw pressure tie-break 에는 여전히
 // 척도 불일치가 남아 (memory usage 0.87 이 cpu throttle 0.45 를 raw 값만으로 누름), tie-break 도
 // 척도 중립 정규화로 바꿔 memory 사용률이 문제 신호 기반 차원을 부당히 선점하지 못하게 한다 (#359 리뷰).
+// Hotspot.Severity는 항상 pressureSeverityFor 산출물이라 값 수준 비교(dimensionMoreDominant)와 동치다.
 func moreDominant(aDim string, a *Hotspot, bDim string, b *Hotspot) bool {
-	ra, rb := pressureSeverityRank(a.Severity), pressureSeverityRank(b.Severity)
+	return dimensionMoreDominant(aDim, a.Pressure, bDim, b.Pressure)
+}
+
+// dimensionMoreDominant는 (차원, pressure) 값 쌍의 dominant 비교다(#444). severity 우선(차원 인지
+// 임계, memory는 usage), 동급이면 severityProgress로 척도 중립 비교한다. strict 비교라 완전 동률은
+// 앞선 후보가 유지되고, synthDimensions 고정 순서로 순회하는 호출자(/health와 topology)의 dominant
+// 판정이 요청 간 결정적이다.
+func dimensionMoreDominant(aDim string, aVal float64, bDim string, bVal float64) bool {
+	ra := pressureSeverityRank(pressureSeverityFor(aDim, aVal))
+	rb := pressureSeverityRank(pressureSeverityFor(bDim, bVal))
 	if ra != rb {
 		return ra > rb
 	}
-	return severityProgress(aDim, a.Pressure) > severityProgress(bDim, b.Pressure)
+	return severityProgress(aDim, aVal) > severityProgress(bDim, bVal)
+}
+
+// nodeStatusForDim은 한 차원의 pressure를 노드 상태 단일 규약 어휘(#381)로 환산한다(#444). memory의
+// node pressure는 node_exporter 실측 사용률이라 usage 임계(0.85/0.95)로, 문제 신호 기반 score인
+// 나머지 차원은 일반 pressure 임계로 등급화한다. /health와 /node와 topology가 본 환산을 공유한다.
+func nodeStatusForDim(dim string, v float64) string {
+	if dim == "memory" {
+		return correlation.NodeStatusFromUsage(v)
+	}
+	return correlation.NodeStatusFromPressure(v)
 }
 
 // synthDimension 은 한 자원 차원의 health / pressure / anomaly recording rule 이름을 묶는다. 네 차원의
@@ -991,11 +1011,7 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 		if isFiltered {
 			dominantLow := domDim == ""
 			if domDim != "" {
-				g := correlation.NodeStatusFromPressure(domVal)
-				if domDim == "memory" {
-					g = correlation.NodeStatusFromUsage(domVal)
-				}
-				dominantLow = g == correlation.NodeStatusHealthy
+				dominantLow = nodeStatusForDim(domDim, domVal) == correlation.NodeStatusHealthy
 			}
 			kept := resp.TopPods[:0]
 			if !dominantLow {
@@ -1091,11 +1107,7 @@ func composeNodeStatus(pressureGrade string, usage []float64, health map[string]
 func nodePressureGrade(pressure map[string]float64) string {
 	grade := ""
 	for dim, v := range pressure {
-		g := correlation.NodeStatusFromPressure(v)
-		if dim == "memory" {
-			g = correlation.NodeStatusFromUsage(v)
-		}
-		if correlation.NodeStatusRank(g) > correlation.NodeStatusRank(grade) {
+		if g := nodeStatusForDim(dim, v); correlation.NodeStatusRank(g) > correlation.NodeStatusRank(grade) {
 			grade = g
 		}
 	}

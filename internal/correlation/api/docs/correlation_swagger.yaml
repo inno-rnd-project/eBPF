@@ -2597,7 +2597,9 @@ paths:
         라우팅하는 입력이며, cluster scope 는 라우팅 대상이 없어 전역 알림 목록에서 표시한다. title 과 summary 는
         사람이 읽을 설명으로 (#349), title 은 alertname 의 한국어 제목이고 summary 는 항목 labels 로 치환된
         설명이다. 카탈로그 미등록 alertname (kube-prometheus-stack 내장 alert 등) 은 title 에 alertname
-        을 그대로 쓰고 summary 를 생략한다.
+        을 그대로 쓰고 summary 를 생략한다. namespace 파라미터는 pod 필터에 namespace 제약을 더해 동명 pod 의
+        이력이 namespace 를 넘어 섞이지 않게 하며 (#444), pod 없이 단독으로 주면 해당 namespace 귀속 에피소드만
+        남긴다. pod 단독 조회는 종전 계약 (namespace 무제약) 을 유지한다.
       parameters:
       - description: '조회 기간 (예: 1h, 6h, 최대 24h, 기본 1h)'
         in: query
@@ -2618,6 +2620,11 @@ paths:
       - description: pod/src_pod/victim_pod 라벨이 이 pod 를 가리키는 에피소드만 조회
         in: query
         name: pod
+        type: string
+      - description: pod 와 함께 주면 해당 namespace 의 동명 pod 로 한정하고, 단독으로 주면 namespace/src_namespace/victim_namespace
+          라벨이 이 namespace 를 가리키는 에피소드만 조회
+        in: query
+        name: namespace
         type: string
       produces:
       - application/json
