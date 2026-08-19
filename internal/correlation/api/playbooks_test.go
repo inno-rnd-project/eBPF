@@ -43,7 +43,7 @@ func TestPlaybooks_Catalog(t *testing.T) {
 			}
 		}
 	}
-	for kind, want := range map[string]int{"gpu_idle_cause": 9, "drop_stage": 10, "dimension": 4, "alert": 3} {
+	for kind, want := range map[string]int{"gpu_idle_cause": 9, "drop_stage": 10, "dimension": 4, "alert": 9} {
 		if kinds[kind] != want {
 			t.Errorf("kind %s=%d want %d", kind, kinds[kind], want)
 		}

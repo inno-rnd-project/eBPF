@@ -502,7 +502,7 @@ var playbookCatalog = []playbookEntry{
 		},
 	},
 
-	// ---- alert 3종 (cause 로 흡수되지 않는 독립 alertname) ----
+	// ---- alert 9종 (cause 로 흡수되지 않는 독립 alertname) ----
 	{
 		cause: "CorrelationStrongNoisyNeighbor", kind: "alert",
 		title:       "강한 noisy neighbor 상관 감지",
@@ -530,6 +530,93 @@ var playbookCatalog = []playbookEntry{
 		actions: []string{
 			"식별된 stage 의 drop_stage 안내를 적용",
 			"특정 목적지로의 반복 burst 면 해당 endpoint 의 실존과 정책 허용 여부 확인",
+		},
+	},
+	// ---- agents issues 6종 (#445). /agents 의 issues 가 방출하는 alertname 은 playbooks 조회
+	// 입력과 호환된다는 계약이 있어, 전 항목이 본 카탈로그에 존재해야 한다. 정합은
+	// TestPlaybooks_AgentIssuesContract 가 agentIssueAlertnames 전수로 고정한다. ----
+	{
+		cause: "ObsAgentDown", kind: "alert",
+		title:       "관측 에이전트 scrape down",
+		description: "netobs 또는 gpuobs 에이전트의 metrics endpoint scrape가 실패하는 상태다. 해당 노드의 관측 신호(latency, drop, GPU 지표)가 조용히 비고 있어 다른 진단의 전제가 무너진다.",
+		checks: []playbookCheckEntry{
+			{description: "노드별 에이전트 up 여부와 동반 issue 확인", api: "/api/v1/agents", atCapable: true},
+			{description: "발화 이력으로 down 시작 시점과 재발 주기 확인", api: "/api/v1/incidents"},
+		},
+		actions: []string{
+			"해당 노드의 에이전트 DaemonSet pod 상태와 재시작 이력 확인 (CrashLoopBackOff, OOMKill)",
+			"pod 는 정상인데 scrape 만 실패하면 노드 간 모니터링 포트 차단과 NetworkPolicy 점검 (docs/deploy/cluster-onboarding.md 의 포트 목록)",
+			"노드 자체의 NotReady 여부 확인 (node-map 의 down 판정과 교차)",
+		},
+	},
+	{
+		cause: "NetObsBpfProgramUnavailable", kind: "alert",
+		title:       "BPF program 일부 미부착",
+		description: "netobs 에이전트의 BPF program 중 일부가 attach되지 않은 상태다. 미부착 probe가 담당하는 신호(해당 stage latency, drop 등)가 결측되어 관측이 부분적으로 빈다.",
+		checks: []playbookCheckEntry{
+			{description: "bpf_programs_loaded 와 total 의 격차 확인", api: "/api/v1/agents", atCapable: true},
+			{description: "발화 이력으로 특정 노드 한정인지 전 노드인지 확인", api: "/api/v1/incidents"},
+		},
+		actions: []string{
+			"에이전트 로그에서 attach 실패 심볼과 에러 확인 (kernel 심볼 부재는 자연 skip)",
+			"커널 버전별 심볼 가용성을 docs/deploy/kernel-matrix.md 와 대조",
+			"일시 실패면 에이전트 pod 재시작으로 재attach 시도",
+		},
+	},
+	{
+		cause: "NetObsBpfAttachFailureHigh", kind: "alert",
+		title:       "BPF attach 실패 반복",
+		description: "netobs 에이전트의 BPF attach 실패가 최근 5분간 반복되는 상태다. 재시도 루프가 돌고 있다는 신호로, 방치하면 program 미부착(NetObsBpfProgramUnavailable)으로 이어질 수 있다.",
+		checks: []playbookCheckEntry{
+			{description: "attach 실패 누적과 program 부착 상태 확인", api: "/api/v1/agents", atCapable: true},
+			{description: "발화 이력으로 실패의 지속성 확인", api: "/api/v1/incidents"},
+		},
+		actions: []string{
+			"에이전트 로그에서 반복 실패 심볼 식별 (attach_retry 로그)",
+			"해당 심볼이 커널에 없으면 kernel-matrix 문서와 대조 후 optional 처리 여부 검토",
+			"커널 업그레이드나 노드 재부팅 직후면 일시 현상일 수 있어 재발 주기 관찰",
+		},
+	},
+	{
+		cause: "GPUObsAgentNvmlErrorsHigh", kind: "alert",
+		title:       "NVML 호출 오류율 과다",
+		description: "gpuobs 에이전트의 NVML 호출 실패율이 임계(1/s)를 넘은 상태다. GPU 지표(사용률, 메모리, 온도)의 신뢰도가 떨어지고 결측이 생길 수 있다.",
+		checks: []playbookCheckEntry{
+			{description: "오류율과 에이전트 상태 확인", api: "/api/v1/agents", atCapable: true},
+			{description: "GPU 현황에서 지표 결측 여부 확인", api: "/api/v1/gpu-status", atCapable: true},
+		},
+		actions: []string{
+			"해당 노드에서 nvidia-smi 동작 여부로 driver/NVML 라이브러리 상태 확인",
+			"driver 업데이트나 GPU reset 직후면 에이전트 pod 재시작으로 NVML 세션 재수립",
+			"지속되면 driver 버전과 GPU 하드웨어 상태 (Xid 에러 로그) 점검",
+		},
+	},
+	{
+		cause: "ObsAgentInformerStale", kind: "alert",
+		title:       "kube informer watch 정체",
+		description: "에이전트의 kube informer가 마지막 watch event 이후 300초 넘게 정체된 상태다. pod 메타데이터 갱신이 멈춰 신규 pod의 귀속(namespace, pod 라벨)이 빠지거나 삭제된 pod 로 귀속될 수 있다.",
+		checks: []playbookCheckEntry{
+			{description: "informer_lag_seconds 와 에이전트별 정체 범위 확인", api: "/api/v1/agents", atCapable: true},
+			{description: "발화 이력으로 정체 시작 시점 확인", api: "/api/v1/incidents"},
+		},
+		actions: []string{
+			"kube-apiserver 연결성 확인 (에이전트 로그의 watch 재수립 실패, RBAC 과 NetworkPolicy)",
+			"kube-apiserver 자체의 부하와 가용성 확인",
+			"단일 에이전트 한정이면 해당 pod 재시작으로 watch 재수립",
+		},
+	},
+	{
+		cause: "GPUObsCudaSymbolUnavailable", kind: "alert",
+		title:       "CUDA driver 심볼 미부착",
+		description: "gpuobs 에이전트가 CUDA driver 심볼(cu*)에 uprobe를 부착하지 못한 상태다. driver 심볼은 CUDA pod 귀속의 필수 조건이라 kernel launch 와 메모리 복사의 pod 단위 계측이 전부 빈다. runtime 심볼(cuda*)은 선택 계측이라 판정에 들어가지 않는다.",
+		checks: []playbookCheckEntry{
+			{description: "cuda_driver_symbols 부착 상태 확인", api: "/api/v1/agents", atCapable: true},
+			{description: "GPU 현황에서 pod_attribution 결측 확인", api: "/api/v1/gpu-status", atCapable: true},
+		},
+		actions: []string{
+			"노드의 libcuda.so 경로가 에이전트 컨테이너에 마운트되는지 확인 (driver 설치 경로 변경 여부)",
+			"driver 재설치나 버전 변경 직후면 에이전트 pod 재시작으로 심볼 재스캔",
+			"에이전트 로그의 심볼 스캔 결과에서 탐색 경로와 실패 사유 확인",
 		},
 	},
 	{
