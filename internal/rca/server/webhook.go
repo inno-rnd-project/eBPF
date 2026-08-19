@@ -176,8 +176,13 @@ func NewWebhookHandler(reg *registry.Registry, src registry.Sources, st *store.S
 				summary, ok := reg.Dispatch(ctx, alertname, a.Labels, src)
 				// store.Set 의 두 번째 인자 (registered) 에 ok 를 전달한다. 등록 alert 는 cap
 				// 무관하게 항상 store 에 자리가 보장되어 적대적 webhook 으로 미등록 alertname 이
-				// cap 을 채워도 핵심 alert 의 진단 흐름이 차단되지 않는다.
-				st.Set(summary, ok)
+				// cap 을 채워도 핵심 alert 의 진단 흐름이 차단되지 않는다. cap 초과 거부는 로그와
+				// 카운터로 관측한다(#446). 종전에는 반환값을 버려 미등록 alert의 드롭이 무관측이라
+				// 운영자가 webhook 도달 여부조차 확인할 수 없었다.
+				if _, stored := st.Set(summary, ok); !stored {
+					log.Printf("rca: store cap exceeded, unregistered alert %s dropped (entries=%d)", alertname, st.Len())
+					met.RecordStoreRejected()
+				}
 				if ok {
 					// #122 false positive guard. ConfidenceScore 가 threshold 미만 이면 metrics
 					// emit 을 skip 하고 skipped_total counter 만 증가 한다. store 는 그대로 유지

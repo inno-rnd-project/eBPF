@@ -22,8 +22,11 @@ type Metrics struct {
 	// 초과) / canceled (요청 예산 소진으로 잔여 미처리) / duplicate (재전송 멱등 억제) 세 값으로
 	// 폐쇄된다.
 	webhookDropped *prometheus.CounterVec
-	mu             sync.Mutex
-	lastLabels     map[string]prometheus.Labels // alertname → 가장 최근 emit 한 라벨 셋
+	// storeRejected는 #446의 store cap 초과 거부 계수다. dispatch 이후 단계라 webhookDropped와
+	// 구분되며, 미등록 alert이 store cap에 막혀 /rca 조회 표면에서 사라진 건수를 담는다.
+	storeRejected prometheus.Counter
+	mu            sync.Mutex
+	lastLabels    map[string]prometheus.Labels // alertname → 가장 최근 emit 한 라벨 셋
 }
 
 // New 는 메트릭들을 만들어 반환한다. Register 는 호출 측이 별도로 한다 (테스트 격리 용이).
@@ -62,6 +65,12 @@ func New() *Metrics {
 			},
 			[]string{"reason"},
 		),
+		storeRejected: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: "rca_store_entries_rejected_total",
+				Help: "Unregistered alerts whose RCA summary was rejected by the store entry cap after dispatch. The summary is computed but not queryable via /rca; a persistently increasing value means unregistered alertnames are exhausting the cap.",
+			},
+		),
 		skippedTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "rca_summary_skipped_total",
@@ -75,7 +84,7 @@ func New() *Metrics {
 
 // Collectors 는 prometheus.Registerer.MustRegister 에 전달할 collector 슬라이스를 돌려준다.
 func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.emitted, m.lastInfo, m.confidenceScore, m.skippedTotal, m.webhookDropped}
+	return []prometheus.Collector{m.emitted, m.lastInfo, m.confidenceScore, m.skippedTotal, m.webhookDropped, m.storeRejected}
 }
 
 // Record 는 한 RCASummary 가 산출됐을 때 호출된다. emitted_total 을 증가시키고 last_summary_info
@@ -140,6 +149,11 @@ func (m *Metrics) RecordWebhookDropped(reason string, n int) {
 
 func (m *Metrics) RecordSkipped(alertname, reason string) {
 	m.skippedTotal.WithLabelValues(alertname, reason).Inc()
+}
+
+// RecordStoreRejected는 미등록 alert의 summary가 store cap 초과로 거부됐을 때 호출한다(#446).
+func (m *Metrics) RecordStoreRejected() {
+	m.storeRejected.Inc()
 }
 
 // defaultStr 은 empty 문자열을 라벨에 그대로 흘리지 않도록 sentinel 로 치환한다. Prometheus

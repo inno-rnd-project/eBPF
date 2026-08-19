@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -481,4 +482,66 @@ func TestWebhook_RetransmissionDeduped(t *testing.T) {
 	if src.calls <= callsAfterFirst {
 		t.Errorf("다른 라벨 alert 가 억제됨: calls=%d", src.calls)
 	}
+}
+
+// TestWebhook_StoreCapRejectionObserved는 #446의 store 거부 관측성을 검증한다. 종전에는 st.Set의
+// 반환값을 버려 미등록 alert의 cap 초과 드롭이 완전히 무관측이었다. cap 2 store를 미등록 alert
+// 2종으로 채운 뒤 세 번째 미등록 alert이 거부되면 rca_store_entries_rejected_total이 계수되고
+// /rca 조회가 404 임을 단정한다.
+func TestWebhook_StoreCapRejectionObserved(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	st := store.NewWithMaxEntries(2)
+	met := rcametrics.New()
+	for _, c := range met.Collectors() {
+		reg.MustRegister(c)
+	}
+	var ready atomic.Bool
+	ready.Store(true)
+	mux := NewMux(Options{
+		Registry: reg,
+		Ready:    &ready,
+		Webhook:  NewWebhookHandler(registry.New(), nil, st, met, 0.0),
+		RCA:      NewRCAHandler(st),
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	post := func(alertname string) {
+		t.Helper()
+		payload := `{"alerts":[{"status":"firing","labels":{"alertname":"` + alertname + `"}}]}`
+		resp, err := http.Post(srv.URL+"/webhook", "application/json", strings.NewReader(payload))
+		if err != nil {
+			t.Fatalf("POST %s: %v", alertname, err)
+		}
+		_ = resp.Body.Close()
+	}
+	post("UnregisteredA")
+	post("UnregisteredB")
+	post("UnregisteredC")
+
+	if st.Len() != 2 {
+		t.Fatalf("store len=%d want 2 (cap)", st.Len())
+	}
+	if _, ok := st.Get("UnregisteredC"); ok {
+		t.Fatalf("UnregisteredC 가 cap 초과인데 저장됨")
+	}
+	body, err := http.Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer func() { _ = body.Body.Close() }()
+	raw, _ := io.ReadAll(body.Body)
+	if !strings.Contains(string(raw), "rca_store_entries_rejected_total 1") {
+		t.Errorf("rejected counter 미계수: %s", grepLine(string(raw), "rca_store_entries_rejected_total"))
+	}
+}
+
+// grepLine은 메트릭 텍스트에서 해당 이름이 포함된 행을 뽑는 테스트 헬퍼다.
+func grepLine(body, name string) string {
+	for _, l := range strings.Split(body, "\n") {
+		if strings.Contains(l, name) && !strings.HasPrefix(l, "#") {
+			return l
+		}
+	}
+	return "(없음)"
 }
