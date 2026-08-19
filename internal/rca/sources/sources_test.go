@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	dto "github.com/prometheus/client_model/go"
+
 	"netobs/internal/rca/registry"
 )
 
@@ -256,3 +258,58 @@ func (s stubPromQL) fetchTopDropFlows(context.Context, string, int) []registry.D
 }
 
 func (stubPromQL) probe(context.Context) error { return nil }
+
+// counterValue는 CounterVec의 특정 라벨 값을 읽는 테스트 헬퍼다.
+func counterValue(t *testing.T, source, reason string) float64 {
+	t.Helper()
+	m := &dto.Metric{}
+	if err := fetchFailures.WithLabelValues(source, reason).Write(m); err != nil {
+		t.Fatalf("counter read: %v", err)
+	}
+	return m.GetCounter().GetValue()
+}
+
+// TestHttpGpuobsSource_FetchFailuresObserved는 #446의 실패 관측성을 검증한다. 종전 fetchGPUSignal
+// 은 다섯 실패 분기가 전부 무관측 0 반환이라 GPU 신호가 영구 0이 되어도 원인 표면이 없었다.
+// 상태코드 실패와 파싱 실패가 rca_source_fetch_failures_total의 해당 reason으로 계수되는지 단정한다.
+func TestHttpGpuobsSource_FetchFailuresObserved(t *testing.T) {
+	// 상태코드 실패: 500 응답이 reason="status"로 계수된다.
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer bad.Close()
+	src := newHTTPGpuobsSource(bad.URL, time.Second)
+	before := counterValue(t, "gpuobs", "status")
+	if v := src.fetchGPUSignal(context.Background(), "n1"); v != 0 {
+		t.Fatalf("signal=%v want 0 (graceful empty 유지)", v)
+	}
+	if got := counterValue(t, "gpuobs", "status"); got != before+1 {
+		t.Errorf("status counter=%v want %v", got, before+1)
+	}
+
+	// 파싱 실패: 비정합 schema 가 reason="parse"로 계수된다.
+	malformed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"result":[{"value":[123, 456]}]}}`))
+	}))
+	defer malformed.Close()
+	src = newHTTPGpuobsSource(malformed.URL, time.Second)
+	before = counterValue(t, "gpuobs", "parse")
+	if v := src.fetchGPUSignal(context.Background(), "n1"); v != 0 {
+		t.Fatalf("signal=%v want 0", v)
+	}
+	if got := counterValue(t, "gpuobs", "parse"); got != before+1 {
+		t.Errorf("parse counter=%v want %v", got, before+1)
+	}
+
+	// 전송 실패: 닫힌 endpoint 가 reason="do"로 계수된다.
+	closed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	closed.Close()
+	src = newHTTPGpuobsSource(closed.URL, time.Second)
+	before = counterValue(t, "gpuobs", "do")
+	if v := src.fetchGPUSignal(context.Background(), "n1"); v != 0 {
+		t.Fatalf("signal=%v want 0", v)
+	}
+	if got := counterValue(t, "gpuobs", "do"); got != before+1 {
+		t.Errorf("do counter=%v want %v", got, before+1)
+	}
+}
