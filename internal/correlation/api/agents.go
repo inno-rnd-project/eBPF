@@ -59,6 +59,30 @@ const (
 	agentNvmlErrorRatePerSec  = 1   // GPUObsAgentNvmlErrorsHigh: rate > 1/s
 )
 
+// judgeAgentHealth 가 issues 로 방출하는 alertname 상수다(#445). issues 의 alertname 은 playbooks
+// 조회 입력과 호환된다는 계약이 있어, 새 issue 를 추가할 때는 상수와 함께 agentIssueAlertnames 에
+// 등재하고 playbooks 카탈로그에 대응 항목을 추가해야 한다. 정합은
+// TestPlaybooks_AgentIssuesContract 가 전수 검사로 고정한다.
+const (
+	alertObsAgentDown              = "ObsAgentDown"
+	alertNetObsBpfProgramUnavail   = "NetObsBpfProgramUnavailable"
+	alertNetObsBpfAttachFailure    = "NetObsBpfAttachFailureHigh"
+	alertGPUObsAgentNvmlErrorsHigh = "GPUObsAgentNvmlErrorsHigh"
+	alertObsAgentInformerStale     = "ObsAgentInformerStale"
+	alertGPUObsCudaSymbolUnavail   = "GPUObsCudaSymbolUnavailable"
+)
+
+// agentIssueAlertnames 는 judgeAgentHealth 가 방출할 수 있는 alertname 전수 목록이다. playbooks
+// 계약 정합 테스트의 입력이다.
+var agentIssueAlertnames = []string{
+	alertObsAgentDown,
+	alertNetObsBpfProgramUnavail,
+	alertNetObsBpfAttachFailure,
+	alertGPUObsAgentNvmlErrorsHigh,
+	alertObsAgentInformerStale,
+	alertGPUObsCudaSymbolUnavail,
+}
+
 // GetAgents godoc
 // @Summary      노드별 관측 에이전트 self-health
 // @Description  netobs 와 gpuobs 에이전트의 스크레이프 up 여부, BPF program attach 상태와 최근 attach 실패, NVML 오류율, informer lag, cuda 심볼 부착 상태(driver 필수·runtime 선택)를 노드 단위로 집계하고 기존 알림 규칙과 동일한 임계로 healthy / degraded 를 판정한다. issues 의 alertname 은 playbooks 조회 입력과 호환된다. node 파라미터로 단일 노드를 조회한다.
@@ -179,24 +203,24 @@ func nodeSuffixMatcher(node string) string {
 func judgeAgentHealth(a *AgentHealth) (string, []string) {
 	issues := []string{}
 	if !a.Up {
-		issues = append(issues, "ObsAgentDown")
+		issues = append(issues, alertObsAgentDown)
 	}
 	if a.BpfProgramsLoaded != nil && a.BpfProgramsTotal != nil && *a.BpfProgramsLoaded < *a.BpfProgramsTotal {
-		issues = append(issues, "NetObsBpfProgramUnavailable")
+		issues = append(issues, alertNetObsBpfProgramUnavail)
 	}
 	if a.BpfAttachFailures5m != nil && *a.BpfAttachFailures5m > 0 {
-		issues = append(issues, "NetObsBpfAttachFailureHigh")
+		issues = append(issues, alertNetObsBpfAttachFailure)
 	}
 	if a.NvmlErrorsPerSec != nil && *a.NvmlErrorsPerSec > agentNvmlErrorRatePerSec {
-		issues = append(issues, "GPUObsAgentNvmlErrorsHigh")
+		issues = append(issues, alertGPUObsAgentNvmlErrorsHigh)
 	}
 	if a.InformerLagSeconds != nil && *a.InformerLagSeconds > agentInformerStaleSeconds {
-		issues = append(issues, "ObsAgentInformerStale")
+		issues = append(issues, alertObsAgentInformerStale)
 	}
 	// driver 심볼 미부착은 CUDA pod 귀속 불가라 degraded 다. runtime (cudart) 미부착은 선택 계측이라
 	// 판정에 넣지 않고 정보 필드로만 노출한다 (alert 규약과 동일).
 	if a.CudaDriverSymbols != nil && !*a.CudaDriverSymbols {
-		issues = append(issues, "GPUObsCudaSymbolUnavailable")
+		issues = append(issues, alertGPUObsCudaSymbolUnavail)
 	}
 	if len(issues) > 0 {
 		return "degraded", issues

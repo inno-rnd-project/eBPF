@@ -75,6 +75,19 @@ func TestPlaybooks_CauseLookup(t *testing.T) {
 	}
 }
 
+// TestPlaybooks_AgentIssuesContract 는 #445 의 계약 정합을 검증한다. /agents 의 issues 가 방출할
+// 수 있는 alertname 전수(agentIssueAlertnames)가 playbooks 카탈로그에서 cause 또는 alias 로 조회
+// 가능해야 한다. swagger 와 패키지 주석의 "issues 의 alertname 은 playbooks 조회 입력과 호환된다"
+// 서술을 고정하며, judgeAgentHealth 에 새 issue 를 추가하면서 카탈로그 항목을 빠뜨리면 본 테스트가
+// 실패해 계약 위반이 드러난다.
+func TestPlaybooks_AgentIssuesContract(t *testing.T) {
+	for _, alert := range agentIssueAlertnames {
+		if findPlaybook(alert) == nil {
+			t.Errorf("agents issue %s 가 playbooks 카탈로그에서 조회 불가 (계약 위반)", alert)
+		}
+	}
+}
+
 // TestPlaybooks_UnknownCause 는 미등록 식별자가 404 로 구분되는지 검증한다.
 func TestPlaybooks_UnknownCause(t *testing.T) {
 	rec, _ := playbooksGet(t, "/api/v1/playbooks?cause=bogus")
