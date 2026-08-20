@@ -226,8 +226,8 @@ func TestRCAHandler_UnknownAlertReturns404(t *testing.T) {
 }
 
 // TestWebhook_UnknownAlertEchoesRawLabels 는 mapping 미등록 alert 가 silent drop 되지 않고
-// store 에 raw label echo 형태의 entry 가 저장되는지 검증한다.
-func TestWebhook_UnknownAlertEchoesRawLabels(t *testing.T) {
+// store 에 AlertName 만 채운 entry 가 저장되는지 검증한다 (raw labels 는 보존하지 않는다).
+func TestWebhook_UnknownAlertStoredForDiagnostics(t *testing.T) {
 	mux, st, _, _ := fixtures(t)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -240,8 +240,8 @@ func TestWebhook_UnknownAlertEchoesRawLabels(t *testing.T) {
 }
 
 // TestWebhook_UnknownAlertSkipsMetricsEmit 는 mapping 미등록 alert 가 store 에는 저장되지만
-// metrics emit 은 건너뛰어 rca_summary_emitted_total 의 alert_name 라벨이 9 종으로 폐쇄되는지
-// 검증한다. 외부에서 임의 alertname 으로 webhook 이 도달해도 cardinality 가 폭증하지 않는다.
+// metrics emit 은 건너뛰어 rca_summary_emitted_total 의 alert_name 라벨이 등록 11 종으로 폐쇄
+// 되는지 검증한다. 외부에서 임의 alertname 으로 webhook 이 도달해도 cardinality 가 폭증하지 않는다.
 func TestWebhook_UnknownAlertSkipsMetricsEmit(t *testing.T) {
 	mux, _, met, _ := fixtures(t)
 	srv := httptest.NewServer(mux)

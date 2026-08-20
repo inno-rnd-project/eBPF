@@ -1,7 +1,8 @@
 // Package registry 는 alert 이름별 RCA 산정 함수를 모은 dispatcher 다. 11 alert mapping 을 alert
 // 그룹 단위 (netobs, gpuobs, idle, correlation) 4 파일로 분리해 신규 alert 추가 시 한 파일만
-// 갱신되도록 응집도를 통제한다. mapping 이 등록되지 않은 alert 는 Dispatch 가 zero RCASummary +
-// false 를 돌려주어 호출 측이 raw label echo back 으로 silent drop 을 회피한다.
+// 갱신되도록 응집도를 통제한다. mapping 이 등록되지 않은 alert 는 Dispatch 가 AlertName 만 채운
+// zero RCASummary + false 를 돌려주어 호출 측이 도달 사실을 보관해 silent drop 을 회피한다
+// (raw labels 는 보존하지 않는다, #447 주석 정정).
 package registry
 
 import "context"
@@ -94,8 +95,8 @@ func New() *Registry {
 	return r
 }
 
-// Dispatch 는 alert 이름에 등록된 mapping 을 찾아 호출한다. mapping 미등록 시 (RCASummary{}, false)
-// 를 돌려주며 호출 측은 raw label echo back 으로 silent drop 을 회피한다.
+// Dispatch 는 alert 이름에 등록된 mapping 을 찾아 호출한다. mapping 미등록 시 AlertName 만 채운
+// (RCASummary, false) 를 돌려주며 호출 측은 이를 보관해 도달 여부의 진단 표면을 남긴다.
 func (r *Registry) Dispatch(ctx context.Context, alertname string, labels map[string]string, sources Sources) (RCASummary, bool) {
 	m, ok := r.mappings[alertname]
 	if !ok {

@@ -47,7 +47,7 @@ func New() *Metrics {
 			[]string{"alert_name", "dominant_dimension", "top_suspect", "primary_drop_flow"},
 		),
 		// #122 multi-source cross-reference confidence score 의 alert 별 gauge. 라벨 셋은
-		// alert_name 과 dominant_dimension 2 종 으로 cardinality 폐쇄 (등록 alert 9 종 x 7 도메인
+		// alert_name 과 dominant_dimension 2 종 으로 cardinality 폐쇄 (등록 alert 11 종 x 7 도메인
 		// 정도). float 값 의 confidence 자체 를 라벨 로 두지 않 아 series 폭주 방지.
 		confidenceScore: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -137,7 +137,7 @@ func (m *Metrics) Record(summary registry.RCASummary) {
 }
 
 // RecordSkipped 는 #122 false positive guard 가 ConfidenceScore 미달 으로 RCA emit 을 skip 할 때
-// 호출 한다. alert_name 라벨 카디널리티 는 등록 alert 9 종 으로 폐쇄 되며 reason 라벨 은 현재
+// 호출 한다. alert_name 라벨 카디널리티 는 등록 alert 11 종 으로 폐쇄 되며 reason 라벨 은 현재
 // "below_threshold" 단일 값 이다.
 // RecordWebhookDropped 는 webhook 처리 상한 / 취소 / 멱등 억제로 dispatch 되지 않은 alert 수를
 // 누적한다 (#419). reason 은 over_cap / canceled / duplicate 로 폐쇄된다.

@@ -16,7 +16,7 @@ type Entry struct {
 	UpdatedAt time.Time           `json:"updated_at"`
 }
 
-// DefaultMaxEntries 는 Store 가 보관할 수 있는 최대 alert 종 수다. registry 등록 alert 9 종 +
+// DefaultMaxEntries 는 Store 가 보관할 수 있는 최대 alert 종 수다. registry 등록 alert 11 종 +
 // 미등록 alert 의 안전 마진을 합쳐 64 로 둔다. 적대적 webhook 으로 임의 alertname 이 무한히
 // 들어와도 본 상한에서 거부되어 메모리 사용량이 폐쇄된다. NewWithMaxEntries 로 환경별 override
 // 가능.

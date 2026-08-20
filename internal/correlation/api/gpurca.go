@@ -68,7 +68,8 @@ type RcaEvidence struct {
 	TemperatureCelsius      *float64 `json:"temperature_celsius,omitempty"`
 	SlowdownHeadroomCelsius *float64 `json:"slowdown_headroom_celsius,omitempty"`
 	// CauseScore 는 점수형 cause (pcie_saturation, dcgm_pcie_replay, nccl_collective_stall,
-	// host_compute_stall, cgroup_contention) 의 노드 score (0-1) 다.
+	// host_compute_stall, cgroup_contention) 의 score (0-1) 다. node: 접두 rule 은 노드 단일
+	// 시리즈, pod: 접두 rule (host_compute_stall, cgroup_contention) 은 노드로 좁힌 pod max 다.
 	CauseScore *float64 `json:"cause_score,omitempty"`
 
 	// slowdownThresholdCelsius 는 여유 산출용 중간값으로 응답에는 싣지 않는다.
@@ -100,8 +101,10 @@ type rcaCauseInfo struct {
 	evidence    []rcaEvidenceBind
 }
 
-// nodeScoreBind 는 node 스코프 단일 시리즈를 CauseScore 로 싣는 공용 바인딩이다. metric 은 고정
-// 리터럴이고 node 는 parseNodeParam 검증을 통과한 값이라 %q 결합이 안전하다.
+// nodeScoreBind는 cause score 시리즈를 node 매처로 좁혀 max() 집계한 값을 CauseScore로 싣는
+// 공용 바인딩이다. metric은 node: 접두 rule 외에 pod: 접두 rule(host_compute_stall,
+// cgroup_contention)도 받으며, 그 경우 노드 내 pod 시리즈들의 max가 실린다(#447 서술 정정).
+// metric은 고정 리터럴이고 node는 parseNodeParam 검증을 통과한 값이라 %q 결합이 안전하다.
 func nodeScoreBind(metric string) []rcaEvidenceBind {
 	return []rcaEvidenceBind{{
 		query: func(node, _ string, _ *RcaSuspect) string {

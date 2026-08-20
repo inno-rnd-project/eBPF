@@ -121,7 +121,8 @@ type PodsResponse struct {
 // "메트릭 부재" 를 error 가 아닌 빈 결과로 돌려주므로 error != nil 은 항상 Prometheus 백엔드 장애
 // (timeout / transport) 를 뜻한다. 따라서 호출부는 error 를 500 query_failed 로 통일해 데이터 부재
 // (빈 결과, error nil → 200) 와 백엔드 장애를 상태코드로 구분한다. 보조 신호만 다루는 best-effort
-// 호출부 (fetchCauseEvidence) 만 error 를 의도적으로 무시한다.
+// 호출부 (drops / bandwidth / memory / latency-breakdown 의 부가 신호 조회와 gpurca 의
+// fetchCauseEvidence) 는 error 를 의도적으로 무시한다 (#447 주석 정정).
 func (h *SynthesisHandler) queryParallel(ctx context.Context, queries ...string) ([][]correlation.InstantSample, error) {
 	out := make([][]correlation.InstantSample, len(queries))
 	errs := make([]error, len(queries))
