@@ -120,6 +120,10 @@ func main() {
 	for _, c := range met.Collectors() {
 		reg.MustRegister(c)
 	}
+	// #446 하류 신호 fetch 실패 카운터 (sources 패키지 소유).
+	for _, c := range sources.Collectors() {
+		reg.MustRegister(c)
+	}
 
 	mux := server.NewMux(server.Options{
 		Registry: reg,
