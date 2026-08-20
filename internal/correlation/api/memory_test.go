@@ -91,3 +91,14 @@ func TestMemory_NilQuerier(t *testing.T) {
 		t.Errorf("pods=%d want 0 (nil querier)", len(resp.Pods))
 	}
 }
+
+// TestMemory_InvalidLimit400은 #447의 limit 파싱 통일을 검증한다. 종전에는 파싱 오류를 침묵
+// 흡수해 기본값으로 진행했다.
+func TestMemory_InvalidLimit400(t *testing.T) {
+	h := NewSynthesisHandler(&fakeQuerier{}, nil, nil)
+	rec := httptest.NewRecorder()
+	h.GetMemory(rec, httptest.NewRequest(http.MethodGet, "/api/v1/memory?limit=abc", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 (invalid_limit)", rec.Code)
+	}
+}
