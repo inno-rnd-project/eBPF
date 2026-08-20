@@ -21,7 +21,6 @@ func mapCorrelationStrongNoisyNeighbor(ctx context.Context, labels map[string]st
 	suspectNS := labelOr(labels, "suspect_namespace", "")
 	suspectPod := labelOr(labels, "suspect_pod", "")
 	dimension := labelOr(labels, "resource_dimension", "unknown")
-	node := labelOr(labels, "node", "")
 
 	summary := RCASummary{
 		DominantDimension: dimension,
@@ -41,11 +40,9 @@ func mapCorrelationStrongNoisyNeighbor(ctx context.Context, labels map[string]st
 		if victimNS != "" {
 			dropFlows = sources.TopDropFlows(ctx, victimNS)
 		}
-		gpuSignal := 0.0
-		if node != "" {
-			gpuSignal = sources.GPUSignal(ctx, node)
-		}
-		summary.ConfidenceScore = sources.EvaluateConfidence(neighbors, dropFlows, gpuSignal)
+		// correlation_noisy_neighbor_score 는 victim / suspect / dimension 집계라 alert 라벨에
+		// node 가 없어 GPU signal 조회 분기가 영구 미실행이었다 (#447 죽은 코드 제거).
+		summary.ConfidenceScore = sources.EvaluateConfidence(neighbors, dropFlows, 0)
 	}
 	return summary
 }

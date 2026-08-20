@@ -109,11 +109,12 @@ var gpuPerfThrottleReasons = map[string]bool{
 }
 
 // gpuIdleUtilizationThreshold 는 device idle 판정 임계 (%) 다. node:gpu_idle:5m rule 의 `< 20`
-// bool 비교와 동일 값이며 rule 이 바뀌면 함께 갱신한다.
+// bool 비교와 동일 값이며 rule 이 바뀌면 함께 갱신한다. Go 측 단일 진실원은 본 상수 하나다(#447).
 const gpuIdleUtilizationThreshold = 20
 
 // gpuDeviceStatus 는 device 3단 판정 (#279) 이다. 성능성 throttle 활성이면 degraded, slowdown 임계
-// 의 90% 이상 온도 또는 노드 유의미 NVML 오류율 초과 (alert 임계 1/s) 면 warning, 그 외 healthy 다.
+// 의 90% 이상 온도 또는 노드 유의미 NVML 오류율 초과 (agentNvmlErrorRatePerSec, alert 와 공유) 면
+// warning, 그 외 healthy 다.
 func gpuDeviceStatus(d *GpuDevice, nodeNvmlRate float64) string {
 	for _, r := range d.ThrottleReasons {
 		if gpuPerfThrottleReasons[r] {
@@ -125,7 +126,7 @@ func gpuDeviceStatus(d *GpuDevice, nodeNvmlRate float64) string {
 			return "warning"
 		}
 	}
-	if nodeNvmlRate > 1 {
+	if nodeNvmlRate > agentNvmlErrorRatePerSec {
 		return "warning"
 	}
 	return "healthy"
