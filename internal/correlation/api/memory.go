@@ -20,7 +20,11 @@ type MemoryResponse struct {
 	GeneratedAt string      `json:"generated_at"`
 	Window      string      `json:"window"`
 	Pods        []PodMemory `json:"pods"`
-	Summary     string      `json:"summary"`
+	// Total 은 limit 적용 전 전체 pod 수, Truncated 는 잘렸는지다 (#352 패턴, #447 보강). 종전에는
+	// 조용히 잘라 소비자가 절단 여부를 알 수 없었다.
+	Total     int    `json:"total"`
+	Truncated bool   `json:"truncated"`
+	Summary   string `json:"summary"`
 }
 
 // PodMemory 는 한 pod 의 종류별 메모리 분해다. rss 는 non-reclaimable(anonymous) 로 OOM 을 직접
@@ -104,14 +108,20 @@ func (h *SynthesisHandler) GetMemory(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf(byPod, "swap"),
 			"sum by(namespace, pod) (kube_pod_container_resource_limits"+limitSel+")",
 		)
-		resp.Pods = buildPodMemory(append([][]correlation.InstantSample{ws}, rest...), limit)
+		all := buildPodMemory(append([][]correlation.InstantSample{ws}, rest...))
+		resp.Total = len(all)
+		if len(all) > limit {
+			all = all[:limit]
+			resp.Truncated = true
+		}
+		resp.Pods = all
 	}
 
 	resp.Summary = buildMemorySummary(resp)
 	apicommon.WriteJSON(w, resp)
 }
 
-func buildPodMemory(res [][]correlation.InstantSample, limit int) []PodMemory {
+func buildPodMemory(res [][]correlation.InstantSample) []PodMemory {
 	if len(res) < 5 {
 		return []PodMemory{}
 	}
@@ -179,9 +189,6 @@ func buildPodMemory(res [][]correlation.InstantSample, limit int) []PodMemory {
 		}
 		return out[i].Pod < out[j].Pod
 	})
-	if len(out) > limit {
-		out = out[:limit]
-	}
 	return out
 }
 

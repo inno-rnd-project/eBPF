@@ -22,8 +22,12 @@ type BandwidthResponse struct {
 	Pods        []BandwidthPod `json:"pods"`
 	// Nodes 는 NIC 포화 판단 근거다. namespace 필터와 무관하게 항상 클러스터 전체 pod 합계로
 	// 산출해 필터로 합계가 왜곡되지 않게 한다.
-	Nodes   []BandwidthNode `json:"nodes"`
-	Summary string          `json:"summary"`
+	Nodes []BandwidthNode `json:"nodes"`
+	// Total 은 limit 적용 전 전체 pod 수, Truncated 는 pods 가 잘렸는지다 (#352 패턴, #447 보강).
+	// nodes 는 클러스터 합계라 절단 대상이 아니다.
+	Total     int    `json:"total"`
+	Truncated bool   `json:"truncated"`
+	Summary   string `json:"summary"`
 }
 
 // BandwidthPod 는 한 pod 의 방향·관점별 대역폭이다. NicTxBytesPerSec 는 NIC 관점 (skb 단위) TX 로,
@@ -172,8 +176,10 @@ func (h *SynthesisHandler) GetBandwidth(w http.ResponseWriter, r *http.Request) 
 		}
 		return resp.Pods[i].Pod < resp.Pods[j].Pod
 	})
+	resp.Total = len(resp.Pods)
 	if len(resp.Pods) > limit {
 		resp.Pods = resp.Pods[:limit]
+		resp.Truncated = true
 	}
 
 	nodes := map[string]*BandwidthNode{}
