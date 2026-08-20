@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"netobs/internal/apicommon"
 	rcametrics "netobs/internal/rca/metrics"
 	"netobs/internal/rca/registry"
 	"netobs/internal/rca/store"
@@ -115,7 +116,7 @@ func NewWebhookHandler(reg *registry.Registry, src registry.Sources, st *store.S
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var p alertmanagerPayload
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxWebhookPayloadBytes)).Decode(&p); err != nil {
-			http.Error(w, "invalid payload: "+err.Error(), http.StatusBadRequest)
+			apicommon.WriteError(w, http.StatusBadRequest, "invalid_payload", "payload 파싱 실패: "+err.Error())
 			return
 		}
 
@@ -234,7 +235,9 @@ func NewRCAHandler(st *store.Store) http.Handler {
 		}
 		entry, ok := st.Get(alertname)
 		if !ok {
-			http.Error(w, "no summary for alert "+alertname, http.StatusNotFound)
+			// #447 표준 ErrorBody. 종전 http.Error 는 위에서 세팅한 application/json 을
+			// text/plain 으로 덮어써 JSON 소비자의 파싱 실패를 유발했다.
+			apicommon.WriteError(w, http.StatusNotFound, "unknown_alert", "alert 의 summary 가 없습니다: "+alertname)
 			return
 		}
 		if err := json.NewEncoder(w).Encode(entry); err != nil {
