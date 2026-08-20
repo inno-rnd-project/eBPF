@@ -250,7 +250,30 @@ func buildDropFlows(rate, lastTs []correlation.InstantSample, nsFilter string, l
 		}
 		out = append(out, f)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].DropsPerSec > out[j].DropsPerSec })
+	// #447 다단 tie-break. 같은 파일의 buildDropGroups / buildCiliumDrops 관례와 동일하게 동률을
+	// 식별 필드 사전순으로 고정한다. rate 동률(특히 저부하 구간의 같은 값)에서 순서가 폴링마다
+	// 뒤바뀌어 프론트 목록이 흔들리던 비결정성을 제거한다 (sort.Slice 는 불안정 정렬).
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].DropsPerSec != out[j].DropsPerSec {
+			return out[i].DropsPerSec > out[j].DropsPerSec
+		}
+		if out[i].Node != out[j].Node {
+			return out[i].Node < out[j].Node
+		}
+		if out[i].SrcIP != out[j].SrcIP {
+			return out[i].SrcIP < out[j].SrcIP
+		}
+		if out[i].SrcPort != out[j].SrcPort {
+			return out[i].SrcPort < out[j].SrcPort
+		}
+		if out[i].DstIP != out[j].DstIP {
+			return out[i].DstIP < out[j].DstIP
+		}
+		if out[i].DstPort != out[j].DstPort {
+			return out[i].DstPort < out[j].DstPort
+		}
+		return out[i].Reason < out[j].Reason
+	})
 	if len(out) > limit {
 		out = out[:limit]
 	}
@@ -266,7 +289,19 @@ func buildDropStacks(samples []correlation.InstantSample, limit int) []DropStack
 		l := sm.Labels
 		out = append(out, DropStack{Reason: l["drop_reason"], Category: l["drop_category"], Func: l["func"], DropsPerSec: sm.Value})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].DropsPerSec > out[j].DropsPerSec })
+	// #447 다단 tie-break (buildDropFlows 와 동일 취지). 동률은 func / reason / category 사전순.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].DropsPerSec != out[j].DropsPerSec {
+			return out[i].DropsPerSec > out[j].DropsPerSec
+		}
+		if out[i].Func != out[j].Func {
+			return out[i].Func < out[j].Func
+		}
+		if out[i].Reason != out[j].Reason {
+			return out[i].Reason < out[j].Reason
+		}
+		return out[i].Category < out[j].Category
+	})
 	if len(out) > limit {
 		out = out[:limit]
 	}

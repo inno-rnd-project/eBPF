@@ -226,3 +226,18 @@ func TestGpuStatus_MergedDeviceQuery(t *testing.T) {
 		t.Errorf("쿼리 수=%d want <=14 (병합 효과)", len(q.queries))
 	}
 }
+
+// TestGpuIndexLess_Numeric은 #447의 gpu_index 수치 정렬을 검증한다. 종전 문자열 비교는 10장
+// 이상에서 "10" < "2"로 어긋났다.
+func TestGpuIndexLess_Numeric(t *testing.T) {
+	if !gpuIndexLess("2", "10") {
+		t.Errorf("2 < 10 이어야 함 (수치 비교)")
+	}
+	if gpuIndexLess("10", "2") {
+		t.Errorf("10 > 2 이어야 함")
+	}
+	// 비수치 라벨 방어: 사전순 fallback.
+	if !gpuIndexLess("a", "b") {
+		t.Errorf("비수치는 사전순")
+	}
+}

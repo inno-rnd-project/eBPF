@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -475,11 +476,23 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 		if resp.Devices[i].Node != resp.Devices[j].Node {
 			return resp.Devices[i].Node < resp.Devices[j].Node
 		}
-		return resp.Devices[i].GpuIndex < resp.Devices[j].GpuIndex
+		return gpuIndexLess(resp.Devices[i].GpuIndex, resp.Devices[j].GpuIndex)
 	})
 
 	resp.Summary = summarizeGpuStatus(resp)
 	apicommon.WriteJSON(w, resp)
+}
+
+// gpuIndexLess는 gpu_index 라벨(수치 문자열)의 정렬 비교다(#447). 종전 문자열 사전순 비교는
+// 10장 이상 노드에서 "10" < "2"로 어긋났다. 양쪽 모두 수치면 수치로, 아니면(비정상 라벨 방어)
+// 사전순으로 비교한다.
+func gpuIndexLess(a, b string) bool {
+	ai, aerr := strconv.Atoi(a)
+	bi, berr := strconv.Atoi(b)
+	if aerr == nil && berr == nil {
+		return ai < bi
+	}
+	return a < b
 }
 
 // summarizeGpuStatus 는 사용률 최고 device 기준 한 줄 요약을 만든다.

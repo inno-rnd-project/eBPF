@@ -140,3 +140,34 @@ func TestDrops_NilQuerier(t *testing.T) {
 		t.Errorf("resp=%+v want empty/false (nil querier)", resp)
 	}
 }
+
+// TestBuildDropFlows_DeterministicTieOrder는 #447의 정렬 결정성을 검증한다. 종전에는 rate 단일
+// 키의 불안정 정렬이라 동률 항목의 순서가 폴링마다 뒤바뀌었다. 동률 3건이 5-tuple 사전순으로
+// 고정되는지 단정한다.
+func TestBuildDropFlows_DeterministicTieOrder(t *testing.T) {
+	mk := func(srcIP string) correlation.InstantSample {
+		return correlation.InstantSample{Labels: map[string]string{
+			"node": "n1", "src_ip": srcIP, "src_port": "1", "dst_ip": "10.0.0.9",
+			"dst_port": "80", "drop_reason": "r",
+		}, Value: 5}
+	}
+	for i := 0; i < 10; i++ {
+		out := buildDropFlows([]correlation.InstantSample{mk("10.0.0.3"), mk("10.0.0.1"), mk("10.0.0.2")}, nil, "", 10)
+		if len(out) != 3 || out[0].SrcIP != "10.0.0.1" || out[1].SrcIP != "10.0.0.2" || out[2].SrcIP != "10.0.0.3" {
+			t.Fatalf("call %d: order=%v want src_ip 사전순 고정", i+1, []string{out[0].SrcIP, out[1].SrcIP, out[2].SrcIP})
+		}
+	}
+}
+
+// TestBuildDropStacks_DeterministicTieOrder는 동률 stack이 func 사전순으로 고정되는지 단정한다.
+func TestBuildDropStacks_DeterministicTieOrder(t *testing.T) {
+	mk := func(fn string) correlation.InstantSample {
+		return correlation.InstantSample{Labels: map[string]string{"func": fn, "drop_reason": "r"}, Value: 2}
+	}
+	for i := 0; i < 10; i++ {
+		out := buildDropStacks([]correlation.InstantSample{mk("tcp_v4_rcv"), mk("kfree_skb"), mk("nf_hook_slow")}, 10)
+		if len(out) != 3 || out[0].Func != "kfree_skb" || out[1].Func != "nf_hook_slow" || out[2].Func != "tcp_v4_rcv" {
+			t.Fatalf("call %d: order 비결정", i+1)
+		}
+	}
+}
