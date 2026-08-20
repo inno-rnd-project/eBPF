@@ -7,7 +7,6 @@ import (
 	"math"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -19,9 +18,13 @@ import (
 // 원인 가중치 순위로 합성한다. recording rule (gpu_idle_cause_weight:5m 계열) 을 instant query 로 읽어
 // Grafana 에만 있던 신호를 API 로 노출한다.
 type GpuIdleResponse struct {
-	GeneratedAt      string               `json:"generated_at"`
-	Window           string               `json:"window"`
-	Scope            string               `json:"scope"`
+	GeneratedAt string `json:"generated_at"`
+	Window      string `json:"window"`
+	Scope       string `json:"scope"`
+	// NodeIgnored 는 scope 가 node 가 아닌 요청에 node 파라미터가 함께 왔을 때 true 다 (#447).
+	// node 필터는 scope=node 전용이라 그 외 scope 에서는 적용되지 않는데, 종전에는 무시 사실이
+	// 응답에 드러나지 않아 소비자가 필터가 적용된 것으로 오독할 수 있었다.
+	NodeIgnored      bool                 `json:"node_ignored,omitempty"`
 	Nodes            []GpuNodeIdle        `json:"nodes"`
 	Cluster          *GpuIdleAttribution  `json:"cluster"`
 	NodeAttributions []GpuNodeAttribution `json:"node_attributions,omitempty"`
@@ -81,7 +84,7 @@ type GpuVictimIdle struct {
 // @Tags         gpu
 // @Produce      json
 // @Param        scope  query  string  false  "cluster 또는 node 또는 pod (기본 cluster)"
-// @Param        node   query  string  false  "scope=node 단일 노드 필터 (DNS-1123 형식, 생략 시 전체 노드)"
+// @Param        node   query  string  false  "scope=node 단일 노드 필터 (DNS-1123 형식, 생략 시 전체 노드). 다른 scope 에서는 적용되지 않고 node_ignored=true 로 표기된다"
 // @Param        limit  query  int     false  "scope=pod 상위 N victim (1-100, 기본 10)"
 // @Param        at         query  string  false  "평가 시점 (RFC3339 또는 unix seconds, 생략 시 현재)"
 // @Success      200  {object}  GpuIdleResponse
@@ -102,14 +105,13 @@ func (h *SynthesisHandler) GetGpuIdle(w http.ResponseWriter, r *http.Request) {
 		apicommon.WriteError(w, http.StatusBadRequest, "invalid_node", err.Error())
 		return
 	}
-	limit := 10
-	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > 100 {
-		limit = 100
+	// #447 limit 파싱 통일. 종전에는 파싱 오류를 침묵 흡수해 기본값을 썼는데, swagger 가
+	// 범위를 명시하므로 다른 목록 핸들러(flows / drops / incidents)와 동일하게 파싱 불가를
+	// 400 으로 돌려준다. 범위 초과 clamp 와 기본값 정책은 ParseLimit 이 동일하게 유지한다.
+	limit, lok := apicommon.ParseLimit(r, 10, 100)
+	if !lok {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_limit", "limit 은 정수여야 합니다")
+		return
 	}
 
 	evalCtx, evalAt, ok := applyAtParam(w, r, r.Context())
@@ -135,6 +137,9 @@ func (h *SynthesisHandler) GetGpuIdle(w http.ResponseWriter, r *http.Request) {
 		nodeSelector := ""
 		if scope == "node" && node != "" {
 			nodeSelector = fmt.Sprintf("{node=%q}", node)
+		} else if node != "" {
+			// #447 무시 사실을 응답에 표기한다. 필터 미적용 조회 자체는 종전과 동일하다.
+			resp.NodeIgnored = true
 		}
 
 		// #404 필수/부가 분리. 종전에는 전 쿼리를 err == nil 조건에 흡수해 백엔드 전면 장애가 200 과

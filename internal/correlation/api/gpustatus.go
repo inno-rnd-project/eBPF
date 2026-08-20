@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -109,11 +110,12 @@ var gpuPerfThrottleReasons = map[string]bool{
 }
 
 // gpuIdleUtilizationThreshold 는 device idle 판정 임계 (%) 다. node:gpu_idle:5m rule 의 `< 20`
-// bool 비교와 동일 값이며 rule 이 바뀌면 함께 갱신한다.
+// bool 비교와 동일 값이며 rule 이 바뀌면 함께 갱신한다. Go 측 단일 진실원은 본 상수 하나다(#447).
 const gpuIdleUtilizationThreshold = 20
 
 // gpuDeviceStatus 는 device 3단 판정 (#279) 이다. 성능성 throttle 활성이면 degraded, slowdown 임계
-// 의 90% 이상 온도 또는 노드 유의미 NVML 오류율 초과 (alert 임계 1/s) 면 warning, 그 외 healthy 다.
+// 의 90% 이상 온도 또는 노드 유의미 NVML 오류율 초과 (agentNvmlErrorRatePerSec, alert 와 공유) 면
+// warning, 그 외 healthy 다.
 func gpuDeviceStatus(d *GpuDevice, nodeNvmlRate float64) string {
 	for _, r := range d.ThrottleReasons {
 		if gpuPerfThrottleReasons[r] {
@@ -125,7 +127,7 @@ func gpuDeviceStatus(d *GpuDevice, nodeNvmlRate float64) string {
 			return "warning"
 		}
 	}
-	if nodeNvmlRate > 1 {
+	if nodeNvmlRate > agentNvmlErrorRatePerSec {
 		return "warning"
 	}
 	return "healthy"
@@ -474,11 +476,23 @@ func (h *SynthesisHandler) GetGpuStatus(w http.ResponseWriter, r *http.Request) 
 		if resp.Devices[i].Node != resp.Devices[j].Node {
 			return resp.Devices[i].Node < resp.Devices[j].Node
 		}
-		return resp.Devices[i].GpuIndex < resp.Devices[j].GpuIndex
+		return gpuIndexLess(resp.Devices[i].GpuIndex, resp.Devices[j].GpuIndex)
 	})
 
 	resp.Summary = summarizeGpuStatus(resp)
 	apicommon.WriteJSON(w, resp)
+}
+
+// gpuIndexLess는 gpu_index 라벨(수치 문자열)의 정렬 비교다(#447). 종전 문자열 사전순 비교는
+// 10장 이상 노드에서 "10" < "2"로 어긋났다. 양쪽 모두 수치면 수치로, 아니면(비정상 라벨 방어)
+// 사전순으로 비교한다.
+func gpuIndexLess(a, b string) bool {
+	ai, aerr := strconv.Atoi(a)
+	bi, berr := strconv.Atoi(b)
+	if aerr == nil && berr == nil {
+		return ai < bi
+	}
+	return a < b
 }
 
 // summarizeGpuStatus 는 사용률 최고 device 기준 한 줄 요약을 만든다.

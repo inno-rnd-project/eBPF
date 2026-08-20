@@ -426,12 +426,6 @@ func (h *Handler) ListCrossNode(w http.ResponseWriter, r *http.Request) {
 
 	limit, offset := apicommon.ParsePagination(r)
 	paged := apicommon.ApplyPagination(filtered, limit, offset)
-	// apicommon.ApplyPagination 이 빈 입력 또는 offset 초과 시 nil 슬라이스 를 반환 할 수 있어
-	// JSON 직렬화 가 "items": null 로 떨어질 위험 이 있다. graceful empty response 보장 위해
-	// nil 시 빈 슬라이스 로 정규화 해 응답 schema 가 항상 "items": [] 형태 를 유지 하게 한다.
-	if paged == nil {
-		paged = []correlation.NodeInterference{}
-	}
 
 	resp := CrossNodeListResponse{
 		Items: paged,
@@ -513,12 +507,6 @@ func (h *Handler) ListServiceImpact(w http.ResponseWriter, r *http.Request) {
 
 	limit, offset := apicommon.ParsePagination(r)
 	paged := apicommon.ApplyPagination(filtered, limit, offset)
-	// apicommon.ApplyPagination 이 빈 입력 또는 offset 초과 시 nil 슬라이스를 반환할 수 있어 JSON
-	// 직렬화가 "items": null 로 떨어질 위험이 있다. graceful empty response 보장을 위해 nil 시 빈
-	// 슬라이스로 정규화해 응답 schema 가 항상 "items": [] 형태를 유지하게 한다.
-	if paged == nil {
-		paged = []correlation.ServiceImpact{}
-	}
 
 	resp := ServiceImpactListResponse{
 		Items: paged,
@@ -618,12 +606,6 @@ func (h *Handler) ListCrossLevel(w http.ResponseWriter, r *http.Request) {
 
 	limit, offset := apicommon.ParsePagination(r)
 	paged := apicommon.ApplyPagination(filtered, limit, offset)
-	// apicommon.ApplyPagination 이 빈 입력 또는 offset 초과 시 nil 슬라이스를 반환할 수 있어 JSON
-	// 직렬화가 "items": null 로 떨어질 위험이 있다. graceful empty response 보장을 위해 nil 시 빈
-	// 슬라이스로 정규화해 응답 schema 가 항상 "items": [] 형태를 유지하게 한다.
-	if paged == nil {
-		paged = []correlation.CrossLevel{}
-	}
 
 	resp := CrossLevelListResponse{
 		Items: paged,

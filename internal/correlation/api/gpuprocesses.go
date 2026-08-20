@@ -55,7 +55,7 @@ func (h *SynthesisHandler) GetGpuProcesses(w http.ResponseWriter, r *http.Reques
 	}
 
 	resp := GpuProcessesResponse{
-		GeneratedAt: time.Now().Format(time.RFC3339),
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Node:        node,
 		Processes:   []gpuobstypes.GPUProcessDetail{},
 	}

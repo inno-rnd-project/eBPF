@@ -227,3 +227,30 @@ func TestGpuIdle_NilQuerier(t *testing.T) {
 		t.Errorf("resp=%+v want empty nodes/nil cluster (nil querier)", resp)
 	}
 }
+
+// TestGpuIdle_NodeIgnoredMarker는 #447의 무시 표기를 검증한다. scope=cluster에 node를 주면
+// 필터는 적용되지 않고 node_ignored=true가 실리며, scope=node에서는 실리지 않는다.
+func TestGpuIdle_NodeIgnoredMarker(t *testing.T) {
+	q := (&fakeQuerier{}).on("node:gpu_idle:5m", sample(0.5, "node", "n1"))
+	h := NewSynthesisHandler(q, nil, nil)
+
+	rec := httptest.NewRecorder()
+	h.GetGpuIdle(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-idle?scope=cluster&node=n1", nil))
+	var resp GpuIdleResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.NodeIgnored {
+		t.Errorf("scope=cluster + node 에서 node_ignored=true 여야 함")
+	}
+
+	rec = httptest.NewRecorder()
+	h.GetGpuIdle(rec, httptest.NewRequest(http.MethodGet, "/api/v1/gpu-idle?scope=node&node=n1", nil))
+	resp = GpuIdleResponse{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.NodeIgnored {
+		t.Errorf("scope=node 에서는 node_ignored 미표기여야 함")
+	}
+}

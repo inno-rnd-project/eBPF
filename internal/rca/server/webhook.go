@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"netobs/internal/apicommon"
 	rcametrics "netobs/internal/rca/metrics"
 	"netobs/internal/rca/registry"
 	"netobs/internal/rca/store"
@@ -82,7 +83,8 @@ func (r *recentAlerts) suppress(fp string, now time.Time) bool {
 
 // fingerprint 는 alert labels 의 결정적 지문이다. 키 정렬 후 key=value 를 이어 붙여 Alertmanager
 // 재전송 (동일 labels) 이 같은 지문을 얻게 한다. 값에 구분자 (0x1f) 가 들어가는 극단 케이스의
-// 충돌은 억제가 잘못돼도 60s 뒤 자연 해소되는 무해한 방향이라 해시 없이 단순 결합으로 둔다.
+// 충돌은 억제가 잘못돼도 dedupeWindow(30s) 뒤 자연 해소되는 무해한 방향이라 해시 없이 단순
+// 결합으로 둔다.
 func fingerprint(labels map[string]string) string {
 	keys := make([]string, 0, len(labels))
 	for k := range labels {
@@ -100,9 +102,9 @@ func fingerprint(labels map[string]string) string {
 }
 
 // NewWebhookHandler 는 POST /webhook 핸들러를 만든다. payload 의 firing 알람만 처리하고
-// resolved 알람은 emit 없이 200 으로 ack 한다. mapping 미등록 alert 는 store 에는 raw labels
-// echo back 한 RCASummary 를 그대로 보관해 silent drop 을 회피하지만, metrics 에는 emit 하지
-// 않아 등록 alert 종으로 라벨 카디널리티가 폐쇄된다. confidenceThreshold 는 #122 의 false
+// resolved 알람은 emit 없이 200 으로 ack 한다. mapping 미등록 alert 는 store 에 AlertName 만
+// 채운 RCASummary 로 보관해 도달 여부의 진단 표면을 남기고 (raw labels 는 보존하지 않는다),
+// metrics 에는 emit 하지 않아 등록 alert 종으로 라벨 카디널리티가 폐쇄된다. confidenceThreshold 는 #122 의 false
 // positive guard 임계 다. RCASummary.ConfidenceScore 가 본 값 미만 인 등록 alert 는 metrics emit
 // 을 skip 하고 store 에는 그대로 보관 + skipped_total counter 만 증가 한다.
 //
@@ -114,7 +116,7 @@ func NewWebhookHandler(reg *registry.Registry, src registry.Sources, st *store.S
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var p alertmanagerPayload
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxWebhookPayloadBytes)).Decode(&p); err != nil {
-			http.Error(w, "invalid payload: "+err.Error(), http.StatusBadRequest)
+			apicommon.WriteError(w, http.StatusBadRequest, "invalid_payload", "payload 파싱 실패: "+err.Error())
 			return
 		}
 
@@ -233,7 +235,9 @@ func NewRCAHandler(st *store.Store) http.Handler {
 		}
 		entry, ok := st.Get(alertname)
 		if !ok {
-			http.Error(w, "no summary for alert "+alertname, http.StatusNotFound)
+			// #447 표준 ErrorBody. 종전 http.Error 는 위에서 세팅한 application/json 을
+			// text/plain 으로 덮어써 JSON 소비자의 파싱 실패를 유발했다.
+			apicommon.WriteError(w, http.StatusNotFound, "unknown_alert", "alert 의 summary 가 없습니다: "+alertname)
 			return
 		}
 		if err := json.NewEncoder(w).Encode(entry); err != nil {

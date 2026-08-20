@@ -226,8 +226,8 @@ func TestRCAHandler_UnknownAlertReturns404(t *testing.T) {
 }
 
 // TestWebhook_UnknownAlertEchoesRawLabels 는 mapping 미등록 alert 가 silent drop 되지 않고
-// store 에 raw label echo 형태의 entry 가 저장되는지 검증한다.
-func TestWebhook_UnknownAlertEchoesRawLabels(t *testing.T) {
+// store 에 AlertName 만 채운 entry 가 저장되는지 검증한다 (raw labels 는 보존하지 않는다).
+func TestWebhook_UnknownAlertStoredForDiagnostics(t *testing.T) {
 	mux, st, _, _ := fixtures(t)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -240,8 +240,8 @@ func TestWebhook_UnknownAlertEchoesRawLabels(t *testing.T) {
 }
 
 // TestWebhook_UnknownAlertSkipsMetricsEmit 는 mapping 미등록 alert 가 store 에는 저장되지만
-// metrics emit 은 건너뛰어 rca_summary_emitted_total 의 alert_name 라벨이 9 종으로 폐쇄되는지
-// 검증한다. 외부에서 임의 alertname 으로 webhook 이 도달해도 cardinality 가 폭증하지 않는다.
+// metrics emit 은 건너뛰어 rca_summary_emitted_total 의 alert_name 라벨이 등록 11 종으로 폐쇄
+// 되는지 검증한다. 외부에서 임의 alertname 으로 webhook 이 도달해도 cardinality 가 폭증하지 않는다.
 func TestWebhook_UnknownAlertSkipsMetricsEmit(t *testing.T) {
 	mux, _, met, _ := fixtures(t)
 	srv := httptest.NewServer(mux)
@@ -544,4 +544,48 @@ func grepLine(body, name string) string {
 		}
 	}
 	return "(없음)"
+}
+
+// TestRCAErrorBodyStandardized는 #447의 표준 ErrorBody 통일을 검증한다. 미존재 alert 404와
+// method 불일치 405가 correlation API와 동일한 {"error":{"code","message"}} JSON으로 오는지
+// 단정한다. 종전 http.Error는 text/plain 평문이라 JSON 소비자의 파싱이 깨졌다.
+func TestRCAErrorBodyStandardized(t *testing.T) {
+	mux, _, _, _ := fixtures(t)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/rca?alert=NoSuchAlert")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status=%d want 404", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("Content-Type=%q want application/json", ct)
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("ErrorBody decode 실패 (평문 회귀?): %v", err)
+	}
+	if body.Error.Code != "unknown_alert" {
+		t.Errorf("code=%q want unknown_alert", body.Error.Code)
+	}
+
+	resp2, err := http.Get(srv.URL + "/webhook")
+	if err != nil {
+		t.Fatalf("GET /webhook: %v", err)
+	}
+	defer func() { _ = resp2.Body.Close() }()
+	if resp2.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("status=%d want 405", resp2.StatusCode)
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&body); err != nil || body.Error.Code != "method_not_allowed" {
+		t.Errorf("405 ErrorBody 미정합: err=%v code=%q", err, body.Error.Code)
+	}
 }

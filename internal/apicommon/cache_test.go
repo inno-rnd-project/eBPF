@@ -97,6 +97,7 @@ func TestResponseCache_InflightSharing(t *testing.T) {
 
 	var wg sync.WaitGroup
 	bodies := make([]string, 8)
+	headers := make([]string, 8)
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func(i int) {
@@ -104,6 +105,7 @@ func TestResponseCache_InflightSharing(t *testing.T) {
 			rec := httptest.NewRecorder()
 			wrapped.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/overview", nil))
 			bodies[i] = rec.Body.String()
+			headers[i] = rec.Header().Get("X-Cache")
 		}(i)
 	}
 	time.Sleep(30 * time.Millisecond)
@@ -117,6 +119,21 @@ func TestResponseCache_InflightSharing(t *testing.T) {
 		if b != "shared" {
 			t.Errorf("bodies[%d]=%q want shared", i, b)
 		}
+	}
+	// #447 병합 요청은 X-Cache=MERGED 로 TTL 적중(HIT)과 구분된다. 선행 1건은 MISS 다.
+	miss, merged := 0, 0
+	for _, h := range headers {
+		switch h {
+		case "MISS":
+			miss++
+		case "MERGED":
+			merged++
+		default:
+			t.Errorf("X-Cache=%q want MISS 또는 MERGED", h)
+		}
+	}
+	if miss != 1 || merged != 7 {
+		t.Errorf("MISS=%d MERGED=%d want 1/7", miss, merged)
 	}
 }
 

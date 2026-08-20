@@ -266,7 +266,7 @@
         },
         "/api/v1/drops": {
             "get": {
-                "description": "netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction 별 drop rate 랭킹을 돌려준다. NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 가 켜진 경우 5-tuple flow(pod·src/dst ip:port·마지막 발생 시점)와 커널 stack 함수 상세가 flows/stacks 에 채워지며, flow_detail_enabled 로 활성 여부를 알린다. cilium_drops 는 CNI(BPF) 계층 drop(NetworkPolicy 거부 등, 커널 kfree_skb 경로의 사각)을 cilium_drop_count_total 로 합성한 node 수준 신호이며 pod 귀속이 없다. retrans 는 workload 단위 TCP 재전송 랭킹으로 drop 과 함께 패킷 손실 계열 신호를 한 응답으로 묶는다.",
+                "description": "netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction 별 drop rate 랭킹을 돌려준다. NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 가 켜진 경우 5-tuple flow(pod·src/dst ip:port·마지막 발생 시점)와 커널 stack 함수 상세가 flows/stacks 에 채워진다. flow_detail_enabled 는 allow-list 설정 여부가 아니라 이번 조회 창에 flow/stack 데이터가 존재했는지를 반영하므로, allow-list 가 켜져 있어도 drop 이 없으면 false 다. cilium_drops 는 CNI(BPF) 계층 drop(NetworkPolicy 거부 등, 커널 kfree_skb 경로의 사각)을 cilium_drop_count_total 로 합성한 node 수준 신호이며 pod 귀속이 없다. retrans 는 workload 단위 TCP 재전송 랭킹으로 drop 과 함께 패킷 손실 계열 신호를 한 응답으로 묶는다.",
                 "produces": [
                     "application/json"
                 ],
@@ -433,7 +433,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "scope=node 단일 노드 필터 (DNS-1123 형식, 생략 시 전체 노드)",
+                        "description": "scope=node 단일 노드 필터 (DNS-1123 형식, 생략 시 전체 노드). 다른 scope 에서는 적용되지 않고 node_ignored=true 로 표기된다",
                         "name": "node",
                         "in": "query"
                     },
@@ -917,6 +917,12 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/internal_correlation_api.MemoryResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/netobs_internal_apicommon.ErrorBody"
                         }
                     },
                     "500": {
@@ -1883,6 +1889,13 @@
                 "summary": {
                     "type": "string"
                 },
+                "total": {
+                    "description": "Total 은 limit 적용 전 전체 pod 수, Truncated 는 pods 가 잘렸는지다 (#352 패턴, #447 보강).\nnodes 는 클러스터 합계라 절단 대상이 아니다.",
+                    "type": "integer"
+                },
+                "truncated": {
+                    "type": "boolean"
+                },
                 "window": {
                     "type": "string"
                 }
@@ -2101,6 +2114,7 @@
                     }
                 },
                 "flow_detail_enabled": {
+                    "description": "FlowDetailEnabled 는 이번 조회 창에 flow/stack 시리즈가 존재했는지다. allow-list 설정\n여부가 아니라 데이터 유무를 반영한다 (#447 서술 정정). exporter 는 agent 설정을 조회할\n경로가 없어 설정 여부 자체는 판정할 수 없다.",
                     "type": "boolean"
                 },
                 "flows": {
@@ -2455,6 +2469,10 @@
                     "items": {
                         "$ref": "#/definitions/internal_correlation_api.GpuNodeAttribution"
                     }
+                },
+                "node_ignored": {
+                    "description": "NodeIgnored 는 scope 가 node 가 아닌 요청에 node 파라미터가 함께 왔을 때 true 다 (#447).\nnode 필터는 scope=node 전용이라 그 외 scope 에서는 적용되지 않는데, 종전에는 무시 사실이\n응답에 드러나지 않아 소비자가 필터가 적용된 것으로 오독할 수 있었다.",
+                    "type": "boolean"
                 },
                 "nodes": {
                     "type": "array",
@@ -2913,6 +2931,13 @@
                 },
                 "summary": {
                     "type": "string"
+                },
+                "total": {
+                    "description": "Total 은 limit 적용 전 전체 pod 수, Truncated 는 잘렸는지다 (#352 패턴, #447 보강). 종전에는\n조용히 잘라 소비자가 절단 여부를 알 수 없었다.",
+                    "type": "integer"
+                },
+                "truncated": {
+                    "type": "boolean"
                 },
                 "window": {
                     "type": "string"
@@ -3850,7 +3875,7 @@
             "type": "object",
             "properties": {
                 "cause_score": {
-                    "description": "CauseScore 는 점수형 cause (pcie_saturation, dcgm_pcie_replay, nccl_collective_stall,\nhost_compute_stall, cgroup_contention) 의 노드 score (0-1) 다.",
+                    "description": "CauseScore 는 점수형 cause (pcie_saturation, dcgm_pcie_replay, nccl_collective_stall,\nhost_compute_stall, cgroup_contention) 의 score (0-1) 다. node: 접두 rule 은 노드 단일\n시리즈, pod: 접두 rule (host_compute_stall, cgroup_contention) 은 노드로 좁힌 pod max 다.",
                     "type": "number"
                 },
                 "cpu_throttle_ratio": {

@@ -13,6 +13,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"netobs/internal/apicommon"
 )
 
 // Options 는 NewMux 가 받는 외부 의존을 묶는다. Webhook 과 RCA 는 mapping registry + Store +
@@ -46,8 +48,20 @@ func NewMux(opts Options) http.Handler {
 		_, _ = w.Write([]byte("ready\n"))
 	})
 
-	mux.Handle("/webhook", methodGate(http.MethodPost, opts.Webhook))
-	mux.Handle("/rca", methodGate(http.MethodGet, opts.RCA))
+	// #447 correlation API 와 규약 통일. API 성 경로(/webhook, /rca)에 요청 로그와 panic 복구
+	// 미들웨어를 적용하고 에러 응답을 표준 ErrorBody 로 통일한다. /healthz 와 /readyz 는 kubelet
+	// probe 전용 평문 규약이라 제외한다. MethodGuard 는 조회 전용(GET/HEAD/OPTIONS)이라 POST 를
+	// 받는 /webhook 에 쓸 수 없어 로컬 methodGate 가 method 게이트를 유지한다.
+	mux.Handle("/webhook", apicommon.Chain(
+		methodGate(http.MethodPost, opts.Webhook),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+	))
+	mux.Handle("/rca", apicommon.Chain(
+		methodGate(http.MethodGet, opts.RCA),
+		apicommon.LoggingMiddleware,
+		apicommon.RecoverMiddleware,
+	))
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -77,11 +91,11 @@ func methodGate(method string, inner http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != method {
 			w.Header().Set("Allow", method)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			apicommon.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "허용 method: "+method)
 			return
 		}
 		if inner == nil {
-			http.Error(w, "not implemented", http.StatusNotImplemented)
+			apicommon.WriteError(w, http.StatusNotImplemented, "not_implemented", "핸들러가 구성되지 않았습니다")
 			return
 		}
 		inner.ServeHTTP(w, r)

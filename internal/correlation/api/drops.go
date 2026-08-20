@@ -31,9 +31,12 @@ type DropsResponse struct {
 	CiliumDrops []CiliumDropGroup `json:"cilium_drops"`
 	// Retrans 는 #226 의 workload 단위 TCP 재전송 랭킹이다. drop 과 함께 패킷 손실 계열 신호라 한
 	// 응답으로 묶는다. 항상 수집되는 netobs_retrans_events_labeled_total 기반이다.
-	Retrans           []RetransGroup `json:"retrans"`
-	FlowDetailEnabled bool           `json:"flow_detail_enabled"`
-	Summary           string         `json:"summary"`
+	Retrans []RetransGroup `json:"retrans"`
+	// FlowDetailEnabled 는 이번 조회 창에 flow/stack 시리즈가 존재했는지다. allow-list 설정
+	// 여부가 아니라 데이터 유무를 반영한다 (#447 서술 정정). exporter 는 agent 설정을 조회할
+	// 경로가 없어 설정 여부 자체는 판정할 수 없다.
+	FlowDetailEnabled bool   `json:"flow_detail_enabled"`
+	Summary           string `json:"summary"`
 }
 
 // DropGroup 은 workload 단위 drop 집계다 (항상 수집). direction 별 reason / category 와 drops/sec 를 담는다.
@@ -98,7 +101,7 @@ type RetransGroup struct {
 
 // GetDrops godoc
 // @Summary      패킷 drop 분석
-// @Description  netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction 별 drop rate 랭킹을 돌려준다. NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 가 켜진 경우 5-tuple flow(pod·src/dst ip:port·마지막 발생 시점)와 커널 stack 함수 상세가 flows/stacks 에 채워지며, flow_detail_enabled 로 활성 여부를 알린다. cilium_drops 는 CNI(BPF) 계층 drop(NetworkPolicy 거부 등, 커널 kfree_skb 경로의 사각)을 cilium_drop_count_total 로 합성한 node 수준 신호이며 pod 귀속이 없다. retrans 는 workload 단위 TCP 재전송 랭킹으로 drop 과 함께 패킷 손실 계열 신호를 한 응답으로 묶는다.
+// @Description  netobs_drop_events_labeled_total(항상 수집) 기반으로 node·workload·reason·category·direction 별 drop rate 랭킹을 돌려준다. NETOBS_DROP_FLOW_ALLOW_NAMESPACES allow-list 가 켜진 경우 5-tuple flow(pod·src/dst ip:port·마지막 발생 시점)와 커널 stack 함수 상세가 flows/stacks 에 채워진다. flow_detail_enabled 는 allow-list 설정 여부가 아니라 이번 조회 창에 flow/stack 데이터가 존재했는지를 반영하므로, allow-list 가 켜져 있어도 drop 이 없으면 false 다. cilium_drops 는 CNI(BPF) 계층 drop(NetworkPolicy 거부 등, 커널 kfree_skb 경로의 사각)을 cilium_drop_count_total 로 합성한 node 수준 신호이며 pod 귀속이 없다. retrans 는 workload 단위 TCP 재전송 랭킹으로 drop 과 함께 패킷 손실 계열 신호를 한 응답으로 묶는다.
 // @Tags         network
 // @Produce      json
 // @Param        namespace  query  string  false  "src_namespace 필터 (생략 시 전체)"
@@ -250,7 +253,30 @@ func buildDropFlows(rate, lastTs []correlation.InstantSample, nsFilter string, l
 		}
 		out = append(out, f)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].DropsPerSec > out[j].DropsPerSec })
+	// #447 다단 tie-break. 같은 파일의 buildDropGroups / buildCiliumDrops 관례와 동일하게 동률을
+	// 식별 필드 사전순으로 고정한다. rate 동률(특히 저부하 구간의 같은 값)에서 순서가 폴링마다
+	// 뒤바뀌어 프론트 목록이 흔들리던 비결정성을 제거한다 (sort.Slice 는 불안정 정렬).
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].DropsPerSec != out[j].DropsPerSec {
+			return out[i].DropsPerSec > out[j].DropsPerSec
+		}
+		if out[i].Node != out[j].Node {
+			return out[i].Node < out[j].Node
+		}
+		if out[i].SrcIP != out[j].SrcIP {
+			return out[i].SrcIP < out[j].SrcIP
+		}
+		if out[i].SrcPort != out[j].SrcPort {
+			return out[i].SrcPort < out[j].SrcPort
+		}
+		if out[i].DstIP != out[j].DstIP {
+			return out[i].DstIP < out[j].DstIP
+		}
+		if out[i].DstPort != out[j].DstPort {
+			return out[i].DstPort < out[j].DstPort
+		}
+		return out[i].Reason < out[j].Reason
+	})
 	if len(out) > limit {
 		out = out[:limit]
 	}
@@ -266,7 +292,19 @@ func buildDropStacks(samples []correlation.InstantSample, limit int) []DropStack
 		l := sm.Labels
 		out = append(out, DropStack{Reason: l["drop_reason"], Category: l["drop_category"], Func: l["func"], DropsPerSec: sm.Value})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].DropsPerSec > out[j].DropsPerSec })
+	// #447 다단 tie-break (buildDropFlows 와 동일 취지). 동률은 func / reason / category 사전순.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].DropsPerSec != out[j].DropsPerSec {
+			return out[i].DropsPerSec > out[j].DropsPerSec
+		}
+		if out[i].Func != out[j].Func {
+			return out[i].Func < out[j].Func
+		}
+		if out[i].Reason != out[j].Reason {
+			return out[i].Reason < out[j].Reason
+		}
+		return out[i].Category < out[j].Category
+	})
 	if len(out) > limit {
 		out = out[:limit]
 	}

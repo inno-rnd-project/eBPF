@@ -71,7 +71,10 @@ func (c *ResponseCache) Middleware(next http.Handler) http.Handler {
 		e, shared, raw := c.fetch(key, next, r)
 		switch {
 		case e != nil && shared:
-			writeCached(w, e, "HIT")
+			// #447 in-flight 병합은 TTL 적중과 다른 경로다(선행 요청의 결과를 기다려 공유).
+			// HIT 으로 합쳐 표기하면 운영자가 캐시 수명과 병합 빈도를 구분할 수 없어 별도
+			// 상태로 구분한다.
+			writeCached(w, e, "MERGED")
 		case e != nil:
 			writeCached(w, e, "MISS")
 		case raw != nil:
@@ -168,7 +171,8 @@ func cacheKey(r *http.Request) string {
 	return b.String()
 }
 
-// writeCached 는 저장된 응답을 내보낸다. X-Cache 헤더로 운영자가 캐시 적중을 확인한다.
+// writeCached 는 저장된 응답을 내보낸다. X-Cache 헤더로 운영자가 캐시 적중(HIT), 최초 실행
+// (MISS), in-flight 병합(MERGED)을 구분한다.
 func writeCached(w http.ResponseWriter, e *cacheEntry, status string) {
 	if e.contentType != "" {
 		w.Header().Set("Content-Type", e.contentType)

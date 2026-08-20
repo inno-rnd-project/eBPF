@@ -6,7 +6,6 @@ import (
 	"math"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -23,8 +22,12 @@ type BandwidthResponse struct {
 	Pods        []BandwidthPod `json:"pods"`
 	// Nodes 는 NIC 포화 판단 근거다. namespace 필터와 무관하게 항상 클러스터 전체 pod 합계로
 	// 산출해 필터로 합계가 왜곡되지 않게 한다.
-	Nodes   []BandwidthNode `json:"nodes"`
-	Summary string          `json:"summary"`
+	Nodes []BandwidthNode `json:"nodes"`
+	// Total 은 limit 적용 전 전체 pod 수, Truncated 는 pods 가 잘렸는지다 (#352 패턴, #447 보강).
+	// nodes 는 클러스터 합계라 절단 대상이 아니다.
+	Total     int    `json:"total"`
+	Truncated bool   `json:"truncated"`
+	Summary   string `json:"summary"`
 }
 
 // BandwidthPod 는 한 pod 의 방향·관점별 대역폭이다. NicTxBytesPerSec 는 NIC 관점 (skb 단위) TX 로,
@@ -76,14 +79,13 @@ func (h *SynthesisHandler) GetBandwidth(w http.ResponseWriter, r *http.Request) 
 		apicommon.WriteError(w, http.StatusBadRequest, "invalid_namespace", err.Error())
 		return
 	}
-	limit := 50
-	if v := strings.TrimSpace(q.Get("limit")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > 500 {
-		limit = 500
+	// #447 limit 파싱 통일. 종전에는 파싱 오류를 침묵 흡수해 기본값을 썼는데, swagger 가
+	// 범위를 명시하므로 다른 목록 핸들러(flows / drops / incidents)와 동일하게 파싱 불가를
+	// 400 으로 돌려준다. 범위 초과 clamp 와 기본값 정책은 ParseLimit 이 동일하게 유지한다.
+	limit, lok := apicommon.ParseLimit(r, 50, 500)
+	if !lok {
+		apicommon.WriteError(w, http.StatusBadRequest, "invalid_limit", "limit 은 정수여야 합니다")
+		return
 	}
 	node, err := parseNodeParam(strings.TrimSpace(q.Get("node")))
 	if err != nil {
@@ -174,8 +176,10 @@ func (h *SynthesisHandler) GetBandwidth(w http.ResponseWriter, r *http.Request) 
 		}
 		return resp.Pods[i].Pod < resp.Pods[j].Pod
 	})
+	resp.Total = len(resp.Pods)
 	if len(resp.Pods) > limit {
 		resp.Pods = resp.Pods[:limit]
+		resp.Truncated = true
 	}
 
 	nodes := map[string]*BandwidthNode{}

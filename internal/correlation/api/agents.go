@@ -56,7 +56,9 @@ type AgentHealth struct {
 // 함께 갱신한다.
 const (
 	agentInformerStaleSeconds = 300 // ObsAgentInformerStale: lag > 300s
-	agentNvmlErrorRatePerSec  = 1   // GPUObsAgentNvmlErrorsHigh: rate > 1/s
+	// agentNvmlErrorRatePerSec는 GPUObsAgentNvmlErrorsHigh의 rate > 1/s 임계다. agents 판정과
+	// gpu-status의 device warning 판정(gpuDeviceStatus)이 공유하는 단일 진실원이다(#447).
+	agentNvmlErrorRatePerSec = 1
 )
 
 // judgeAgentHealth 가 issues 로 방출하는 alertname 상수다(#445). issues 의 alertname 은 playbooks

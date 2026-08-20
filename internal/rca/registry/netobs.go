@@ -24,7 +24,6 @@ func mapNetObsDropBurst(ctx context.Context, labels map[string]string, sources S
 	dstPort := labelOr(labels, "dst_port", "")
 	proto := labelOr(labels, "protocol", "")
 	reason := labelOr(labels, "drop_reason", "")
-	node := labelOr(labels, "node", "")
 
 	summary := RCASummary{
 		DominantDimension: "network",
@@ -45,11 +44,9 @@ func mapNetObsDropBurst(ctx context.Context, labels map[string]string, sources S
 		if srcNS != "" {
 			dropFlows = sources.TopDropFlows(ctx, srcNS)
 		}
-		gpuSignal := 0.0
-		if node != "" {
-			gpuSignal = sources.GPUSignal(ctx, node)
-		}
-		summary.ConfidenceScore = sources.EvaluateConfidence(neighbors, dropFlows, gpuSignal)
+		// netobs_drop_burst:rate1m 은 5-tuple 단위 집계라 alert 라벨에 node 가 없어 GPU signal
+		// 조회 분기가 영구 미실행이었다 (#447 죽은 코드 제거). GPU 신호는 0 으로 고정된다.
+		summary.ConfidenceScore = sources.EvaluateConfidence(neighbors, dropFlows, 0)
 	}
 	return summary
 }
