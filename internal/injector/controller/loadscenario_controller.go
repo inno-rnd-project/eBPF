@@ -511,9 +511,10 @@ func (r *LoadScenarioReconciler) startRun(ctx context.Context, ls *injectorv1alp
 		}
 	}
 
-	if _, err := safety.AcquireLock(ctx, r.K8sClient, r.LockNamespace,
+	release, err := safety.AcquireLock(ctx, r.K8sClient, r.LockNamespace,
 		ls.Spec.TargetRef.Namespace, ls.Spec.TargetRef.Name, r.LockHolder,
-		ls.Spec.Duration.Duration*2); err != nil {
+		ls.Spec.Duration.Duration*2)
+	if err != nil {
 		if ls.Spec.ConcurrencyPolicy == injectorv1alpha1.ConcurrencyForbid {
 			scheduleTime := metav1.NewTime(startTime)
 			ls.Status.LastScheduleTime = &scheduleTime
@@ -522,8 +523,17 @@ func (r *LoadScenarioReconciler) startRun(ctx context.Context, ls *injectorv1alp
 		}
 		return fmt.Errorf("acquire lock: %w", err)
 	}
-	// AcquireLock 의 release func 는 본 시점 에 호출 하지 않는다. lease TTL=duration*2 만료 또는
-	// Running phase 종료 시점 의 forceReleaseLease 호출 로 정리 된다 (비동기 흐름).
+	// #458 lease 는 gen.Start 가 성공해 run 이 시작된 경우에만 유지한다. 그 경우 lease 는 TTL
+	// (duration*2) 만료 또는 Running phase 종료 시점 의 forceReleaseLease 로 정리 된다 (비동기 흐름).
+	// 시작 전에 실패하면 (target Pod 조회 실패, nodeName 빈 값, loadgen New / Start 실패) 여기서
+	// 해제한다. 종전에는 gen.Start 실패만 해제해 나머지 경로가 lease 를 최대 60분 남겼고, 기본
+	// Forbid 정책에서 그동안 같은 target 의 모든 시나리오가 skip 으로 봉쇄됐다.
+	started := false
+	defer func() {
+		if !started {
+			release()
+		}
+	}()
 
 	// target Pod fetch 후 nodeName 추출. cpu / memory / gpu loadgen 이 stress Pod 를 동일 node 에
 	// 강제 배치 하기 위해 Params.TargetNode 가 비어 있으면 안 된다.
@@ -553,10 +563,9 @@ func (r *LoadScenarioReconciler) startRun(ctx context.Context, ls *injectorv1alp
 		Owner: loadgen.SelfOwnerReference(r.SelfPodName, r.SelfPodNamespace, r.SelfPodUID, ls.Namespace),
 	}
 	if err := gen.Start(ctx, params); err != nil {
-		// stress Pod start 실패 시 lock 해제. 다음 run 의 lock 충돌 회피.
-		_ = r.forceReleaseLease(ctx, ls)
 		return fmt.Errorf("loadgen Start: %w", err)
 	}
+	started = true
 	// gen.Stop 은 본 함수 에서 호출 하지 않는다. Running phase 종료 시점 의 cleanupStressPods 가
 	// 라벨 매칭 으로 stress Pod 를 정리 한다.
 	return nil
