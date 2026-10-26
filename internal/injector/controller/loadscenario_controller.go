@@ -99,6 +99,8 @@ func (r *LoadScenarioReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	r.CronParser = defaultCronParser
 	r.Client = mgr.GetClient()
+	// #459 loadscenario_active_count 는 매니저 캐시 의 Running CR 수를 scrape 시점 에 센다.
+	setActiveCountReader(mgr.GetClient())
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&injectorv1alpha1.LoadScenario{}).
 		Complete(r)
@@ -300,10 +302,9 @@ func (r *LoadScenarioReconciler) handleIdle(ctx context.Context, ls *injectorv1a
 	ls.Status.RunState = injectorv1alpha1.RunStateRunning
 	setCondition(ls, "Ready", metav1.ConditionTrue, "ReconcileOK", "controller is reconciling scenario")
 	setCondition(ls, "Scheduled", metav1.ConditionTrue, "RunStarted", "stress Pod spawned, awaiting duration")
-	ActiveCount.Inc()
 	if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
-		// status update 실패 시에도 controller-runtime 의 재시도 흐름에 위임. ActiveCount 는 다음
-		// reconcile 의 cleanup 단계 에서 자연 정합 된다.
+		// status update 실패 시에도 controller-runtime 의 재시도 흐름에 위임. ActiveCount 는 영속된
+		// 상태 만 세므로 별도 보정이 필요 없다 (#459).
 		return ctrl.Result{}, updateErr
 	}
 	return ctrl.Result{RequeueAfter: ls.Spec.Duration.Duration + 5*time.Second}, nil
@@ -407,7 +408,6 @@ func (r *LoadScenarioReconciler) handleRunning(ctx context.Context, ls *injector
 		}
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
 	}
-	ActiveCount.Dec()
 
 	if ls.Spec.SpikeAlertAssertion && r.SpikeAsserter != nil {
 		// AwaitingSpikeAlert phase 진입. RunStartTime 을 polling 시작 시각 으로 재해석 한다.

@@ -1,8 +1,16 @@
 package controller
 
 import (
+	"context"
+	"math"
+	"sync/atomic"
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+
+	injectorv1alpha1 "netobs/api/v1alpha1"
 )
 
 // #102 controller self-observability metric 3 종. controller-runtime 의 manager 가 노출 하는 기본
@@ -19,13 +27,17 @@ var (
 		[]string{"result"},
 	)
 
-	// ActiveCount 는 현재 reconcile 진행 중 인 LoadScenario 개수 (blocking duration 안) 다. controller
-	// worker stall 감지 의 입력 신호.
-	ActiveCount = prometheus.NewGauge(
+	// ActiveCount 는 현재 run 진행 중 (RunState=Running) 인 LoadScenario 개수 다. controller worker
+	// stall 감지 의 입력 신호. #459 부터 전이 경로마다 Inc/Dec 하지 않고 scrape 시점 에 매니저 캐시 의
+	// Running CR 수를 센다. 종전 Inc/Dec 는 status 영속화 전에 수행되어 update 충돌 (상향 드리프트),
+	// 전이 실패 후 재시도 (이중 감산), 실행 중 삭제와 비정상 분기 (감산 누락), controller 재시작 (음수)
+	// 에서 실제와 어긋났다. 영속된 상태 만 세므로 모든 전이 경로 가 구조적 으로 정합 한다.
+	ActiveCount = prometheus.NewGaugeFunc(
 		prometheus.GaugeOpts{
 			Name: "loadscenario_active_count",
-			Help: "현재 reconcile 진행 중 인 LoadScenario 개수.",
+			Help: "현재 run 진행 중 (RunState=Running) 인 LoadScenario 개수. scrape 시점 에 controller 캐시 의 CR 상태로 센다.",
 		},
+		countActiveRunning,
 	)
 
 	// LastRunStatus 는 LoadScenario 별 마지막 run 의 결과 indicator (0 / 1) 다. result 라벨 별로
@@ -77,4 +89,35 @@ func RecordReconcileResult(namespace, loadscenario, result string, ts float64) {
 		}
 		LastRunStatus.WithLabelValues(loadscenario, namespace, r).Set(v)
 	}
+}
+
+// activeCountReader 는 ActiveCount 가 Running CR 을 셀 때 쓰는 reader 다. SetupWithManager 가 매니저
+// 의 캐시 기반 client 를 주입한다. scrape goroutine 과 동시 접근 하므로 atomic 으로 둔다.
+var activeCountReader atomic.Pointer[client.Reader]
+
+// setActiveCountReader 는 ActiveCount 의 집계 대상 reader 를 지정한다.
+func setActiveCountReader(r client.Reader) {
+	activeCountReader.Store(&r)
+}
+
+// countActiveRunning 은 RunState=Running 인 LoadScenario 수를 센다. reader 미주입 (테스트, 기동 전)
+// 이면 0 이고, 조회 실패 (캐시 미동기화 등) 면 실제와 다른 값을 내지 않도록 NaN 을 돌려준다.
+func countActiveRunning() float64 {
+	rp := activeCountReader.Load()
+	if rp == nil {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var list injectorv1alpha1.LoadScenarioList
+	if err := (*rp).List(ctx, &list); err != nil {
+		return math.NaN()
+	}
+	n := 0
+	for i := range list.Items {
+		if list.Items[i].Status.RunState == injectorv1alpha1.RunStateRunning {
+			n++
+		}
+	}
+	return float64(n)
 }
