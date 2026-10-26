@@ -2548,7 +2548,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by(direction) (rate(netobs_pod_bytes_total{layer=\"l4\", node=\"$node\", src_pod=~\"$src_pod\"}[5m])) * 8 / 1000000",
+          "expr": "sum by(direction) (rate(netobs_pod_bytes_total{layer=\"l4\", node=~\"$node\", src_pod=~\"$src_pod\"}[5m])) * 8 / 1000000",
           "legendFormat": "{{direction}}",
           "datasource": "${datasource}"
         }
