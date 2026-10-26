@@ -6,10 +6,14 @@ namespace: ebpf-project
 resources:
   - ../../base
 
-# dev overlay는 canary 배포용이며 로컬에서 `make image-build-gpuobs-agent`로 만든
-# 태그를 사용하는 것을 기본 동작으로 삼는다. `make bump`가 이 값을 갱신한다.
+# dev overlay는 canary 배포용이다. `make bump`가 newTag를 갱신하고 `make image-push-all`이
+# 같은 태그를 ghcr에 push한다.
+# #462 dev도 netobs, correlation dev(#312)와 같이 ghcr 이미지를 받는다. 종전 로컬 태그와
+# imagePullPolicy: Never는 노드의 이미지 prune이나 노드 상실 시 ErrImageNeverPull로 기동이
+# 막혔다(같은 원인의 injector ImagePullBackOff가 2026-10 디스크 압박 장애에서 실측됐다).
 images:
   - name: gpuobs-agent
+    newName: ghcr.io/inno-rnd-project/gpuobs-agent
     newTag: "3.3.9"
 
 patches:
