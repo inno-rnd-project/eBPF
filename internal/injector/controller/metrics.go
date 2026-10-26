@@ -17,12 +17,13 @@ import (
 // metric (workqueue depth 등) 외에 LoadScenario 단위 reconcile 결과 와 active count 와 마지막 run
 // 상태 를 직접 노출 해 운영자 가 dashboard 와 alert 에서 reconciler 상태 를 가시화 가능 하다.
 var (
-	// ReconcileTotal 은 reconcile 호출 결과 누계 다. result 라벨 (success / error / skip) 별로
-	// 카운트 한다.
+	// ReconcileTotal 은 reconcile 호출 결과 누계 다. #462 부터 Reconcile 이 호출마다 정확히 1회
+	// 계수한다. 종전에는 종결 결과 (success/error/skip) 에서만 증가해 대기와 거부, 정지 경로의
+	// reconcile 이 빠져 이름과 달리 호출 누계가 아니었다. result 값은 Help 의 고정 열거다.
 	ReconcileTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "loadscenario_reconcile_total",
-			Help: "LoadScenario reconcile 호출 누계 (result 라벨 별 success/error/skip).",
+			Help: "LoadScenario reconcile 호출 누계. result 라벨: success(run 정상 종료), error(run 시작 실패), skip(lease 충돌), started(run 시작), wait(실행 시각·score 미충족, run 진행 중 등 대기), denied(cluster label·namespace 게이트 거부), suspended(spec.suspend 또는 maxFailures 초과), deleted(삭제 정리).",
 		},
 		[]string{"result"},
 	)
@@ -79,8 +80,8 @@ var NamespaceDeniedTotal = prometheus.NewCounterVec(
 
 // RecordReconcileResult 는 reconcile 단계 종료 시 ReconcileTotal 과 LastRunStatus 와 Reconcile
 // Timestamp 를 일괄 갱신 하는 helper 다. result 는 "success" / "error" / "skip" 중 하나.
-func RecordReconcileResult(namespace, loadscenario, result string, ts float64) {
-	ReconcileTotal.WithLabelValues(result).Inc()
+func RecordReconcileResult(ctx context.Context, namespace, loadscenario, result string, ts float64) {
+	setReconcileOutcome(ctx, result)
 	ReconcileTimestamp.Set(ts)
 	for _, r := range []string{"success", "error", "skip"} {
 		v := float64(0)
@@ -120,4 +121,22 @@ func countActiveRunning() float64 {
 		}
 	}
 	return float64(n)
+}
+
+// reconcileOutcomeKey 는 Reconcile 한 번의 결과 값을 ctx 로 전달하는 키다.
+type reconcileOutcomeKey struct{}
+
+// withReconcileOutcome 은 Reconcile 이 호출 끝에 계수할 결과 슬롯을 ctx 에 싣는다.
+func withReconcileOutcome(ctx context.Context, outcome *string) context.Context {
+	return context.WithValue(ctx, reconcileOutcomeKey{}, outcome)
+}
+
+// setReconcileOutcome 은 현재 Reconcile 의 결과를 지정한다. 슬롯이 없는 호출 (Reconcile 밖) 은
+// 즉시 계수해 기록이 빠지지 않게 한다.
+func setReconcileOutcome(ctx context.Context, result string) {
+	if p, ok := ctx.Value(reconcileOutcomeKey{}).(*string); ok {
+		*p = result
+		return
+	}
+	ReconcileTotal.WithLabelValues(result).Inc()
 }

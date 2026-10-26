@@ -120,8 +120,15 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	// #462 reconcile_total 은 존재하는 CR 의 reconcile 마다 정확히 1회 계수한다. 기본은 wait 이고
+	// 각 경로가 결과를 덮어쓴다.
+	outcome := "wait"
+	ctx = withReconcileOutcome(ctx, &outcome)
+	defer func() { ReconcileTotal.WithLabelValues(outcome).Inc() }()
+
 	// Deletion timestamp 검사 - finalizer cleanup.
 	if !ls.DeletionTimestamp.IsZero() {
+		setReconcileOutcome(ctx, "deleted")
 		return r.handleDeletion(ctx, &ls)
 	}
 
@@ -136,6 +143,7 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// prod cluster 차단 gate.
 	if err := safety.CheckClusterLabel(ctx, r.K8sClient, r.AllowClusterLabel); err != nil {
 		logger.Info("cluster label gate refused", "error", err.Error())
+		setReconcileOutcome(ctx, "denied")
 		setCondition(&ls, "Ready", metav1.ConditionFalse, "ClusterLabelGate", err.Error())
 		if updateErr := r.Status().Update(ctx, &ls); updateErr != nil {
 			return ctrl.Result{}, updateErr
@@ -149,6 +157,7 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := safety.CheckNamespaceAllowed(r.AllowedNamespaces, ls.Namespace); err != nil {
 		logger.Info("namespace gate refused spawn namespace", "error", err.Error())
 		NamespaceDeniedTotal.WithLabelValues("spawn").Inc()
+		setReconcileOutcome(ctx, "denied")
 		setCondition(&ls, "Ready", metav1.ConditionFalse, "NamespaceDenied", "spawn: "+err.Error())
 		if updateErr := r.Status().Update(ctx, &ls); updateErr != nil {
 			return ctrl.Result{}, updateErr
@@ -158,6 +167,7 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := safety.CheckNamespaceAllowed(r.AllowedNamespaces, ls.Spec.TargetRef.Namespace); err != nil {
 		logger.Info("namespace gate refused target namespace", "error", err.Error())
 		NamespaceDeniedTotal.WithLabelValues("target").Inc()
+		setReconcileOutcome(ctx, "denied")
 		setCondition(&ls, "Ready", metav1.ConditionFalse, "NamespaceDenied", "target: "+err.Error())
 		if updateErr := r.Status().Update(ctx, &ls); updateErr != nil {
 			return ctrl.Result{}, updateErr
@@ -168,6 +178,7 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// suspend 검사. spec.suspend 또는 maxFailures 초과 시 skip. controller 는 spec 을 mutation 하지
 	// 않으며 maxFailures 초과 상태 는 status condition 으로만 표현 한다.
 	if r.isSuspended(&ls) {
+		setReconcileOutcome(ctx, "suspended")
 		reason := "SpecSuspend"
 		msg := "spec.suspend=true"
 		if !ls.Spec.Suspend {
@@ -264,7 +275,7 @@ func (r *LoadScenarioReconciler) handleIdle(ctx context.Context, ls *injectorv1a
 		if errors.Is(startErr, errSkipForbidLockHeld) {
 			// Forbid 정책 의 lock 충돌 은 skip 결과 로 분류. ConsecutiveFailures 미증가, LastSuccessfulRunTime
 			// 미갱신. metrics result=skip.
-			RecordReconcileResult(ls.Namespace, ls.Name, "skip", float64(time.Now().Unix()))
+			RecordReconcileResult(ctx, ls.Namespace, ls.Name, "skip", float64(time.Now().Unix()))
 			if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
 				return ctrl.Result{}, updateErr
 			}
@@ -283,7 +294,7 @@ func (r *LoadScenarioReconciler) handleIdle(ctx context.Context, ls *injectorv1a
 		if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
-		RecordReconcileResult(ls.Namespace, ls.Name, "error", float64(time.Now().Unix()))
+		RecordReconcileResult(ctx, ls.Namespace, ls.Name, "error", float64(time.Now().Unix()))
 		next := schedule.Next(now).Sub(now)
 		if next <= 0 {
 			next = time.Minute
@@ -307,6 +318,8 @@ func (r *LoadScenarioReconciler) handleIdle(ctx context.Context, ls *injectorv1a
 		// 상태 만 세므로 별도 보정이 필요 없다 (#459).
 		return ctrl.Result{}, updateErr
 	}
+	// started 는 Running 전이가 영속된 뒤에만 지정한다 (#462).
+	setReconcileOutcome(ctx, "started")
 	return ctrl.Result{RequeueAfter: ls.Spec.Duration.Duration + 5*time.Second}, nil
 }
 
@@ -483,7 +496,7 @@ func (r *LoadScenarioReconciler) markRunSuccess(ctx context.Context, ls *injecto
 	if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
 		return ctrl.Result{}, updateErr
 	}
-	RecordReconcileResult(ls.Namespace, ls.Name, "success", float64(time.Now().Unix()))
+	RecordReconcileResult(ctx, ls.Namespace, ls.Name, "success", float64(time.Now().Unix()))
 	next := schedule.Next(r.Now()).Sub(r.Now())
 	if next <= 0 {
 		next = time.Minute
