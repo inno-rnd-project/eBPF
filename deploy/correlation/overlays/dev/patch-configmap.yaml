@@ -12,5 +12,7 @@ data:
   # 별도 CROSS_NODE env 없이 correlation_cross_node_score series 가 emit 된다. /api/v1/cross-node-
   # interference endpoint 와 dashboard panel 과 verify.sh 가드 가 기본 활성 경로 로 동작 한다.
   # cardinality 부담 시 CROSS_NODE: "false" 로 opt-out 한다.
-  # #409 CORS 는 base 가 전 origin 허용 ("*") 이라 dev 별도 override 를 두지 않는다. dev 는
-  # port-forward 접속 (localhost) 이 잦아 base 정책이 그대로 필요하다.
+  # #461 CORS 개발 접속 경로는 dev 에만 둔다. base 목록 (swagger-ui 3종과 공인 프론트) 에 개발
+  # 프론트 서버 사설 IP 와 port-forward 관행의 localhost, 127.0.0.1 을 더한 전체 목록이다. ConfigMap
+  # 값은 문자열이라 base 에 이어 붙일 수 없어 전체를 다시 적으므로, base 목록이 바뀌면 함께 갱신한다.
+  API_CORS_ALLOW_ORIGINS: "http://swagger-ui:8080,http://swagger-ui.ebpf-project:8080,http://swagger-ui.ebpf-project.svc.cluster.local:8080,http://101.79.72.57,http://192.168.160.212:3000,http://localhost:3000,http://127.0.0.1:3000"
