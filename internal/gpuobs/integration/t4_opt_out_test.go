@@ -31,8 +31,9 @@ func TestT4_OptOutToggleEffects(t *testing.T) {
 
 		nv := newToggleFakeNVML([]toggleFakeDevice{
 			{uuid: "GPU-A", index: 0, snapshot: types.GPUSnapshot{
-				Device:         types.GPUDevice{UUID: "GPU-A", Index: 0},
-				UtilizationPct: 50,
+				Device:               types.GPUDevice{UUID: "GPU-A", Index: 0},
+				UtilizationPct:       50,
+				UtilizationSupported: true,
 			}},
 		})
 		c := collector.New(nv, config.Config{

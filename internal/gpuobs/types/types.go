@@ -85,6 +85,15 @@ type GPUSnapshot struct {
 	TemperatureC     uint
 	PowerUsageWatts  float64
 
+	// core 4 지표의 지원 플래그다(#457). MIG 활성 parent device는 GetUtilizationRates에 NOT_SUPPORTED를
+	// 돌려주는 것이 NVML의 문서화된 동작이고, 일부 vGPU 프로파일은 온도나 전력을 지원하지 않는다. 미지원
+	// 지표만 결측으로 두고 device 수집을 계속하도록 다른 지표와 같은 *Supported 게이트를 둔다.
+	// UtilizationSupported는 같은 호출이 반환하는 MemoryCopyUtilPct도 함께 게이트한다.
+	UtilizationSupported bool
+	MemorySupported      bool
+	TemperatureSupported bool
+	PowerUsageSupported  bool
+
 	// MemoryCopyUtilPct는 NVML GetUtilizationRates의 Memory copy 엔진 사용률 (0-100) 이다.
 	// 동일 호출에서 GPU util과 함께 반환되므로 추가 NVML 호출 비용은 없다.
 	MemoryCopyUtilPct uint
