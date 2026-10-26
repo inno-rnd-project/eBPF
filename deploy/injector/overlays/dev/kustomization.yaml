@@ -26,8 +26,13 @@ patches:
                   - name: INJECTOR_ALLOWED_TARGET_NAMESPACES
                     value: "ebpf-project,default"
 
+# 컨트롤러 이미지는 ghcr 레지스트리에서 받는다. 종전 로컬 전용 태그(workload-injector:x.y.z)는
+# 빌드한 노드의 docker에만 존재해, 그 노드가 DiskPressure로 파드를 축출하고 kubelet 이미지 GC가
+# 로컬 이미지를 지운 뒤 다른 노드로 재스케줄된 파드가 ImagePullBackOff에 빠졌다.
+# make image-push-all이 ghcr에 같은 태그를 push하므로 newTag는 make bump가 그대로 갱신한다.
 images:
   - name: workload-injector
+    newName: ghcr.io/inno-rnd-project/workload-injector
     newTag: "3.3.5"
 # base 가 Job 매니페스트를 두지 않으므로 dev overlay 도 patch-job 을 두지 않는다. 운영자는
 # test/injector-examples/{cpu,network,gpu}.yaml 을 직접 edit (TARGET_POD / INTENSITY / DURATION) 후
