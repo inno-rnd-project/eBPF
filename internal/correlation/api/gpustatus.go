@@ -111,6 +111,8 @@ var gpuPerfThrottleReasons = map[string]bool{
 
 // gpuIdleUtilizationThreshold 는 device idle 판정 임계 (%) 다. node:gpu_idle:5m rule 의 `< 20`
 // bool 비교와 동일 값이며 rule 이 바뀌면 함께 갱신한다. Go 측 단일 진실원은 본 상수 하나다(#447).
+// rule 쪽(deploy/gpuobs/base/prometheus-rule-idle-cause.yaml의 node:gpu_idle:5m)에도 이 상수와의
+// 동기화 주석을 두었다(#462).
 const gpuIdleUtilizationThreshold = 20
 
 // gpuDeviceStatus 는 device 3단 판정 (#279) 이다. 성능성 throttle 활성이면 degraded, slowdown 임계

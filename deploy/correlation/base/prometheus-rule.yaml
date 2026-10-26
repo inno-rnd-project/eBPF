@@ -26,9 +26,10 @@ spec:
       rules:
         # correlation_victim_latency_pressure:5m
         # victim Pod 의 latency p99 가 임계 (0.1s) 를 초과하면 1, 그 외에는 시리즈 미존재로 둬 active
-        # dominant dimension 산정의 AND 게이팅 입력으로 사용된다. 임계 0.1s 는 본 시리즈 (#65) 의
-        # NetObsHighStageLatencyP99 와 동일 수준으로 잡아 운영 임계 정합을 유지한다. 운영자가
-        # 환경별 tunable 로 조정하려면 본 recording rule 표현식의 0.1 상수를 변경한다. netobs 의
+        # dominant dimension 산정의 AND 게이팅 입력으로 사용된다. 임계 0.1s는 경보
+        # NetObsHighStageLatencyP99의 임계(0.4s)와 다른 값이다. 이 게이트는 경보가 아니라 간섭
+        # 판정의 입력이라 경보와 독립으로 운영하며, 두 값을 함께 바꿀 필요는 없다(#462 주석 정정).
+        # 운영자가 환경별 tunable로 조정하려면 본 recording rule 표현식의 0.1 상수를 변경한다. netobs 의
         # latency 메트릭은 src_namespace / src_pod / src_pod_uid 라벨을 쓰는데 correlation 메트릭은
         # victim_namespace / victim_pod / victim_pod_uid 를 써서 label_replace 로 키 이름을 정합
         # 시킨 뒤 sum by 로 src_* 라벨을 drop 한다.

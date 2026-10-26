@@ -37,7 +37,9 @@ spec:
       rules:
         # node:gpu_idle:5m
         # 5분 윈도우에서 GPU 사용률이 20% 미만이었던 시간 비율 (0-1). 노드 내 GPU별 비율의 평균을
-        # 노드 단위로 rollup한다. avg_over_time + bool 비교 + subquery 패턴이라 evaluation 비용이
+        # 노드 단위로 rollup한다. 임계 20은 gpu-status API의 device idle 판정 상수
+        # gpuIdleUtilizationThreshold(internal/correlation/api/gpustatus.go)와 수동으로 동기화해야
+        # 한다(#462). 한쪽만 바꾸면 rule의 노드 idle과 API의 device idle 판정이 어긋난다. avg_over_time + bool 비교 + subquery 패턴이라 evaluation 비용이
         # 다른 rule보다 높으니 group interval 변경 시 주의.
         - record: node:gpu_idle:5m
           expr: |
