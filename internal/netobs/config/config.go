@@ -165,6 +165,21 @@ func getenvFloat(key string, def float64) (float64, error) {
 	return f, nil
 }
 
+// getenvInt는 환경 변수 값을 정수로 파싱한다. 빈 값이면 default를 반환하고 파싱 실패 시 명시적
+// 에러를 반환한다(getenvDuration, getenvFloat와 같은 규약). 범위 검증은 flag 적용 뒤의 검증이
+// 한 곳에서 담당한다.
+func getenvInt(key string, def int) (int, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid integer for %s: %q", key, v)
+	}
+	return n, nil
+}
+
 // parseNamespaceList는 콤마 구분 namespace 문자열을 정규화된 슬라이스로 변환한다. 공백 trim과 빈
 // 토큰 제거, 중복 dedup을 수행해 startup 시점 1회 결정으로 운영자가 안전하게 multi-line yaml 또는
 // env로 주입 가능하게 한다. 입력에 등장한 첫 occurrence 순서를 보존해 운영자가 의도한 우선순위
@@ -218,19 +233,22 @@ func Parse() (Config, error) {
 		return Config{}, err
 	}
 
-	dropFlowMaxActive, err := strconv.Atoi(getenv("NETOBS_DROP_FLOW_MAX_ACTIVE", "1024"))
-	if err != nil || dropFlowMaxActive <= 0 {
-		dropFlowMaxActive = 1024
+	// #462 cardinality cap 3종은 형제 진입점(duration, float)과 같이 파싱 실패를 기동 실패로 노출
+	// 한다. 종전에는 파싱 실패와 0 이하를 로그 없이 1024로 강등해 운영자의 cap 오타가 조용히
+	// 무시됐고, flag 적용 뒤의 양수 검증도 env 경로에서는 무력화됐다. 0 이하는 그 검증이 거부한다.
+	dropFlowMaxActive, err := getenvInt("NETOBS_DROP_FLOW_MAX_ACTIVE", 1024)
+	if err != nil {
+		return Config{}, err
 	}
 
-	dropStackMaxActive, err := strconv.Atoi(getenv("NETOBS_DROP_STACK_MAX_ACTIVE", "1024"))
-	if err != nil || dropStackMaxActive <= 0 {
-		dropStackMaxActive = 1024
+	dropStackMaxActive, err := getenvInt("NETOBS_DROP_STACK_MAX_ACTIVE", 1024)
+	if err != nil {
+		return Config{}, err
 	}
 
-	flowMaxActive, err := strconv.Atoi(getenv("NETOBS_FLOW_MAX_ACTIVE", "1024"))
-	if err != nil || flowMaxActive <= 0 {
-		flowMaxActive = 1024
+	flowMaxActive, err := getenvInt("NETOBS_FLOW_MAX_ACTIVE", 1024)
+	if err != nil {
+		return Config{}, err
 	}
 
 	// #403 src_port 라벨 표현 모드. 미지 값은 안전 기본 (full, 현행 유지) 으로 강등한다.
