@@ -168,7 +168,10 @@ spec:
                   SpikeAlertAssertion 이 true 이면 controller 가 부하 종료 후 5 분 polling window 동안
                   z-score spike alert (CPUThrottleSpikeDetected / MemoryPressureSpikeDetected /
                   NetworkDropSpikeDetected / GPUUtilSpikeDetected) 발화 여부 를 Prometheus query 로 확인 해
-                  status 에 기록 한다.
+                  status 에 기록 한다. 기록 전용(record-only) 계약이라 run의 성공·실패 판정에 영향을 주지
+                  않는다. alert가 발화하지 않아도 run은 성공(LastSuccessfulRunTime 갱신, ConsecutiveFailures
+                  초기화)으로 집계되며, 결과는 SpikeAlertObserved condition(True/False/Unknown)과
+                  LastObservedSpikeAlerts로만 확인한다.
                 type: boolean
               suspend:
                 default: false
