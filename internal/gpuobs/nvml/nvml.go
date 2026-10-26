@@ -378,54 +378,20 @@ func (d *deviceImpl) updateIndex(newIndex uint) {
 func (d *deviceImpl) Snapshot() (types.GPUSnapshot, error) {
 	// Snapshot 내부의 모든 NVML 호출 boundary 의 합산 latency 를 측정한다. 개별 호출별 latency
 	// 는 markUnsupported / NOT_SUPPORTED 캐싱 패턴이 이미 처리하므로 외부 진입 경계 1 회만
-	// observe 한다. nvmlRet 는 첫 번째 필수 NVML 호출 (utilization) 의 ret 으로 두어 hot-path
-	// 실패 코드 분포만 errors_total 에 반영한다.
+	// observe 한다. nvmlRet 는 core 호출의 실제 실패 코드만 담아 errors_total 에 반영한다.
+	// markUnsupported 로 흡수한 NOT_SUPPORTED 는 Snapshot 이 성공한 것이라 계수하지 않는다(#457).
 	var nvmlRet gonvml.Return
 	start := time.Now()
 	defer func() { observeNvmlCall("Snapshot", start, &nvmlRet) }()
 
-	util, ret := d.handle.GetUtilizationRates()
-	nvmlRet = ret
-	if err := d.wrapErr("utilization", ret); err != nil {
-		return types.GPUSnapshot{}, err
-	}
-
-	mem, ret := d.handle.GetMemoryInfo()
-	if ret != gonvml.SUCCESS {
-		nvmlRet = ret
-	}
-	if err := d.wrapErr("memory info", ret); err != nil {
-		return types.GPUSnapshot{}, err
-	}
-
-	temp, ret := d.handle.GetTemperature(gonvml.TEMPERATURE_GPU)
-	if ret != gonvml.SUCCESS {
-		nvmlRet = ret
-	}
-	if err := d.wrapErr("temperature", ret); err != nil {
-		return types.GPUSnapshot{}, err
-	}
-
-	// NVML power reporting 단위는 milliwatts이므로 1000으로 나눠 Watts로 변환한다.
-	powerMilliWatts, ret := d.handle.GetPowerUsage()
-	if ret != gonvml.SUCCESS {
-		nvmlRet = ret
-	}
-	if err := d.wrapErr("power usage", ret); err != nil {
-		return types.GPUSnapshot{}, err
-	}
-
-	snap := types.GPUSnapshot{
-		Device:            d.info,
-		UtilizationPct:    uint(util.Gpu),
-		MemoryCopyUtilPct: uint(util.Memory),
-		MemoryUsedBytes:   mem.Used,
-		MemoryTotalBytes:  mem.Total,
-		TemperatureC:      uint(temp),
-		PowerUsageWatts:   float64(powerMilliWatts) / 1000.0,
-	}
+	snap := types.GPUSnapshot{Device: d.info}
 	// hot-plug 추적: NVML index 가 재배치된 경우 currentIdx 가 갱신되어 있으니 라벨 일관성을 위해 반영한다.
 	snap.Device.Index = uint(d.currentIdx.Load())
+
+	if ret, err := d.fillCore(&snap); err != nil {
+		nvmlRet = ret
+		return types.GPUSnapshot{}, err
+	}
 
 	d.fillPcieThroughput(&snap)
 	d.fillThrottleReasons(&snap)
@@ -447,6 +413,76 @@ func (d *deviceImpl) Snapshot() (types.GPUSnapshot, error) {
 	d.fillGpm(&snap)
 
 	return snap, nil
+}
+
+// fillCore는 core 4 지표(utilization, memory info, temperature, power usage)를 채운다(#457). 종전에는
+// 네 호출이 SUCCESS가 아닌 모든 반환값에서 Snapshot 전체를 실패시켜, 하나라도 미지원이면 device가
+// 통째로 버려졌다. MIG 활성 parent의 utilization 미지원처럼 NVML이 문서화한 NOT_SUPPORTED는 fill* 계열과
+// 같이 markUnsupported로 흡수해 해당 필드만 결측으로 두고, 그 외 반환값(실제 장애)은 종전대로 첫 실패의
+// ret과 error를 돌려줘 device를 건너뛰게 한다.
+func (d *deviceImpl) fillCore(snap *types.GPUSnapshot) (gonvml.Return, error) {
+	if !d.isUnsupported("utilization") {
+		util, ret := d.handle.GetUtilizationRates()
+		ok, err := d.coreResult("utilization", ret)
+		if err != nil {
+			return ret, err
+		}
+		if ok {
+			snap.UtilizationPct = uint(util.Gpu)
+			snap.MemoryCopyUtilPct = uint(util.Memory)
+			snap.UtilizationSupported = true
+		}
+	}
+	if !d.isUnsupported("memory_info") {
+		mem, ret := d.handle.GetMemoryInfo()
+		ok, err := d.coreResult("memory_info", ret)
+		if err != nil {
+			return ret, err
+		}
+		if ok {
+			snap.MemoryUsedBytes = mem.Used
+			snap.MemoryTotalBytes = mem.Total
+			snap.MemorySupported = true
+		}
+	}
+	if !d.isUnsupported("temperature") {
+		temp, ret := d.handle.GetTemperature(gonvml.TEMPERATURE_GPU)
+		ok, err := d.coreResult("temperature", ret)
+		if err != nil {
+			return ret, err
+		}
+		if ok {
+			snap.TemperatureC = uint(temp)
+			snap.TemperatureSupported = true
+		}
+	}
+	if !d.isUnsupported("power_usage") {
+		// NVML power reporting 단위는 milliwatts이므로 1000으로 나눠 Watts로 변환한다.
+		powerMilliWatts, ret := d.handle.GetPowerUsage()
+		ok, err := d.coreResult("power_usage", ret)
+		if err != nil {
+			return ret, err
+		}
+		if ok {
+			snap.PowerUsageWatts = float64(powerMilliWatts) / 1000.0
+			snap.PowerUsageSupported = true
+		}
+	}
+	return gonvml.SUCCESS, nil
+}
+
+// coreResult는 core 호출의 ret을 판정한다. SUCCESS면 true, NOT_SUPPORTED면 markUnsupported 후 false,
+// 그 외는 device 컨텍스트를 덧붙인 error다. metric은 unsupported 키이자 에러 메시지의 op 이름이다.
+func (d *deviceImpl) coreResult(metric string, ret gonvml.Return) (bool, error) {
+	switch ret {
+	case gonvml.SUCCESS:
+		return true, nil
+	case gonvml.ERROR_NOT_SUPPORTED:
+		d.markUnsupported(metric)
+		return false, nil
+	default:
+		return false, d.wrapErr(metric, ret)
+	}
 }
 
 // fillPcieThroughput은 RX/TX 두 카운터를 한 번에 채운다. NVML 자체는 두 호출을 분리해 노출하지만

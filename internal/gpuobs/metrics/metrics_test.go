@@ -222,6 +222,10 @@ func fullySupportedSnap() types.GPUSnapshot {
 		MemoryTotalBytes:          8192,
 		TemperatureC:              60,
 		PowerUsageWatts:           120.5,
+		UtilizationSupported:      true,
+		MemorySupported:           true,
+		TemperatureSupported:      true,
+		PowerUsageSupported:       true,
 		PcieRxBps:                 2048,
 		PcieTxBps:                 4096,
 		PcieSupported:             true,
@@ -296,6 +300,50 @@ func fullySupportedSnapWithStaticInfo() types.GPUSnapshot {
 	snap.Device.VbiosVersion = "94.02.71.40.6e"
 	snap.Device.GspFirmwareVersion = "550.54.15"
 	return snap
+}
+
+// TestRecord_CoreMetricsGatedBySupported는 #457의 core 지표 게이트를 검증한다. MIG 활성 parent처럼
+// utilization만 미지원인 device에서 utilization과 같은 호출의 memory copy util은 시리즈가 만들어지지
+// 않고, 지원되는 memory/temperature/power는 그대로 발행되어야 한다. 종전에는 미지원 하나가 device
+// 전체를 버려 나머지 지표까지 소실됐다.
+func TestRecord_CoreMetricsGatedBySupported(t *testing.T) {
+	resetDeviceMetricsState(t)
+
+	snap := fullySupportedSnap()
+	snap.UtilizationSupported = false
+	Record("n", snap)
+
+	if got := testutil.CollectAndCount(deviceUtilization); got != 0 {
+		t.Errorf("utilization series=%d want 0 (미지원)", got)
+	}
+	if got := testutil.CollectAndCount(deviceMemoryCopyUtilization); got != 0 {
+		t.Errorf("memcopy series=%d want 0 (utilization 게이트 공유)", got)
+	}
+	if got := testutil.ToFloat64(deviceMemoryUsed.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != 1024 {
+		t.Errorf("memory used=%v want 1024", got)
+	}
+	if got := testutil.ToFloat64(deviceTemperature.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != 60 {
+		t.Errorf("temperature=%v want 60", got)
+	}
+	if got := testutil.ToFloat64(devicePower.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != 120.5 {
+		t.Errorf("power=%v want 120.5", got)
+	}
+
+	// 온도와 전력이 미지원인 vGPU 프로파일 형태: 두 시리즈만 빠진다.
+	resetDeviceMetricsState(t)
+	snap = fullySupportedSnap()
+	snap.TemperatureSupported = false
+	snap.PowerUsageSupported = false
+	Record("n", snap)
+	if got := testutil.CollectAndCount(deviceTemperature); got != 0 {
+		t.Errorf("temperature series=%d want 0", got)
+	}
+	if got := testutil.CollectAndCount(devicePower); got != 0 {
+		t.Errorf("power series=%d want 0", got)
+	}
+	if got := testutil.ToFloat64(deviceUtilization.WithLabelValues("n", "GPU-A", "0", "RTX-3090")); got != 50 {
+		t.Errorf("util=%v want 50", got)
+	}
 }
 
 func TestRecord_BaseDeviceMetrics(t *testing.T) {

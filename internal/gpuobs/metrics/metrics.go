@@ -844,23 +844,31 @@ func RecordMpsActive(node string, dev types.GPUDevice, active bool) {
 // 매 호출 시 `prometheus.Labels` 맵 할당을 피하기 위해 `WithLabelValues`를 사용한다.
 // 라벨 카디널리티는 노드당 device 수(통상 ≤8)로 제한되어 별도 escape hatch는 두지 않는다.
 //
-// 신규 device 메트릭(PCIe / throttle / clock / ECC / encoder/decoder / pstate)은 각 *Supported
-// 플래그가 true일 때만 발행한다. 미지원 GPU에서는 해당 시리즈가 처음부터 만들어지지 않아
+// 모든 device 메트릭(core 4 지표 / PCIe / throttle / clock / ECC / encoder/decoder / pstate 등)은 각
+// *Supported 플래그가 true일 때만 발행한다. 미지원 GPU에서는 해당 시리즈가 처음부터 만들어지지 않아
 // Prometheus 카디널리티가 늘어나지 않는다.
 func Record(node string, snap types.GPUSnapshot) {
 	idx := strconv.FormatUint(uint64(snap.Device.Index), 10)
 	uuid := snap.Device.UUID
 	model := snap.Device.Model
 
-	deviceUtilization.WithLabelValues(node, uuid, idx, model).Set(float64(snap.UtilizationPct))
-	deviceMemoryUsed.WithLabelValues(node, uuid, idx, model).Set(float64(snap.MemoryUsedBytes))
-	deviceMemoryTotal.WithLabelValues(node, uuid, idx, model).Set(float64(snap.MemoryTotalBytes))
-	deviceTemperature.WithLabelValues(node, uuid, idx, model).Set(float64(snap.TemperatureC))
-	devicePower.WithLabelValues(node, uuid, idx, model).Set(snap.PowerUsageWatts)
-	// MemoryCopyUtilPct는 GetUtilizationRates 단일 호출에서 UtilizationPct(.Gpu)와 함께 반환되는 값(.Memory)이라
-	// 별도 *Supported 게이트 없이 base 메트릭과 같은 NVML SUCCESS gate 아래 발행한다. 호출 자체가 실패하면
-	// Snapshot이 상위에서 에러로 빠져나가므로 여기까지 도달했다는 것은 두 값 모두 유효하다는 뜻이다.
-	deviceMemoryCopyUtilization.WithLabelValues(node, uuid, idx, model).Set(float64(snap.MemoryCopyUtilPct))
+	// core 4 지표도 #457부터 *Supported 게이트를 따른다. MIG 활성 parent처럼 일부만 미지원인 device는
+	// 지원되는 지표만 발행한다. MemoryCopyUtilPct는 GetUtilizationRates 단일 호출에서 UtilizationPct(.Gpu)와
+	// 함께 반환되는 값(.Memory)이라 UtilizationSupported 게이트를 공유한다.
+	if snap.UtilizationSupported {
+		deviceUtilization.WithLabelValues(node, uuid, idx, model).Set(float64(snap.UtilizationPct))
+		deviceMemoryCopyUtilization.WithLabelValues(node, uuid, idx, model).Set(float64(snap.MemoryCopyUtilPct))
+	}
+	if snap.MemorySupported {
+		deviceMemoryUsed.WithLabelValues(node, uuid, idx, model).Set(float64(snap.MemoryUsedBytes))
+		deviceMemoryTotal.WithLabelValues(node, uuid, idx, model).Set(float64(snap.MemoryTotalBytes))
+	}
+	if snap.TemperatureSupported {
+		deviceTemperature.WithLabelValues(node, uuid, idx, model).Set(float64(snap.TemperatureC))
+	}
+	if snap.PowerUsageSupported {
+		devicePower.WithLabelValues(node, uuid, idx, model).Set(snap.PowerUsageWatts)
+	}
 
 	if snap.PcieSupported {
 		devicePcieRxBps.WithLabelValues(node, uuid, idx, model).Set(float64(snap.PcieRxBps))
