@@ -200,6 +200,12 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 }
 
+// lastStartFailed 는 직전 시도가 run 시작 전에 실패 (Scheduled=RunStartFailed) 했는지 판정한다.
+func lastStartFailed(ls *injectorv1alpha1.LoadScenario) bool {
+	c := meta.FindStatusCondition(ls.Status.Conditions, "Scheduled")
+	return c != nil && c.Reason == "RunStartFailed"
+}
+
 // isSuspended 는 spec.suspend 또는 maxFailures 초과 상태를 판정 한다. 자동 suspend 는 status 변동
 // 만으로 표현 하며 spec 을 mutation 하지 않아 GitOps drift 를 회피 한다.
 func (r *LoadScenarioReconciler) isSuspended(ls *injectorv1alpha1.LoadScenario) bool {
@@ -216,6 +222,17 @@ func (r *LoadScenarioReconciler) isSuspended(ls *injectorv1alpha1.LoadScenario) 
 // 인가 를 start, 아니면 wait.
 func (r *LoadScenarioReconciler) handleIdle(ctx context.Context, ls *injectorv1alpha1.LoadScenario, schedule cron.Schedule) (ctrl.Result, error) {
 	now := r.Now()
+	// #458 시작 실패 재시도 간격. 직전 시도가 시작 전에 실패했으면 그 시도 시각 (LastScheduleTime)
+	// 기준 다음 schedule tick 전에는 재시도하지 않는다. 종전에는 실패 직후의 status 갱신이 일으킨
+	// reconcile 이 곧바로 재시도해 초 단위로 실패를 쌓았고, 기본 maxFailures 3 에서 일시적 실패 (대상
+	// Pod 미배치 등) 만으로 시나리오가 MaxFailuresExceeded 로 정지했다. score 트리거 경로는
+	// LastScheduleTime 을 보지 않으므로 이 게이트를 분기 앞에 두어 두 경로에 함께 적용하고, 대기
+	// 중의 불필요한 score 조회도 막는다.
+	if lastStartFailed(ls) && ls.Status.LastScheduleTime != nil {
+		if nextRun := schedule.Next(ls.Status.LastScheduleTime.Time); nextRun.After(now) {
+			return ctrl.Result{RequeueAfter: nextRun.Sub(now)}, nil
+		}
+	}
 	// scoreTrigger 가 설정 되면 schedule 은 직접 트리거 가 아닌 score 평가 poll 주기 로 해석 된다. 매
 	// poll 마다 간섭 score 를 평가 해 임계 충족 + minInterval debounce 통과 시에만 run 으로 진행 한다.
 	// 미충족 / 에러 / provider 부재 는 evaluateScoreTrigger 가 condition + requeue 로 처리 하고
@@ -255,14 +272,21 @@ func (r *LoadScenarioReconciler) handleIdle(ctx context.Context, ls *injectorv1a
 			}
 			return ctrl.Result{RequeueAfter: next}, nil
 		}
-		// run start 실패 (safety gate / loadgen Start 등). 실패 카운트 +1.
+		// run start 실패 (safety gate / loadgen Start 등). 실패 카운트 +1. 시도 시각을 LastScheduleTime
+		// 에 기록해 다음 재시도를 다음 schedule tick 으로 미룬다 (Forbid lock skip 과 같은 주기).
 		ls.Status.ConsecutiveFailures++
+		scheduleTime := metav1.NewTime(now)
+		ls.Status.LastScheduleTime = &scheduleTime
 		setCondition(ls, "Scheduled", metav1.ConditionFalse, "RunStartFailed", startErr.Error())
 		if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
 		RecordReconcileResult(ls.Namespace, ls.Name, "error", float64(time.Now().Unix()))
-		return ctrl.Result{RequeueAfter: time.Minute}, nil
+		next := schedule.Next(now).Sub(now)
+		if next <= 0 {
+			next = time.Minute
+		}
+		return ctrl.Result{RequeueAfter: next}, nil
 	}
 
 	// stress Pod 가 spawn 되었음. RunState=Running 으로 전환 후 duration 만큼 wait.

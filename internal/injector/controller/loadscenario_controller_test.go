@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -276,5 +278,71 @@ func TestReconcile_NamespaceGate(t *testing.T) {
 	// fail-closed: 빈 허용 목록은 spawn namespace 부터 거부한다 (safety 단위 검증).
 	if err := safety.CheckNamespaceAllowed(nil, "ebpf-project"); err == nil {
 		t.Error("빈 허용 목록이 거부되지 않음 (fail-closed 위반)")
+	}
+}
+
+// TestReconcile_StartFailureWaitsForNextScheduleTick 는 #458 의 재시도 간격 회귀 가드다. run 시작 전
+// 실패 직후의 reconcile (실패 status 갱신이 일으키는 이벤트) 이 곧바로 재시도하지 않고 다음 schedule
+// tick 까지 기다려야 한다. 종전에는 초 단위로 재시도해 기본 maxFailures 3 을 바로 소진했다. cron 경로와
+// score 트리거 경로 모두에 적용되며, score 경로는 대기 중 score 조회도 하지 않아야 한다.
+func TestReconcile_StartFailureWaitsForNextScheduleTick(t *testing.T) {
+	cases := []struct {
+		name     string
+		scenario func() *injectorv1alpha1.LoadScenario
+		provider *fakeScoreProvider
+	}{
+		{"cron 경로", func() *injectorv1alpha1.LoadScenario {
+			ls := scoreTriggerScenario()
+			ls.Spec.ScoreTrigger = nil
+			return ls
+		}, nil},
+		{"score 트리거 경로", scoreTriggerScenario, &fakeScoreProvider{score: 0.9, found: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ls := tc.scenario()
+			var provider InterferenceScoreProvider
+			if tc.provider != nil {
+				provider = tc.provider
+			}
+			clock := time.Now()
+			r, c := newScoreReconciler(ls, provider, clock)
+			r.Now = func() time.Time { return clock }
+			createCalls := 0
+			r.K8sClient.(*k8sfake.Clientset).PrependReactor("create", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+				createCalls++
+				return true, nil, errors.New("injected create failure")
+			})
+
+			reconcileOnce(t, r, ls)
+			got := getScenario(t, c, ls)
+			if got.Status.ConsecutiveFailures != 1 || got.Status.LastScheduleTime == nil {
+				t.Fatalf("첫 실패 failures=%d lastScheduleTime=%v, want 1 / 기록됨", got.Status.ConsecutiveFailures, got.Status.LastScheduleTime)
+			}
+			scoreCalls := 0
+			if tc.provider != nil {
+				scoreCalls = tc.provider.calls
+			}
+
+			// 같은 시각의 연속 reconcile 은 재시도하지 않는다.
+			for i := 0; i < 3; i++ {
+				reconcileOnce(t, r, getScenario(t, c, ls))
+			}
+			got = getScenario(t, c, ls)
+			if got.Status.ConsecutiveFailures != 1 || createCalls != 1 {
+				t.Errorf("tick 전 재시도 failures=%d createCalls=%d, want 1 / 1", got.Status.ConsecutiveFailures, createCalls)
+			}
+			if tc.provider != nil && tc.provider.calls != scoreCalls {
+				t.Errorf("tick 전 score 조회 %d회 추가, want 0", tc.provider.calls-scoreCalls)
+			}
+
+			// 다음 tick (@every 1m) 이 지나면 재시도한다.
+			clock = clock.Add(61 * time.Second)
+			reconcileOnce(t, r, getScenario(t, c, ls))
+			got = getScenario(t, c, ls)
+			if got.Status.ConsecutiveFailures != 2 || createCalls != 2 {
+				t.Errorf("tick 후 재시도 failures=%d createCalls=%d, want 2 / 2", got.Status.ConsecutiveFailures, createCalls)
+			}
+		})
 	}
 }
