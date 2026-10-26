@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func overviewFakeQuerier() *fakeQuerier {
@@ -110,11 +111,14 @@ func TestOverview(t *testing.T) {
 }
 
 // TestOverview_AtParam 은 at 지정 시 평가 시점이 ctx 로 전파되고 generated_at 에 반영되는지 검증한다.
+// at 값은 고정 타임스탬프가 아니라 현재 기준 1시간 전으로 만든다. 고정값은 시간이 지나
+// atRetentionWindow(45일) 밖으로 벗어나 400으로 거부되는 date-rot가 실측됐다 (TestAtParam과 동일).
 func TestOverview_AtParam(t *testing.T) {
+	at := time.Now().Add(-time.Hour).UTC().Truncate(time.Second).Format(time.RFC3339)
 	q := overviewFakeQuerier()
 	h := NewSynthesisHandler(q, nil, nil)
 	rec := httptest.NewRecorder()
-	h.GetOverview(rec, httptest.NewRequest(http.MethodGet, "/api/v1/overview?at=2026-07-09T01:00:00Z", nil))
+	h.GetOverview(rec, httptest.NewRequest(http.MethodGet, "/api/v1/overview?at="+at, nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200", rec.Code)
 	}
@@ -122,10 +126,10 @@ func TestOverview_AtParam(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.GeneratedAt != "2026-07-09T01:00:00Z" {
-		t.Errorf("generated_at=%q want at 반영", resp.GeneratedAt)
+	if resp.GeneratedAt != at {
+		t.Errorf("generated_at=%q want at 반영 (%s)", resp.GeneratedAt, at)
 	}
-	if q.lastAt.Format("2006-01-02T15:04:05Z") != "2026-07-09T01:00:00Z" {
+	if q.lastAt.UTC().Format(time.RFC3339) != at {
 		t.Errorf("lastAt=%v want ctx 전파", q.lastAt)
 	}
 	rec = httptest.NewRecorder()
