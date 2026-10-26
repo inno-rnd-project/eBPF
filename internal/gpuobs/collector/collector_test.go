@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"netobs/internal/gpuobs/config"
 	"netobs/internal/gpuobs/contention"
 	"netobs/internal/gpuobs/metrics"
@@ -939,6 +941,67 @@ func TestPollOnce_MigPathEnumeratesInstances(t *testing.T) {
 	// #104 G1 fix 이후 instance handle 은 parent deviceImpl 의 cache 슬롯이 보유 하고 collector pollOnce
 	// 는 매 poll 마다 Close 를 호출 하지 않는다 (parent Close 가 children 일괄 해제 책임). 본 테스트의
 	// 직전 close 호출 검증 은 nvml 패키지의 deviceImpl 단위 테스트로 이관 되어야 한다 (별도 PR).
+}
+
+// TestPollOnce_SnapshotErrorKeepsSelfHealthAndMigPath 는 #457 의 경로 분리를 검증한다. MIG 활성 parent
+// 의 Snapshot 이 실제 장애로 실패해도 그 device 의 gauge 발행만 건너뛰고, self-health (gpuobs_mig_mode)
+// 와 per-pod (RunningProcesses) 와 MIG instance 수집은 캐시된 정적 정보로 계속되어야 한다. 종전에는
+// Snapshot 실패의 continue 가 세 경로를 함께 막아 MIG per-pod util 이 매 poll 사라졌다.
+func TestPollOnce_SnapshotErrorKeepsSelfHealthAndMigPath(t *testing.T) {
+	inst := &fakeMigInstance{
+		uuid:  "MIG-snaperr",
+		giID:  1,
+		utils: []types.GPUProcessUtil{{PID: 100, SmUtilPct: 40}},
+	}
+	info := types.GPUDevice{Index: 0, UUID: "GPU-snaperr", Model: "A100", MigMode: types.MigModeEnabled}
+	parent := &migFakeDevice{
+		fakeDevice:   &fakeDevice{info: info, snapshotErr: errors.New("temperature idx=0: GPU is lost")},
+		migInstances: []*fakeMigInstance{inst},
+	}
+	resolver := &fakeResolver{byPID: map[uint32]kube.PodIdentity{
+		100: {IdentityClass: kube.IdentityClassPod, Namespace: "ml", PodName: "p1", PodUID: "uid-1"},
+	}}
+	spy := &migSnapshotSpy{}
+	cfg := config.Config{GPUMetricsEnabled: true, PodMetricsEnabled: true, NodeName: "n"}
+	c := New(&fakeNVML{count: 1, devices: map[uint]*fakeDevice{0: parent.fakeDevice}}, cfg, resolver)
+	c.devSet = nvml.NewDeviceSet(&migFakeNVML{parent: parent})
+	if err := c.devSet.Sync(); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	c.recordMigSnapshot = spy.record
+	reg := prometheus.NewRegistry()
+	metrics.Register(reg)
+
+	c.pollOnce()
+
+	if got := len(spy.lastSamples()); got != 1 {
+		t.Errorf("mig samples=%d want 1 (Snapshot 실패와 무관하게 MIG 경로 진행)", got)
+	}
+	if got := parent.procCallCount(); got != 1 {
+		t.Errorf("RunningProcesses 호출=%d want 1 (per-pod 경로 진행)", got)
+	}
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	found := false
+	for _, mf := range mfs {
+		if mf.GetName() != "gpuobs_mig_mode" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			labels := map[string]string{}
+			for _, lp := range m.GetLabel() {
+				labels[lp.GetName()] = lp.GetValue()
+			}
+			if labels["gpu_uuid"] == "GPU-snaperr" && labels["mode"] == "enabled" && m.GetGauge().GetValue() == 1 {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("gpuobs_mig_mode{gpu_uuid=GPU-snaperr,mode=enabled}=1 미발행 (self-health 경로 차단)")
+	}
 }
 
 // migFakeNVML 은 migFakeDevice 를 nvml.NVML.Device 결과로 반환하는 NVML wrapper.

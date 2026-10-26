@@ -157,7 +157,8 @@ type podMigKey struct {
 // 합산 단계가 있어 동일 Pod의 다중 GPU 프로세스가 라벨 충돌로 덮어써지는 문제가 사라지고,
 // metrics 측의 diff cleanup이 종료된 Pod의 stale 시리즈를 자동 제거한다.
 //
-// 한 device에서 Snapshot/RunningProcesses 실패는 다른 device 폴링을 막지 않는다.
+// 한 device에서 Snapshot/RunningProcesses 실패는 다른 device 폴링을 막지 않는다. Snapshot 실패는 그
+// device 의 gauge 발행만 건너뛰고 self-health 와 per-pod 와 MIG instance 수집은 계속한다 (#457).
 // per-pod 귀속은 resolver 주입 + cfg 토글이 모두 활성일 때만 시도되며, 그 외에는 device-level만 수행한다.
 func (c *Collector) pollOnce() {
 	perPodEnabled := c.resolver != nil && c.cfg.PodMetricsEnabled
@@ -183,18 +184,29 @@ func (c *Collector) pollOnce() {
 	mpsOn := mpsDetect()
 
 	for _, dev := range c.devSet.Snapshot() {
+		// #457 device-level 지표 실패는 그 device 의 gauge 발행만 건너뛴다. 종전에는 Snapshot 실패가
+		// continue 로 self-health 와 per-pod 와 MIG instance 수집까지 함께 막았다. 이후 경로는 NVML 호출
+		// 없이 캐시된 정적 정보 (Info) 로 device 라벨을 얻어 진행한다.
+		var device types.GPUDevice
 		snap, err := dev.Snapshot()
 		if err != nil {
 			// wrapErr가 이미 idx 컨텍스트를 포함한다.
 			log.Printf("gpuobs: snapshot: %v", err)
-			continue
+			info, ierr := dev.Info()
+			if ierr != nil {
+				log.Printf("gpuobs: device info: %v", ierr)
+				continue
+			}
+			device = info
+		} else {
+			device = snap.Device
+			metrics.Record(c.cfg.NodeName, snap)
 		}
-		metrics.Record(c.cfg.NodeName, snap)
 
 		// #104 self-health 메트릭 발행. MigMode 는 nvml init 단계 에서 캐싱 되어 매 poll 비용 zero.
 		// MPS 는 위에서 1회 detect 한 결과 를 device 라벨 4종 으로 동일 값 발행.
-		metrics.RecordMigMode(c.cfg.NodeName, snap.Device)
-		metrics.RecordMpsActive(c.cfg.NodeName, snap.Device, mpsOn)
+		metrics.RecordMigMode(c.cfg.NodeName, device)
+		metrics.RecordMpsActive(c.cfg.NodeName, device, mpsOn)
 
 		if !perPodEnabled {
 			continue
@@ -220,8 +232,8 @@ func (c *Collector) pollOnce() {
 			// "이 GPU 에서 도는 것 전부" 라 귀속 실패를 숨기면 오히려 진단이 어려워진다.
 			detail := types.GPUProcessDetail{
 				PID:             p.PID,
-				GpuUUID:         snap.Device.UUID,
-				GpuIndex:        snap.Device.Index,
+				GpuUUID:         device.UUID,
+				GpuIndex:        device.Index,
 				Type:            p.Type,
 				MemoryUsedBytes: p.MemoryUsedBytes,
 			}
@@ -247,8 +259,8 @@ func (c *Collector) pollOnce() {
 			}
 			key := podGPUKey{
 				podUID:   id.PodUID,
-				gpuUUID:  snap.Device.UUID,
-				gpuIndex: snap.Device.Index,
+				gpuUUID:  device.UUID,
+				gpuIndex: device.Index,
 			}
 			smUtil := utilByPID[p.PID]
 			if v, ok := aggregated[key]; ok {
@@ -258,7 +270,7 @@ func (c *Collector) pollOnce() {
 			}
 			aggregated[key] = &metrics.PodGPUSample{
 				ID:           id,
-				Device:       snap.Device,
+				Device:       device,
 				MemUsedBytes: p.MemoryUsedBytes,
 				SmUtilPct:    smUtil,
 			}
@@ -267,8 +279,8 @@ func (c *Collector) pollOnce() {
 		// #104 MIG 활성 경로. parent device 의 MigMode 가 Enabled 일 때만 instance enumerate 후
 		// instance 별 process util 산정. RTX 3090 같은 MIG 미지원 device 에서는 본 분기 미진입 (graceful
 		// degradation). instance enumerate / per-instance util 실패는 비치명 적 으로 흡수.
-		if snap.Device.MigMode == types.MigModeEnabled {
-			c.collectMigInstances(dev, snap.Device, aggregatedMig)
+		if device.MigMode == types.MigModeEnabled {
+			c.collectMigInstances(dev, device, aggregatedMig)
 		}
 	}
 
