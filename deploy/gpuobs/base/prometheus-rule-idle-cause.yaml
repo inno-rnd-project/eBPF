@@ -359,8 +359,10 @@ spec:
       # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화된다. 가장 큰 rule은
       # pod 수에 비례하는 pod 단위 rule이며 dev 실측 최대 52 시리즈(2026-10, 10일 최대)라 2000은
       # 정상 운영에 닿지 않는다. 도달 전 조기 경고는 이 그룹 끝의
-      # cluster:gpuobs_dominant_cause_rule_series:max 와 DominantCauseRuleSeriesNearLimit 이 맡는다
-      # (#462). 도달 자체 (평가 실패) 는 kube-prometheus-stack 기본 경보 PrometheusRuleFailures 가 잡는다.
+      # cluster:gpuobs_dominant_cause_rule_series:max와 DominantCauseRuleSeriesNearLimit이 맡고(#462),
+      # 도달 자체(평가 실패)는 kube-prometheus-stack 기본 경보 PrometheusRuleFailures가 잡는다.
+      # 이 그룹에 pod 단위 rule을 추가하거나 이름을 바꾸면 집계 rule의 regex를 함께 고치고, limit을
+      # 바꾸면 DominantCauseRuleSeriesNearLimit의 임계 1600과 description을 함께 고친다.
       limit: 2000
       rules:
         # cluster:gpu_pcie_saturation_score:5m
@@ -1042,10 +1044,10 @@ spec:
           expr: topk by(node, victim_namespace, victim_pod) (3, pod:gpu_idle_cause_weight:5m)
 
         # cluster:gpuobs_dominant_cause_rule_series:max
-        # 이 그룹 pod 단위 rule의 rule별 산출 시리즈 수 최댓값이다 (#462 near-limit 감시 입력). 그룹
+        # 이 그룹 pod 단위 rule의 rule별 산출 시리즈 수 최댓값이다(#462 near-limit 감시 입력). 그룹
         # limit은 rule 단위로 적용되므로 rule 하나의 산출을 센다. pod:gpu_idle_cause_score:5m만
         # cause별 rule 6개로 나뉘어 cause 단위로 세고, 나머지는 rule 하나가 한 이름이라 이름 단위로
-        # 센다 (pod:gpu_idle_cause_weight:5m은 cause 라벨이 있어도 rule 하나라 이름 전체로 센다).
+        # 센다(pod:gpu_idle_cause_weight:5m은 cause 라벨이 있어도 rule 하나라 이름 전체로 센다).
         # 그룹 끝에 두어 같은 평가 주기의 pod rule 결과를 읽는다. or는 메트릭 이름을 빼고 라벨셋을
         # 비교하므로 오른쪽은 cause 라벨이 남는 by(cause) 집계여야 왼쪽(이름만 남는 집계)에 가려지지
         # 않는다.

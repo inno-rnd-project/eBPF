@@ -714,9 +714,13 @@ spec:
         # (dev 실측 1456 시리즈, #442 rcv stage 와 26 le 확장 반영) 은 pod 수에 비례해 커져 한계
         # 도달 시 세 파생 rule 이 함께 조용히 빈다. 80% 임계 (3200) 에서 선행 발화해 limit 상향
         # 또는 카디널리티 절감을 준비할 시간을 준다.
+        # #462 limit에 도달한 rule은 평가 오류로 산출이 끊겨 lookback이 지나면 이 경보 입력이 비고
+        # 경보가 resolve된다. PrometheusRuleFailures(for 15m)가 발화하기까지의 공백과 상황이 나아진
+        # 것처럼 읽히는 resolve를 막도록 keep_firing_for로 30분 더 유지한다.
         - alert: StageLatencyIntermediateSeriesNearLimit
           expr: count(pod:netobs_stage_latency_rate_le:5m) > 3200
           for: 30m
+          keep_firing_for: 30m
           labels:
             severity: warning
             component: observability
@@ -726,18 +730,21 @@ spec:
 
         # DominantCauseRuleSeriesNearLimit
         # dominant-cause.recording 그룹 pod 단위 rule의 rule별 산출 시리즈가 그룹 limit 2000의 80%
-        # (1600)를 30분 넘게 초과하면 발화한다 (#462). limit 도달 시 해당 rule의 산출이 통째로
+        # (1600)를 30분 넘게 초과하면 발화한다(#462). limit에 도달하면 해당 rule의 산출이 통째로
         # 버려져 dominant cause와 원인 가중치 파생이 비므로, 도달 전에 pod 증가 추세를 알린다. 도달
-        # 자체는 PrometheusRuleFailures 가 잡는다.
+        # 자체는 PrometheusRuleFailures가 잡는다. 도달한 rule은 평가 오류로 산출이 끊겨 집계 입력이
+        # 비면 경보가 resolve되므로, PrometheusRuleFailures(for 15m)까지의 공백을 메우도록
+        # keep_firing_for로 30분 더 유지한다. 그룹 limit을 바꾸면 임계 1600과 description을 함께 고친다.
         - alert: DominantCauseRuleSeriesNearLimit
           expr: cluster:gpuobs_dominant_cause_rule_series:max > 1600
           for: 30m
+          keep_firing_for: 30m
           labels:
             severity: warning
             component: observability
           annotations:
             summary: "dominant cause rule nearing group limit ({{ $value }} series)"
-            description: "dominant-cause.recording 그룹의 pod 단위 rule 하나가 {{ $value }} 시리즈를 산출해 그룹 limit 2000 의 80% 를 30 분 이상 초과했다. 한계 도달 시 그 rule의 산출이 버려져 GPU idle dominant cause 와 원인 가중치 파생이 비게 된다. pod 증가 추세를 확인하고 limit 상향을 검토한다."
+            description: "dominant-cause.recording 그룹의 pod 단위 rule 하나가 {{ $value }} 시리즈를 산출해 그룹 limit 2000의 80%를 30분 넘게 초과했다. 한계에 도달하면 그 rule의 산출이 버려져 GPU idle dominant cause와 원인 가중치 파생이 비게 된다. 집계가 rule 식별 라벨을 지우므로 임박한 rule은 count by(__name__) ({__name__=~'pod:.+:5m'})와 count by(cause) (pod:gpu_idle_cause_score:5m)로 찾고, pod 증가 추세를 확인해 limit 상향을 검토한다."
 
         # #88 capacity-trends z-score anomaly alert 4종. 본 alert 군은 capacity planning 의 선행
         # 신호 (즉시 대응 불요 의 warning severity) 라 throttle 류 critical alert 와 component
