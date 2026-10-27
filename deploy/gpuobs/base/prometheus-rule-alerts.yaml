@@ -31,8 +31,8 @@ spec:
       interval: 30s
       # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
       # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
-      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
-      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 정상 운영
+      # 산출은 limit보다 한 자릿수 이상 작다(2026-10 dev 실측 그룹별 rule 최대 60 미만, #462 정정).
       limit: 2000
       rules:
         # NetObsHighStageLatencyP99
@@ -48,9 +48,9 @@ spec:
         # stage!~ 매처로 대기/간격/네트워크 stage를 제외한다. to_veth(전송 간격)와 ack_wait(지연 ACK
         # 타이머, 설계상 최대 200~500ms)와 rcv_app(app pickup 대기)과 connect(핸드셰이크 왕복 RTT)은
         # 로컬 처리 병목이 아니라 트래픽 패턴·TCP 타이머·앱 스케줄링·네트워크 RTT에 좌우되어 정상
-        # 상태에서도 구조적으로 천장 근처에 상주한다. 이들을 포함하면 임계 0.4s가 상시 오탐이 되므로
-        # (#362 실측: 0.4 발화가 전부 to_veth·ack_wait), 처리 병목만 SLO 대상으로 남긴다. 더 큰 상한
-        # 관측이 필요하면 histogram bucket 범위를 확장한 뒤 임계를 재설정하는 follow-up이 필요하다.
+        # 상태에서도 구조적으로 큰 지연을 보여 #362 실측에서 임계 0.4s 발화를 전부 차지했다(전부
+        # to_veth·ack_wait). 이들을 포함하면 임계 0.4s가 상시 오탐이 되므로 처리 병목만 SLO 대상으로
+        # 남긴다.
         # stage!~ 는 부정 목록이라 새 latency stage 추가 시 SLO 적합성을 재검토해야 부적합 stage가
         # 자동 포함돼 오탐이 되는 것을 막는다 (현재 retrans·drop·sock_teardown 은 latency histogram 을
         # emit 하지 않아 시리즈 부재로 무해). 제외한 stage(ack_wait·rcv_app·connect)의 실제 비정상은
@@ -261,8 +261,8 @@ spec:
       interval: 30s
       # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
       # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
-      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
-      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 정상 운영
+      # 산출은 limit보다 한 자릿수 이상 작다(2026-10 dev 실측 그룹별 rule 최대 60 미만, #462 정정).
       limit: 2000
       rules:
         # GPUIdleWithPCIeSaturation
@@ -482,8 +482,8 @@ spec:
       interval: 30s
       # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
       # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
-      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
-      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 정상 운영
+      # 산출은 limit보다 한 자릿수 이상 작다(2026-10 dev 실측 그룹별 rule 최대 60 미만, #462 정정).
       limit: 2000
       rules:
         # ObsAgentDown

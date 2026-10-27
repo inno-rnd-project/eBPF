@@ -20,8 +20,8 @@ spec:
       interval: 30s
       # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
       # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
-      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
-      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 정상 운영
+      # 산출은 limit보다 한 자릿수 이상 작다(2026-10 dev 실측 그룹별 rule 최대 60 미만, #462 정정).
       limit: 2000
       rules:
         # correlation_victim_latency_pressure:5m
@@ -29,6 +29,8 @@ spec:
         # dominant dimension 산정의 AND 게이팅 입력으로 사용된다. 임계 0.1s는 경보
         # NetObsHighStageLatencyP99의 임계(0.4s)와 다른 값이다. 이 게이트는 경보가 아니라 간섭
         # 판정의 입력이라 경보와 독립으로 운영하며, 두 값을 함께 바꿀 필요는 없다(#462 주석 정정).
+        # 측정 대상도 다르다. 이 게이트는 pod 단위로 대기 stage까지 포함한 전 stage 합산 p99이고,
+        # 경보는 workload와 stage 단위로 처리 stage만 본 p99다.
         # 운영자가 환경별 tunable로 조정하려면 본 recording rule 표현식의 0.1 상수를 변경한다. netobs 의
         # latency 메트릭은 src_namespace / src_pod / src_pod_uid 라벨을 쓰는데 correlation 메트릭은
         # victim_namespace / victim_pod / victim_pod_uid 를 써서 label_replace 로 키 이름을 정합
@@ -72,8 +74,8 @@ spec:
       interval: 30s
       # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
       # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
-      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
-      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 정상 운영
+      # 산출은 limit보다 한 자릿수 이상 작다(2026-10 dev 실측 그룹별 rule 최대 60 미만, #462 정정).
       limit: 2000
       rules:
         # CorrelationStrongNoisyNeighbor

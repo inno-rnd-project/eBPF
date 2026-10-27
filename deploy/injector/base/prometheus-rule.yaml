@@ -18,8 +18,8 @@ spec:
       interval: 30s
       # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
       # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
-      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
-      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 정상 운영
+      # 산출은 limit보다 한 자릿수 이상 작다(2026-10 dev 실측 그룹별 rule 최대 60 미만, #462 정정).
       limit: 2000
       rules:
         # InjectorActive
