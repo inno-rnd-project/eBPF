@@ -59,8 +59,8 @@ type LoadScenarioSpec struct {
 	// +kubebuilder:validation:Required
 	Duration metav1.Duration `json:"duration"`
 
-	// Intensity 는 부하 강도다. kind 별 단위 가 다르며 (cpu: millicores, memory: Mi/Gi,
-	// network: M/G, gpu: 1~100 점유율 percent) safety.CheckIntensity 에서 kind 별 상한과 비교한다.
+	// Intensity는 부하 강도다. kind별 단위가 다르며(cpu: millicores, memory: Mi/Gi, network: M/G,
+	// gpu: 1~100 점유율 percent) safety.CheckIntensity에서 kind별 상한과 비교한다.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	Intensity string `json:"intensity"`
@@ -183,9 +183,9 @@ type LoadScenarioStatus struct {
 	// +optional
 	LastScoreTriggerTime *metav1.Time `json:"lastScoreTriggerTime,omitempty"`
 
-	// LastObservedSpikeAlerts 는 spikeAlertAssertion 이 true 일 때 마지막 run 종료 직후
-	// firing 으로 관측 된 alertname 목록 이다. hit 가 없으면 빈 배열 또는 nil. polling 시작 시
-	// 비워지므로 직전 run의 hit가 남지 않는다(#462).
+	// LastObservedSpikeAlerts는 spikeAlertAssertion이 true일 때 마지막 run 종료 직후 firing으로
+	// 관측된 alertname 목록이다. hit가 없으면 빈 배열 또는 nil이며, polling 시작 시 비워지므로 직전
+	// run의 hit가 남지 않는다(#462).
 	// +optional
 	LastObservedSpikeAlerts []string `json:"lastObservedSpikeAlerts,omitempty"`
 

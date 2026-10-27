@@ -47,7 +47,7 @@
 - `CPUThrottleSpikeDetected`
 - `MemoryPressureSpikeDetected`
 
-hit 한 alertname 목록 은 `status.lastObservedSpikeAlerts` 에 기록 되고 `condition.SpikeAlertObserved` 가 `True` 로 전환 된다. window 만료 까지 hit 가 없으면 `condition.SpikeAlertObserved = False` 로 기록 된다.
+hit한 alertname 목록은 `status.lastObservedSpikeAlerts`에 기록되고 `condition.SpikeAlertObserved`가 `True`로 전환된다. window 만료까지 hit가 없으면 `condition.SpikeAlertObserved = False`로 기록된다.
 
 이 흐름은 발화 관측을 기록할 뿐 검증 게이트가 아니다(#462). alert가 발화하지 않아도 run은 성공으로 집계되고(`LastSuccessfulRunTime` 갱신, `consecutiveFailures` 초기화), 결과는 condition과 `lastObservedSpikeAlerts`로만 확인한다. 관측은 target 필터 없이 클러스터 전역 `ALERTS`를 매칭하고 lease가 polling 전에 해제되므로, 기록된 hit가 이번 run의 부하 때문이라는 인과는 보장하지 않는다. polling 시작 시 `lastObservedSpikeAlerts`는 비워져 직전 run의 hit가 남지 않는다.
 
@@ -76,7 +76,7 @@ kubectl apply -f my-loadscenario.yaml
 
 ## 샘플 LoadScenario CR
 
-매분 1 회 `correlation-stress/victim` Pod 에 30 초 CPU 부하 인가 + spike alert 발화 관측 기록. spikeAlertAssertion이 켜져 있으면 부하 종료 뒤 polling window(최대 약 5분 30초) 동안 다음 run이 시작되지 않으므로 실제 주기는 1분보다 길다:
+매분 1회 `correlation-stress/victim` Pod에 30초 CPU 부하 인가와 spike alert 발화 관측 기록. spikeAlertAssertion이 켜져 있으면 부하 종료 뒤 polling window(최대 약 5분 30초) 동안 다음 run이 시작되지 않으므로 실제 주기는 1분보다 길다:
 
 ```yaml
 apiVersion: injector.netobs.io/v1alpha1
@@ -119,7 +119,7 @@ spec:
 - `deploy/injector/examples/` 의 추천 base yaml을 운영 환경의 임시 디렉토리로 복사
 - `targetRef.namespace`와 `targetRef.name`을 실제 부하 인가 대상 Pod로 정정
 - `schedule` 의 cron 표현식을 운영 의도에 맞춰 조정 (`@every 1m` 같은 짧은 schedule은 dev cluster 검증 한정)
-- `intensity` 의 안전 상한 (cpu 4000m, memory 2Gi, network 1000M, gpu 점유율 100) 을 넘지 않게 정정
+- `intensity`의 안전 상한(cpu 4000m, memory 2Gi, network 1000M, gpu 점유율 100)을 넘지 않게 정정
 - `kubectl apply -f <정정한-yaml>` 적용 후 `kubectl get loadscenario -n <namespace>` 로 controller reconcile 진입 확인
 - `status.lastScheduleTime`과 `status.lastSuccessfulRunTime` 갱신으로 정상 동작 확인
 
@@ -139,7 +139,7 @@ spec:
 
 ### spike alert 미발화 (`condition.SpikeAlertObserved = False`)
 
-부하 가 z-score spike alert 임계 (#89 의 stddev 기반) 를 넘기지 못 한 상태. 기록 전용 계약이라 이 경우에도 run은 성공으로 집계된다. 가능성.
+부하가 z-score spike alert 임계(#89의 stddev 기반)를 넘기지 못한 상태다. 기록 전용 계약이라 이 경우에도 run은 성공으로 집계된다. 가능성은 다음과 같다.
 
 - `spec.intensity` 가 baseline 변동 보다 작음. intensity 를 더 높여 재시도 (단 safety.CheckIntensity 상한 내)
 - `spec.duration` 이 너무 짧아 (예: 30 초 미만) baseline 갱신 전 부하 종료. duration 을 1 분 이상 으로 조정
