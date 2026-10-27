@@ -19,12 +19,12 @@ import (
 // 통합 레이어에서 fail-fast 로 잡아 #37 (privileged 제거) 같은 후속 작업의 회귀 가드로 동작한다.
 //
 // 의도된 차이 (현재 시점):
-//   - DaemonSet 의 imagePullPolicy: dev=Never, prod=IfNotPresent
 //   - DaemonSet 의 nodeSelector: dev 는 observability.netobs/canary=true 추가, prod 는 미적용
-//   - DaemonSet image: dev 는 newName 미설정 (gpuobs-agent), prod 는 ghcr 접두 명시
-//   - DaemonSet image newTag: 두 overlay 모두 동일 (make bump 동기화)
 //
-// 위 4 가지 외의 차이는 drift 로 간주해 테스트 실패.
+// 이미지 규약은 #462부터 dev와 prod가 같다. 두 overlay 모두 ghcr 이미지(newName)와 같은 태그
+// (make bump 동기화), imagePullPolicy: IfNotPresent를 쓴다. 종전 dev의 로컬 태그와 Never는 노드
+// 이미지 prune이나 노드 상실 시 ErrImageNeverPull 위험이 있어 통일했다. 이 규약에서 벗어나는
+// 차이도 drift로 간주해 테스트 실패.
 func TestT6_OverlayDriftDevVsProd(t *testing.T) {
 	root := repoRoot(t)
 	devPath := filepath.Join(root, "deploy", "gpuobs", "overlays", "dev")
@@ -73,19 +73,15 @@ func TestT6_OverlayDriftDevVsProd(t *testing.T) {
 	if !strings.HasPrefix(prodImage, "ghcr.io/") {
 		t.Errorf("prod image=%q want ghcr.io/* prefix", prodImage)
 	}
-	if strings.Contains(devImage, "ghcr.io/") {
-		t.Errorf("dev image=%q must not have ghcr.io prefix (uses local docker tag)", devImage)
-	}
-	devTag := imageTag(devImage)
-	prodTag := imageTag(prodImage)
-	if devTag != prodTag {
-		t.Errorf("dev image tag %q vs prod tag %q must match (make bump 동기화 회귀)", devTag, prodTag)
+	// #462 dev도 prod와 같은 ghcr 이미지를 쓴다. 이름과 태그(make bump 동기화)가 모두 같아야 한다.
+	if devImage != prodImage {
+		t.Errorf("dev image=%q vs prod image=%q must match (ghcr 규약 또는 make bump 동기화 회귀)", devImage, prodImage)
 	}
 
 	devPolicy := getDaemonSetImagePullPolicy(t, devDS)
 	prodPolicy := getDaemonSetImagePullPolicy(t, prodDS)
-	if devPolicy != "Never" {
-		t.Errorf("dev imagePullPolicy=%q want Never", devPolicy)
+	if devPolicy != "IfNotPresent" {
+		t.Errorf("dev imagePullPolicy=%q want IfNotPresent (#462 ghcr 규약)", devPolicy)
 	}
 	if prodPolicy != "IfNotPresent" {
 		t.Errorf("prod imagePullPolicy=%q want IfNotPresent", prodPolicy)
@@ -230,12 +226,4 @@ func getDaemonSetNodeSelector(t *testing.T, doc []byte) map[string]string {
 		t.Fatalf("daemonset parse: %v", err)
 	}
 	return ds.Spec.Template.Spec.NodeSelector
-}
-
-func imageTag(image string) string {
-	idx := strings.LastIndex(image, ":")
-	if idx < 0 {
-		return ""
-	}
-	return image[idx+1:]
 }
