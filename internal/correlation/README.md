@@ -192,11 +192,11 @@ dimension 분류는 suspect metric query 문자열의 substring 매칭으로 결
 
 ### 설치
 
-dev 클러스터는 로컬 빌드 이미지를 사용한다.
+dev 클러스터도 ghcr 이미지를 `IfNotPresent`로 받으므로 deploy 전에 push한다. 같은 태그를 재push하면 노드에 반영되지 않아, 코드가 바뀌면 `make bump`로 새 태그를 만든다.
 
 ```sh
 make build-correlation-exporter
-make image-build-correlation-exporter
+make image-push-correlation-exporter
 make deploy-correlation-dev
 ```
 
