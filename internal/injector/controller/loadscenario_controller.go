@@ -108,7 +108,7 @@ func (r *LoadScenarioReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // Reconcile 은 비동기 state machine 의 단일 transition 을 처리 한다. blocking wait 없이 짧게 종료
 // 하며 다음 transition 까지 RequeueAfter 로 controller-runtime workqueue 가 wait 한다.
-func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, retErr error) {
 	logger := log.FromContext(ctx).WithValues("loadscenario", req.NamespacedName)
 	defer func() { ReconcileTimestamp.Set(float64(time.Now().Unix())) }()
 
@@ -120,11 +120,18 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	// #462 reconcile_total 은 존재하는 CR 의 reconcile 마다 정확히 1회 계수한다. 기본은 wait 이고
-	// 각 경로가 결과를 덮어쓴다.
+	// #462 reconcile_total은 존재하는 CR의 reconcile마다 정확히 1회 계수한다(Get NotFound와 Get
+	// 오류는 계수하지 않는다). 기본은 wait이고 각 경로가 결과를 덮어쓰며, 에러를 반환하는 경로는
+	// 지정한 결과와 무관하게 retry로 분류한다. 종결 결과 기록 전에 status update가 실패한 경우도
+	// retry가 되어, 영속되지 않은 결과가 success나 started로 계수되지 않는다.
 	outcome := "wait"
 	ctx = withReconcileOutcome(ctx, &outcome)
-	defer func() { ReconcileTotal.WithLabelValues(outcome).Inc() }()
+	defer func() {
+		if retErr != nil {
+			outcome = "retry"
+		}
+		ReconcileTotal.WithLabelValues(outcome).Inc()
+	}()
 
 	// Deletion timestamp 검사 - finalizer cleanup.
 	if !ls.DeletionTimestamp.IsZero() {
@@ -318,7 +325,7 @@ func (r *LoadScenarioReconciler) handleIdle(ctx context.Context, ls *injectorv1a
 		// 상태 만 세므로 별도 보정이 필요 없다 (#459).
 		return ctrl.Result{}, updateErr
 	}
-	// started 는 Running 전이가 영속된 뒤에만 지정한다 (#462).
+	// started는 Running 전이가 영속된 뒤에만 지정한다(#462).
 	setReconcileOutcome(ctx, "started")
 	return ctrl.Result{RequeueAfter: ls.Spec.Duration.Duration + 5*time.Second}, nil
 }
