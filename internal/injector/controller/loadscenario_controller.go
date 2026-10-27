@@ -434,6 +434,10 @@ func (r *LoadScenarioReconciler) handleRunning(ctx context.Context, ls *injector
 		pollStart := metav1.NewTime(now)
 		ls.Status.RunStartTime = &pollStart
 		ls.Status.RunState = injectorv1alpha1.RunStateAwaitingSpikeAlert
+		// #462 이번 run의 관측 결과만 남도록 직전 run의 hit 목록을 비운다. 종전에는 hit 경로에서만
+		// 대입되어, 직전 hit 뒤 이번 run이 미발화로 끝나면 SpikeAlertObserved=False인데 필드에는 직전
+		// alert가 남았다. run의 성공·실패 판정과는 무관하다.
+		ls.Status.LastObservedSpikeAlerts = nil
 		setCondition(ls, "SpikeAlertObserved", metav1.ConditionUnknown, "Polling", "spike alert polling window started")
 		if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
 			return ctrl.Result{}, updateErr

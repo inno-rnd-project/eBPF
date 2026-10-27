@@ -74,7 +74,7 @@ spec:
               intensity:
                 description: |-
                   Intensity 는 부하 강도다. kind 별 단위 가 다르며 (cpu: millicores, memory: Mi/Gi,
-                  network: M/G, gpu: 1 단위 fraction) safety.CheckIntensity 에서 kind 별 상한과 비교한다.
+                  network: M/G, gpu: 1~100 점유율 percent) safety.CheckIntensity 에서 kind 별 상한과 비교한다.
                 minLength: 1
                 type: string
               kind:
@@ -165,13 +165,14 @@ spec:
               spikeAlertAssertion:
                 default: false
                 description: |-
-                  SpikeAlertAssertion 이 true 이면 controller 가 부하 종료 후 5 분 polling window 동안
-                  z-score spike alert (CPUThrottleSpikeDetected / MemoryPressureSpikeDetected /
-                  NetworkDropSpikeDetected / GPUUtilSpikeDetected) 발화 여부 를 Prometheus query 로 확인 해
-                  status 에 기록 한다. 기록 전용(record-only) 계약이라 run의 성공·실패 판정에 영향을 주지
-                  않는다. alert가 발화하지 않아도 run은 성공(LastSuccessfulRunTime 갱신, ConsecutiveFailures
-                  초기화)으로 집계되며, 결과는 SpikeAlertObserved condition(True/False/Unknown)과
-                  LastObservedSpikeAlerts로만 확인한다.
+                  SpikeAlertAssertion이 true이면 controller가 부하 종료 후 5분 polling window 동안 z-score spike
+                  alert(CPUThrottleSpikeDetected, MemoryPressureSpikeDetected, NetworkDropSpikeDetected,
+                  GPUUtilSpikeDetected)의 발화 여부를 Prometheus query로 확인해 status에 기록한다. 기록
+                  전용(record-only) 계약이라 run의 성공·실패 판정에 영향을 주지 않는다. alert가 발화하지 않아도
+                  run은 성공(LastSuccessfulRunTime 갱신, ConsecutiveFailures 초기화)으로 집계되며, 결과는
+                  SpikeAlertObserved condition(True/False/Unknown)과 LastObservedSpikeAlerts로만 확인한다. 관측은
+                  target 필터 없이 클러스터 전역 ALERTS를 매칭하고 lease가 polling 전에 해제되므로 이번 run과의
+                  인과를 보장하지 않는다. polling 동안(최대 약 5분 30초) 다음 run은 시작되지 않는다.
                 type: boolean
               suspend:
                 default: false
@@ -205,7 +206,7 @@ spec:
               conditions:
                 description: |-
                   Conditions 는 controller-runtime convention 의 condition 배열 이다. 본 CRD 가 노출 하는
-                  condition type 은 다음 4 종 이다.
+                  condition type은 다음 5종이다.
                     - Ready (controller 가 LoadScenario 를 reconcile 가능 한 상태)
                     - Scheduled (마지막 run 이 schedule 따라 정상 트리거 됨)
                     - SpikeAlertObserved (spikeAlertAssertion = true 일 때 마지막 run 의 alert hit 여부)
@@ -278,7 +279,8 @@ spec:
               lastObservedSpikeAlerts:
                 description: |-
                   LastObservedSpikeAlerts 는 spikeAlertAssertion 이 true 일 때 마지막 run 종료 직후
-                  firing 으로 관측 된 alertname 목록 이다. hit 가 없으면 빈 배열 또는 nil.
+                  firing 으로 관측 된 alertname 목록 이다. hit 가 없으면 빈 배열 또는 nil. polling 시작 시
+                  비워지므로 직전 run의 hit가 남지 않는다(#462).
                 items:
                   type: string
                 type: array
