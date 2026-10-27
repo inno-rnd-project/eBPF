@@ -152,11 +152,11 @@ make bump    # bump VERSION + update every overlay image tag in one step
 
 | Overlay | Component | Stage | Node selector | Image policy |
 |---|---|---|---|---|
-| `netobs-dev` | netobs | canary | `accelerator=nvidia`, `observability.netobs/canary=true` | `Never` (local image) |
+| `netobs-dev` | netobs | canary | `accelerator=nvidia`, `observability.netobs/canary=true` | `IfNotPresent` (ghcr) |
 | `netobs-prod` | netobs | fleet | `observability.netobs/enabled=true` (control-plane excluded) | `IfNotPresent` |
-| `gpuobs-dev` | gpuobs | canary | `accelerator=nvidia`, `observability.netobs/canary=true` | `Never` (local image) |
+| `gpuobs-dev` | gpuobs | canary | `accelerator=nvidia`, `observability.netobs/canary=true` | `IfNotPresent` (ghcr) |
 | `gpuobs-prod` | gpuobs | fleet | `accelerator=nvidia`, `observability.netobs/enabled=true` | `IfNotPresent` |
-| `correlation-dev` | correlation-exporter | cluster singleton | n/a (Deployment, 임의 노드) | `Never` (local image), `RECONCILE_INTERVAL=1m`, `WINDOW=30m` |
+| `correlation-dev` | correlation-exporter | cluster singleton | n/a (Deployment, 임의 노드) | `IfNotPresent` (ghcr), `RECONCILE_INTERVAL=1m`, `WINDOW=30m` |
 | `correlation-prod` | correlation-exporter | cluster singleton | n/a (Deployment, 임의 노드) | `IfNotPresent`, 메모리 limit 1Gi 상향 |
 
 ### Node labels
@@ -178,10 +178,12 @@ kubectl label node ebpf-worker2 observability.netobs/enabled=true --overwrite
 
 ### Dev canary workflow
 
+dev overlay도 ghcr 이미지를 `IfNotPresent`로 받으므로 deploy 전에 반드시 push한다. 노드는 이미 받은 태그를 다시 받지 않아 같은 태그를 재push하면 반영되지 않으므로, 코드가 바뀌면 `make bump`로 새 태그를 만든 뒤 push한다.
+
 Replace `<agent>` with `netobs` or `gpuobs`:
 ```bash
 make build-<agent>-agent          # local binary
-make image-build-<agent>-agent    # local image at <agent>-agent:<VERSION>
+make image-push-<agent>-agent     # build and push ghcr.io/inno-rnd-project/<agent>-agent:<VERSION>
 make render-<agent>-dev           # kustomize dry-run
 make deploy-<agent>-dev           # apply to canary node
 make delete-<agent>-dev           # teardown
@@ -190,7 +192,7 @@ make delete-<agent>-dev           # teardown
 correlation-exporter는 `-agent` 접미사 컨벤션 밖에 있어 explicit 타깃을 사용한다.
 ```bash
 make build-correlation-exporter        # local binary
-make image-build-correlation-exporter  # local image at correlation-exporter:<VERSION>
+make image-push-correlation-exporter   # build and push ghcr.io/inno-rnd-project/correlation-exporter:<VERSION>
 make render-correlation-dev            # kustomize dry-run
 make deploy-correlation-dev            # apply Deployment + ServiceMonitor + PrometheusRule + ConfigMap
 make delete-correlation-dev            # teardown

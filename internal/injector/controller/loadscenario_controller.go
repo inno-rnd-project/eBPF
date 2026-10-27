@@ -108,7 +108,7 @@ func (r *LoadScenarioReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // Reconcile 은 비동기 state machine 의 단일 transition 을 처리 한다. blocking wait 없이 짧게 종료
 // 하며 다음 transition 까지 RequeueAfter 로 controller-runtime workqueue 가 wait 한다.
-func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, retErr error) {
 	logger := log.FromContext(ctx).WithValues("loadscenario", req.NamespacedName)
 	defer func() { ReconcileTimestamp.Set(float64(time.Now().Unix())) }()
 
@@ -120,8 +120,22 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	// #462 reconcile_total은 존재하는 CR의 reconcile마다 정확히 1회 계수한다(Get NotFound와 Get
+	// 오류는 계수하지 않는다). 기본은 wait이고 각 경로가 결과를 덮어쓰며, 에러를 반환하는 경로는
+	// 지정한 결과와 무관하게 retry로 분류한다. 종결 결과 기록 전에 status update가 실패한 경우도
+	// retry가 되어, 영속되지 않은 결과가 success나 started로 계수되지 않는다.
+	outcome := "wait"
+	ctx = withReconcileOutcome(ctx, &outcome)
+	defer func() {
+		if retErr != nil {
+			outcome = "retry"
+		}
+		ReconcileTotal.WithLabelValues(outcome).Inc()
+	}()
+
 	// Deletion timestamp 검사 - finalizer cleanup.
 	if !ls.DeletionTimestamp.IsZero() {
+		setReconcileOutcome(ctx, "deleted")
 		return r.handleDeletion(ctx, &ls)
 	}
 
@@ -136,6 +150,7 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// prod cluster 차단 gate.
 	if err := safety.CheckClusterLabel(ctx, r.K8sClient, r.AllowClusterLabel); err != nil {
 		logger.Info("cluster label gate refused", "error", err.Error())
+		setReconcileOutcome(ctx, "denied")
 		setCondition(&ls, "Ready", metav1.ConditionFalse, "ClusterLabelGate", err.Error())
 		if updateErr := r.Status().Update(ctx, &ls); updateErr != nil {
 			return ctrl.Result{}, updateErr
@@ -149,6 +164,7 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := safety.CheckNamespaceAllowed(r.AllowedNamespaces, ls.Namespace); err != nil {
 		logger.Info("namespace gate refused spawn namespace", "error", err.Error())
 		NamespaceDeniedTotal.WithLabelValues("spawn").Inc()
+		setReconcileOutcome(ctx, "denied")
 		setCondition(&ls, "Ready", metav1.ConditionFalse, "NamespaceDenied", "spawn: "+err.Error())
 		if updateErr := r.Status().Update(ctx, &ls); updateErr != nil {
 			return ctrl.Result{}, updateErr
@@ -158,6 +174,7 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := safety.CheckNamespaceAllowed(r.AllowedNamespaces, ls.Spec.TargetRef.Namespace); err != nil {
 		logger.Info("namespace gate refused target namespace", "error", err.Error())
 		NamespaceDeniedTotal.WithLabelValues("target").Inc()
+		setReconcileOutcome(ctx, "denied")
 		setCondition(&ls, "Ready", metav1.ConditionFalse, "NamespaceDenied", "target: "+err.Error())
 		if updateErr := r.Status().Update(ctx, &ls); updateErr != nil {
 			return ctrl.Result{}, updateErr
@@ -168,6 +185,7 @@ func (r *LoadScenarioReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// suspend 검사. spec.suspend 또는 maxFailures 초과 시 skip. controller 는 spec 을 mutation 하지
 	// 않으며 maxFailures 초과 상태 는 status condition 으로만 표현 한다.
 	if r.isSuspended(&ls) {
+		setReconcileOutcome(ctx, "suspended")
 		reason := "SpecSuspend"
 		msg := "spec.suspend=true"
 		if !ls.Spec.Suspend {
@@ -264,7 +282,7 @@ func (r *LoadScenarioReconciler) handleIdle(ctx context.Context, ls *injectorv1a
 		if errors.Is(startErr, errSkipForbidLockHeld) {
 			// Forbid 정책 의 lock 충돌 은 skip 결과 로 분류. ConsecutiveFailures 미증가, LastSuccessfulRunTime
 			// 미갱신. metrics result=skip.
-			RecordReconcileResult(ls.Namespace, ls.Name, "skip", float64(time.Now().Unix()))
+			RecordReconcileResult(ctx, ls.Namespace, ls.Name, "skip", float64(time.Now().Unix()))
 			if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
 				return ctrl.Result{}, updateErr
 			}
@@ -283,7 +301,7 @@ func (r *LoadScenarioReconciler) handleIdle(ctx context.Context, ls *injectorv1a
 		if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
-		RecordReconcileResult(ls.Namespace, ls.Name, "error", float64(time.Now().Unix()))
+		RecordReconcileResult(ctx, ls.Namespace, ls.Name, "error", float64(time.Now().Unix()))
 		next := schedule.Next(now).Sub(now)
 		if next <= 0 {
 			next = time.Minute
@@ -307,6 +325,8 @@ func (r *LoadScenarioReconciler) handleIdle(ctx context.Context, ls *injectorv1a
 		// 상태 만 세므로 별도 보정이 필요 없다 (#459).
 		return ctrl.Result{}, updateErr
 	}
+	// started는 Running 전이가 영속된 뒤에만 지정한다(#462).
+	setReconcileOutcome(ctx, "started")
 	return ctrl.Result{RequeueAfter: ls.Spec.Duration.Duration + 5*time.Second}, nil
 }
 
@@ -414,6 +434,10 @@ func (r *LoadScenarioReconciler) handleRunning(ctx context.Context, ls *injector
 		pollStart := metav1.NewTime(now)
 		ls.Status.RunStartTime = &pollStart
 		ls.Status.RunState = injectorv1alpha1.RunStateAwaitingSpikeAlert
+		// #462 이번 run의 관측 결과만 남도록 직전 run의 hit 목록을 비운다. 종전에는 hit 경로에서만
+		// 대입되어, 직전 hit 뒤 이번 run이 미발화로 끝나면 SpikeAlertObserved=False인데 필드에는 직전
+		// alert가 남았다. run의 성공·실패 판정과는 무관하다.
+		ls.Status.LastObservedSpikeAlerts = nil
 		setCondition(ls, "SpikeAlertObserved", metav1.ConditionUnknown, "Polling", "spike alert polling window started")
 		if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
 			return ctrl.Result{}, updateErr
@@ -483,7 +507,7 @@ func (r *LoadScenarioReconciler) markRunSuccess(ctx context.Context, ls *injecto
 	if updateErr := r.Status().Update(ctx, ls); updateErr != nil {
 		return ctrl.Result{}, updateErr
 	}
-	RecordReconcileResult(ls.Namespace, ls.Name, "success", float64(time.Now().Unix()))
+	RecordReconcileResult(ctx, ls.Namespace, ls.Name, "success", float64(time.Now().Unix()))
 	next := schedule.Next(r.Now()).Sub(r.Now())
 	if next <= 0 {
 		next = time.Minute

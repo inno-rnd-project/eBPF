@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"reflect"
 	"testing"
 )
@@ -92,4 +93,48 @@ func TestParseNamespaceList(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGetenvInt는 정수 튜너블의 env 진입점이 빈 값에서 default, 유효 값에서 그 값, 잘못된 입력에서
+// 에러를 반환하는지 검증한다(#462).
+func TestGetenvInt(t *testing.T) {
+	const key = "TEST_GETENV_INT_KEY"
+	t.Setenv(key, "")
+	if v, err := getenvInt(key, 1024); err != nil || v != 1024 {
+		t.Errorf("empty env: got (%v, %v) want (1024, nil)", v, err)
+	}
+	t.Setenv(key, "2048")
+	if v, err := getenvInt(key, 1024); err != nil || v != 2048 {
+		t.Errorf("valid env: got (%v, %v) want (2048, nil)", v, err)
+	}
+	t.Setenv(key, "10k")
+	if _, err := getenvInt(key, 1024); err == nil {
+		t.Errorf("invalid env: err=nil want non-nil")
+	}
+}
+
+// TestParse_MaxActiveTunablesFailFast는 #462의 회귀 가드다. cardinality cap 3종의 오타(비정수)와
+// 0 이하 값이 종전처럼 조용히 1024로 강등되지 않고 기동 실패로 드러나는지 검증한다.
+func TestParse_MaxActiveTunablesFailFast(t *testing.T) {
+	prevArgs := os.Args
+	os.Args = []string{"netobs-agent"}
+	t.Cleanup(func() { os.Args = prevArgs })
+
+	for _, key := range []string{"NETOBS_DROP_FLOW_MAX_ACTIVE", "NETOBS_DROP_STACK_MAX_ACTIVE", "NETOBS_FLOW_MAX_ACTIVE"} {
+		for _, v := range []string{"10k", "0", "-5"} {
+			t.Run(key+"="+v, func(t *testing.T) {
+				t.Setenv(key, v)
+				if _, err := Parse(); err == nil {
+					t.Errorf("Parse err=nil, want 기동 실패 (%s=%q)", key, v)
+				}
+			})
+		}
+	}
+	t.Run("정상값 수용", func(t *testing.T) {
+		t.Setenv("NETOBS_FLOW_MAX_ACTIVE", "4096")
+		cfg, err := Parse()
+		if err != nil || cfg.FlowMaxActive != 4096 {
+			t.Errorf("Parse=(%d, %v), want (4096, nil)", cfg.FlowMaxActive, err)
+		}
+	})
 }

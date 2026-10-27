@@ -28,8 +28,7 @@ spec:
       interval: 30s
       # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
       # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
-      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
-      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화된다.
       # #442 rcv stage 의 pod 편입으로 중간 rule 실측이 1456 이 되어 (882 → 1456) 종전 limit
       # 2000 의 headroom 이 얇아져 4000 으로 상향한다. 임박 감지 임계 (80%) 는 alert 가 3200 으로
       # 동반 상향된다.
@@ -37,7 +36,9 @@ spec:
       rules:
         # node:gpu_idle:5m
         # 5분 윈도우에서 GPU 사용률이 20% 미만이었던 시간 비율 (0-1). 노드 내 GPU별 비율의 평균을
-        # 노드 단위로 rollup한다. avg_over_time + bool 비교 + subquery 패턴이라 evaluation 비용이
+        # 노드 단위로 rollup한다. 임계 20은 gpu-status API의 device idle 판정 상수
+        # gpuIdleUtilizationThreshold(internal/correlation/api/gpustatus.go)와 수동으로 동기화해야
+        # 한다(#462). 한쪽만 바꾸면 rule의 노드 idle과 API의 device idle 판정이 어긋난다. avg_over_time + bool 비교 + subquery 패턴이라 evaluation 비용이
         # 다른 rule보다 높으니 group interval 변경 시 주의.
         - record: node:gpu_idle:5m
           expr: |
@@ -354,8 +355,13 @@ spec:
       interval: 30s
       # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
       # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
-      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
-      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화된다. 가장 큰 rule은
+      # pod 수에 비례하는 pod 단위 rule이며 dev 실측 최대 52 시리즈(2026-10, 10일 최대)라 2000은
+      # 정상 운영에 닿지 않는다. 도달 전 조기 경고는 이 그룹 끝의
+      # cluster:gpuobs_dominant_cause_rule_series:max와 DominantCauseRuleSeriesNearLimit이 맡고(#462),
+      # 도달 자체(평가 실패)는 kube-prometheus-stack 기본 경보 PrometheusRuleFailures가 잡는다.
+      # 이 그룹에 pod 단위 rule을 추가하거나 이름을 바꾸면 집계 rule의 regex를 함께 고치고, limit을
+      # 바꾸면 DominantCauseRuleSeriesNearLimit의 임계 1600과 description을 함께 고친다.
       limit: 2000
       rules:
         # cluster:gpu_pcie_saturation_score:5m
@@ -1035,3 +1041,19 @@ spec:
         # 로 victim 별 독립적 으로 top3 선정 한다.
         - record: pod:gpu_idle_cause_weight_top3:5m
           expr: topk by(node, victim_namespace, victim_pod) (3, pod:gpu_idle_cause_weight:5m)
+
+        # cluster:gpuobs_dominant_cause_rule_series:max
+        # 이 그룹 pod 단위 rule의 rule별 산출 시리즈 수 최댓값이다(#462 near-limit 감시 입력). 그룹
+        # limit은 rule 단위로 적용되므로 rule 하나의 산출을 센다. pod:gpu_idle_cause_score:5m만
+        # cause별 rule 6개로 나뉘어 cause 단위로 세고, 나머지는 rule 하나가 한 이름이라 이름 단위로
+        # 센다(pod:gpu_idle_cause_weight:5m은 cause 라벨이 있어도 rule 하나라 이름 전체로 센다).
+        # 그룹 끝에 두어 같은 평가 주기의 pod rule 결과를 읽는다. or는 메트릭 이름을 빼고 라벨셋을
+        # 비교하므로 오른쪽은 cause 라벨이 남는 by(cause) 집계여야 왼쪽(이름만 남는 집계)에 가려지지
+        # 않는다.
+        - record: cluster:gpuobs_dominant_cause_rule_series:max
+          expr: |
+            max(
+              count by(__name__) ({__name__=~"pod:(cgroup_contention_score|[a-z_]+_score_rise|gpu_idle_cause_sum|gpu_idle_cause_weight|gpu_idle_cause_weight_top3):5m"})
+              or
+              count by(cause) (pod:gpu_idle_cause_score:5m)
+            )

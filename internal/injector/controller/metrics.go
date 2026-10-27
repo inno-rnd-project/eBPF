@@ -17,12 +17,14 @@ import (
 // metric (workqueue depth 등) 외에 LoadScenario 단위 reconcile 결과 와 active count 와 마지막 run
 // 상태 를 직접 노출 해 운영자 가 dashboard 와 alert 에서 reconciler 상태 를 가시화 가능 하다.
 var (
-	// ReconcileTotal 은 reconcile 호출 결과 누계 다. result 라벨 (success / error / skip) 별로
-	// 카운트 한다.
+	// ReconcileTotal은 reconcile 결과 누계다. #462부터 존재하는 CR의 reconcile마다 정확히 1회
+	// 계수한다(Get NotFound와 Get 오류는 계수하지 않는다). 종전에는 종결 결과(success/error/skip)
+	// 에서만 증가해 대기와 거부, 정지 경로의 reconcile이 빠졌다. result 값은 Help의 고정 열거라
+	// 시리즈 수 상한이 유계다.
 	ReconcileTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "loadscenario_reconcile_total",
-			Help: "LoadScenario reconcile 호출 누계 (result 라벨 별 success/error/skip).",
+			Help: "존재하는 LoadScenario의 reconcile 누계(CR 조회 실패 제외, reconcile마다 1회). result 라벨: success(run 정상 종료), error(run 시작 실패), skip(lease 충돌), started(run 시작), wait(실행 시각·score 미충족, run 진행 중, finalizer 최초 등록, 잘못된 schedule 등 에러 없는 대기), denied(cluster label·namespace 게이트 거부), suspended(spec.suspend 또는 maxFailures 초과), deleted(삭제 정리), retry(에러 반환으로 재시도되는 reconcile).",
 		},
 		[]string{"result"},
 	)
@@ -77,10 +79,11 @@ var NamespaceDeniedTotal = prometheus.NewCounterVec(
 	[]string{"scope"},
 )
 
-// RecordReconcileResult 는 reconcile 단계 종료 시 ReconcileTotal 과 LastRunStatus 와 Reconcile
-// Timestamp 를 일괄 갱신 하는 helper 다. result 는 "success" / "error" / "skip" 중 하나.
-func RecordReconcileResult(namespace, loadscenario, result string, ts float64) {
-	ReconcileTotal.WithLabelValues(result).Inc()
+// RecordReconcileResult는 run 종결 결과를 기록하는 helper다. 현재 reconcile의 결과 슬롯을 result로
+// 지정하고(계수는 Reconcile이 끝에서 1회 수행한다) LastRunStatus와 ReconcileTimestamp를 갱신한다.
+// result는 "success" / "error" / "skip" 중 하나다.
+func RecordReconcileResult(ctx context.Context, namespace, loadscenario, result string, ts float64) {
+	setReconcileOutcome(ctx, result)
 	ReconcileTimestamp.Set(ts)
 	for _, r := range []string{"success", "error", "skip"} {
 		v := float64(0)
@@ -120,4 +123,22 @@ func countActiveRunning() float64 {
 		}
 	}
 	return float64(n)
+}
+
+// reconcileOutcomeKey는 Reconcile 한 번의 결과 값을 ctx로 전달하는 키다.
+type reconcileOutcomeKey struct{}
+
+// withReconcileOutcome은 Reconcile이 호출 끝에 계수할 결과 슬롯을 ctx에 싣는다.
+func withReconcileOutcome(ctx context.Context, outcome *string) context.Context {
+	return context.WithValue(ctx, reconcileOutcomeKey{}, outcome)
+}
+
+// setReconcileOutcome은 현재 Reconcile의 결과를 지정한다. 슬롯이 없는 호출(Reconcile 밖)은 즉시
+// 계수해 기록이 빠지지 않게 한다.
+func setReconcileOutcome(ctx context.Context, result string) {
+	if p, ok := ctx.Value(reconcileOutcomeKey{}).(*string); ok {
+		*p = result
+		return
+	}
+	ReconcileTotal.WithLabelValues(result).Inc()
 }

@@ -31,8 +31,8 @@ spec:
       interval: 30s
       # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
       # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
-      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
-      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 정상 운영
+      # 산출은 limit보다 한 자릿수 이상 작다(2026-10 dev 실측 그룹별 rule 최대 60 미만, #462 정정).
       limit: 2000
       rules:
         # NetObsHighStageLatencyP99
@@ -41,16 +41,16 @@ spec:
         # fallback이 만드는 노이즈를 차단한다. netobs_stage_latency_labeled_seconds의 버킷은
         # #442 부터 ExponentialBuckets(1e-6, 2, 25)로 최상위 finite 경계가 16.777216s다 (#362
         # 당시에는 20단계 0.524288s). 기존 임계 1.0s는 당시 천장(0.524288s) 위라
-        # 어떤 부하에서도 도달 불가한 dead alert였다(#362). 임계 0.4s는 최상위 finite 버킷
-        # [0.262144s, 0.524288s] 안이라 도달 가능하며, 처리 stage의 실측 baseline p99(최대 약
-        # 0.014s) 위로 충분한 여유를 둔다. 관측 상한은 0.524288s로 유지되어 그보다 큰 latency는
-        # 천장에서 포화하지만 0.4s 임계는 여전히 발화한다.
+        # 어떤 부하에서도 도달 불가한 dead alert였다(#362). 임계 0.4s는 버킷 [0.262144s, 0.524288s]
+        # 안이라 도달 가능하며, 처리 stage의 실측 baseline p99(최대 약 0.014s) 위로 충분한 여유를
+        # 둔다. #442 이후 관측 상한은 16.777216s라 0.524288s를 넘는 latency도 포화 없이 구분되어
+        # p99 값 자체가 실제 지연을 반영한다(#462 주석 정정).
         # stage!~ 매처로 대기/간격/네트워크 stage를 제외한다. to_veth(전송 간격)와 ack_wait(지연 ACK
         # 타이머, 설계상 최대 200~500ms)와 rcv_app(app pickup 대기)과 connect(핸드셰이크 왕복 RTT)은
         # 로컬 처리 병목이 아니라 트래픽 패턴·TCP 타이머·앱 스케줄링·네트워크 RTT에 좌우되어 정상
-        # 상태에서도 구조적으로 천장 근처에 상주한다. 이들을 포함하면 임계 0.4s가 상시 오탐이 되므로
-        # (#362 실측: 0.4 발화가 전부 to_veth·ack_wait), 처리 병목만 SLO 대상으로 남긴다. 더 큰 상한
-        # 관측이 필요하면 histogram bucket 범위를 확장한 뒤 임계를 재설정하는 follow-up이 필요하다.
+        # 상태에서도 구조적으로 큰 지연을 보여 #362 실측에서 임계 0.4s 발화를 전부 차지했다(전부
+        # to_veth·ack_wait). 이들을 포함하면 임계 0.4s가 상시 오탐이 되므로 처리 병목만 SLO 대상으로
+        # 남긴다.
         # stage!~ 는 부정 목록이라 새 latency stage 추가 시 SLO 적합성을 재검토해야 부적합 stage가
         # 자동 포함돼 오탐이 되는 것을 막는다 (현재 retrans·drop·sock_teardown 은 latency histogram 을
         # emit 하지 않아 시리즈 부재로 무해). 제외한 stage(ack_wait·rcv_app·connect)의 실제 비정상은
@@ -261,8 +261,8 @@ spec:
       interval: 30s
       # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
       # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
-      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
-      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 정상 운영
+      # 산출은 limit보다 한 자릿수 이상 작다(2026-10 dev 실측 그룹별 rule 최대 60 미만, #462 정정).
       limit: 2000
       rules:
         # GPUIdleWithPCIeSaturation
@@ -482,8 +482,8 @@ spec:
       interval: 30s
       # #412 rule 산출 시리즈 폭주 backstop. 초과 시 그 rule만 평가 실패로 산출이 버려지고
       # 같은 그룹의 다른 rule은 계속 평가된다 (dev 실측: limit 1 그룹에서 초과 rule만 health err,
-      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 현행 최대
-      # rule이 약 900 시리즈라 2000은 정상 운영에 닿지 않는다.
+      # 나머지 rule은 정상 산출). 폭주가 조용히 스토리지를 채우는 대신 가시화되며, 정상 운영
+      # 산출은 limit보다 한 자릿수 이상 작다(2026-10 dev 실측 그룹별 rule 최대 60 미만, #462 정정).
       limit: 2000
       rules:
         # ObsAgentDown
@@ -714,15 +714,37 @@ spec:
         # (dev 실측 1456 시리즈, #442 rcv stage 와 26 le 확장 반영) 은 pod 수에 비례해 커져 한계
         # 도달 시 세 파생 rule 이 함께 조용히 빈다. 80% 임계 (3200) 에서 선행 발화해 limit 상향
         # 또는 카디널리티 절감을 준비할 시간을 준다.
+        # #462 limit에 도달한 rule은 평가 오류로 산출이 끊겨 lookback이 지나면 이 경보 입력이 비고
+        # 경보가 resolve된다. PrometheusRuleFailures(for 15m)가 발화하기까지의 공백과 상황이 나아진
+        # 것처럼 읽히는 resolve를 막도록 keep_firing_for로 30분 더 유지한다.
         - alert: StageLatencyIntermediateSeriesNearLimit
           expr: count(pod:netobs_stage_latency_rate_le:5m) > 3200
           for: 30m
+          keep_firing_for: 30m
           labels:
             severity: warning
             component: observability
           annotations:
             summary: "stage latency intermediate rule nearing group limit ({{ $value }} series)"
             description: "pod:netobs_stage_latency_rate_le:5m 의 산출 시리즈가 {{ $value }} 개로 그룹 limit 4000 의 80% 를 30 분 이상 초과했다. 한계 도달 시 본 rule과 node p99, pod p99, correlation victim latency pressure 파생이 함께 소실된다. pod 증가 추세를 확인하고 limit 상향 또는 stage 라벨 축소를 검토한다."
+
+        # DominantCauseRuleSeriesNearLimit
+        # dominant-cause.recording 그룹 pod 단위 rule의 rule별 산출 시리즈가 그룹 limit 2000의 80%
+        # (1600)를 30분 넘게 초과하면 발화한다(#462). limit에 도달하면 해당 rule의 산출이 통째로
+        # 버려져 dominant cause와 원인 가중치 파생이 비므로, 도달 전에 pod 증가 추세를 알린다. 도달
+        # 자체는 PrometheusRuleFailures가 잡는다. 도달한 rule은 평가 오류로 산출이 끊겨 집계 입력이
+        # 비면 경보가 resolve되므로, PrometheusRuleFailures(for 15m)까지의 공백을 메우도록
+        # keep_firing_for로 30분 더 유지한다. 그룹 limit을 바꾸면 임계 1600과 description을 함께 고친다.
+        - alert: DominantCauseRuleSeriesNearLimit
+          expr: cluster:gpuobs_dominant_cause_rule_series:max > 1600
+          for: 30m
+          keep_firing_for: 30m
+          labels:
+            severity: warning
+            component: observability
+          annotations:
+            summary: "dominant cause rule nearing group limit ({{ $value }} series)"
+            description: "dominant-cause.recording 그룹의 pod 단위 rule 하나가 {{ $value }} 시리즈를 산출해 그룹 limit 2000의 80%를 30분 넘게 초과했다. 한계에 도달하면 그 rule의 산출이 버려져 GPU idle dominant cause와 원인 가중치 파생이 비게 된다. 집계가 rule 식별 라벨을 지우므로 임박한 rule은 count by(__name__) ({__name__=~'pod:.+:5m'})와 count by(cause) (pod:gpu_idle_cause_score:5m)로 찾고, pod 증가 추세를 확인해 limit 상향을 검토한다."
 
         # #88 capacity-trends z-score anomaly alert 4종. 본 alert 군은 capacity planning 의 선행
         # 신호 (즉시 대응 불요 의 warning severity) 라 throttle 류 critical alert 와 component

@@ -70,8 +70,8 @@ var IntensityLimits = map[loadgen.Kind]string{
 }
 
 // CheckIntensity 는 kind 별 상한 표 와 입력을 비교한다. cpu 는 resource.Quantity 로 파싱해 수치 비교,
-// gpu 는 1~100 점유율 percent 로 파싱, memory 는 bytes 단위로 파싱, network 는 단순 prefix 매칭으로
-// 1000M / 1G 이상 거부.
+// gpu는 1~100 점유율 percent로 파싱, memory는 bytes 단위로 파싱, network는 bits/sec로 환산해
+// 상한(1000M = 1G)과 비교하며 1000M과 1G는 경계값이라 허용된다(#462 주석 정정).
 func CheckIntensity(kind loadgen.Kind, intensity string) error {
 	limit, ok := IntensityLimits[kind]
 	if !ok {
@@ -218,8 +218,9 @@ func checkResourceQuantity(input, limit, kind string) error {
 	return nil
 }
 
-// 단위 변환 helper. resource.Quantity 의존을 피해 패키지 외부 의존을 최소화한다. cpu 는 "500m" /
-// "4" 형식, gpu 는 "1" / "2" 형식 모두 정수 millis 로 정규화.
+// 단위 변환 helper. resource.Quantity 의존을 피해 패키지 외부 의존을 최소화한다. cpu의 "500m" /
+// "4" 형식을 정수 millis로 정규화한다. gpu는 1~100 점유율 percent라 checkGPUUtilPercent가 따로
+// 검증한다(#462 주석 정정).
 type quantity struct {
 	millis int64
 }

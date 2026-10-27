@@ -53,6 +53,7 @@ var incidentCatalog = map[string]incidentInfo{
 	"CadvisorMetricsPartiallyAbsent":          {"cAdvisor 부분 결측", "cAdvisor (kubelet) 메트릭이 일부 노드에서 결측되어 해당 노드의 파생 신호가 조용히 비어 있음"},
 	"NodeExporterMetricsPartiallyAbsent":      {"node-exporter 부분 결측", "node-exporter 메트릭이 일부 노드에서 결측되어 해당 노드의 파생 신호가 조용히 비어 있음"},
 	"StageLatencyIntermediateSeriesNearLimit": {"stage latency rule 카디널리티 임박", "stage latency 중간 rule의 산출 시리즈가 그룹 limit의 80%를 초과함"},
+	"DominantCauseRuleSeriesNearLimit":        {"dominant cause rule 카디널리티 임박", "dominant cause 그룹 pod 단위 rule의 산출 시리즈가 그룹 limit의 80%를 초과함"},
 
 	// gpuobs (하드웨어 신호) 계열
 	"GPUObsThrottleActive":           {"GPU throttle 활성", "{{node}}의 GPU가 {{reason}} 사유로 throttle 중임"},

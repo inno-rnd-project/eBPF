@@ -1,0 +1,106 @@
+# gpuobs-dominant-cause-near-limit.test.yaml은 #462의 dominant-cause.recording 그룹 near-limit 감시
+# 검증이다. 그룹 limit은 rule 단위로 적용되므로 집계 rule이 rule 하나의 산출 수를 세는지(cause별로
+# 나뉜 score rule은 cause 단위, 나머지는 이름 단위), 그리고 경보가 1600 초과 30분 지속에서만
+# 발화하고 입력이 끊겨도 keep_firing_for 동안 유지되는지 단정한다. 경보 발화는 시리즈 1601개를
+# 적는 대신 집계 결과를 직접 주입해 검증한다.
+rule_files:
+  - gpuobs.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # rule 단위 집계: score rule은 cause별 rule이라 network_pressure 3개와 cpu_throttle 2개로 따로
+  # 세고(최대 3), weight rule은 rule 하나라 2개 전체를 센다. 최댓값은 score의 3이다. 이 입력은
+  # 잘못된 집계를 모두 구분한다. or 오른쪽이 라벨 없는 집계로 바뀌어 가려지거나 score 분기가
+  # 빠지면 weight의 2가, score를 이름 전체로 세면 5가 나온다.
+  - interval: 30s
+    input_series:
+      - series: 'pod:gpu_idle_cause_score:5m{cause="network_pressure",node="n1",src_pod="a"}'
+        values: '1x20'
+      - series: 'pod:gpu_idle_cause_score:5m{cause="network_pressure",node="n1",src_pod="b"}'
+        values: '1x20'
+      - series: 'pod:gpu_idle_cause_score:5m{cause="network_pressure",node="n1",src_pod="c"}'
+        values: '1x20'
+      - series: 'pod:gpu_idle_cause_score:5m{cause="cpu_throttle",node="n1",src_pod="a"}'
+        values: '1x20'
+      - series: 'pod:gpu_idle_cause_score:5m{cause="cpu_throttle",node="n1",src_pod="b"}'
+        values: '1x20'
+      - series: 'pod:gpu_idle_cause_weight:5m{cause="network_pressure",node="n1",src_pod="a"}'
+        values: '1x20'
+      - series: 'pod:gpu_idle_cause_weight:5m{cause="network_pressure",node="n1",src_pod="b"}'
+        values: '1x20'
+    promql_expr_test:
+      - expr: cluster:gpuobs_dominant_cause_rule_series:max
+        eval_time: 5m
+        exp_samples:
+          - labels: 'cluster:gpuobs_dominant_cause_rule_series:max'
+            value: 3
+
+  # *_score_rise rule이 최댓값이면 그 산출(4)이 잡힌다. regex에서 rise 패턴이 빠지면 1이 나온다.
+  - interval: 30s
+    input_series:
+      - series: 'pod:network_pressure_score_rise:5m{node="n1",src_pod="a"}'
+        values: '1x20'
+      - series: 'pod:network_pressure_score_rise:5m{node="n1",src_pod="b"}'
+        values: '1x20'
+      - series: 'pod:network_pressure_score_rise:5m{node="n1",src_pod="c"}'
+        values: '1x20'
+      - series: 'pod:network_pressure_score_rise:5m{node="n1",src_pod="d"}'
+        values: '1x20'
+      - series: 'pod:gpu_idle_cause_sum:5m{node="n1",src_pod="a"}'
+        values: '1x20'
+    promql_expr_test:
+      - expr: cluster:gpuobs_dominant_cause_rule_series:max
+        eval_time: 5m
+        exp_samples:
+          - labels: 'cluster:gpuobs_dominant_cause_rule_series:max'
+            value: 4
+
+  # 경보: 1700이 30분 넘게 지속되면 발화하고 29분 시점에는 아직 발화하지 않는다.
+  - interval: 1m
+    input_series:
+      - series: 'cluster:gpuobs_dominant_cause_rule_series:max'
+        values: '1700x40'
+    alert_rule_test:
+      - alertname: DominantCauseRuleSeriesNearLimit
+        eval_time: 29m
+        exp_alerts: []
+      - alertname: DominantCauseRuleSeriesNearLimit
+        eval_time: 35m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: observability
+            exp_annotations:
+              summary: "dominant cause rule nearing group limit (1700 series)"
+              description: "dominant-cause.recording 그룹의 pod 단위 rule 하나가 1700 시리즈를 산출해 그룹 limit 2000의 80%를 30분 넘게 초과했다. 한계에 도달하면 그 rule의 산출이 버려져 GPU idle dominant cause와 원인 가중치 파생이 비게 된다. 집계가 rule 식별 라벨을 지우므로 임박한 rule은 count by(__name__) ({__name__=~'pod:.+:5m'})와 count by(cause) (pod:gpu_idle_cause_score:5m)로 찾고, pod 증가 추세를 확인해 limit 상향을 검토한다."
+
+  # 임계 경계값 1600은 초과가 아니라 발화하지 않는다.
+  - interval: 1m
+    input_series:
+      - series: 'cluster:gpuobs_dominant_cause_rule_series:max'
+        values: '1600x40'
+    alert_rule_test:
+      - alertname: DominantCauseRuleSeriesNearLimit
+        eval_time: 35m
+        exp_alerts: []
+
+  # limit에 도달한 rule은 평가 오류로 산출이 끊긴다. 집계 입력이 40분 뒤 사라져도(lookback 5분이
+  # 지난 45분 이후) keep_firing_for 30분 동안은 발화가 유지되고, 그 뒤에야 resolve된다.
+  - interval: 1m
+    input_series:
+      - series: 'cluster:gpuobs_dominant_cause_rule_series:max'
+        values: '1700x40 _x60'
+    alert_rule_test:
+      - alertname: DominantCauseRuleSeriesNearLimit
+        eval_time: 55m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: observability
+            exp_annotations:
+              summary: "dominant cause rule nearing group limit (1700 series)"
+              description: "dominant-cause.recording 그룹의 pod 단위 rule 하나가 1700 시리즈를 산출해 그룹 limit 2000의 80%를 30분 넘게 초과했다. 한계에 도달하면 그 rule의 산출이 버려져 GPU idle dominant cause와 원인 가중치 파생이 비게 된다. 집계가 rule 식별 라벨을 지우므로 임박한 rule은 count by(__name__) ({__name__=~'pod:.+:5m'})와 count by(cause) (pod:gpu_idle_cause_score:5m)로 찾고, pod 증가 추세를 확인해 limit 상향을 검토한다."
+      - alertname: DominantCauseRuleSeriesNearLimit
+        eval_time: 90m
+        exp_alerts: []
