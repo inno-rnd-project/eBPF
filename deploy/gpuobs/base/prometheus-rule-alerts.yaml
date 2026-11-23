@@ -568,14 +568,15 @@ spec:
         # #416 맵 의미론별 분리. 점유율 임계는 페어링 / gated 맵 (starts, netobs_drop_stacks,
         # seg_accum, recv_starts, connect_starts) 에만 유효하다. 이들은 emit 시점에 entry 를 cleanup
         # 하므로 우상향 점유율이 미매칭 entry leak 이라는 진짜 신호다 (starts 실측: 재시작 전 0.985,
-        # 재시작 후 0.016). 반면 accumulator 맵 (flow_bytes, pod_bytes) 은 entry 가 만료되지 않아
-        # 점유율이 누적 distinct key 의 단조 증가 함수라 1.0 근처 수렴이 정상 상태고 (#414 이전
-        # flow_bytes 3노드 0.99 안착 실측), 점유율로는 죽은 key 가 채운 것과 활성 key 가 밀리는
+        # 재시작 후 0.016). 반면 accumulator 맵 (flow_bytes, pod_bytes, pod_retrans) 은 entry 가
+        # 만료되지 않아 점유율이 누적 distinct key 의 단조 증가 함수라 1.0 근처 수렴이 정상 상태고
+        # (#414 이전 flow_bytes 3노드 0.99 안착 실측), 점유율로는 죽은 key 가 채운 것과 활성 key 가 밀리는
         # 실해를 구분할 수 없어 map 매처로 제외한다. accumulator 의 실해 (활성 flow evict) 는
-        # NetObsFlowCounterResets 가 커버한다. 신규 편입 맵은 명시 제외 전까지 본 임계가 기본
-        # 적용된다 (제외 매처 방식 채택 이유).
+        # NetObsFlowCounterResets 가 커버한다. pod_retrans는 loader가 CPU 수에 맞춘 크기로 live entry
+        # evict 자체를 피한다. 신규 편입 맵은 명시 제외 전까지 본 임계가 기본 적용된다 (제외 매처
+        # 방식 채택 이유).
         - alert: NetObsBpfMapUtilizationHigh
-          expr: netobs_bpf_map_utilization_ratio{map!~"flow_bytes|pod_bytes"} > 0.8
+          expr: netobs_bpf_map_utilization_ratio{map!~"flow_bytes|pod_bytes|pod_retrans"} > 0.8
           for: 5m
           labels:
             severity: warning
