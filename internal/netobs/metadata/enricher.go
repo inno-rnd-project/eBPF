@@ -190,6 +190,25 @@ func (e *Enricher) ResolveCgroup(cgroupID uint64) (kube.PodIdentity, bool) {
 	return e.lookupCgroupHint(cgroupID, time.Now())
 }
 
+// ResolveCgroupScanned는 cgroup 역매핑 스캐너 테이블만 조회한다. 스캐너는 informer의 pod 목록과
+// kubepods cgroup inode로만 테이블을 만들어 호스트 프로세스 cgroup(system.slice 등)을 pod로 풀지
+// 않는다. ResolveCgroup은 ringbuf 이벤트로 학습한 힌트를 먼저 보는데, 그 힌트는 IP나 ifindex로
+// 추론한 identity에서도 학습되어 호스트 소켓이 pod로 귀속될 수 있다. 소켓 cgroup을 그대로 키로 쓰는
+// 누적 맵(pod_retrans)은 추론이 필요 없으므로 이 메서드로 귀속을 스캐너에 한정한다. 스캐너가
+// 없으면(cgroup v1, kube 메타데이터 비활성) 항상 (zero, false)다.
+func (e *Enricher) ResolveCgroupScanned(cgroupID uint64) (kube.PodIdentity, bool) {
+	if cgroupID == 0 {
+		return kube.PodIdentity{}, false
+	}
+	e.mu.RLock()
+	scanner := e.cgroupScanner
+	e.mu.RUnlock()
+	if scanner == nil {
+		return kube.PodIdentity{}, false
+	}
+	return scanner.Lookup(cgroupID)
+}
+
 func (e *Enricher) lookupCgroupHint(cgroupID uint64, now time.Time) (kube.PodIdentity, bool) {
 	if cgroupID == 0 {
 		return kube.PodIdentity{}, false

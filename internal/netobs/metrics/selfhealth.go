@@ -39,8 +39,9 @@ var (
 	// bpfMapUtilizationRatio 는 BPF map 의 current entries / max entries 비율이다. 의미는 맵
 	// 부류별로 다르다 (#416). 페어링 / gated 맵 (starts 등) 은 emit 시 cleanup 되므로 0.8 안정
 	// 초과가 미매칭 entry leak 신호라 NetObsBpfMapUtilizationHigh 가 감시하고, accumulator 맵
-	// (flow_bytes, pod_bytes) 은 entry 가 만료되지 않아 1.0 근처 수렴이 정상이라 임계에서 제외되며
-	// 실해 (활성 flow evict) 는 netobs_flow_counter_resets_total 이 커버한다.
+	// (flow_bytes, pod_bytes, pod_retrans) 은 entry 가 만료되지 않아 1.0 근처 수렴이 정상이라
+	// 임계에서 제외되며 실해 (활성 flow evict) 는 netobs_flow_counter_resets_total 이 커버한다.
+	// pod_retrans는 loader가 CPU 수에 맞춘 크기로 live entry evict 자체를 피한다.
 	bpfMapUtilizationRatio = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "netobs_bpf_map_utilization_ratio",

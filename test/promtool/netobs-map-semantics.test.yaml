@@ -1,7 +1,8 @@
 # netobs-map-semantics.test.yaml 은 #416 의 맵 의미론별 alert 분리 검증이다. accumulator 맵
-# (flow_bytes, pod_bytes) 은 1.0 포화에도 NetObsBpfMapUtilizationHigh 가 침묵하고, 페어링 맵
-# (starts) 은 기존 임계로 발화하며, 활성 flow 의 counter reset rate 는 NetObsFlowCounterResets 가
-# 커버함을 단정한다. rule_files 는 make test-prometheus-rules 가 추출해 마운트하는 gpuobs.yaml.
+# (flow_bytes, pod_bytes, pod_retrans) 은 1.0 포화에도 NetObsBpfMapUtilizationHigh 가 침묵하고,
+# 페어링 맵 (starts) 은 기존 임계로 발화하며, 활성 flow 의 counter reset rate 는
+# NetObsFlowCounterResets 가 커버함을 단정한다. rule_files 는 make test-prometheus-rules 가 추출해
+# 마운트하는 gpuobs.yaml.
 rule_files:
   - gpuobs.yaml
 
@@ -15,6 +16,8 @@ tests:
         values: '1+0x40'
       - series: 'netobs_bpf_map_utilization_ratio{map="pod_bytes",node="n1"}'
         values: '0.99+0x40'
+      - series: 'netobs_bpf_map_utilization_ratio{map="pod_retrans",node="n1"}'
+        values: '1+0x40'
       - series: 'netobs_bpf_map_utilization_ratio{map="starts",node="n1"}'
         values: '0.985+0x40'
     alert_rule_test:

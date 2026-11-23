@@ -4,6 +4,8 @@ import (
 	"testing"
 	"unsafe"
 
+	cebpf "github.com/cilium/ebpf"
+
 	"netobs/internal/netobs/types"
 )
 
@@ -71,5 +73,55 @@ func TestFlowBytesMaxEntries(t *testing.T) {
 	}
 	if int(m.MaxEntries) != want {
 		t.Errorf("flow_bytes MaxEntries=%d want %d (#351 상향 회귀)", m.MaxEntries, want)
+	}
+}
+
+// TestPodRetransLayout은 pod_retrans 맵의 key/value가 BPF 정의와 같은 16 byte인지, 맵이 단일 instance
+// LRU_HASH이고 컴파일 기본 크기가 16384인지 가드한다. key는 cgroup_id (8) + kind (1) + pad (7), value는
+// segs (8) + bytes (8)이다. PERCPU로 바뀌면 64 CPU 노드에서 맵 메모리가 수십 배로 늘고, 기본 크기가
+// 줄면 CPU별 LRU local free list에 묶이는 노드 때문에 빈 맵에서도 counter reset이 생긴다. 120 CPU를
+// 넘는 노드의 크기 보정은 TestPodRetransMaxEntries가 가드한다.
+func TestPodRetransLayout(t *testing.T) {
+	if got := int(unsafe.Sizeof(NetObsNetobsPodRetransKey{})); got != 16 {
+		t.Errorf("NetObsNetobsPodRetransKey size=%d want 16", got)
+	}
+	if got := int(unsafe.Sizeof(NetObsNetobsPodRetransValue{})); got != 16 {
+		t.Errorf("NetObsNetobsPodRetransValue size=%d want 16", got)
+	}
+	spec, err := LoadNetObs()
+	if err != nil {
+		t.Fatalf("LoadNetObs: %v", err)
+	}
+	m, ok := spec.Maps["pod_retrans"]
+	if !ok {
+		t.Fatal("pod_retrans map spec 부재")
+	}
+	if m.Type != cebpf.LRUHash || m.MaxEntries != 16384 {
+		t.Errorf("pod_retrans type=%s max_entries=%d want LRUHash 16384", m.Type, m.MaxEntries)
+	}
+	// loader가 붙이는 tracepoint 이름과 "_tp" 라벨은 프로그램의 raw_tp 섹션과 같아야 한다.
+	for prog, tp := range map[string]string{
+		"handle_tp_tcp_retransmit_skb":    "tcp_retransmit_skb",
+		"handle_tp_tcp_retransmit_synack": "tcp_retransmit_synack",
+	} {
+		p, ok := spec.Programs[prog]
+		if !ok {
+			t.Errorf("%s program spec 부재", prog)
+			continue
+		}
+		if p.Type != cebpf.RawTracepoint || p.AttachTo != tp {
+			t.Errorf("%s type=%s attach_to=%q want RawTracepoint %q", prog, p.Type, p.AttachTo, tp)
+		}
+	}
+}
+
+// TestPodRetransMaxEntries는 loader가 CPU 수에 맞춰 pod_retrans 크기를 올리는 경계를 가드한다. CPU마다
+// 128개가 local free list에 묶이므로 예약분과 같은 크기의 live 여유를 더한 2 x 128 x CPU가 기본
+// 16384를 넘을 때만 올린다.
+func TestPodRetransMaxEntries(t *testing.T) {
+	for ncpu, want := range map[int]uint32{1: 16384, 4: 16384, 64: 16384, 224: 57344, 256: 65536} {
+		if got := podRetransMaxEntries(ncpu); got != want {
+			t.Errorf("podRetransMaxEntries(%d)=%d want %d", ncpu, got, want)
+		}
 	}
 }

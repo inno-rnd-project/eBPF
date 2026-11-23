@@ -21,6 +21,7 @@ import (
 	"netobs/internal/netobs/metadata"
 	"netobs/internal/netobs/metrics"
 	"netobs/internal/netobs/podbytes"
+	"netobs/internal/netobs/podretrans"
 	"netobs/internal/netobs/selfhealth"
 	"netobs/internal/netobs/symbols"
 	"netobs/internal/netobs/types"
@@ -107,6 +108,12 @@ func main() {
 	// PodMetricsEnabled가 false면 어떤 시리즈도 emit하지 않는다 (enricher와 동일 토글 정합).
 	podBytesCollector := podbytes.New(enricher, cfg.NodeName, cfg.PodMetricsEnabled)
 	reg.MustRegister(podBytesCollector)
+
+	// podretrans collector는 BPF pod_retrans 누적 맵에서 netobs_pod_retrans_segments_total과
+	// netobs_pod_retrans_bytes_total을 emit한다. 귀속은 cgroup 스캐너 테이블만 써서 힌트 캐시를 거쳐
+	// 호스트 소켓의 재전송이 pod로 새는 것을 막는다. 토글 정합은 podbytes와 같다.
+	podRetransCollector := podretrans.New(enricher, cfg.NodeName, cfg.PodMetricsEnabled)
+	reg.MustRegister(podRetransCollector)
 
 	// #85 flow.Collector 는 BPF flow_bytes 누적 맵 을 scrape 시점 에 iterate 해 netobs_flow_bytes_total
 	// 5-tuple counter 를 emit 한다. FlowAllowNamespaces 가 비어 있으면 FlowGuard 의 모든 admit 이 거부
@@ -286,6 +293,7 @@ func main() {
 			ebpfReady.Store(true)
 			if rt != nil {
 				podBytesCollector.SetMap(rt.PodBytes)
+				podRetransCollector.SetMap(rt.PodRetrans)
 				if flowCollector != nil {
 					flowCollector.SetMap(rt.FlowBytes)
 				}
@@ -313,6 +321,7 @@ func main() {
 					RecvStarts:    rt.RecvStarts,
 					ConnectStarts: rt.ConnectStarts,
 					UdpRcvStarts:  rt.UdpRcvStarts,
+					PodRetrans:    rt.PodRetrans,
 				}); err != nil {
 					log.Printf("self-health refresher: %v", err)
 				} else {
@@ -384,6 +393,7 @@ func main() {
 			// invalidate한다. 이후 Collect는 nil-map 가드로 빈 결과를 반환한다. #85 flow.Collector
 			// 도 동일한 stale FD 회피를 위해 함께 invalidate 한다.
 			podBytesCollector.SetMap(nil)
+			podRetransCollector.SetMap(nil)
 			if flowCollector != nil {
 				flowCollector.SetMap(nil)
 			}
