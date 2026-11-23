@@ -84,8 +84,9 @@ func fakeAttachSymbols() []string {
 	return out
 }
 
-// trackedSymbols 는 netlat BPF 가 attach 시도할 kprobe / kretprobe 심볼 21 종이다. required 2 종 +
-// optional 19 종으로 구성되며 슬라이스 순서는 Run 의 attach 루프 순서와 정합한다. gpuobs 의
+// trackedSymbols는 netlat BPF가 attach 시도할 kprobe, kretprobe, raw tracepoint의 program 라벨이다.
+// tcp_sendmsg와 tcp_sendmsg_ret만 required이고 나머지는 optional이며, 개수는 바뀌기 쉬워 적지 않는다.
+// 슬라이스 순서는 Run의 attach 루프 순서와 정합한다. gpuobs의
 // trackedSymbols (cuda loader.go:29) 와 동일하게 metrics.SetBpfProgramLoaded 의 라벨 cardinality
 // 를 폐쇄적으로 잡아 attach 단계 이전에도 모든 심볼이 0 으로 선등록되도록 한다.
 // #103 IPv6 TCP receive path 2 종 (tcp_v6_rcv, tcp_v6_do_rcv) 과 UDP TX/RX probe 4 종 추가.
@@ -101,6 +102,10 @@ var trackedSymbols = []string{
 	"veth_xmit",
 	"__dev_queue_xmit",
 	"tcp_retransmit_skb",
+	// pod 재전송 카운터의 raw tracepoint 2종. kprobe 라벨 tcp_retransmit_skb와 겹치지 않도록
+	// kretprobe의 "_ret"처럼 "_tp" 접미를 붙인다.
+	"tcp_retransmit_skb_tp",
+	"tcp_retransmit_synack_tp",
 	"kfree_skb_reason",
 	"tcp_cleanup_rbuf",
 	"tcp_v4_rcv",
@@ -194,6 +199,34 @@ func attachOptionalKretprobe(symbol string, prog *cebpf.Program, links *[]link.L
 	log.Printf("attached kretprobe/%s", symbol)
 }
 
+// podRetransMaxEntries는 pod_retrans LRU 맵의 크기를 노드 CPU 수에 맞춘다. 6.16까지의 커널 LRU는
+// CPU마다 free 노드 128개(LOCAL_FREE_TARGET)를 local list로 떼어 두고, global free list가 모자라면
+// 다른 CPU에서 가져오기 전에 live entry부터 evict한다. 컴파일된 기본 16384는 약 120 CPU까지만 이
+// 예약분을 감당하므로, 그보다 큰 노드에서는 예약분(128 x CPU)에 같은 크기의 live 여유를 더한다.
+func podRetransMaxEntries(ncpu int) uint32 {
+	const base, localFreeTarget = 16384, 128
+	if want := 2 * localFreeTarget * ncpu; want > base {
+		return uint32(want)
+	}
+	return base
+}
+
+// attachOptionalRawTracepoint는 raw tracepoint를 attach한다. metrics 라벨은 tracepoint 이름에 "_tp"
+// 접미를 붙여 같은 이름의 kprobe 심볼과 구분하며 trackedSymbols의 "*_tp" 항목과 정합한다.
+func attachOptionalRawTracepoint(tracepoint string, prog *cebpf.Program, links *[]link.Link) {
+	program := tracepoint + "_tp"
+	l, err := attachWithRetry(program, func() (link.Link, error) {
+		return link.AttachRawTracepoint(link.RawTracepointOptions{Name: tracepoint, Program: prog})
+	})
+	if err != nil {
+		log.Printf("skip optional raw_tp/%s: %v", tracepoint, err)
+		return
+	}
+	*links = append(*links, l)
+	metrics.SetBpfProgramLoaded(program, true)
+	log.Printf("attached raw_tp/%s", tracepoint)
+}
+
 // Runtime은 Run이 onReady 콜백으로 상위에 넘기는 BPF 런타임 핸들이다. ringbuf events는 채널로 따로
 // 흘러가므로 Runtime에는 외부 컴포넌트가 scrape 등 다른 lifecycle에서 직접 읽어야 하는 BPF 맵만 노출한다.
 type Runtime struct {
@@ -226,6 +259,9 @@ type Runtime struct {
 	// UdpRcvStarts는 #443의 UDP recvmsg 식별 stash(LRU, max_entries=8192)다. 페어링 stash라
 	// evict는 해당 recv 표본의 볼륨 유실로 이어져 utilization 편입 대상이다.
 	UdpRcvStarts *cebpf.Map
+	// PodRetrans는 (소켓 cgroup_id, kind) 키의 재전송 세그먼트·바이트 누적 LRU_HASH 맵으로,
+	// podretrans collector가 scrape 시점에 iterate해 Prometheus counter로 emit한다.
+	PodRetrans *cebpf.Map
 }
 
 // Run은 BPF 오브젝트 로드, 프로브 attach, ringbuf reader 준비가 모두 끝난 시점에
@@ -263,8 +299,17 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 		return err
 	}
 
+	spec, err := LoadNetObs()
+	if err != nil {
+		return err
+	}
+	if ncpu, err := cebpf.PossibleCPU(); err == nil {
+		spec.Maps["pod_retrans"].MaxEntries = podRetransMaxEntries(ncpu)
+	} else {
+		log.Printf("pod_retrans: PossibleCPU 조회 실패, 기본 크기 유지: %v", err)
+	}
 	var objs NetObsObjects
-	if err := LoadNetObsObjects(&objs, nil); err != nil {
+	if err := spec.LoadAndAssign(&objs, nil); err != nil {
 		return err
 	}
 	defer func() { _ = objs.Close() }()
@@ -308,6 +353,9 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 	attachOptionalKprobe("veth_xmit", objs.HandleVethXmit, &links)
 	attachOptionalKprobe("__dev_queue_xmit", objs.HandleDevQueueXmit, &links)
 	attachOptionalKprobe("tcp_retransmit_skb", objs.HandleTcpRetransmitSkb, &links)
+	// 재전송 세그먼트·바이트 누적. 위 kprobe 이벤트와 별개로 성공한 재전송만 세그먼트 단위로 센다.
+	attachOptionalRawTracepoint("tcp_retransmit_skb", objs.HandleTpTcpRetransmitSkb, &links)
+	attachOptionalRawTracepoint("tcp_retransmit_synack", objs.HandleTpTcpRetransmitSynack, &links)
 	attachOptionalKprobe("kfree_skb_reason", objs.HandleKfreeSkbReason, &links)
 	attachOptionalKprobe("tcp_cleanup_rbuf", objs.HandleTcpCleanupRbuf, &links)
 
@@ -384,6 +432,7 @@ func Run(ctx context.Context, targetIP string, out chan<- types.Event, onReady f
 			RecvStarts:    objs.RecvStarts,
 			ConnectStarts: objs.ConnectStarts,
 			UdpRcvStarts:  objs.UdpRcvStarts,
+			PodRetrans:    objs.PodRetrans,
 		})
 	}
 

@@ -87,6 +87,29 @@ struct netobs_pod_bytes_value {
     __u64 packets;
 };
 
+/* pod_retrans 누적 맵의 key/value. key는 (소켓 cgroup_id, kind)이고 value는 성공한 재전송의 세그먼트
+ * 수(tcp_skb_pcount)와 payload 바이트(skb->len) 누적이다. kind는 데이터 재전송과 handshake 재전송을
+ * 나눠 소비자가 데이터 경로 품질만 따로 볼 수 있게 한다. client SYN 재전송도 tcp_retransmit_skb
+ * 경로로 들어오므로 tcp_flags의 SYN 비트로 data와 syn을 가르고, listener의 SYN-ACK 재전송은 별도
+ * tracepoint라 synack으로 둔다. 자기 netns를 쓰는 pod라면 kind 합계가 그 netns의 Tcp RetransSegs에서
+ * TcpExt TCPRetransFail을 뺀 값과 같고, hostNetwork pod는 host netns를 공유하므로 자기 소켓분만 센다. */
+enum netobs_retrans_kind {
+    NETOBS_RETRANS_DATA   = 0,
+    NETOBS_RETRANS_SYN    = 1,
+    NETOBS_RETRANS_SYNACK = 2,
+};
+
+struct netobs_pod_retrans_key {
+    __u64 cgroup_id;
+    __u8  kind;
+    __u8  pad[7];
+};
+
+struct netobs_pod_retrans_value {
+    __u64 segs;
+    __u64 bytes;
+};
+
 /* #85 Pod 간 정상 flow 의 5-tuple RX/TX 추적 map 의 key/value. cgroup_id 와 5-tuple 양쪽을 모두 보관해
  * 동일 connection 의 양 종단 Pod 가 서로 다른 entry 로 누적 되도록 한다. direction 을 key 에 포함해
  * 동일 connection 의 egress 와 ingress 도 별도 entry 로 누적 된다. saddr / daddr 은 network byte

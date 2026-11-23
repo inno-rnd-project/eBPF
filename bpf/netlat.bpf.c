@@ -96,6 +96,23 @@ struct {
     __type(value, struct netobs_flow_value);
 } flow_bytes SEC(".maps");
 
+/* pod_retrans는 소켓 cgroup별 TCP 재전송 세그먼트와 바이트 누적 맵이다. 재전송은 RTO 타이머와 ACK
+ * 처리의 softirq에서 여러 CPU에 흩어져 일어나지만 빈도가 낮아 PERCPU 복제(16384 x 64 CPU x 16B ≈
+ * 16MB)보다 단일 LRU_HASH와 inc_flow_bytes의 race-safe 패턴(NOEXIST 등록 후 atomic add)이 맞다.
+ * 슬롯은 에이전트 기동 이후 재전송이 있었던 (cgroup, kind)만 차지해 이 클러스터 규모에서는 수백 개
+ * 수준이다. 그래도 8192가 아니라 16384로 두는 이유는 LRU 구현에 있다. 6.16까지의 커널 LRU는 CPU마다
+ * free 노드 128개(LOCAL_FREE_TARGET)를 local list로 떼어 두고, global free list가 모자라면 다른
+ * CPU에서 가져오기 전에 live entry부터 evict한다. 64 CPU 노드에서는 64 x 128 = 8192개가 묶일 수
+ * 있어 8192로 두면 거의 빈 맵에서도 counter reset이 생긴다. 16384는 약 120 CPU까지만 이 예약분을
+ * 감당하므로 그보다 큰 노드는 Go loader가 로드 시점에 2 x 128 x CPU로 올린다(podRetransMaxEntries).
+ * accumulator라 entry가 만료되지 않으며 점유율은 NetObsBpfMapUtilizationHigh 대상에서 빠진다. */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 16384);
+    __type(key, struct netobs_pod_retrans_key);
+    __type(value, struct netobs_pod_retrans_value);
+} pod_retrans SEC(".maps");
+
 /* #121 TSO/GSO send path segment 누적 latency map. key 는 socket_cookie (u64), value 는 첫 transmit
  * timestamp 와 segment 단위 latency 누적 합산 과 segment 개수 의 누적 추적 struct 다. sendmsg
  * 사이클 중 호출 되는 모든 __tcp_transmit_skb 의 segment latency 를 본 map 에 합산 누적 하고
@@ -491,6 +508,35 @@ static __always_inline void inc_flow_bytes(__u64 cgroup_id, __u8 family,
     val = bpf_map_lookup_elem(&flow_bytes, &key);
     if (val)
         __sync_fetch_and_add(&val->bytes, bytes_delta);
+}
+
+/* inc_pod_retrans는 소켓 cgroup과 kind 키로 pod_retrans에 성공한 재전송을 누적한다. 재전송은 softirq
+ * 컨텍스트라 현재 task의 cgroup이 아니라 소켓에 묶인 cgroup을 쓴다(#441). 호스트 소켓도 누적되지만
+ * collector가 kubepods cgroup만 pod로 풀어 emit하므로 시리즈로 새지 않는다. 동시 첫 등록의 delta
+ * 유실은 inc_flow_bytes와 같은 NOEXIST 등록 후 재조회와 atomic add로 막는다. */
+static __always_inline void inc_pod_retrans(struct sock *sk, __u8 kind, __u64 segs, __u64 bytes)
+{
+    struct netobs_pod_retrans_key key;
+    struct netobs_pod_retrans_value init;
+    struct netobs_pod_retrans_value *val;
+
+    __builtin_memset(&key, 0, sizeof(key));
+    key.cgroup_id = sock_cgroup_id(sk);
+    if (!key.cgroup_id)
+        return;
+    key.kind = kind;
+
+    val = bpf_map_lookup_elem(&pod_retrans, &key);
+    if (!val) {
+        __builtin_memset(&init, 0, sizeof(init));
+        bpf_map_update_elem(&pod_retrans, &key, &init, BPF_NOEXIST);
+        val = bpf_map_lookup_elem(&pod_retrans, &key);
+        if (!val)
+            return;
+    }
+    __sync_fetch_and_add(&val->segs, segs);
+    if (bytes)
+        __sync_fetch_and_add(&val->bytes, bytes);
 }
 
 /* emit_event 의 stack_id 인자는 #83 drop event 의 kernel stack capture 용이다. drop 외 stage 는
@@ -890,6 +936,51 @@ int BPF_KPROBE(handle_tcp_retransmit_skb, struct sock *sk, struct sk_buff *skb, 
 
     bpf_get_current_comm(&s.comm, sizeof(s.comm));
     emit_event(&s, NETOBS_STAGE_RETRANS, 0, 0, 0, -1, 0, 0);
+    return 0;
+}
+
+/* tcp_retransmit_skb tracepoint는 6.16까지 (sk, skb) 인자로 __tcp_retransmit_skb가 성공했을 때만
+ * 발화한다. 6.17부터는 (sk, skb, int err)로 바뀌어 실패한 시도에서도 발화하므로, err 필드가 있는
+ * 커널에서만 ctx[2]를 읽어 실패분을 거른다. 6.2와 6.8에서는 이 구조체가 없어 guard가 상수 0으로
+ * relocate되고, verifier가 ctx[2] load를 죽은 분기로 버려 2인자 tracepoint attach가 통과한다. */
+/* ponytail: err 필드 존재만 본다. 이후 커널이 err를 event class로 옮기면 guard가 0이 되어 실패한
+ * 시도까지 계상한다. 그때는 Go loader가 btf_trace_tcp_retransmit_skb의 인자 수를 읽어 2인자와
+ * err 프로그램 중 하나를 attach하는 방식으로 바꾼다. */
+struct trace_event_raw_tcp_retransmit_skb___err {
+    int err;
+} __attribute__((preserve_access_index));
+
+#define NETOBS_TCPHDR_SYN 0x02
+
+/* raw tracepoint 재전송 카운터. kprobe/tcp_retransmit_skb는 호출 단위 이벤트라 GSO skb의 세그먼트 수를
+ * 모르고, tcp_send_loss_probe가 __tcp_retransmit_skb를 직접 부르는 TLP 재전송을 놓친다. 이 tracepoint는
+ * __tcp_retransmit_skb 안에서 성공한 재전송마다 발화하므로 MIB의 RetransSegs 증가분과 같은 단위로 센다.
+ * raw_tp는 BTF 타입이 붙지 않은 u64 인자라 sk와 skb는 BPF_CORE_READ로 읽는다. */
+SEC("raw_tp/tcp_retransmit_skb")
+int BPF_PROG(handle_tp_tcp_retransmit_skb, struct sock *sk, struct sk_buff *skb)
+{
+    struct tcp_skb_cb *tcb;
+    __u64 segs;
+    __u8 kind;
+
+    if (bpf_core_field_exists(struct trace_event_raw_tcp_retransmit_skb___err, err) && (int)ctx[2])
+        return 0;
+
+    /* MIB도 tcp_skb_pcount를 그대로 더하므로 0 보정 없이 tcp_gso_segs를 쓴다. */
+    tcb = (void *)skb + bpf_core_field_offset(struct sk_buff, cb);
+    segs = BPF_CORE_READ(tcb, tcp_gso_segs);
+    kind = (BPF_CORE_READ(tcb, tcp_flags) & NETOBS_TCPHDR_SYN) ? NETOBS_RETRANS_SYN : NETOBS_RETRANS_DATA;
+    inc_pod_retrans(sk, kind, segs, (__u64)BPF_CORE_READ(skb, len));
+    return 0;
+}
+
+/* listener의 SYN-ACK 재전송은 tcp_retransmit_skb를 거치지 않는다. tcp_rtx_synack은 전송이 성공했을 때만
+ * RetransSegs를 1 올리고 이 tracepoint를 발화하므로 세그먼트 1개, 바이트 0으로 센다. sk는 listener라
+ * 서버 pod의 cgroup으로 귀속된다. */
+SEC("raw_tp/tcp_retransmit_synack")
+int BPF_PROG(handle_tp_tcp_retransmit_synack, struct sock *sk, struct request_sock *req)
+{
+    inc_pod_retrans(sk, NETOBS_RETRANS_SYNACK, 1, 0);
     return 0;
 }
 

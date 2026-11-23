@@ -51,6 +51,17 @@ type NetObsNetobsPodBytesValue struct {
 	Packets uint64
 }
 
+type NetObsNetobsPodRetransKey struct {
+	CgroupId uint64
+	Kind     uint8
+	Pad      [7]uint8
+}
+
+type NetObsNetobsPodRetransValue struct {
+	Segs  uint64
+	Bytes uint64
+}
+
 type NetObsNetobsRecvState struct {
 	TsL3          uint64
 	TsEstablished uint64
@@ -147,34 +158,36 @@ type NetObsSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type NetObsProgramSpecs struct {
-	HandleDevQueueXmit      *ebpf.ProgramSpec `ebpf:"handle_dev_queue_xmit"`
-	HandleKfreeSkbReason    *ebpf.ProgramSpec `ebpf:"handle_kfree_skb_reason"`
-	HandleNetifReceiveSkb   *ebpf.ProgramSpec `ebpf:"handle_netif_receive_skb"`
-	HandleTcpCleanupRbuf    *ebpf.ProgramSpec `ebpf:"handle_tcp_cleanup_rbuf"`
-	HandleTcpFinishConnect  *ebpf.ProgramSpec `ebpf:"handle_tcp_finish_connect"`
-	HandleTcpRcvEstablished *ebpf.ProgramSpec `ebpf:"handle_tcp_rcv_established"`
-	HandleTcpRecvmsg        *ebpf.ProgramSpec `ebpf:"handle_tcp_recvmsg"`
-	HandleTcpRetransmitSkb  *ebpf.ProgramSpec `ebpf:"handle_tcp_retransmit_skb"`
-	HandleTcpSendAck        *ebpf.ProgramSpec `ebpf:"handle_tcp_send_ack"`
-	HandleTcpSendmsg        *ebpf.ProgramSpec `ebpf:"handle_tcp_sendmsg"`
-	HandleTcpSendmsgRet     *ebpf.ProgramSpec `ebpf:"handle_tcp_sendmsg_ret"`
-	HandleTcpTransmitSkb    *ebpf.ProgramSpec `ebpf:"handle_tcp_transmit_skb"`
-	HandleTcpTransmitSkbRet *ebpf.ProgramSpec `ebpf:"handle_tcp_transmit_skb_ret"`
-	HandleTcpV4Connect      *ebpf.ProgramSpec `ebpf:"handle_tcp_v4_connect"`
-	HandleTcpV4DoRcv        *ebpf.ProgramSpec `ebpf:"handle_tcp_v4_do_rcv"`
-	HandleTcpV4Rcv          *ebpf.ProgramSpec `ebpf:"handle_tcp_v4_rcv"`
-	HandleTcpV6Connect      *ebpf.ProgramSpec `ebpf:"handle_tcp_v6_connect"`
-	HandleTcpV6DoRcv        *ebpf.ProgramSpec `ebpf:"handle_tcp_v6_do_rcv"`
-	HandleTcpV6Rcv          *ebpf.ProgramSpec `ebpf:"handle_tcp_v6_rcv"`
-	HandleTcpWriteXmit      *ebpf.ProgramSpec `ebpf:"handle_tcp_write_xmit"`
-	HandleTcpWriteXmitRet   *ebpf.ProgramSpec `ebpf:"handle_tcp_write_xmit_ret"`
-	HandleUdpRecvmsg        *ebpf.ProgramSpec `ebpf:"handle_udp_recvmsg"`
-	HandleUdpRecvmsgRet     *ebpf.ProgramSpec `ebpf:"handle_udp_recvmsg_ret"`
-	HandleUdpSendmsg        *ebpf.ProgramSpec `ebpf:"handle_udp_sendmsg"`
-	HandleUdpv6Recvmsg      *ebpf.ProgramSpec `ebpf:"handle_udpv6_recvmsg"`
-	HandleUdpv6RecvmsgRet   *ebpf.ProgramSpec `ebpf:"handle_udpv6_recvmsg_ret"`
-	HandleUdpv6Sendmsg      *ebpf.ProgramSpec `ebpf:"handle_udpv6_sendmsg"`
-	HandleVethXmit          *ebpf.ProgramSpec `ebpf:"handle_veth_xmit"`
+	HandleDevQueueXmit          *ebpf.ProgramSpec `ebpf:"handle_dev_queue_xmit"`
+	HandleKfreeSkbReason        *ebpf.ProgramSpec `ebpf:"handle_kfree_skb_reason"`
+	HandleNetifReceiveSkb       *ebpf.ProgramSpec `ebpf:"handle_netif_receive_skb"`
+	HandleTcpCleanupRbuf        *ebpf.ProgramSpec `ebpf:"handle_tcp_cleanup_rbuf"`
+	HandleTcpFinishConnect      *ebpf.ProgramSpec `ebpf:"handle_tcp_finish_connect"`
+	HandleTcpRcvEstablished     *ebpf.ProgramSpec `ebpf:"handle_tcp_rcv_established"`
+	HandleTcpRecvmsg            *ebpf.ProgramSpec `ebpf:"handle_tcp_recvmsg"`
+	HandleTcpRetransmitSkb      *ebpf.ProgramSpec `ebpf:"handle_tcp_retransmit_skb"`
+	HandleTcpSendAck            *ebpf.ProgramSpec `ebpf:"handle_tcp_send_ack"`
+	HandleTcpSendmsg            *ebpf.ProgramSpec `ebpf:"handle_tcp_sendmsg"`
+	HandleTcpSendmsgRet         *ebpf.ProgramSpec `ebpf:"handle_tcp_sendmsg_ret"`
+	HandleTcpTransmitSkb        *ebpf.ProgramSpec `ebpf:"handle_tcp_transmit_skb"`
+	HandleTcpTransmitSkbRet     *ebpf.ProgramSpec `ebpf:"handle_tcp_transmit_skb_ret"`
+	HandleTcpV4Connect          *ebpf.ProgramSpec `ebpf:"handle_tcp_v4_connect"`
+	HandleTcpV4DoRcv            *ebpf.ProgramSpec `ebpf:"handle_tcp_v4_do_rcv"`
+	HandleTcpV4Rcv              *ebpf.ProgramSpec `ebpf:"handle_tcp_v4_rcv"`
+	HandleTcpV6Connect          *ebpf.ProgramSpec `ebpf:"handle_tcp_v6_connect"`
+	HandleTcpV6DoRcv            *ebpf.ProgramSpec `ebpf:"handle_tcp_v6_do_rcv"`
+	HandleTcpV6Rcv              *ebpf.ProgramSpec `ebpf:"handle_tcp_v6_rcv"`
+	HandleTcpWriteXmit          *ebpf.ProgramSpec `ebpf:"handle_tcp_write_xmit"`
+	HandleTcpWriteXmitRet       *ebpf.ProgramSpec `ebpf:"handle_tcp_write_xmit_ret"`
+	HandleTpTcpRetransmitSkb    *ebpf.ProgramSpec `ebpf:"handle_tp_tcp_retransmit_skb"`
+	HandleTpTcpRetransmitSynack *ebpf.ProgramSpec `ebpf:"handle_tp_tcp_retransmit_synack"`
+	HandleUdpRecvmsg            *ebpf.ProgramSpec `ebpf:"handle_udp_recvmsg"`
+	HandleUdpRecvmsgRet         *ebpf.ProgramSpec `ebpf:"handle_udp_recvmsg_ret"`
+	HandleUdpSendmsg            *ebpf.ProgramSpec `ebpf:"handle_udp_sendmsg"`
+	HandleUdpv6Recvmsg          *ebpf.ProgramSpec `ebpf:"handle_udpv6_recvmsg"`
+	HandleUdpv6RecvmsgRet       *ebpf.ProgramSpec `ebpf:"handle_udpv6_recvmsg_ret"`
+	HandleUdpv6Sendmsg          *ebpf.ProgramSpec `ebpf:"handle_udpv6_sendmsg"`
+	HandleVethXmit              *ebpf.ProgramSpec `ebpf:"handle_veth_xmit"`
 }
 
 // NetObsMapSpecs contains maps before they are loaded into the kernel.
@@ -188,6 +201,7 @@ type NetObsMapSpecs struct {
 	FlowBytes     *ebpf.MapSpec `ebpf:"flow_bytes"`
 	NicIngress    *ebpf.MapSpec `ebpf:"nic_ingress"`
 	PodBytes      *ebpf.MapSpec `ebpf:"pod_bytes"`
+	PodRetrans    *ebpf.MapSpec `ebpf:"pod_retrans"`
 	RecvStarts    *ebpf.MapSpec `ebpf:"recv_starts"`
 	SegAccum      *ebpf.MapSpec `ebpf:"seg_accum"`
 	Starts        *ebpf.MapSpec `ebpf:"starts"`
@@ -228,6 +242,7 @@ type NetObsMaps struct {
 	FlowBytes     *ebpf.Map `ebpf:"flow_bytes"`
 	NicIngress    *ebpf.Map `ebpf:"nic_ingress"`
 	PodBytes      *ebpf.Map `ebpf:"pod_bytes"`
+	PodRetrans    *ebpf.Map `ebpf:"pod_retrans"`
 	RecvStarts    *ebpf.Map `ebpf:"recv_starts"`
 	SegAccum      *ebpf.Map `ebpf:"seg_accum"`
 	Starts        *ebpf.Map `ebpf:"starts"`
@@ -244,6 +259,7 @@ func (m *NetObsMaps) Close() error {
 		m.FlowBytes,
 		m.NicIngress,
 		m.PodBytes,
+		m.PodRetrans,
 		m.RecvStarts,
 		m.SegAccum,
 		m.Starts,
@@ -262,34 +278,36 @@ type NetObsVariables struct {
 //
 // It can be passed to LoadNetObsObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NetObsPrograms struct {
-	HandleDevQueueXmit      *ebpf.Program `ebpf:"handle_dev_queue_xmit"`
-	HandleKfreeSkbReason    *ebpf.Program `ebpf:"handle_kfree_skb_reason"`
-	HandleNetifReceiveSkb   *ebpf.Program `ebpf:"handle_netif_receive_skb"`
-	HandleTcpCleanupRbuf    *ebpf.Program `ebpf:"handle_tcp_cleanup_rbuf"`
-	HandleTcpFinishConnect  *ebpf.Program `ebpf:"handle_tcp_finish_connect"`
-	HandleTcpRcvEstablished *ebpf.Program `ebpf:"handle_tcp_rcv_established"`
-	HandleTcpRecvmsg        *ebpf.Program `ebpf:"handle_tcp_recvmsg"`
-	HandleTcpRetransmitSkb  *ebpf.Program `ebpf:"handle_tcp_retransmit_skb"`
-	HandleTcpSendAck        *ebpf.Program `ebpf:"handle_tcp_send_ack"`
-	HandleTcpSendmsg        *ebpf.Program `ebpf:"handle_tcp_sendmsg"`
-	HandleTcpSendmsgRet     *ebpf.Program `ebpf:"handle_tcp_sendmsg_ret"`
-	HandleTcpTransmitSkb    *ebpf.Program `ebpf:"handle_tcp_transmit_skb"`
-	HandleTcpTransmitSkbRet *ebpf.Program `ebpf:"handle_tcp_transmit_skb_ret"`
-	HandleTcpV4Connect      *ebpf.Program `ebpf:"handle_tcp_v4_connect"`
-	HandleTcpV4DoRcv        *ebpf.Program `ebpf:"handle_tcp_v4_do_rcv"`
-	HandleTcpV4Rcv          *ebpf.Program `ebpf:"handle_tcp_v4_rcv"`
-	HandleTcpV6Connect      *ebpf.Program `ebpf:"handle_tcp_v6_connect"`
-	HandleTcpV6DoRcv        *ebpf.Program `ebpf:"handle_tcp_v6_do_rcv"`
-	HandleTcpV6Rcv          *ebpf.Program `ebpf:"handle_tcp_v6_rcv"`
-	HandleTcpWriteXmit      *ebpf.Program `ebpf:"handle_tcp_write_xmit"`
-	HandleTcpWriteXmitRet   *ebpf.Program `ebpf:"handle_tcp_write_xmit_ret"`
-	HandleUdpRecvmsg        *ebpf.Program `ebpf:"handle_udp_recvmsg"`
-	HandleUdpRecvmsgRet     *ebpf.Program `ebpf:"handle_udp_recvmsg_ret"`
-	HandleUdpSendmsg        *ebpf.Program `ebpf:"handle_udp_sendmsg"`
-	HandleUdpv6Recvmsg      *ebpf.Program `ebpf:"handle_udpv6_recvmsg"`
-	HandleUdpv6RecvmsgRet   *ebpf.Program `ebpf:"handle_udpv6_recvmsg_ret"`
-	HandleUdpv6Sendmsg      *ebpf.Program `ebpf:"handle_udpv6_sendmsg"`
-	HandleVethXmit          *ebpf.Program `ebpf:"handle_veth_xmit"`
+	HandleDevQueueXmit          *ebpf.Program `ebpf:"handle_dev_queue_xmit"`
+	HandleKfreeSkbReason        *ebpf.Program `ebpf:"handle_kfree_skb_reason"`
+	HandleNetifReceiveSkb       *ebpf.Program `ebpf:"handle_netif_receive_skb"`
+	HandleTcpCleanupRbuf        *ebpf.Program `ebpf:"handle_tcp_cleanup_rbuf"`
+	HandleTcpFinishConnect      *ebpf.Program `ebpf:"handle_tcp_finish_connect"`
+	HandleTcpRcvEstablished     *ebpf.Program `ebpf:"handle_tcp_rcv_established"`
+	HandleTcpRecvmsg            *ebpf.Program `ebpf:"handle_tcp_recvmsg"`
+	HandleTcpRetransmitSkb      *ebpf.Program `ebpf:"handle_tcp_retransmit_skb"`
+	HandleTcpSendAck            *ebpf.Program `ebpf:"handle_tcp_send_ack"`
+	HandleTcpSendmsg            *ebpf.Program `ebpf:"handle_tcp_sendmsg"`
+	HandleTcpSendmsgRet         *ebpf.Program `ebpf:"handle_tcp_sendmsg_ret"`
+	HandleTcpTransmitSkb        *ebpf.Program `ebpf:"handle_tcp_transmit_skb"`
+	HandleTcpTransmitSkbRet     *ebpf.Program `ebpf:"handle_tcp_transmit_skb_ret"`
+	HandleTcpV4Connect          *ebpf.Program `ebpf:"handle_tcp_v4_connect"`
+	HandleTcpV4DoRcv            *ebpf.Program `ebpf:"handle_tcp_v4_do_rcv"`
+	HandleTcpV4Rcv              *ebpf.Program `ebpf:"handle_tcp_v4_rcv"`
+	HandleTcpV6Connect          *ebpf.Program `ebpf:"handle_tcp_v6_connect"`
+	HandleTcpV6DoRcv            *ebpf.Program `ebpf:"handle_tcp_v6_do_rcv"`
+	HandleTcpV6Rcv              *ebpf.Program `ebpf:"handle_tcp_v6_rcv"`
+	HandleTcpWriteXmit          *ebpf.Program `ebpf:"handle_tcp_write_xmit"`
+	HandleTcpWriteXmitRet       *ebpf.Program `ebpf:"handle_tcp_write_xmit_ret"`
+	HandleTpTcpRetransmitSkb    *ebpf.Program `ebpf:"handle_tp_tcp_retransmit_skb"`
+	HandleTpTcpRetransmitSynack *ebpf.Program `ebpf:"handle_tp_tcp_retransmit_synack"`
+	HandleUdpRecvmsg            *ebpf.Program `ebpf:"handle_udp_recvmsg"`
+	HandleUdpRecvmsgRet         *ebpf.Program `ebpf:"handle_udp_recvmsg_ret"`
+	HandleUdpSendmsg            *ebpf.Program `ebpf:"handle_udp_sendmsg"`
+	HandleUdpv6Recvmsg          *ebpf.Program `ebpf:"handle_udpv6_recvmsg"`
+	HandleUdpv6RecvmsgRet       *ebpf.Program `ebpf:"handle_udpv6_recvmsg_ret"`
+	HandleUdpv6Sendmsg          *ebpf.Program `ebpf:"handle_udpv6_sendmsg"`
+	HandleVethXmit              *ebpf.Program `ebpf:"handle_veth_xmit"`
 }
 
 func (p *NetObsPrograms) Close() error {
@@ -315,6 +333,8 @@ func (p *NetObsPrograms) Close() error {
 		p.HandleTcpV6Rcv,
 		p.HandleTcpWriteXmit,
 		p.HandleTcpWriteXmitRet,
+		p.HandleTpTcpRetransmitSkb,
+		p.HandleTpTcpRetransmitSynack,
 		p.HandleUdpRecvmsg,
 		p.HandleUdpRecvmsgRet,
 		p.HandleUdpSendmsg,
