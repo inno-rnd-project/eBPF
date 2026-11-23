@@ -4427,11 +4427,24 @@
                 "suspect": {
                     "$ref": "#/definitions/netobs_internal_correlation.PodIdentity"
                 },
+                "suspect_gone": {
+                    "description": "SuspectGone과 VictimGone은 suspect와 victim pod가 분석 시점에 이미 사라진 상태다.\nkube_pod_info에서 그 pod의 마지막 표본이 최신 표본보다 2분 이상 앞서거나 창 안에 아예 없으면\n사라진 것으로 보고, SuspectLastSeenAt과 VictimLastSeenAt은 사라진 쪽이 마지막으로 확인된\n시각(RFC3339, 창 안에 없으면 창 시작)이다. 삭제된 pod는 창 안에 남은 표본으로 30분 안팎 계속 순위에 오르므로\n소비자가 이 필드로 유령 페어를 가린다. 판정은 (namespace, pod) 이름 단위라 같은 이름으로\n재생성된 pod의 이전 인스턴스는 표시하지 않고, kube_pod_info 조회가 실패하거나 지연된 cycle은\n판정을 건너뛰어 false다.",
+                    "type": "boolean"
+                },
+                "suspect_last_seen_at": {
+                    "type": "string"
+                },
                 "suspect_metric": {
                     "type": "string"
                 },
                 "victim": {
                     "$ref": "#/definitions/netobs_internal_correlation.PodIdentity"
+                },
+                "victim_gone": {
+                    "type": "boolean"
+                },
+                "victim_last_seen_at": {
+                    "type": "string"
                 },
                 "victim_metric": {
                     "type": "string"
