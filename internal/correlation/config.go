@@ -132,6 +132,11 @@ type Config struct {
 	// 강한 상관으로 산출되는 것을 차단한다. suspect 는 모두 0-1 정규화 score 라 단일 임계가 정합하며
 	// victim 시계열 (native 단위) 은 게이트 대상이 아니다. 0 이하면 비활성이다.
 	MinSuspectScore float64
+	// PodPresenceQuery는 pod 소멸 판정 query다. 결과의 (namespace, pod)별 마지막 표본이 query 전체의
+	// 최신 표본보다 goneSteps 이상 앞서거나 결과에 아예 없으면 그 pod를 사라진 것으로 보므로, 관측
+	// 대상 namespace를 모두 포함해야 한다. 입력 시계열의 끝은 rate 창 꼬리와 이벤트로만 생기는
+	// 시리즈 때문에 삭제 시점을 대변하지 못해 pod 존재를 따로 조회한다. 비우면 판정하지 않는다.
+	PodPresenceQuery string
 }
 
 // PlannedQueries 는 활성 layer 를 반영해 Correlate 가 fetch 할 query 의 dedup 합집합을 반환한다.
@@ -254,5 +259,6 @@ func DefaultConfig() Config {
 		ImpactPathMinScore: 0.5,
 		MinSuspectScore:    0.1,
 		ImpactPathMaxPaths: 1024,
+		PodPresenceQuery:   "max by (namespace, pod) (kube_pod_info)",
 	}
 }

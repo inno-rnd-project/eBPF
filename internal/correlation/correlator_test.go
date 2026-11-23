@@ -691,3 +691,114 @@ func TestCorrelator_ReverseLagSuppressesEffect(t *testing.T) {
 		t.Errorf("정방향 lag 에서 effect 미산출 (게이트 과잉)")
 	}
 }
+
+// presenceBase는 pod 소멸 판정 테스트의 존재 시계열 시작 시각(epoch ms)이다.
+const presenceBase = 1_000_000
+
+// presenceSeries는 kube_pod_info 존재 시계열을 흉내 낸다. presenceBase부터 1s 간격으로 n개 표본을
+// 갖는다.
+func presenceSeries(namespace, pod string, n int) LabeledSeries {
+	s := LabeledSeries{Metric: "presence", Series: TimeSeries{Labels: map[string]string{"namespace": namespace, "pod": pod}, Samples: make([]Sample, n)}}
+	for i := range s.Series.Samples {
+		s.Series.Samples[i] = Sample{TimestampMs: presenceBase + int64(i)*1000, Value: 1}
+	}
+	return s
+}
+
+// TestCorrelator_PodGone은 pod 소멸 판정을 검증한다. 창은 presenceBase부터 19s이고 존재 query의
+// 최신 표본은 창 끝이다. 마지막 표본이 3 step 앞서면 존재, 4 step 앞서면 소멸이고, 존재 결과에 아예
+// 없는 pod는 창 시작보다 먼저 사라진 것으로 보고 창 시작 시각을 마지막 확인 시각으로 둔다. 입력
+// 시계열 자체가 일찍 끝나도(재전송처럼 이벤트로만 생기는 시리즈) pod가 있으면 소멸이 아니다.
+func TestCorrelator_PodGone(t *testing.T) {
+	const suspectQ, victimQ, presenceQ = "pod:cpu_throttle_score:5m", "pod:stage_latency_p99:5m", "presence"
+	end := time.UnixMilli(presenceBase + 19_000)
+	suspects := []LabeledSeries{
+		valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "s-live"}, suspectQ, pseudoNoise(20)),
+		valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "s-jitter"}, suspectQ, pseudoNoise(20)),
+		valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "s-gone"}, suspectQ, pseudoNoise(20)),
+		valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "s-missing"}, suspectQ, pseudoNoise(20)),
+		// 입력은 일찍 끝났지만 pod는 살아 있다.
+		valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "s-quiet"}, suspectQ, pseudoNoise(10)),
+	}
+	victim := valSeries(map[string]string{"node": "n1", "src_namespace": "ns", "src_pod": "v"}, victimQ, pseudoNoise(20))
+	present := []LabeledSeries{
+		presenceSeries("ns", "s-live", 20),
+		presenceSeries("ns", "s-jitter", 17),
+		presenceSeries("ns", "s-gone", 16),
+		presenceSeries("ns", "s-quiet", 20),
+		presenceSeries("ns", "v", 20),
+	}
+	run := func(t *testing.T, presenceQuery string, step time.Duration, presence []LabeledSeries, presenceErr error) map[string]CorrelationResult {
+		t.Helper()
+		fetcher := &mockFetcher{
+			responses: map[string][]LabeledSeries{suspectQ: suspects, victimQ: {victim}, presenceQ: presence},
+			errors:    map[string]error{},
+		}
+		if presenceErr != nil {
+			fetcher.errors[presenceQ] = presenceErr
+		}
+		cfg := Config{Window: 19 * time.Second, Step: step, MinSamples: 5, LagSteps: []int{0}, DefaultMetrics: []string{suspectQ, victimQ}, PodPresenceQuery: presenceQuery}
+		results, err := New(fetcher, cfg).Correlate(context.Background(), end)
+		if err != nil {
+			t.Fatalf("Correlate: %v", err)
+		}
+		out := map[string]CorrelationResult{}
+		for _, r := range results {
+			out[r.Pair.SrcPod] = r
+		}
+		return out
+	}
+
+	t.Run("판정 경계", func(t *testing.T) {
+		got := run(t, presenceQ, time.Second, present, nil)
+		cases := []struct {
+			pod  string
+			gone bool
+			last int64
+		}{
+			{"s-live", false, 0},
+			{"s-jitter", false, 0},
+			{"s-gone", true, presenceBase + 15_000},
+			{"s-missing", true, presenceBase},
+			{"s-quiet", false, 0},
+		}
+		for _, tc := range cases {
+			r, ok := got[tc.pod]
+			if !ok {
+				t.Fatalf("pair %s→v 없음 (got %d pairs)", tc.pod, len(got))
+			}
+			if r.SrcGone != tc.gone || r.SrcLastSeenMs != tc.last {
+				t.Errorf("%s gone=%v last=%d, want %v %d", tc.pod, r.SrcGone, r.SrcLastSeenMs, tc.gone, tc.last)
+			}
+			if r.DstGone || r.DstLastSeenMs != 0 {
+				t.Errorf("%s→v victim gone=%v last=%d, want false 0", tc.pod, r.DstGone, r.DstLastSeenMs)
+			}
+		}
+	})
+
+	// 존재 결과 전체가 창 끝보다 4 step 앞서 끝나면 kube-state-metrics 장애로 보고 판정을 끈다.
+	stalePresence := []LabeledSeries{presenceSeries("ns", "s-live", 16), presenceSeries("ns", "s-gone", 10)}
+	off := []struct {
+		name     string
+		query    string
+		step     time.Duration
+		presence []LabeledSeries
+		err      error
+	}{
+		{"존재 query 미설정 시 판정 안 함", "", time.Second, present, nil},
+		{"Step 0 시 판정 안 함", presenceQ, 0, present, nil},
+		{"존재 조회 실패 시 판정 안 함", presenceQ, time.Second, present, errors.New("ksm down")},
+		{"존재 결과 없음 시 판정 안 함", presenceQ, time.Second, nil, nil},
+		{"존재 결과 지연 시 판정 안 함", presenceQ, time.Second, stalePresence, nil},
+	}
+	for _, tc := range off {
+		t.Run(tc.name, func(t *testing.T) {
+			got := run(t, tc.query, tc.step, tc.presence, tc.err)
+			for _, pod := range []string{"s-gone", "s-missing"} {
+				if r := got[pod]; r.SrcGone || r.SrcLastSeenMs != 0 {
+					t.Errorf("%s gone=%v last=%d, want false 0", pod, r.SrcGone, r.SrcLastSeenMs)
+				}
+			}
+		})
+	}
+}

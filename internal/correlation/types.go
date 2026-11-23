@@ -114,4 +114,13 @@ type CorrelationResult struct {
 	// 가 유효하며 이때 나머지 Pair 필드는 비어 있다.
 	CrossLevelPair CrossLevelPairKey `json:"cross_level_pair,omitempty"`
 	IsCrossLevel   bool              `json:"is_cross_level,omitempty"`
+	// SrcGone과 DstGone은 pod 레이어 페어의 src와 dst pod가 분석 시점에 이미 사라진 상태이고,
+	// SrcLastSeenMs와 DstLastSeenMs는 사라진 쪽이 PodPresenceQuery에서 마지막으로 확인된 시각(epoch
+	// ms)이며 창 안에서 확인된 적이 없으면 창 시작 시각이다. 삭제된 pod는 창 안에 남은 표본만으로
+	// 산정이 계속되므로 소비자가 이 판정으로 유령 페어를 가린다. 사라지지 않았거나 판정이 꺼졌으면
+	// false와 0이다. JSON tag 셋 동결 규약에 따라 직렬화하지 않는다.
+	SrcGone       bool  `json:"-"`
+	DstGone       bool  `json:"-"`
+	SrcLastSeenMs int64 `json:"-"`
+	DstLastSeenMs int64 `json:"-"`
 }
