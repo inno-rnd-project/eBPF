@@ -3,6 +3,7 @@ package correlation
 import (
 	"sort"
 	"strings"
+	"time"
 )
 
 // ResourceDimension 은 noisy neighbor 메트릭의 resource_dimension 라벨에 들어가는 자원 종류다.
@@ -71,6 +72,30 @@ type NoisyNeighbor struct {
 	// 인과강도다. 운영자가 개별 필드 (Score / PValue / ImpactPValue) 를 종합하지 않고 한 값으로 간섭
 	// 여부를 판단하게 한다. 산정식과 가중치는 ComputeCausalStrength 가 단일 진실원으로 보유한다.
 	CausalStrength float64 `json:"causal_strength"`
+	// SuspectGone과 VictimGone은 suspect와 victim pod가 분석 시점에 이미 사라진 상태다.
+	// kube_pod_info에서 그 pod의 마지막 표본이 최신 표본보다 2분 이상 앞서거나 창 안에 아예 없으면
+	// 사라진 것으로 보고, SuspectLastSeenAt과 VictimLastSeenAt은 사라진 쪽이 마지막으로 확인된
+	// 시각(RFC3339, 창 안에 없으면 창 시작)이다. 삭제된 pod는 창 안에 남은 표본으로 30분 안팎 계속 순위에 오르므로
+	// 소비자가 이 필드로 유령 페어를 가린다. 판정은 (namespace, pod) 이름 단위라 같은 이름으로
+	// 재생성된 pod의 이전 인스턴스는 표시하지 않고, kube_pod_info 조회가 실패하거나 지연된 cycle은
+	// 판정을 건너뛰어 false다.
+	SuspectGone       bool   `json:"suspect_gone"`
+	VictimGone        bool   `json:"victim_gone"`
+	SuspectLastSeenAt string `json:"suspect_last_seen_at,omitempty"`
+	VictimLastSeenAt  string `json:"victim_last_seen_at,omitempty"`
+	// SuspectLastSeenMs와 VictimLastSeenMs는 같은 시각의 epoch ms로 exporter 게이지가 쓰며 직렬화하지
+	// 않는다.
+	SuspectLastSeenMs int64 `json:"-"`
+	VictimLastSeenMs  int64 `json:"-"`
+}
+
+// formatSampleTime은 epoch ms 시각을 API 응답의 RFC3339 UTC 문자열로 바꾼다. 0이면 빈 문자열이라
+// 필드가 생략된다.
+func formatSampleTime(ms int64) string {
+	if ms <= 0 {
+		return ""
+	}
+	return time.UnixMilli(ms).UTC().Format(time.RFC3339)
 }
 
 // classifyDimension 은 query 문자열에서 ResourceDimension 을 결정한다. 매칭 우선순위는 더 구체적인
@@ -206,6 +231,11 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 		impactMagnitudeOK bool
 		impactPValue      float64
 		impactPValueOK    bool
+		// pod 소멸 판정. dedup은 score로만 승자를 고르고 승자의 값을 그대로 운반한다.
+		suspectGone   bool
+		victimGone    bool
+		suspectLastMs int64
+		victimLastMs  int64
 	}
 
 	// #406 results 는 4개 레이어 전체 결과라 len(results) cap 사전 할당은 본 레이어 후보의 실제
@@ -293,6 +323,10 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 			impactMagnitudeOK: r.ImpactMagnitudeOK,
 			impactPValue:      r.ImpactPValue,
 			impactPValueOK:    r.ImpactPValueOK,
+			suspectGone:       r.SrcGone,
+			victimGone:        r.DstGone,
+			suspectLastMs:     r.SrcLastSeenMs,
+			victimLastMs:      r.DstLastSeenMs,
 		})
 	}
 
@@ -412,6 +446,12 @@ func SelectTopN(results []CorrelationResult, topN int) []NoisyNeighbor {
 					EffectOK:        c.impactPValueOK,
 					EffectPValue:    c.impactPValue,
 				}),
+				SuspectGone:       c.suspectGone,
+				VictimGone:        c.victimGone,
+				SuspectLastSeenAt: formatSampleTime(c.suspectLastMs),
+				VictimLastSeenAt:  formatSampleTime(c.victimLastMs),
+				SuspectLastSeenMs: c.suspectLastMs,
+				VictimLastSeenMs:  c.victimLastMs,
 			})
 		}
 	}

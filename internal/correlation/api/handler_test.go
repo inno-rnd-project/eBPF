@@ -677,3 +677,40 @@ func TestListImpactPaths_NilSourceGracefulEmpty(t *testing.T) {
 		t.Errorf("paths/roots nil, want empty slices")
 	}
 }
+
+// TestListNoisyNeighbors_ExcludeGoneOptIn은 exclude_gone이 opt-in인지 검증한다. 미전달과 true가 아닌
+// 값은 전 항목을 노출하고, true(대소문자 무시)면 suspect나 victim pod가 사라진 항목을 빼되 남은
+// 항목의 rank는 엔진 순위를 유지한다.
+func TestListNoisyNeighbors_ExcludeGoneOptIn(t *testing.T) {
+	live := newFakeNeighbor("ns-a", "victim-1", "ns-b", "live", correlation.DimensionCPU, 2)
+	goneSuspect := newFakeNeighbor("ns-a", "victim-1", "ns-b", "gone", correlation.DimensionCPU, 1)
+	goneSuspect.SuspectGone = true
+	goneVictim := newFakeNeighbor("ns-a", "gone-victim", "ns-b", "live", correlation.DimensionCPU, 1)
+	goneVictim.VictimGone = true
+	h := NewHandler(&fakeSource{data: []correlation.NoisyNeighbor{goneSuspect, live, goneVictim}}, nil, nil, nil, nil)
+
+	cases := []struct {
+		query string
+		want  int
+	}{
+		{"", 3},
+		{"?exclude_gone=false", 3},
+		{"?exclude_gone=yes", 3},
+		{"?exclude_gone=true", 1},
+		{"?exclude_gone=TRUE", 1},
+	}
+	for _, tc := range cases {
+		w := httptest.NewRecorder()
+		h.ListNoisyNeighbors(w, httptest.NewRequest(http.MethodGet, "/api/v1/noisy-neighbor"+tc.query, nil))
+		var resp NoisyNeighborListResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("%q unmarshal: %v", tc.query, err)
+		}
+		if resp.Page.Total != tc.want || len(resp.Items) != tc.want {
+			t.Errorf("%q total=%d items=%d, want %d", tc.query, resp.Page.Total, len(resp.Items), tc.want)
+		}
+		if tc.want == 1 && (resp.Items[0].Suspect.Pod != "live" || resp.Items[0].Rank != 2) {
+			t.Errorf("%q 남은 항목 suspect=%s rank=%d, want live 2", tc.query, resp.Items[0].Suspect.Pod, resp.Items[0].Rank)
+		}
+	}
+}

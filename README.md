@@ -344,6 +344,7 @@ correlation-exporter는 두 agent의 cause score recording rule과 latency 메�
 |---|---|---|---|
 | `correlation_noisy_neighbor_score` | Gauge | `victim_namespace`, `victim_pod`, `victim_pod_uid`, `suspect_namespace`, `suspect_pod`, `suspect_pod_uid`, `resource_dimension`, `rank` | Pearson 상관계수 최대 절대값 (0-1). suspect 자원 압박과 victim latency 동조 강도. `resource_dimension` ∈ {`cpu`, `memory`, `network`, `gpu`}, `rank`는 1부터 `TOP_N` (기본 10) 까지 |
 | `correlation_noisy_neighbor_lag_seconds` | Gauge | (동일) | score가 최대 절대값을 보인 lag의 초 단위 환산. 양수면 suspect 변동이 victim latency를 N초 선행하는 인과 방향 |
+| `correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds` | Gauge | (동일) | suspect나 victim pod가 분석 시점에 `kube_pod_info`에서 사라진 페어에만 emit되는 그 pod의 마지막 확인 시각(unix 초, 창 안에서 확인된 적이 없으면 창 시작). 삭제된 pod가 분석 창에 남은 표본으로 순위에 오른 유령 페어를 가리키며 정상 상태에서는 시리즈가 없다 |
 | `correlation_reconcile_duration_seconds` | Gauge | n/a | 마지막 reconcile cycle의 walltime |
 | `correlation_reconcile_pairs_total` | Counter | n/a | `Correlate` 산출 페어의 누적 합계 |
 | `correlation_reconcile_neighbors_total` | Counter | n/a | `SelectTopN` 채택 후 emit된 noisy neighbor 엔트리의 누적 합계 |
@@ -356,7 +357,7 @@ correlation-exporter는 두 agent의 cause score recording rule과 latency 메�
 
 > **카디널리티**: 각 noisy neighbor 엔트리는 동일 라벨 셋으로 `correlation_noisy_neighbor_score`와 `correlation_noisy_neighbor_lag_seconds` 두 gauge를 함께 emit하므로 victim 1000 pod × dimension 4 × rank 10 × metric 2 = 80,000 series가 상한이다. self-health 9종을 더해도 80,009 series. `TOP_N`의 binary-side 상한 100으로 운영자의 입력 실수에 의한 series 폭주를 차단한다.
 
-> **PrometheusRule alerts**: `deploy/correlation/base/prometheus-rule.yaml`이 세 alert를 정의한다. `CorrelationStrongNoisyNeighbor` (max_abs_value > 0.85가 10분 지속), `CorrelationExporterStalled` (last success가 10분 이상 정체), `CorrelationExporterReconcileErrors` (10분 윈도우 에러 3회 이상). 각 alert의 `runbook_url` annotation이 `internal/correlation/README.md`의 헤딩 anchor와 일치해 운영자가 즉시 대응 절차로 이동 가능하다.
+> **PrometheusRule alerts**: `deploy/correlation/base/prometheus-rule.yaml`이 세 alert를 정의한다. `CorrelationStrongNoisyNeighbor` (max_abs_value > 0.85가 10분 지속, 사라진 pod가 낀 페어 제외), `CorrelationExporterStalled` (last success가 10분 이상 정체), `CorrelationExporterReconcileErrors` (10분 윈도우 에러 3회 이상). 각 alert의 `runbook_url` annotation이 `internal/correlation/README.md`의 헤딩 anchor와 일치해 운영자가 즉시 대응 절차로 이동 가능하다.
 
 ## Performance & overhead measurement
 

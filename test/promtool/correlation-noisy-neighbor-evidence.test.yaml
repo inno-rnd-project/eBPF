@@ -4,6 +4,9 @@
 # 페어 (causal_strength 0.45 = 0.5·0.9, pvalue 미emit) 는 발화하지 않는다 (종전이면 발화). 둘째,
 # Granger 유의 (pvalue 0.01) 페어는 발화한다. 셋째, Granger 불가 (lag=0 동시 간섭) 라도 effect
 # 유의성으로 causal_strength 0.65 인 페어는 발화한다 (임계 0.7 이면 막혔을 경로).
+# 케이스 4부터 6은 pod 소멸 게이트다. 사라진 pod가 낀 페어는 증거 게이트를 통과해도 발화하지 않고,
+# pending 중에 pod가 사라지면 발화 전에 해제되며, victim이나 suspect가 다른 페어의 소멸은 살아 있는
+# 페어를 막지 않는다.
 rule_files:
   - correlation.yaml
 
@@ -57,6 +60,76 @@ tests:
         values: '0.9x40'
       - series: 'correlation_noisy_neighbor_causal_strength{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
         values: '0.65x40'
+
+    alert_rule_test:
+      - alertname: CorrelationStrongNoisyNeighbor
+        eval_time: 15m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: correlation
+              victim_namespace: ns
+              victim_pod: v1
+              suspect_namespace: ns
+              suspect_pod: s1
+              resource_dimension: cpu
+            exp_annotations:
+              summary: "noisy neighbor detected (victim=ns/v1 suspect=ns/s1 dimension=cpu)"
+              description: "victim ns/v1 의 latency 가 suspect ns/s1 의 cpu 자원 변동과 max |corr| 0.9 로 10분 이상 동조하고 있다. causal_strength 0.6 초과 또는 Granger pvalue 0.05 미만의 인과 증거 게이트를 함께 통과했다 (#366). internal/correlation/README.md 의 runbook 절차를 따른다."
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/internal/correlation/README.md#correlationstrongnoisyneighbor"
+
+  # 케이스 4: 케이스 2와 같은 증거지만 suspect pod가 사라진 유령 페어 → 미발화.
+  - interval: 30s
+    input_series:
+      - series: 'correlation_noisy_neighbor_score{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '0.9x40'
+      - series: 'correlation_noisy_neighbor_pvalue{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '0.01x40'
+      - series: 'correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '1800000000x40'
+
+    alert_rule_test:
+      - alertname: CorrelationStrongNoisyNeighbor
+        eval_time: 15m
+        exp_alerts: []
+
+  # 케이스 5: 8분간 pending이던 페어의 pod가 사라지면 10분 시점에 발화하지 않는다. unless가 없으면
+  # 10분에 발화해 11분에도 firing이다.
+  - interval: 30s
+    input_series:
+      - series: 'correlation_noisy_neighbor_score{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '0.9x40'
+      - series: 'correlation_noisy_neighbor_pvalue{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '0.01x40'
+      - series: 'correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '_x16 1800000000x24'
+
+    alert_rule_test:
+      - alertname: CorrelationStrongNoisyNeighbor
+        eval_time: 11m
+        exp_alerts: []
+
+  # 케이스 6: 같은 victim의 다른 suspect(s2)가 사라지거나 같은 suspect의 다른 victim(v2)이 사라져도
+  # 살아 있는 v1·s1 페어는 발화한다. unless 조인 키에서 victim이나 suspect 라벨이 빠지면 v1·s1까지
+  # 막힌다.
+  - interval: 30s
+    input_series:
+      - series: 'correlation_noisy_neighbor_score{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '0.9x40'
+      - series: 'correlation_noisy_neighbor_pvalue{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '0.01x40'
+      - series: 'correlation_noisy_neighbor_score{rank="2",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s2",suspect_pod_uid="us2",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '0.9x40'
+      - series: 'correlation_noisy_neighbor_pvalue{rank="2",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s2",suspect_pod_uid="us2",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '0.01x40'
+      - series: 'correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds{rank="2",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s2",suspect_pod_uid="us2",victim_namespace="ns",victim_pod="v1",victim_pod_uid="uv1",victim_signal="latency"}'
+        values: '1800000000x40'
+      - series: 'correlation_noisy_neighbor_score{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v2",victim_pod_uid="uv2",victim_signal="latency"}'
+        values: '0.9x40'
+      - series: 'correlation_noisy_neighbor_pvalue{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v2",victim_pod_uid="uv2",victim_signal="latency"}'
+        values: '0.01x40'
+      - series: 'correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds{rank="1",resource_dimension="cpu",suspect_namespace="ns",suspect_pod="s1",suspect_pod_uid="us1",victim_namespace="ns",victim_pod="v2",victim_pod_uid="uv2",victim_signal="latency"}'
+        values: '1800000000x40'
 
     alert_rule_test:
       - alertname: CorrelationStrongNoisyNeighbor

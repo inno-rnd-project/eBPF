@@ -789,3 +789,35 @@ func TestCollector_CrossLevelDuplicateLabelDedup(t *testing.T) {
 		t.Errorf("cross_level series=%d want 1 (라벨 기준 재dedup)", got)
 	}
 }
+
+// TestCollector_EmitsGoneLastSeenOnlyForGonePairs는 pod 소멸 게이지가 사라진 쪽이 있는 페어에만
+// emit되고 값이 사라진 쪽 중 가장 이른 마지막 확인 시각(unix 초)인지 검증한다. 양쪽이 사라진 페어는
+// suspect가 이른 경우와 victim이 이른 경우를 모두 둔다.
+func TestCollector_EmitsGoneLastSeenOnlyForGonePairs(t *testing.T) {
+	live := neighbor("v1", "live", correlation.DimensionCPU, 1, 0.9, 0)
+	suspectOnly := neighbor("v1", "gone", correlation.DimensionCPU, 2, 0.8, 0)
+	suspectOnly.SuspectGone, suspectOnly.SuspectLastSeenMs = true, 1_799_999_700_000
+	victimEarlier := neighbor("v2", "gone", correlation.DimensionCPU, 1, 0.7, 0)
+	victimEarlier.SuspectGone, victimEarlier.SuspectLastSeenMs = true, 1_799_999_700_000
+	victimEarlier.VictimGone, victimEarlier.VictimLastSeenMs = true, 1_799_999_400_000
+	suspectEarlier := neighbor("v3", "gone", correlation.DimensionCPU, 1, 0.7, 0)
+	suspectEarlier.SuspectGone, suspectEarlier.SuspectLastSeenMs = true, 1_799_999_100_000
+	suspectEarlier.VictimGone, suspectEarlier.VictimLastSeenMs = true, 1_799_999_400_000
+
+	c := NewCollector(30 * time.Second)
+	c.Replace([]correlation.NoisyNeighbor{live, suspectOnly, victimEarlier, suspectEarlier})
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds 사라진 pod가 낀 noisy neighbor 페어에서 그 pod가 마지막으로 확인된 시각(unix 초). suspect나 victim pod가 분석 시점에 kube_pod_info에서 사라진 페어에만 emit되며, 값은 사라진 쪽 중 가장 이른 시각이고 창 안에서 확인된 적이 없으면 창 시작 시각이다. 삭제된 pod가 분석 창에 남은 표본으로 순위에 오른 유령 페어를 가리키고, time()에서 빼면 pod가 사라진 뒤의 경과 시간이다. 어느 쪽이 사라졌는지는 /api/v1/noisy-neighbor의 suspect_gone과 victim_gone으로 본다.
+# TYPE correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds gauge
+correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds{rank="1",resource_dimension="cpu",suspect_namespace="default",suspect_pod="gone",suspect_pod_uid="uid-gone",victim_namespace="default",victim_pod="v2",victim_pod_uid="uid-v2",victim_signal="latency"} 1.7999994e+09
+correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds{rank="1",resource_dimension="cpu",suspect_namespace="default",suspect_pod="gone",suspect_pod_uid="uid-gone",victim_namespace="default",victim_pod="v3",victim_pod_uid="uid-v3",victim_signal="latency"} 1.7999991e+09
+correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds{rank="2",resource_dimension="cpu",suspect_namespace="default",suspect_pod="gone",suspect_pod_uid="uid-gone",victim_namespace="default",victim_pod="v1",victim_pod_uid="uid-v1",victim_signal="latency"} 1.7999997e+09
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds"); err != nil {
+		t.Errorf("metric mismatch: %v", err)
+	}
+}

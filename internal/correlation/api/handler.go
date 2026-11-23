@@ -253,7 +253,7 @@ type ErrorDetail struct {
 // pagination 적용 결과 를 JSON 응답 으로 반환 한다.
 //
 // @Summary      List noisy neighbor top-N
-// @Description  victim/suspect 와 dimension 과 rank 필터 후 pagination 적용한 noisy neighbor 시리즈 반환
+// @Description  victim/suspect 와 dimension 과 rank 필터 후 pagination 적용한 noisy neighbor 시리즈 반환. suspect_gone과 victim_gone은 분석 시점에 kube_pod_info에서 사라진 pod 쪽을 표시하고(마지막 표본이 최신 표본보다 2분 이상 앞서거나 창 안에 없음), suspect_last_seen_at과 victim_last_seen_at은 사라진 쪽이 마지막으로 확인된 시각이다(창 안에 없으면 창 시작). 삭제된 pod는 분석 창에 남은 표본으로 30분 안팎 계속 순위에 오른다. exclude_gone=true면 그런 항목을 빼며, rank는 엔진 순위를 유지해 Prometheus rank 라벨과 맞춘다. 미전달 기본은 전 항목을 노출한다.
 // @Tags         impact
 // @Produce      json
 // @Param        victim_namespace   query  string  false  "victim Pod 의 namespace 필터"
@@ -263,6 +263,7 @@ type ErrorDetail struct {
 // @Param        dimension          query  string  false  "리소스 차원 필터 (cpu/memory/network/gpu)"
 // @Param        victim_signal      query  string  false  "victim 영향 종착 차원 필터 (latency/throughput/error/gpu)"
 // @Param        rank_max           query  int     false  "max rank (기본 무제한)"
+// @Param        exclude_gone       query  bool    false  "사라진 pod가 낀 항목(suspect_gone 또는 victim_gone) 제외 (기본 false)"
 // @Param        limit              query  int     false  "응답 item 최대 개수 (기본 100, 최대 1000)"
 // @Param        offset             query  int     false  "응답 시작 offset (기본 0)"
 // @Success      200  {object}  NoisyNeighborListResponse
@@ -296,6 +297,8 @@ func (h *Handler) ListNoisyNeighbors(w http.ResponseWriter, r *http.Request) {
 	victimPod := strings.TrimSpace(q.Get("victim_pod"))
 	suspectNS := strings.TrimSpace(q.Get("suspect_namespace"))
 	suspectPod := strings.TrimSpace(q.Get("suspect_pod"))
+	// exclude_gone=true면 사라진 pod가 낀 항목을 뺀다(opt-in). 미전달 기본은 종전대로 전 항목을 노출한다.
+	excludeGone := strings.EqualFold(strings.TrimSpace(q.Get("exclude_gone")), "true")
 
 	// netobs / gpuobs handler 와 동일 패턴 으로 nil source 시 graceful empty response 보장. handler
 	// 가 collector 미주입 상태 (예: agent 의 reconcile cycle 시작 전) 에 호출 되어도 panic 회피.
@@ -324,6 +327,9 @@ func (h *Handler) ListNoisyNeighbors(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if suspectPod != "" && n.Suspect.Pod != suspectPod {
+			continue
+		}
+		if excludeGone && (n.SuspectGone || n.VictimGone) {
 			continue
 		}
 		filtered = append(filtered, n)

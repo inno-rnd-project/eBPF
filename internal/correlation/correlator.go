@@ -18,6 +18,12 @@ import (
 // 정상 응답 (수 MB) 에서는 병렬성 손실이 체감되지 않는다.
 const maxConcurrentFetches = 4
 
+// goneSteps는 pod 소멸 판정 임계(step 수)다. PodPresenceQuery에서 pod의 마지막 표본이 query 전체의
+// 최신 표본보다 이만큼 이상 앞서면 사라진 것으로 본다. scrape 지터를 흡수하면서 기본 Step 30초에서
+// 삭제 후 2분이라, prod reconcile 주기 5분을 더해도 CorrelationStrongNoisyNeighbor의 for 10분보다
+// 먼저 표시된다.
+const goneSteps = 4
+
 // Correlator 는 fetcher 로 시계열을 가져와 pair enumerate 후 Pearson 으로 상관계수를 산출하는
 // orchestrator 다. 상태 없이 매 호출이 독립적이라 동일 인스턴스가 여러 호출 간 reuse 가능하다.
 type Correlator struct {
@@ -129,6 +135,7 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 	all = filterWeakSuspects(all, c.config.MinSuspectScore)
 
 	pairs := EnumeratePairs(all)
+	lastSeen, latestSeen := c.podPresence(ctx, start, end)
 	// 동일 시계열이 여러 페어에 반복 등장하므로 samplesToValues 변환 결과를 cache 한다. 키는 시리즈
 	// Samples slice 의 첫 element pointer 와 length 의 합성이라 같은 underlying array 를 다른 길이
 	// 의 슬라이스가 공유하는 (prefix / 부분 슬라이스) 케이스에서 충돌이 일어나지 않는다. 페어 수가
@@ -209,6 +216,8 @@ func (c *Correlator) CorrelateWithStats(ctx context.Context, endTime time.Time) 
 				r.ImpactOK = es.OK
 			}
 		}
+		r.SrcLastSeenMs, r.SrcGone = c.goneAt(lastSeen, latestSeen, start.UnixMilli(), p.Key.SrcNamespace, p.Key.SrcPod)
+		r.DstLastSeenMs, r.DstGone = c.goneAt(lastSeen, latestSeen, start.UnixMilli(), p.Key.DstNamespace, p.Key.DstPod)
 		return r
 	}
 
@@ -443,6 +452,64 @@ func seriesMaxAbs(samples []Sample) float64 {
 		}
 	}
 	return max
+}
+
+// podRef는 pod 소멸 판정의 키다. src_pod_uid는 static pod에서 kube_pod_info의 mirror pod uid와
+// 달라 (namespace, pod)로 대조한다.
+type podRef struct{ namespace, pod string }
+
+// podPresence는 PodPresenceQuery 결과에서 (namespace, pod)별 마지막 표본 시각과 query 전체의 최신
+// 표본 시각을 모은다. query가 비었거나 Step이 0 이하거나 조회가 실패하면 nil을 돌려 판정을 끈다.
+// 결과가 비었거나 최신 표본이 end보다 goneSteps 이상 앞서도(kube-state-metrics 장애) 끈다. 판정용
+// 보조 조회라 실패를 부분 fetch 실패로 세지 않고 로그만 남긴다.
+func (c *Correlator) podPresence(ctx context.Context, start, end time.Time) (map[podRef]int64, int64) {
+	if c.config.PodPresenceQuery == "" || c.config.Step <= 0 {
+		return nil, 0
+	}
+	series, err := c.fetcher.Fetch(ctx, c.config.PodPresenceQuery, start, end, c.config.Step)
+	if err != nil {
+		log.Printf("correlate: pod presence fetch failed, skipping gone judgment: %v", err)
+		return nil, 0
+	}
+	out := make(map[podRef]int64, len(series))
+	var latest int64
+	for _, it := range series {
+		n := len(it.Series.Samples)
+		if n == 0 {
+			continue
+		}
+		k := podRef{it.Series.Labels["namespace"], it.Series.Labels["pod"]}
+		ts := it.Series.Samples[n-1].TimestampMs
+		if ts > out[k] {
+			out[k] = ts
+		}
+		if ts > latest {
+			latest = ts
+		}
+	}
+	// 결과가 비면 latest가 0이라 같은 조건으로 판정이 꺼진다.
+	if end.UnixMilli()-latest >= goneSteps*c.config.Step.Milliseconds() {
+		log.Printf("correlate: pod presence empty or stale (%d pods), skipping gone judgment", len(out))
+		return nil, 0
+	}
+	return out, latest
+}
+
+// goneAt은 pod가 사라졌으면 마지막으로 확인된 시각과 true를 돌려준다. 존재 조회 결과에 아예 없는
+// pod는 창 시작보다 먼저 사라졌는데 입력이 남은 경우라 창 시작 시각(startMs)을 마지막 확인 시각으로
+// 둔다. 판정이 꺼졌으면(lastSeen nil) 사라진 것으로 보지 않는다.
+func (c *Correlator) goneAt(lastSeen map[podRef]int64, latest, startMs int64, namespace, pod string) (int64, bool) {
+	if lastSeen == nil {
+		return 0, false
+	}
+	last, ok := lastSeen[podRef{namespace, pod}]
+	if !ok {
+		return startMs, true
+	}
+	if latest-last < goneSteps*c.config.Step.Milliseconds() {
+		return 0, false
+	}
+	return last, true
 }
 
 // samplesToValues 는 Sample slice 의 Value 만 추출해 Granger 입력 형태로 변환한다. Granger 산정은

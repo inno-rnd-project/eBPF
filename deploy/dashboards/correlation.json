@@ -113,7 +113,7 @@
       "id": 1,
       "type": "table",
       "title": "Top noisy neighbors (victim x suspect x dimension x rank)",
-      "description": "현재 snapshot 의 noisy neighbor 페어. score 내림차순 정렬 후 rank 가 부여된다. lag_seconds 양수는 suspect 가 victim latency 를 선행하는 인과 방향. impact_seconds (#146) 는 suspect 압박 시 victim latency 증가량으로 score (동조 강도) 와 별개의 절대 영향 크기다. score 가 높아도 impact 가 작으면 동조는 강하나 실제 latency 손해는 작은 케이스다.",
+      "description": "현재 snapshot 의 noisy neighbor 페어. score 내림차순 정렬 후 rank 가 부여된다. lag_seconds 양수는 suspect 가 victim latency 를 선행하는 인과 방향. impact_seconds (#146) 는 suspect 압박 시 victim latency 증가량으로 score (동조 강도) 와 별개의 절대 영향 크기다. score 가 높아도 impact 가 작으면 동조는 강하나 실제 latency 손해는 작은 케이스다. pod_gone_seconds는 suspect나 victim pod가 이미 사라진 유령 페어(삭제된 pod가 분석 창에 남은 표본으로 순위에 오른 경우)에만 값이 차며 pod가 사라진 뒤의 경과 시간이다. 이 페어는 CorrelationStrongNoisyNeighbor 경보에서 제외된다.",
       "datasource": "${datasource}",
       "gridPos": {
         "h": 12,
@@ -145,6 +145,12 @@
           "instant": true,
           "format": "table",
           "refId": "D"
+        },
+        {
+          "expr": "max by(victim_namespace, victim_pod, victim_pod_uid, victim_signal, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank) (time() - correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds{victim_namespace=~\"$victim_namespace\",victim_pod=~\"$victim_pod\",victim_signal=~\"$victim_signal\",resource_dimension=~\"$resource_dimension\"})",
+          "instant": true,
+          "format": "table",
+          "refId": "E"
         }
       ],
       "transformations": [
@@ -170,7 +176,8 @@
               "Value #A": "score",
               "Value #B": "lag_seconds",
               "Value #C": "impact_seconds",
-              "Value #D": "causal_strength"
+              "Value #D": "causal_strength",
+              "Value #E": "pod_gone_seconds"
             }
           }
         },
@@ -255,6 +262,26 @@
               {
                 "id": "decimals",
                 "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "pod_gone_seconds"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": "-"
               }
             ]
           }

@@ -1,6 +1,7 @@
 package correlation
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -396,5 +397,77 @@ func TestSelectTopN_ExcludesSamePodAcrossUIDChurn(t *testing.T) {
 	}
 	if got[0].Suspect.Pod != "p2" {
 		t.Errorf("suspect=%s want p2 (자기 자신이 rank 를 차지)", got[0].Suspect.Pod)
+	}
+}
+
+// TestSelectTopN_PropagatesPodGone은 pod 소멸 판정이 noisy neighbor 항목까지 운반되는지와 dedup
+// 승자(최대 score)의 값을 그대로 따르는지 검증한다. 같은 suspect의 cpu metric 두 개 중 score가 낮은
+// 쪽만 소멸로 표시해, 판정을 OR로 합치는 구현과 구분한다.
+func TestSelectTopN_PropagatesPodGone(t *testing.T) {
+	loser := makeResult("default", "noisy", "uidN", "pod:cpu_throttle_score:5m",
+		"default", "victim", "uidV", latencyMetric, 0.6, 0, StatusOK)
+	loser.SrcGone, loser.SrcLastSeenMs = true, 1_799_999_820_000
+	winner := makeResult("default", "noisy", "uidN", "pod:host_compute_stall_score:5m",
+		"default", "victim", "uidV", latencyMetric, 0.8, 0, StatusOK)
+	gone := makeResult("default", "gone", "uidG", "pod:cpu_throttle_score:5m",
+		"default", "victim", "uidV", latencyMetric, 0.7, 0, StatusOK)
+	gone.SrcGone, gone.SrcLastSeenMs = true, 1_799_999_820_000
+	gone.DstGone, gone.DstLastSeenMs = true, 1_800_000_000_000
+
+	got := SelectTopN([]CorrelationResult{loser, winner, gone}, 10)
+	if len(got) != 2 {
+		t.Fatalf("len=%d want 2", len(got))
+	}
+	bySuspect := map[string]NoisyNeighbor{}
+	for _, n := range got {
+		bySuspect[n.Suspect.Pod] = n
+	}
+	if n := bySuspect["noisy"]; n.SuspectGone || n.SuspectLastSeenMs != 0 || n.SuspectLastSeenAt != "" {
+		t.Errorf("noisy gone=%v last=%d at=%q, want 승자 값 false 0 \"\"", n.SuspectGone, n.SuspectLastSeenMs, n.SuspectLastSeenAt)
+	}
+	n := bySuspect["gone"]
+	if !n.SuspectGone || !n.VictimGone {
+		t.Errorf("gone suspect=%v victim=%v, want true true", n.SuspectGone, n.VictimGone)
+	}
+	if n.SuspectLastSeenMs != 1_799_999_820_000 || n.VictimLastSeenMs != 1_800_000_000_000 {
+		t.Errorf("last seen ms suspect=%d victim=%d", n.SuspectLastSeenMs, n.VictimLastSeenMs)
+	}
+	if n.SuspectLastSeenAt != "2027-01-15T07:57:00Z" || n.VictimLastSeenAt != "2027-01-15T08:00:00Z" {
+		t.Errorf("last seen at suspect=%q victim=%q", n.SuspectLastSeenAt, n.VictimLastSeenAt)
+	}
+}
+
+// TestNoisyNeighbor_GoneFieldsJSON은 pod 소멸 필드가 additive로 직렬화되는지 검증한다. gone 두 키는
+// 항상 실리고, 마지막 확인 시각은 값이 있을 때만 실리며, ms 필드는 노출되지 않는다.
+func TestNoisyNeighbor_GoneFieldsJSON(t *testing.T) {
+	keysOf := func(n NoisyNeighbor) map[string]bool {
+		b, err := json.Marshal(n)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		out := map[string]bool{}
+		for k := range m {
+			out[k] = true
+		}
+		return out
+	}
+	empty := keysOf(NoisyNeighbor{})
+	for _, k := range []string{"suspect_gone", "victim_gone"} {
+		if !empty[k] {
+			t.Errorf("키 %s 누락", k)
+		}
+	}
+	for _, k := range []string{"suspect_last_seen_at", "victim_last_seen_at", "SuspectLastSeenMs", "VictimLastSeenMs"} {
+		if empty[k] {
+			t.Errorf("빈 항목에 키 %s가 실림", k)
+		}
+	}
+	full := keysOf(NoisyNeighbor{SuspectLastSeenAt: "x", VictimLastSeenAt: "y", SuspectLastSeenMs: 1, VictimLastSeenMs: 1})
+	if !full["suspect_last_seen_at"] || !full["victim_last_seen_at"] || full["SuspectLastSeenMs"] {
+		t.Errorf("keys=%v", full)
 	}
 }
