@@ -430,7 +430,9 @@ func reconcileOnce(
 		return
 	}
 	neighbors := correlation.SelectTopN(results, topN)
-	collector.Replace(neighbors)
+	// 부분 실패 cycle도 남은 입력으로 snapshot을 교체하므로, 부분 입력 여부를 함께 넘겨 API가
+	// snapshot_partial로 알리게 한다. RecordCycle의 partial 판정(실패 query 존재)과 같은 기준이다.
+	collector.Replace(neighbors, len(fetchStats.FailedQueries) > 0)
 	// #84 cross-node interference snapshot 도 동일 reconcile cycle 에서 갱신 한다. CrossNodeEnabled
 	// 가 false 면 results 에 IsCrossNode=true 항목 이 없 으므로 빈 슬라이스 가 전달 되어 series 가
 	// emit 되지 않는다.

@@ -786,6 +786,11 @@ type NodeResponse struct {
 	// warn 인 이유를 추적하게 한다. 통과한 alert 가 없으면 생략된다. status/status_basis 필드는 불변이며
 	// 본 필드만 additive 로 더한다 (비목표: 출력 스키마 변경 없음, additive 는 미인지 소비자가 무시).
 	StatusAlerts []string `json:"status_alerts,omitempty"`
+	// SuppressedAlerts는 이 노드를 가리키며 firing 중이지만 지속성 게이트(ALERT_STATUS_MIN_HOLD, 기본
+	// 10m)에 못 미쳐 status 반영이 보류된 alertname 목록이다 (additive). status가 ok인데 alert가 떠
+	// 있는 이유를 이 응답만으로 알 수 있게 한다. status, status_basis, status_alerts에는 영향을 주지
+	// 않고, status_alerts에 이미 있는 이름은 싣지 않으며, 보류된 alert가 없으면 생략된다.
+	SuppressedAlerts []string `json:"suppressed_alerts,omitempty"`
 	// Confidence 는 dominant 차원 판정 신뢰도 (0-1, #264) 다. 압박 top1 과 top2 차원의 격차로,
 	// gpu-rca 의 신뢰도와 동일 축이라 한 차원이 지배적일수록 1 에 가깝다.
 	Confidence        float64           `json:"confidence"`
@@ -807,7 +812,7 @@ type NodePodPressure struct {
 
 // GetNode godoc
 // @Summary      노드 1대 전체 압박 상황
-// @Description  노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 차원별 pressure 등급(전 차원 worst, memory 는 node_exporter 실측 사용률이라 일반 임계 대신 usage 임계 0.85/0.95 로 환산해 health 불감대·usage 축 설계와 정합)과 노드 사용량(CPU/memory 점유율, allocatable 분모, 0.85 warn/0.95 degraded) 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(severity critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis 가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서 제외한다. status 는 종전 어휘(ok/warn/degraded/unknown)를 유지하고, 같은 판정을 노드 상태 단일 규약 어휘(#381, healthy/warning/critical/unknown)로 노출하는 status_unified 필드가 additive 로 함께 실린다(ok 는 healthy, warn 은 warning, degraded 는 critical 대응). down(ready 기반) 판정은 ready 신호를 조회하지 않아 방출하지 않으며 node-map 소관이다. top_pods 는 dominant 압박의 원인 후보이며 is_filtered=true 면 pod pressure 가 elevated 임계(0.4) 이상인 pod 만 남기고 dominant severity 가 low(정상)면 목록을 비워 낮은 수치 pod 가 원인으로 오인되지 않게 한다(#380). 미전달 기본은 전 pod 를 노출한다. top_pods 의 pod 는 ns/pod 결합 id 표현으로 불변이며, 슬래시 파싱 없이 신원을 읽는 분리 필드 namespace 와 pod_name 이 additive 로 병기된다(#383, namespace 미상이면 생략). health_notes 는 health 차원의 산출 불가·비실측 사유(additive, #430)로 no_cpu_limit_pods(cpu 가 fallback 상수 1.0, CPU limit pod 없음), no_gpu(GPU 미보유 노드의 정상 결측), scrape_gap(입력 시리즈 소실)을 구분해 담으며, 프론트가 결측 차원을 0.00 대신 측정 불가로 렌더하는 근거다. 항목이 없으면 생략된다.
+// @Description  노드의 4 차원 pressure 와 health, 종합(overall), dominant 차원과 신뢰도, 그 노드 위 top 압박 pod 를 모아 한 노드의 상태를 한 응답으로 돌려준다. health 는 node:*_health_score:5m 룰(cluster health 의 노드 차원 판)이고, 신뢰도는 압박 top1 과 top2 차원 격차라 gpu-rca 와 동일 축이다. status 는 차원별 pressure 등급(전 차원 worst, memory 는 node_exporter 실측 사용률이라 일반 임계 대신 usage 임계 0.85/0.95 로 환산해 health 불감대·usage 축 설계와 정합)과 노드 사용량(CPU/memory 점유율, allocatable 분모, 0.85 warn/0.95 degraded) 등급과 차원별 health 최솟값 등급과 이 노드를 가리키는 firing alert(severity critical 은 degraded, 그 외 warn) 등급의 worst-of 합성(#324, #325)이며, status_basis 가 결정 신호(pressure/usage/health/alert)를 담는다. GPU 사용률은 포화가 정상 활용일 수 있어 등급 입력에서 제외한다. status 는 종전 어휘(ok/warn/degraded/unknown)를 유지하고, 같은 판정을 노드 상태 단일 규약 어휘(#381, healthy/warning/critical/unknown)로 노출하는 status_unified 필드가 additive 로 함께 실린다(ok 는 healthy, warn 은 warning, degraded 는 critical 대응). down(ready 기반) 판정은 ready 신호를 조회하지 않아 방출하지 않으며 node-map 소관이다. top_pods 는 dominant 압박의 원인 후보이며 is_filtered=true 면 pod pressure 가 elevated 임계(0.4) 이상인 pod 만 남기고 dominant severity 가 low(정상)면 목록을 비워 낮은 수치 pod 가 원인으로 오인되지 않게 한다(#380). 미전달 기본은 전 pod 를 노출한다. top_pods 의 pod 는 ns/pod 결합 id 표현으로 불변이며, 슬래시 파싱 없이 신원을 읽는 분리 필드 namespace 와 pod_name 이 additive 로 병기된다(#383, namespace 미상이면 생략). health_notes 는 health 차원의 산출 불가·비실측 사유(additive, #430)로 no_cpu_limit_pods(cpu 가 fallback 상수 1.0, CPU limit pod 없음), no_gpu(GPU 미보유 노드의 정상 결측), scrape_gap(입력 시리즈 소실)을 구분해 담으며, 프론트가 결측 차원을 0.00 대신 측정 불가로 렌더하는 근거다. 항목이 없으면 생략된다. suppressed_alerts는 이 노드를 가리키며 firing 중이지만 지속성 게이트(ALERT_STATUS_MIN_HOLD, 기본 10m)에 못 미쳐 status 반영이 보류된 alertname 목록(additive)으로, status와 status_alerts에는 영향을 주지 않고 보류된 alert가 없으면 생략된다.
 // @Tags         interference
 // @Produce      json
 // @Param        node  path  string  true  "노드 이름"
@@ -957,9 +962,14 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 				ageBySig[alertSignature(sm.Labels)] = sm.Value
 			}
 			names := map[string]bool{}
+			suppressed := map[string]bool{}
 			for _, sm := range firing {
 				if age, ok := ageBySig[alertSignature(sm.Labels)]; ok && age < h.AlertMinHold.Seconds() {
-					continue // 지속성 미달 (transient) → status 반영 보류.
+					// 지속성 미달(transient)이라 status 반영을 보류하고 이름만 suppressed_alerts로 알린다.
+					if n := sm.Labels["alertname"]; n != "" {
+						suppressed[n] = true
+					}
+					continue
 				}
 				grade := correlation.NodeStatusWarning
 				if sm.Labels["severity"] == "critical" {
@@ -976,6 +986,13 @@ func (h *SynthesisHandler) GetNode(w http.ResponseWriter, r *http.Request) {
 				resp.StatusAlerts = append(resp.StatusAlerts, n)
 			}
 			sort.Strings(resp.StatusAlerts)
+			// 같은 alertname의 다른 인스턴스가 게이트를 통과했으면 status_alerts에만 둔다.
+			for n := range suppressed {
+				if !names[n] {
+					resp.SuppressedAlerts = append(resp.SuppressedAlerts, n)
+				}
+			}
+			sort.Strings(resp.SuppressedAlerts)
 		}
 
 		usage := []float64{}

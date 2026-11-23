@@ -145,6 +145,15 @@ definitions:
           snapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패
           cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
         type: string
+      snapshot_partial:
+        description: |-
+          SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다
+          (additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고
+          snapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라
+          이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어
+          있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한
+          query는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.
+        type: boolean
       snapshot_stale:
         type: boolean
     type: object
@@ -162,6 +171,15 @@ definitions:
           snapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패
           cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
         type: string
+      snapshot_partial:
+        description: |-
+          SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다
+          (additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고
+          snapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라
+          이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어
+          있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한
+          query는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.
+        type: boolean
       snapshot_stale:
         type: boolean
     type: object
@@ -716,6 +734,15 @@ definitions:
           snapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패
           cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
         type: string
+      snapshot_partial:
+        description: |-
+          SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다
+          (additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고
+          snapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라
+          이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어
+          있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한
+          query는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.
+        type: boolean
       snapshot_stale:
         type: boolean
       summary:
@@ -744,6 +771,15 @@ definitions:
           snapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패
           cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
         type: string
+      snapshot_partial:
+        description: |-
+          SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다
+          (additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고
+          snapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라
+          이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어
+          있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한
+          query는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.
+        type: boolean
       snapshot_stale:
         type: boolean
       summary:
@@ -1172,6 +1208,15 @@ definitions:
         type: string
       summary:
         type: string
+      suppressed_alerts:
+        description: |-
+          SuppressedAlerts는 이 노드를 가리키며 firing 중이지만 지속성 게이트(ALERT_STATUS_MIN_HOLD, 기본
+          10m)에 못 미쳐 status 반영이 보류된 alertname 목록이다 (additive). status가 ok인데 alert가 떠
+          있는 이유를 이 응답만으로 알 수 있게 한다. status, status_basis, status_alerts에는 영향을 주지
+          않고, status_alerts에 이미 있는 이름은 싣지 않으며, 보류된 alert가 없으면 생략된다.
+        items:
+          type: string
+        type: array
       top_pods:
         items:
           $ref: '#/definitions/internal_correlation_api.NodePodPressure'
@@ -1233,6 +1278,15 @@ definitions:
           snapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패
           cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
         type: string
+      snapshot_partial:
+        description: |-
+          SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다
+          (additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고
+          snapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라
+          이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어
+          있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한
+          query는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.
+        type: boolean
       snapshot_stale:
         type: boolean
     type: object
@@ -1648,6 +1702,15 @@ definitions:
           snapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패
           cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
         type: string
+      snapshot_partial:
+        description: |-
+          SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다
+          (additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고
+          snapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라
+          이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어
+          있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한
+          query는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.
+        type: boolean
       snapshot_stale:
         type: boolean
     type: object
@@ -2869,7 +2932,9 @@ paths:
         이 additive 로 병기된다(#383, namespace 미상이면 생략). health_notes 는 health 차원의 산출 불가·비실측
         사유(additive, #430)로 no_cpu_limit_pods(cpu 가 fallback 상수 1.0, CPU limit pod
         없음), no_gpu(GPU 미보유 노드의 정상 결측), scrape_gap(입력 시리즈 소실)을 구분해 담으며, 프론트가 결측 차원을
-        0.00 대신 측정 불가로 렌더하는 근거다. 항목이 없으면 생략된다.'
+        0.00 대신 측정 불가로 렌더하는 근거다. 항목이 없으면 생략된다. suppressed_alerts는 이 노드를 가리키며 firing
+        중이지만 지속성 게이트(ALERT_STATUS_MIN_HOLD, 기본 10m)에 못 미쳐 status 반영이 보류된 alertname
+        목록(additive)으로, status와 status_alerts에는 영향을 주지 않고 보류된 alert가 없으면 생략된다.'
       parameters:
       - description: 노드 이름
         in: path

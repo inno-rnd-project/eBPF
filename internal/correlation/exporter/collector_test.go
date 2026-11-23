@@ -33,7 +33,7 @@ func TestCollector_EmitsScoreAndLag(t *testing.T) {
 	c := NewCollector(30 * time.Second)
 	c.Replace([]correlation.NoisyNeighbor{
 		neighbor("v1", "s1", correlation.DimensionCPU, 1, 0.85, 2),
-	})
+	}, false)
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
@@ -60,7 +60,7 @@ func TestCollector_SnapshotReturnsIndependentCopy(t *testing.T) {
 	c.Replace([]correlation.NoisyNeighbor{
 		neighbor("v1", "s1", correlation.DimensionCPU, 1, 0.85, 2),
 		neighbor("v1", "s2", correlation.DimensionGPU, 1, 0.70, 0),
-	})
+	}, false)
 
 	snap := c.Snapshot()
 	if len(snap) != 2 {
@@ -95,7 +95,7 @@ func TestCollector_ReplaceClearsStale(t *testing.T) {
 	c := NewCollector(30 * time.Second)
 	c.Replace([]correlation.NoisyNeighbor{
 		neighbor("v1", "s-stale", correlation.DimensionCPU, 1, 0.9, 0),
-	})
+	}, false)
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
@@ -106,7 +106,7 @@ func TestCollector_ReplaceClearsStale(t *testing.T) {
 
 	c.Replace([]correlation.NoisyNeighbor{
 		neighbor("v1", "s-fresh", correlation.DimensionMemory, 1, 0.8, 0),
-	})
+	}, false)
 
 	if count := testutil.CollectAndCount(c, "correlation_noisy_neighbor_score"); count != 1 {
 		t.Fatalf("after replace count=%d want 1 (stale must be gone)", count)
@@ -140,12 +140,12 @@ func TestCollector_EmptySnapshot(t *testing.T) {
 		t.Errorf("nil snapshot count=%d want 0", count)
 	}
 
-	c.Replace(nil)
+	c.Replace(nil, false)
 	if count := testutil.CollectAndCount(c, "correlation_noisy_neighbor_score"); count != 0 {
 		t.Errorf("nil replace count=%d want 0", count)
 	}
 
-	c.Replace([]correlation.NoisyNeighbor{})
+	c.Replace([]correlation.NoisyNeighbor{}, false)
 	if count := testutil.CollectAndCount(c, "correlation_noisy_neighbor_score"); count != 0 {
 		t.Errorf("empty replace count=%d want 0", count)
 	}
@@ -159,7 +159,7 @@ func TestCollector_EmitsVictimSignalLabel(t *testing.T) {
 	tput.VictimSignal = correlation.SignalThroughput
 	tput.Impact = 0.05
 	tput.ImpactOK = false // SelectTopN 이 latency 외 victim 의 impact 를 gate
-	c.Replace([]correlation.NoisyNeighbor{tput})
+	c.Replace([]correlation.NoisyNeighbor{tput}, false)
 
 	want := `# HELP correlation_noisy_neighbor_score Pearson 상관계수 최대 절대값. 1.0 에 가까울수록 suspect 자원 압박과 victim latency 가 강한 동조를 보인다.
 # TYPE correlation_noisy_neighbor_score gauge
@@ -357,7 +357,7 @@ func TestCollector_ConcurrentReplaceAndCollect(t *testing.T) {
 			default:
 				c.Replace([]correlation.NoisyNeighbor{
 					neighbor("v1", "s1", correlation.DimensionCPU, 1, float64(i%100)/100.0, i%3),
-				})
+				}, false)
 				i++
 			}
 		}
@@ -433,7 +433,7 @@ func TestCollector_PValueEmittedOnlyWhenGrangerOK(t *testing.T) {
 	notOK := neighbor("v-skip", "s2", correlation.DimensionMemory, 1, 0.7, 0)
 	notOK.GrangerOK = false
 	notOK.PValue = 0
-	c.Replace([]correlation.NoisyNeighbor{ok, notOK})
+	c.Replace([]correlation.NoisyNeighbor{ok, notOK}, false)
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
@@ -463,7 +463,7 @@ func TestCollector_DominantDimensionEmitted(t *testing.T) {
 	v1Mem := neighbor("v1", "s2", correlation.DimensionMemory, 1, 0.1, 0)
 	// v-zero 는 모든 score 0 → 시리즈 미존재 기대.
 	vZero := neighbor("v-zero", "s3", correlation.DimensionGPU, 1, 0, 0)
-	c.Replace([]correlation.NoisyNeighbor{v1Cpu, v1Mem, vZero})
+	c.Replace([]correlation.NoisyNeighbor{v1Cpu, v1Mem, vZero}, false)
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
@@ -526,7 +526,7 @@ func TestCollector_EmitsImpact(t *testing.T) {
 	withImpact.ImpactOK = true
 	noImpact := neighbor("v2", "s2", correlation.DimensionCPU, 1, 0.80, 1)
 	noImpact.ImpactOK = false
-	c.Replace([]correlation.NoisyNeighbor{withImpact, noImpact})
+	c.Replace([]correlation.NoisyNeighbor{withImpact, noImpact}, false)
 
 	// ImpactOK=true 인 1 개만 emit 되어야 한다.
 	if count := testutil.CollectAndCount(c, "correlation_noisy_neighbor_impact_seconds"); count != 1 {
@@ -565,7 +565,7 @@ func TestCollector_EmitsImpactMagnitudeAndPValue(t *testing.T) {
 	noSig.ImpactMagnitudeOK = true
 	noSig.ImpactPValueOK = false
 
-	c.Replace([]correlation.NoisyNeighbor{tput, noSig})
+	c.Replace([]correlation.NoisyNeighbor{tput, noSig}, false)
 
 	if count := testutil.CollectAndCount(c, "correlation_noisy_neighbor_impact_magnitude"); count != 2 {
 		t.Errorf("impact_magnitude series=%d want 2 (두 항목 모두 MagnitudeOK)", count)
@@ -587,7 +587,7 @@ func TestCollector_EmitsCausalStrength(t *testing.T) {
 	a.CausalStrength = 0.82
 	b := neighbor("v2", "s2", correlation.DimensionNetwork, 1, 0.7, 1)
 	b.CausalStrength = 0.35
-	c.Replace([]correlation.NoisyNeighbor{a, b})
+	c.Replace([]correlation.NoisyNeighbor{a, b}, false)
 
 	if count := testutil.CollectAndCount(c, "correlation_noisy_neighbor_causal_strength"); count != 2 {
 		t.Errorf("causal_strength series=%d want 2 (모든 neighbor emit)", count)
@@ -758,7 +758,7 @@ func TestCollector_SnapshotFreshness(t *testing.T) {
 	}
 
 	c.SetStaleAfter(time.Millisecond)
-	c.Replace(nil)
+	c.Replace(nil, false)
 	if c.SnapshotGeneratedAt().IsZero() {
 		t.Fatalf("Replace 후 GeneratedAt 이 zero")
 	}
@@ -771,6 +771,22 @@ func TestCollector_SnapshotFreshness(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 	if !c.SnapshotStale() {
 		t.Errorf("staleAfter 초과 후 stale=false want true")
+	}
+	// 부분 입력 여부는 Replace가 넘긴 값 그대로이고, 다음 Replace 전까지 stale과 무관하게 유지된다.
+	if _, _, partial := c.SnapshotState(); partial {
+		t.Errorf("전체 입력 Replace 후 partial=true want false")
+	}
+	c.Replace(nil, true)
+	if at, _, partial := c.SnapshotState(); at.IsZero() || !partial {
+		t.Errorf("부분 입력 Replace 직후 at.IsZero=%v partial=%v want false/true", at.IsZero(), partial)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if _, stale, partial := c.SnapshotState(); !stale || !partial {
+		t.Errorf("stale 전환 후 stale=%v partial=%v want true/true", stale, partial)
+	}
+	c.Replace(nil, false)
+	if _, _, partial := c.SnapshotState(); partial {
+		t.Errorf("다음 전체 입력 Replace 후 partial=true want false")
 	}
 }
 
@@ -805,7 +821,7 @@ func TestCollector_EmitsGoneLastSeenOnlyForGonePairs(t *testing.T) {
 	suspectEarlier.VictimGone, suspectEarlier.VictimLastSeenMs = true, 1_799_999_400_000
 
 	c := NewCollector(30 * time.Second)
-	c.Replace([]correlation.NoisyNeighbor{live, suspectOnly, victimEarlier, suspectEarlier})
+	c.Replace([]correlation.NoisyNeighbor{live, suspectOnly, victimEarlier, suspectEarlier}, false)
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
 

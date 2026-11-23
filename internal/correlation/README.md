@@ -316,6 +316,7 @@ kubectl rollout restart deployment -n ebpf-project correlation-exporter
 
 - `kubectl -n ebpf-project get pods -l app.kubernetes.io/name=correlation-exporter` 로 Pod 상태와 restart count 확인
 - `correlation_reconcile_partial_total` 이 함께 증가 중이면 부분 실패 경로다. `correlation_fetch_errors_total` 의 `query` 라벨로 실패 query 를 특정하고 해당 recording rule 가용성 점검
+- 부분 실패 경로에서는 snapshot이 계속 교체되어 API의 `snapshot_stale`이 false로 남는다. 이때 응답이 부분 입력 산출물인지는 `snapshot_partial`로 확인
 - Pod 가 정상이고 partial 증가가 없으면 `kubectl logs` 로 reconcile error 메시지 확인 (Prometheus 응답 코드, query 문법, timeout)
 - Prometheus 서비스 도달성 확인. ConfigMap 의 `PROMETHEUS_URL` 이 cluster 내 도달 가능한 svc 를 가리키는지 점검
 
@@ -334,6 +335,16 @@ reconcile cycle 이 30 분 윈도우에서 3 회 이상 부분 fetch 실패로 �
 - `correlation_fetch_errors_total` 의 `query` 라벨로 실패 query 특정
 - 실패 query 가 recording rule 이면 해당 rule 의 존재와 산출 여부를 Prometheus 에서 확인
 - `kubectl logs` 의 `correlate: fetch failed for query` 라인으로 실패 원인 (응답 코드, timeout) 확인
+- 부분 실패 cycle이 만든 snapshot을 읽는 동안 snapshot 기반 API 6종(`noisy-neighbor`, `cross-node-interference`, `service-impact`, `cross-level`, `impact-graph`, `impact-paths`)은 `snapshot_partial=true`로 응답한다. cycle 단위 판정이라 해당 응답의 layer와 무관한 query가 실패해도 true이며, pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다
+
+#### node API의 status가 ok인데 alert가 firing 중일 때
+
+`/api/v1/node/{node}`는 firing alert가 pending 진입 후 `ALERT_STATUS_MIN_HOLD`(기본 10m) 이상 지속돼야 status에 반영한다 (#379). 그보다 어린 alert는 `status`, `status_basis`, `status_alerts`에 나타나지 않고 `suppressed_alerts`에 alertname으로만 실린다.
+
+- `suppressed_alerts`에 이름이 있으면 지속성 미달로 보류된 상태다. hold를 넘기면 같은 이름이 `status_alerts`로 옮겨 가며 status에 반영된다
+- 같은 alertname의 다른 인스턴스가 이미 hold를 넘겼으면 그 이름은 `status_alerts`에만 실린다
+- `node-map`과 `overview`는 이 게이트 없이 firing 여부만 보므로, 같은 시점에 node-map은 `warning`인데 node API는 `ok`일 수 있다. 이때 `suppressed_alerts`가 그 차이의 근거다
+- alert의 severity와 시작 시각은 incidents API에서 확인
 
 #### CorrelationExporterMetricsAbsent
 

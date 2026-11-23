@@ -148,6 +148,81 @@ func TestReconcileOnce_PrometheusErrorDoesNotMarkReady(t *testing.T) {
 	}
 }
 
+// TestReconcileOnce_SnapshotPartial은 부분 fetch 실패 cycle이 snapshot을 교체하면서 부분 입력 여부를
+// 함께 남기는지 검증한다. partial은 항상 metrics_observed < metrics_expected와 같고, 전체 입력 cycle이
+// 오면 풀리며, 전체 실패 cycle은 Replace에 닿지 않아 이전 snapshot의 시각과 partial이 그대로 남는다.
+// pod 소멸 판정용 보조 조회(PodPresenceQuery)만 실패한 cycle은 부분 입력으로 세지 않는다.
+func TestReconcileOnce_SnapshotPartial(t *testing.T) {
+	const presenceQuery = "max by (namespace, pod) (kube_pod_info)"
+	var failContains atomic.Value // 이 문자열이 든 query만 500으로 응답한다. "*"면 전부 실패
+	failContains.Store("")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query().Get("query")
+		if f := failContains.Load().(string); f == "*" || (f != "" && strings.Contains(query, f)) {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+	}))
+	defer srv.Close()
+
+	cfg := correlation.Config{
+		PrometheusURL:    srv.URL,
+		Window:           30 * time.Minute,
+		Step:             30 * time.Second,
+		MinSamples:       30,
+		LagSteps:         []int{0},
+		DefaultMetrics:   []string{"pod:cpu_throttle_score:5m", "pod:memory_pressure_score:5m"},
+		PodPresenceQuery: presenceQuery,
+		FetchTimeout:     2 * time.Second,
+	}
+	fetcher, err := correlation.NewPrometheusFetcher(cfg.PrometheusURL, cfg.FetchTimeout)
+	if err != nil {
+		t.Fatalf("fetcher: %v", err)
+	}
+	corr := correlation.New(fetcher, cfg)
+	reg := prometheus.NewRegistry()
+	collector := exporter.NewCollector(cfg.Step)
+	reg.MustRegister(collector)
+	health := exporter.NewHealth(reg)
+	var ready atomic.Bool
+
+	run := func(fail string) (time.Time, bool) {
+		failContains.Store(fail)
+		reconcileOnce(context.Background(), corr, collector, health, &ready, 10, cfg.FetchTimeout*4)
+		at, _, partial := collector.SnapshotState()
+		return at, partial
+	}
+	observedBelowExpected := func() bool {
+		return testutil.ToFloat64(health.ReconcileMetricsObserved) < testutil.ToFloat64(health.ReconcileMetricsExpected)
+	}
+
+	at, partial := run("cpu_throttle")
+	if at.IsZero() || !partial || !observedBelowExpected() {
+		t.Fatalf("부분 실패 cycle: at.IsZero=%v partial=%v observed<expected=%v want false/true/true", at.IsZero(), partial, observedBelowExpected())
+	}
+	if v := testutil.ToFloat64(health.ReconcilePartial); v != 1 {
+		t.Errorf("partial_total=%v want 1", v)
+	}
+	partialAt := at
+
+	if at, partial = run("*"); !at.Equal(partialAt) || !partial {
+		t.Errorf("전체 실패 cycle: at 변경=%v partial=%v want 이전 snapshot 유지", !at.Equal(partialAt), partial)
+	}
+
+	if at, partial = run("kube_pod_info"); !at.After(partialAt) || partial || observedBelowExpected() {
+		t.Errorf("보조 조회만 실패한 cycle: 갱신=%v partial=%v observed<expected=%v want true/false/false", at.After(partialAt), partial, observedBelowExpected())
+	}
+
+	if _, partial = run(""); partial || observedBelowExpected() {
+		t.Errorf("전체 입력 cycle: partial=%v observed<expected=%v want false/false", partial, observedBelowExpected())
+	}
+	if v := testutil.ToFloat64(health.ReconcilePartial); v != 1 {
+		t.Errorf("partial_total=%v want 1 (부분 실패 cycle 1회만)", v)
+	}
+}
+
 // TestWriteTimeoutFor_ExceedsFetchTimeout 은 #360 리뷰 보완이다. http.Server WriteTimeout 이 항상
 // FetchTimeout 보다 커야 range 핸들러 (incidents / trends) 와 RCA 프록시의 최장 응답이 절단되지
 // 않는다. 누군가 WriteTimeout 을 고정값으로 되돌리거나 연동을 끊으면 이 가드가 실패한다.

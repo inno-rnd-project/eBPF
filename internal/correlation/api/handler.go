@@ -71,26 +71,26 @@ func NewHandler(source SnapshotSource, crossNodeSource CrossNodeSnapshotSource, 
 // Register 는 ServeMux 에 /api/v1/noisy-neighbor 와 /api/v1/cross-node-interference 두 라우트 를 등록
 // 한다. 호출 측은 mux 를 그대로 전달 하면 된다. 본 함수는 미들웨어 적용 (Logging, Recover, CORS) 도
 // 함께 처리 한다.
-// SnapshotFreshnessSource 는 #405 의 snapshot 신선도 선택 인터페이스다. exporter.Collector 가
-// 만족하며, 미구현 source (테스트 fake 등) 에서는 신선도 필드가 생략된다 (additive omitempty).
+// SnapshotFreshnessSource는 #405의 snapshot 신선도 선택 인터페이스다. exporter.Collector가 만족하며,
+// 미구현 source(테스트 fake 등)에서는 신선도 필드가 생략된다 (additive omitempty). 산출 시각, stale,
+// 부분 입력 여부를 한 번에 돌려줘 세 값이 서로 다른 cycle에서 섞이지 않게 한다.
 type SnapshotFreshnessSource interface {
-	SnapshotGeneratedAt() time.Time
-	SnapshotStale() bool
+	SnapshotState() (generatedAt time.Time, stale, partial bool)
 }
 
-// freshness 는 source 가 신선도를 제공하면 (snapshot_generated_at RFC3339, snapshot_stale) 값을
-// 돌려준다 (#405). 첫 reconcile 전 (zero time) 에는 생략과 동일하게 빈 값을 돌려준다.
-func (h *Handler) freshness() (string, *bool) {
+// freshness는 source가 신선도를 제공하면 (snapshot_generated_at RFC3339, snapshot_stale,
+// snapshot_partial) 값을 돌려준다 (#405). 첫 reconcile 전(zero time)에는 생략과 동일하게 빈 값을
+// 돌려주므로 세 필드는 항상 함께 있거나 함께 없다.
+func (h *Handler) freshness() (string, *bool, *bool) {
 	fs, ok := h.source.(SnapshotFreshnessSource)
 	if !ok {
-		return "", nil
+		return "", nil, nil
 	}
-	at := fs.SnapshotGeneratedAt()
+	at, stale, partial := fs.SnapshotState()
 	if at.IsZero() {
-		return "", nil
+		return "", nil, nil
 	}
-	stale := fs.SnapshotStale()
-	return at.UTC().Format(time.RFC3339), &stale
+	return at.UTC().Format(time.RFC3339), &stale, &partial
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -155,6 +155,13 @@ type NoisyNeighborListResponse struct {
 	// cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
 	SnapshotGeneratedAt string `json:"snapshot_generated_at,omitempty"`
 	SnapshotStale       *bool  `json:"snapshot_stale,omitempty"`
+	// SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다
+	// (additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고
+	// snapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라
+	// 이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어
+	// 있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한
+	// query는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.
+	SnapshotPartial *bool `json:"snapshot_partial,omitempty"`
 }
 
 // CrossNodeListResponse 는 /api/v1/cross-node-interference 응답 의 typed 표현 이다 (#119). swaggo 가
@@ -168,6 +175,13 @@ type CrossNodeListResponse struct {
 	// cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
 	SnapshotGeneratedAt string `json:"snapshot_generated_at,omitempty"`
 	SnapshotStale       *bool  `json:"snapshot_stale,omitempty"`
+	// SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다
+	// (additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고
+	// snapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라
+	// 이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어
+	// 있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한
+	// query는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.
+	SnapshotPartial *bool `json:"snapshot_partial,omitempty"`
 }
 
 // ServiceImpactListResponse 는 /api/v1/service-impact 응답의 typed 표현이다 (#148). swaggo 가 본
@@ -181,6 +195,13 @@ type ServiceImpactListResponse struct {
 	// cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
 	SnapshotGeneratedAt string `json:"snapshot_generated_at,omitempty"`
 	SnapshotStale       *bool  `json:"snapshot_stale,omitempty"`
+	// SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다
+	// (additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고
+	// snapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라
+	// 이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어
+	// 있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한
+	// query는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.
+	SnapshotPartial *bool `json:"snapshot_partial,omitempty"`
 }
 
 // CrossLevelListResponse 는 /api/v1/cross-level 응답의 typed 표현이다 (#149). swaggo 가 본 구조체를
@@ -194,6 +215,13 @@ type CrossLevelListResponse struct {
 	// cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
 	SnapshotGeneratedAt string `json:"snapshot_generated_at,omitempty"`
 	SnapshotStale       *bool  `json:"snapshot_stale,omitempty"`
+	// SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다
+	// (additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고
+	// snapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라
+	// 이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어
+	// 있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한
+	// query는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.
+	SnapshotPartial *bool `json:"snapshot_partial,omitempty"`
 }
 
 // ImpactGraphResponse 는 /api/v1/impact-graph 응답의 typed 표현이다 (#151 Phase 1). 그래프는 페어
@@ -209,6 +237,13 @@ type ImpactGraphResponse struct {
 	// cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
 	SnapshotGeneratedAt string `json:"snapshot_generated_at,omitempty"`
 	SnapshotStale       *bool  `json:"snapshot_stale,omitempty"`
+	// SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다
+	// (additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고
+	// snapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라
+	// 이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어
+	// 있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한
+	// query는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.
+	SnapshotPartial *bool `json:"snapshot_partial,omitempty"`
 }
 
 // ImpactGraphSummary 는 그래프 규모 요약이다. dashboard 가 정점 / 엣지 수를 빠르게 파악하게 한다.
@@ -228,6 +263,13 @@ type ImpactPathsResponse struct {
 	// cycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.
 	SnapshotGeneratedAt string `json:"snapshot_generated_at,omitempty"`
 	SnapshotStale       *bool  `json:"snapshot_stale,omitempty"`
+	// SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다
+	// (additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고
+	// snapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라
+	// 이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어
+	// 있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한
+	// query는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.
+	SnapshotPartial *bool `json:"snapshot_partial,omitempty"`
 }
 
 // ImpactPathsSummary 는 경로 / 근원 규모 요약이다.
@@ -346,7 +388,7 @@ func (h *Handler) ListNoisyNeighbors(w http.ResponseWriter, r *http.Request) {
 			Total:  len(filtered),
 		},
 	}
-	resp.SnapshotGeneratedAt, resp.SnapshotStale = h.freshness()
+	resp.SnapshotGeneratedAt, resp.SnapshotStale, resp.SnapshotPartial = h.freshness()
 	apicommon.WriteJSON(w, resp)
 }
 
@@ -441,7 +483,7 @@ func (h *Handler) ListCrossNode(w http.ResponseWriter, r *http.Request) {
 			Total:  len(filtered),
 		},
 	}
-	resp.SnapshotGeneratedAt, resp.SnapshotStale = h.freshness()
+	resp.SnapshotGeneratedAt, resp.SnapshotStale, resp.SnapshotPartial = h.freshness()
 	apicommon.WriteJSON(w, resp)
 }
 
@@ -522,7 +564,7 @@ func (h *Handler) ListServiceImpact(w http.ResponseWriter, r *http.Request) {
 			Total:  len(filtered),
 		},
 	}
-	resp.SnapshotGeneratedAt, resp.SnapshotStale = h.freshness()
+	resp.SnapshotGeneratedAt, resp.SnapshotStale, resp.SnapshotPartial = h.freshness()
 	apicommon.WriteJSON(w, resp)
 }
 
@@ -621,7 +663,7 @@ func (h *Handler) ListCrossLevel(w http.ResponseWriter, r *http.Request) {
 			Total:  len(filtered),
 		},
 	}
-	resp.SnapshotGeneratedAt, resp.SnapshotStale = h.freshness()
+	resp.SnapshotGeneratedAt, resp.SnapshotStale, resp.SnapshotPartial = h.freshness()
 	apicommon.WriteJSON(w, resp)
 }
 
@@ -680,7 +722,7 @@ func (h *Handler) GetImpactGraph(w http.ResponseWriter, r *http.Request) {
 			EdgeCount: len(g.Edges),
 		},
 	}
-	resp.SnapshotGeneratedAt, resp.SnapshotStale = h.freshness()
+	resp.SnapshotGeneratedAt, resp.SnapshotStale, resp.SnapshotPartial = h.freshness()
 	apicommon.WriteJSON(w, resp)
 }
 
@@ -758,6 +800,6 @@ func (h *Handler) ListImpactPaths(w http.ResponseWriter, r *http.Request) {
 			RootCount: len(roots),
 		},
 	}
-	resp.SnapshotGeneratedAt, resp.SnapshotStale = h.freshness()
+	resp.SnapshotGeneratedAt, resp.SnapshotStale, resp.SnapshotPartial = h.freshness()
 	apicommon.WriteJSON(w, resp)
 }
