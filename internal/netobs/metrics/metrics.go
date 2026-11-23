@@ -100,11 +100,15 @@ var (
 		[]string{"stage"},
 	)
 
+	// stageLatencyBuckets는 netobs_stage_latency_seconds의 버킷 경계다. 대기 stage 꼬리 비율 rule이 이 중
+	// 0.524288과 1.048576을 le 라벨로 직접 고르므로 변수로 두고 단위 테스트가 두 경계의 존재를 가드한다.
+	stageLatencyBuckets = prometheus.ExponentialBuckets(1e-6, 2, 25)
+
 	legacyLatencySeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "netobs_stage_latency_seconds",
 			Help:    "Latency of selected kernel stages",
-			Buckets: prometheus.ExponentialBuckets(1e-6, 2, 25),
+			Buckets: stageLatencyBuckets,
 		},
 		[]string{"stage"},
 	)
