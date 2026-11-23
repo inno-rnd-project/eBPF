@@ -123,6 +123,8 @@ type Collector struct {
 	// 의 배수로 설정한다.
 	snapshotAt time.Time
 	staleAfter time.Duration
+	// snapshotPartial은 snapshotAt의 snapshot이 부분 fetch 실패 cycle의 산출물인지다.
+	snapshotPartial bool
 
 	scoreDesc              *prometheus.Desc
 	lagDesc                *prometheus.Desc
@@ -257,7 +259,11 @@ func (c *Collector) Snapshot() []correlation.NoisyNeighbor {
 // Replace 는 reconcile cycle 산출물로 snapshot 을 교체한다. 입력 슬라이스는 호출 후에도 호출자
 // 측에서 수정 가능하도록 내부적으로 복사본을 보관한다. dominant dimension 도 본 시점에 1 회
 // 산정해 캐시에 둬 scrape 마다 Collect 가 재계산하지 않게 한다.
-func (c *Collector) Replace(neighbors []correlation.NoisyNeighbor) {
+//
+// partial은 이 cycle에서 입력 query 일부의
+// fetch가 실패했는지로, 산출 시각과 같은 임계 구역에서 기록해 API의 snapshot_partial이 항상
+// snapshot_generated_at이 가리키는 snapshot을 설명하게 한다.
+func (c *Collector) Replace(neighbors []correlation.NoisyNeighbor, partial bool) {
 	copied := append([]correlation.NoisyNeighbor(nil), neighbors...)
 	dominant := correlation.ComputeDominantDimension(copied)
 	c.mu.Lock()
@@ -266,6 +272,7 @@ func (c *Collector) Replace(neighbors []correlation.NoisyNeighbor) {
 	// #405 snapshot 산출 시각. Replace 는 reconcile 성공 cycle 의 첫 갱신 지점이라 cycle 당 1회
 	// 갱신되고, 실패 cycle 은 Replace 미호출로 시각이 남아 age 가 자란다.
 	c.snapshotAt = time.Now()
+	c.snapshotPartial = partial
 	c.mu.Unlock()
 }
 
@@ -277,23 +284,28 @@ func (c *Collector) SetStaleAfter(d time.Duration) {
 	c.mu.Unlock()
 }
 
-// SnapshotGeneratedAt 은 마지막 성공 reconcile 의 snapshot 산출 시각이다 (#405). 첫 reconcile 전에는
-// zero time 이다. api.SnapshotFreshnessSource 를 만족한다.
-func (c *Collector) SnapshotGeneratedAt() time.Time {
+// SnapshotState는 현재 snapshot의 산출 시각, stale 여부, 부분 입력 여부를 한 번의 락으로 읽는다.
+// api.SnapshotFreshnessSource를 만족한다. 산출 시각은 마지막으로 Replace에 도달한 cycle의 시각이고 첫
+// reconcile 전에는 zero time이다 (#405). stale은 snapshot 나이가 staleAfter를 넘었는지로, staleAfter
+// 미설정 (0) 이나 첫 reconcile 전에는 false다. partial은 그 snapshot을 만든 cycle에서 입력 query 일부의
+// fetch가 실패했는지다. 전체 실패 cycle은 Replace에 닿지 않아 이전 snapshot의 세 값이 그대로 남는다.
+func (c *Collector) SnapshotState() (generatedAt time.Time, stale, partial bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.snapshotAt
+	stale = c.staleAfter > 0 && !c.snapshotAt.IsZero() && time.Since(c.snapshotAt) > c.staleAfter
+	return c.snapshotAt, stale, c.snapshotPartial
 }
 
-// SnapshotStale 은 snapshot 나이가 staleAfter 를 넘었는지다 (#405). staleAfter 미설정 (0) 또는 첫
-// reconcile 전에는 false 다.
+// SnapshotGeneratedAt은 SnapshotState의 산출 시각이다.
+func (c *Collector) SnapshotGeneratedAt() time.Time {
+	at, _, _ := c.SnapshotState()
+	return at
+}
+
+// SnapshotStale은 SnapshotState의 stale 여부다.
 func (c *Collector) SnapshotStale() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.staleAfter <= 0 || c.snapshotAt.IsZero() {
-		return false
-	}
-	return time.Since(c.snapshotAt) > c.staleAfter
+	_, stale, _ := c.SnapshotState()
+	return stale
 }
 
 // ReplaceCrossNode 는 #84 cross-node interference의 snapshot을 교체한다. main 의 reconcileOnce 가
