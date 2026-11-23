@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"netobs/internal/correlation"
 )
@@ -711,6 +713,70 @@ func TestListNoisyNeighbors_ExcludeGoneOptIn(t *testing.T) {
 		}
 		if tc.want == 1 && (resp.Items[0].Suspect.Pod != "live" || resp.Items[0].Rank != 2) {
 			t.Errorf("%q 남은 항목 suspect=%s rank=%d, want live 2", tc.query, resp.Items[0].Suspect.Pod, resp.Items[0].Rank)
+		}
+	}
+}
+
+// freshSource는 snapshot 신선도까지 제공하는 fake다. fakeSource만 쓰면 신선도 인터페이스 미구현 경로다.
+type freshSource struct {
+	fakeSource
+	at             time.Time
+	stale, partial bool
+}
+
+func (f *freshSource) SnapshotState() (time.Time, bool, bool) { return f.at, f.stale, f.partial }
+
+// TestSnapshotFreshnessFields는 snapshot 기반 6개 endpoint가 신선도 세 필드를 함께 싣거나 함께 생략하는지
+// JSON 키 단위로 검증한다. 신선도 미제공 source와 첫 reconcile 전(zero time)에는 세 키가 모두 없고,
+// snapshot이 있으면 snapshot_partial이 false여도 키가 존재해 소비자가 "전체 입력"과 "정보 없음"을
+// 구분한다. 시각은 상대값이라 날짜가 지나도 깨지지 않는다.
+func TestSnapshotFreshnessFields(t *testing.T) {
+	at := time.Now().Add(-time.Minute)
+	sources := []struct {
+		name           string
+		src            SnapshotSource
+		present        bool
+		stale, partial bool
+	}{
+		{"no-freshness-source", &fakeSource{}, false, false, false},
+		{"before-first-reconcile", &freshSource{}, false, false, false},
+		{"full", &freshSource{at: at}, true, false, false},
+		{"partial", &freshSource{at: at, partial: true}, true, false, true},
+		{"stale-partial", &freshSource{at: at, stale: true, partial: true}, true, true, true},
+	}
+	endpoints := map[string]func(*Handler) http.HandlerFunc{
+		"/api/v1/noisy-neighbor":          func(h *Handler) http.HandlerFunc { return h.ListNoisyNeighbors },
+		"/api/v1/cross-node-interference": func(h *Handler) http.HandlerFunc { return h.ListCrossNode },
+		"/api/v1/service-impact":          func(h *Handler) http.HandlerFunc { return h.ListServiceImpact },
+		"/api/v1/cross-level":             func(h *Handler) http.HandlerFunc { return h.ListCrossLevel },
+		"/api/v1/impact-graph":            func(h *Handler) http.HandlerFunc { return h.GetImpactGraph },
+		"/api/v1/impact-paths":            func(h *Handler) http.HandlerFunc { return h.ListImpactPaths },
+	}
+	for _, s := range sources {
+		fake := &fakeSource{}
+		h := NewHandler(s.src, fake, fake, fake, fake)
+		for path, handler := range endpoints {
+			rec := httptest.NewRecorder()
+			handler(h)(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s %s: status=%d", s.name, path, rec.Code)
+			}
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+				t.Fatalf("%s %s: %v", s.name, path, err)
+			}
+			want := map[string]string{}
+			if s.present {
+				want["snapshot_generated_at"] = `"` + at.UTC().Format(time.RFC3339) + `"`
+				want["snapshot_stale"] = strconv.FormatBool(s.stale)
+				want["snapshot_partial"] = strconv.FormatBool(s.partial)
+			}
+			for _, key := range []string{"snapshot_generated_at", "snapshot_stale", "snapshot_partial"} {
+				got, present := raw[key]
+				if w, ok := want[key]; present != ok || string(got) != w {
+					t.Errorf("%s %s: %s=%q (존재 %v) want %q (존재 %v)", s.name, path, key, got, present, w, ok)
+				}
+			}
 		}
 	}
 }

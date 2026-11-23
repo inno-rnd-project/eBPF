@@ -1940,6 +1940,10 @@
                     "description": "SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인\nsnapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패\ncycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.",
                     "type": "string"
                 },
+                "snapshot_partial": {
+                    "description": "SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다\n(additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고\nsnapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라\n이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어\n있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한\nquery는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.",
+                    "type": "boolean"
+                },
                 "snapshot_stale": {
                     "type": "boolean"
                 }
@@ -1960,6 +1964,10 @@
                 "snapshot_generated_at": {
                     "description": "SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인\nsnapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패\ncycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.",
                     "type": "string"
+                },
+                "snapshot_partial": {
+                    "description": "SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다\n(additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고\nsnapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라\n이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어\n있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한\nquery는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.",
+                    "type": "boolean"
                 },
                 "snapshot_stale": {
                     "type": "boolean"
@@ -2724,6 +2732,10 @@
                     "description": "SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인\nsnapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패\ncycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.",
                     "type": "string"
                 },
+                "snapshot_partial": {
+                    "description": "SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다\n(additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고\nsnapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라\n이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어\n있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한\nquery는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.",
+                    "type": "boolean"
+                },
                 "snapshot_stale": {
                     "type": "boolean"
                 },
@@ -2761,6 +2773,10 @@
                 "snapshot_generated_at": {
                     "description": "SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인\nsnapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패\ncycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.",
                     "type": "string"
+                },
+                "snapshot_partial": {
+                    "description": "SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다\n(additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고\nsnapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라\n이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어\n있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한\nquery는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.",
+                    "type": "boolean"
                 },
                 "snapshot_stale": {
                     "type": "boolean"
@@ -3423,6 +3439,10 @@
                     "description": "SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인\nsnapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패\ncycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.",
                     "type": "string"
                 },
+                "snapshot_partial": {
+                    "description": "SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다\n(additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고\nsnapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라\n이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어\n있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한\nquery는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.",
+                    "type": "boolean"
+                },
                 "snapshot_stale": {
                     "type": "boolean"
                 }
@@ -3998,6 +4018,10 @@
                 "snapshot_generated_at": {
                     "description": "SnapshotGeneratedAt 와 SnapshotStale 은 #405 의 신선도 additive 필드다. 이 응답의 원천인\nsnapshot 이 산출된 시각 (RFC3339) 과 stale 판정 (reconcile interval 3배 초과) 으로, 실패\ncycle 이 이어질 때 소비자가 오래된 결과임을 판별한다. 첫 reconcile 전에는 생략된다.",
                     "type": "string"
+                },
+                "snapshot_partial": {
+                    "description": "SnapshotPartial은 이 snapshot을 만든 reconcile cycle에서 입력 query 일부의 fetch가 실패했는지다\n(additive). 부분 실패 cycle도 남은 입력으로 snapshot을 교체해 snapshot_generated_at이 갱신되고\nsnapshot_stale이 false로 남으므로, 부분 입력 산출 여부는 본 필드로 판별한다. cycle 단위 판정이라\n이 응답의 layer와 무관한 query 실패도 true로 반영되고, true인 cycle에서는 항목이 줄거나 비어\n있을 수 있다. pod 소멸 판정용 보조 조회 실패와 페어 수 상한 절단은 포함하지 않는다. 실패한\nquery는 correlation_fetch_errors_total의 query 라벨로 특정하며, 첫 reconcile 전에는 생략된다.",
+                    "type": "boolean"
                 },
                 "snapshot_stale": {
                     "type": "boolean"
