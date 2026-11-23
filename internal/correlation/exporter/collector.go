@@ -131,6 +131,7 @@ type Collector struct {
 	impactMagnitudeDesc    *prometheus.Desc
 	impactPValueDesc       *prometheus.Desc
 	causalStrengthDesc     *prometheus.Desc
+	goneLastSeenDesc       *prometheus.Desc
 	dominantDesc           *prometheus.Desc
 	crossNodeScoreDesc     *prometheus.Desc
 	serviceImpactScoreDesc *prometheus.Desc
@@ -181,6 +182,11 @@ func NewCollector(step time.Duration) *Collector {
 			"#176 의 통합 인과강도. Pearson 강도 (0.5) 와 Granger 유의성 (0.3) 과 effect size 유의성 (0.2) 을 가중합한 0~1 단일 지표로, 운영자가 개별 필드 (score / pvalue / impact_pvalue) 를 종합하지 않고 한 값으로 간섭 여부를 판단한다. 유의성 항은 산정 skip 시 0 으로 처리되어 증거가 많을수록 1 에 가깝다. 산정식과 가중치는 ComputeCausalStrength 가 단일 진실원으로 보유한다.",
 			neighborLabels, nil,
 		),
+		goneLastSeenDesc: prometheus.NewDesc(
+			"correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds",
+			"사라진 pod가 낀 noisy neighbor 페어에서 그 pod가 마지막으로 확인된 시각(unix 초). suspect나 victim pod가 분석 시점에 kube_pod_info에서 사라진 페어에만 emit되며, 값은 사라진 쪽 중 가장 이른 시각이고 창 안에서 확인된 적이 없으면 창 시작 시각이다. 삭제된 pod가 분석 창에 남은 표본으로 순위에 오른 유령 페어를 가리키고, time()에서 빼면 pod가 사라진 뒤의 경과 시간이다. 어느 쪽이 사라졌는지는 /api/v1/noisy-neighbor의 suspect_gone과 victim_gone으로 본다.",
+			neighborLabels, nil,
+		),
 		dominantDesc: prometheus.NewDesc(
 			"correlation_dominant_dimension",
 			"#69 의 victim 단위 dominant dimension. 4 dimension (cpu / gpu / memory / network) 별 max score 를 sum 정규화한 weight 중 가장 큰 dimension 1 종만 emit 된다. 정확 동률 시 dimension enum 사전순 가장 앞 라벨이 채택된다. raw 메트릭이라 latency pressure 와 무관하게 항상 emit 되며 active 시간대 한정 view 는 correlation_dominant_dimension_active:5m recording rule 을 본다.",
@@ -217,6 +223,22 @@ func NewCollector(step time.Duration) *Collector {
 			nil, nil,
 		),
 	}
+}
+
+// goneLastSeen은 사라진 쪽 중 가장 이른 마지막 확인 시각(unix 초)을 돌려준다. 사라진 쪽이 없으면
+// false다.
+func goneLastSeen(n correlation.NoisyNeighbor) (float64, bool) {
+	var ms int64
+	if n.SuspectGone {
+		ms = n.SuspectLastSeenMs
+	}
+	if n.VictimGone && (ms == 0 || n.VictimLastSeenMs < ms) {
+		ms = n.VictimLastSeenMs
+	}
+	if ms <= 0 {
+		return 0, false
+	}
+	return float64(ms) / 1000, true
 }
 
 // Snapshot 은 가장 최근 Replace 가 보관한 NoisyNeighbor 리스트의 안전한 복사본을 반환한다.
@@ -401,6 +423,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.impactMagnitudeDesc
 	ch <- c.impactPValueDesc
 	ch <- c.causalStrengthDesc
+	ch <- c.goneLastSeenDesc
 	ch <- c.dominantDesc
 	ch <- c.crossNodeScoreDesc
 	ch <- c.serviceImpactScoreDesc
@@ -465,6 +488,10 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		// #176 통합 인과강도. 항상 [0,1] 로 산정되어 Top-N 의 모든 페어가 단일 series 를 갖는다 (별도
 		// OK 가드 없음). 운영자가 본 메트릭 하나로 간섭 우선순위를 정렬한다.
 		ch <- prometheus.MustNewConstMetric(c.causalStrengthDesc, prometheus.GaugeValue, n.CausalStrength, labels...)
+		// 사라진 pod가 낀 페어에만 마지막 확인 시각을 emit한다. 정상 상태에서는 시리즈가 없다.
+		if lastSeen, ok := goneLastSeen(n); ok {
+			ch <- prometheus.MustNewConstMetric(c.goneLastSeenDesc, prometheus.GaugeValue, lastSeen, labels...)
+		}
 	}
 	// dominant dimension 은 Replace 시점에 1 회 산정되어 c.dominant 에 캐시된 결과를 그대로 emit
 	// 한다. scrape 마다 victim 단위 dimension max 집계 + sum 정규화 비용을 피해 Collect hot path 가
