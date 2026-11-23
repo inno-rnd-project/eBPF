@@ -94,6 +94,11 @@ spec:
         # 집계하므로 victim_signal 축은 의도적으로 병합된다. score 와 증거가 같은 페어의 서로 다른
         # victim_signal 변형에서 와도 통과하며, 같은 (victim, suspect, dimension) 페어의 인과 증거라는
         # 의미론으로 수용한다 (victim_signal 까지 조인 키에 넣으면 게이트가 과도하게 좁아진다).
+        # 사라진 pod가 낀 페어는 unless로 제외한다. 삭제된 pod는 분석 창에 남은 표본으로 score와
+        # 증거 시리즈가 30분 안팎 계속 emit되어, 롤아웃 직후 이미 사라진 pod를 suspect로 발화했다.
+        # correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds는 사라진 쪽이 있는 페어에만
+        # 있고 판정이 pod 단위라 같은 5라벨 grain의 변형은 판정이 같으므로, 5라벨로 조인해 빼며
+        # $value와 라벨은 그대로다.
         - alert: CorrelationStrongNoisyNeighbor
           expr: |
             (
@@ -115,6 +120,8 @@ spec:
                 ) < 0.05
               )
             )
+            unless on (victim_namespace, victim_pod, suspect_namespace, suspect_pod, resource_dimension)
+            correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds
           for: 10m
           labels:
             severity: warning
