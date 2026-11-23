@@ -781,7 +781,9 @@ paths:
         이 additive 로 병기된다(#383, namespace 미상이면 생략). health_notes 는 health 차원의 산출 불가·비실측
         사유(additive, #430)로 no_cpu_limit_pods(cpu 가 fallback 상수 1.0, CPU limit pod
         없음), no_gpu(GPU 미보유 노드의 정상 결측), scrape_gap(입력 시리즈 소실)을 구분해 담으며, 프론트가 결측 차원을
-        0.00 대신 측정 불가로 렌더하는 근거다. 항목이 없으면 생략된다.'
+        0.00 대신 측정 불가로 렌더하는 근거다. 항목이 없으면 생략된다. suppressed_alerts는 이 노드를 가리키며 firing
+        중이지만 지속성 게이트(ALERT_STATUS_MIN_HOLD, 기본 10m)에 못 미쳐 status 반영이 보류된 alertname
+        목록(additive)으로, status와 status_alerts에는 영향을 주지 않고 보류된 alert가 없으면 생략된다.'
       produces:
       - application/json
       tags:
@@ -2552,6 +2554,19 @@ definitions:
         type: string
       summary:
         type: string
+      suppressed_alerts:
+        description: 'SuppressedAlerts는 이 노드를 가리키며 firing 중이지만 지속성 게이트(ALERT_STATUS_MIN_HOLD,
+          기본
+
+          10m)에 못 미쳐 status 반영이 보류된 alertname 목록이다 (additive). status가 ok인데 alert가
+          떠
+
+          있는 이유를 이 응답만으로 알 수 있게 한다. status, status_basis, status_alerts에는 영향을 주지
+
+          않고, status_alerts에 이미 있는 이름은 싣지 않으며, 보류된 alert가 없으면 생략된다.'
+        type: array
+        items:
+          type: string
       top_pods:
         type: array
         items:

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -488,6 +489,74 @@ func TestSynthesis_GetNode_AlertMinHoldConfigurable(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	if resp.Status != "warn" || resp.StatusBasis != "alert" || len(resp.StatusAlerts) != 1 {
 		t.Errorf("낮춘 hold: status=%q basis=%q alerts=%v want warn/alert/[1건] (age 60s > 30s hold)", resp.Status, resp.StatusBasis, resp.StatusAlerts)
+	}
+}
+
+// TestSynthesis_GetNode_SuppressedAlerts는 지속성 게이트로 보류된 firing alert 이름이
+// suppressed_alerts로 노출되는지 검증한다. 보류분은 status, status_basis, status_alerts를 바꾸지 않고,
+// 같은 alertname의 다른 인스턴스가 게이트를 통과했으면 status_alerts에만 남으며, 보류분이 없으면 JSON
+// 키 자체가 생략된다. age는 time() - ALERTS_FOR_STATE 값이라 wall-clock에 의존하지 않는다.
+func TestSynthesis_GetNode_SuppressedAlerts(t *testing.T) {
+	type alert struct {
+		name, severity, instance string
+		age                      float64 // 음수면 ALERTS_FOR_STATE 표본 없음
+	}
+	cases := []struct {
+		name           string
+		hold           time.Duration
+		alerts         []alert
+		wantStatus     string
+		wantStatusList []string
+		wantSuppressed []string
+	}{
+		{"young-only", 0, []alert{{"B", "critical", "i1", 60}, {"A", "warning", "i1", 30}}, "ok", nil, []string{"A", "B"}},
+		{"sustained-only", 0, []alert{{"A", "warning", "i1", 1200}}, "warn", []string{"A"}, nil},
+		{"mixed-names", 0, []alert{{"A", "warning", "i1", 1200}, {"B", "critical", "i1", 30}}, "warn", []string{"A"}, []string{"B"}},
+		{"same-name-mixed-instances", 0, []alert{{"A", "warning", "i1", 1200}, {"A", "warning", "i2", 30}}, "warn", []string{"A"}, nil},
+		{"age-unknown-fails-open", 0, []alert{{"A", "warning", "i1", -1}}, "warn", []string{"A"}, nil},
+		{"lowered-hold", 30 * time.Second, []alert{{"A", "warning", "i1", 60}}, "warn", []string{"A"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var firing, ages []correlation.InstantSample
+			for _, a := range tc.alerts {
+				kv := []string{"alertname", a.name, "severity", a.severity, "node", "worker1", "instance", a.instance}
+				firing = append(firing, sample(1, kv...))
+				if a.age >= 0 {
+					ages = append(ages, sample(a.age, kv...))
+				}
+			}
+			q := (&fakeQuerier{}).
+				on("node:cpu_pressure_score", sample(0.1, "node", "worker1")).
+				on("node:cpu_health_score", sample(0.95, "node", "worker1")).
+				on("ALERTS_FOR_STATE", ages...).
+				on("ALERTS", firing...)
+			h := NewSynthesisHandler(q, nil, nil)
+			if tc.hold > 0 {
+				h.AlertMinHold = tc.hold
+			}
+			rec := httptest.NewRecorder()
+			h.GetNode(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/worker1", nil))
+			var resp NodeResponse
+			var raw map[string]json.RawMessage
+			_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+			_ = json.Unmarshal(rec.Body.Bytes(), &raw)
+			if resp.Status != tc.wantStatus {
+				t.Errorf("status=%q want %q", resp.Status, tc.wantStatus)
+			}
+			if !reflect.DeepEqual(resp.StatusAlerts, tc.wantStatusList) {
+				t.Errorf("status_alerts=%v want %v", resp.StatusAlerts, tc.wantStatusList)
+			}
+			if !reflect.DeepEqual(resp.SuppressedAlerts, tc.wantSuppressed) {
+				t.Errorf("suppressed_alerts=%v want %v", resp.SuppressedAlerts, tc.wantSuppressed)
+			}
+			if _, present := raw["suppressed_alerts"]; present != (tc.wantSuppressed != nil) {
+				t.Errorf("suppressed_alerts 키 존재=%v want %v", present, tc.wantSuppressed != nil)
+			}
+			if tc.wantStatusList == nil && resp.StatusBasis == "alert" {
+				t.Errorf("보류분만 있는데 status_basis=alert")
+			}
+		})
 	}
 }
 
