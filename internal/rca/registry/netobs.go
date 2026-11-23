@@ -6,9 +6,9 @@ import (
 	"fmt"
 )
 
-// registerNetobs 는 netobs 그룹의 1 종 mapping 을 등록한다. NetObsHighStageLatencyP99 와
-// NetObsHighDropRate 는 victim 식별 라벨 (src_pod 또는 dst_pod) 이 없어 RCA 대상에서 제외했고,
-// NetObsDropBurst 만 5-tuple 라벨 셋을 활용해 primary_drop_flow 를 채운다.
+// registerNetobs는 netobs 그룹의 1종 mapping을 등록한다. NetObsHighStageLatencyP99, NetObsHighDropRate,
+// NetObsHighWaitStageTailRatio는 victim 식별 라벨(src_pod 또는 dst_pod)이 없어 RCA 대상에서 제외했고,
+// NetObsDropBurst만 5-tuple 라벨 셋을 활용해 primary_drop_flow를 채운다.
 func registerNetobs(r *Registry) {
 	r.register("NetObsDropBurst", mapNetObsDropBurst)
 }
