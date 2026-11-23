@@ -27,6 +27,7 @@ type incidentInfo struct {
 var incidentCatalog = map[string]incidentInfo{
 	// netobs (network observability) 계열
 	"NetObsHighStageLatencyP99":    {"네트워크 stage 지연 급증", "{{node}}의 {{src_namespace}}/{{src_workload}} stage 지연 p99가 임계를 초과함"},
+	"NetObsHighWaitStageTailRatio": {"대기 stage 꼬리 지연 비율 급증", "{{node}}의 {{stage}} stage 이벤트 중 stage 경계를 넘는 지연 비율이 평소보다 높아짐"},
 	"NetObsHighDropRate":           {"네트워크 drop rate 급증", "{{node}}에서 {{drop_category}} 계열 packet drop rate가 임계를 초과함"},
 	"NetObsDropBurst":              {"5-tuple drop burst", "{{src_namespace}}/{{src_pod}} 연결에서 packet drop이 집중 발생함"},
 	"NetObsHighRetransmissionRate": {"TCP 재전송률 급증", "{{node}}의 {{src_namespace}}/{{src_workload}} TCP 재전송률이 임계를 초과함"},

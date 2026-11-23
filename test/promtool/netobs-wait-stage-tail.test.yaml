@@ -1,0 +1,221 @@
+# netobs-wait-stage-tail.test.yaml은 대기 stage(ack_wait, rcv_app, connect) 꼬리 지연 비율 rule과
+# NetObsHighWaitStageTailRatio의 동작을 검증한다. 단기 시나리오는 발화, 희소 게이트, stage별 경계,
+# 대상 stage 범위, 카운터 리셋, 유휴 구간, 음수 clamp를, 장기 시나리오는 중앙값에 의한 만성 억제와
+# 이력 1일 가드를, 공백 시나리오는 하루 넘는 수집 공백 뒤의 가드를 단정한다. rule_files는
+# make test-prometheus-rules가 추출해 마운트하는 gpuobs.yaml이다.
+rule_files:
+  - gpuobs.yaml
+evaluation_interval: 1m
+tests:
+  # 단기 시나리오: 발화, 게이트, stage별 경계, 대상 stage 범위, 카운터 리셋
+  - interval: 1m
+    input_series:
+      # n1 rcv_app: 60m부터 3%(0.1/s)가 0.524288s를 넘어 for 10m 뒤 발화
+      - series: 'netobs_stage_latency_seconds_count{node="n1",stage="rcv_app"}'
+        values: '0+200x180'
+      - series: 'netobs_stage_latency_seconds_bucket{node="n1",stage="rcv_app",le="0.524288"}'
+        values: '0+200x60 12194+194x119'
+      # n2 connect: 비율 50%지만 꼬리 0.005/s로 게이트 0.01/s 미만이라 미발화
+      - series: 'netobs_stage_latency_seconds_count{node="n2",stage="connect"}'
+        values: '0+0.6x180'
+      - series: 'netobs_stage_latency_seconds_bucket{node="n2",stage="connect",le="0.524288"}'
+        values: '0+0.3x180'
+      # n3 ack_wait: 10%가 0.524~1.048s에 있어 ack_wait 경계 1.048576s 미만이라 미발화
+      - series: 'netobs_stage_latency_seconds_count{node="n3",stage="ack_wait"}'
+        values: '0+200x180'
+      - series: 'netobs_stage_latency_seconds_bucket{node="n3",stage="ack_wait",le="0.524288"}'
+        values: '0+180x180'
+      - series: 'netobs_stage_latency_seconds_bucket{node="n3",stage="ack_wait",le="1.048576"}'
+        values: '0+200x180'
+      # n4 ack_wait: 60m부터 10%가 1.048576s를 넘어 발화
+      - series: 'netobs_stage_latency_seconds_count{node="n4",stage="ack_wait"}'
+        values: '0+200x180'
+      - series: 'netobs_stage_latency_seconds_bucket{node="n4",stage="ack_wait",le="1.048576"}'
+        values: '0+200x60 12180+180x119'
+      # n5 to_veth: 50%가 경계를 넘어도 대상 stage가 아니라 시리즈 미산출
+      - series: 'netobs_stage_latency_seconds_count{node="n5",stage="to_veth"}'
+        values: '0+200x180'
+      - series: 'netobs_stage_latency_seconds_bucket{node="n5",stage="to_veth",le="0.524288"}'
+        values: '0+100x180'
+      # n6 connect: 100m부터 꼬리 0.015/s(1.5%)로 게이트 0.01/s 위라 발화 (게이트가 0.02/s였다면 미발화)
+      - series: 'netobs_stage_latency_seconds_count{node="n6",stage="connect"}'
+        values: '0+60x180'
+      - series: 'netobs_stage_latency_seconds_bucket{node="n6",stage="connect",le="0.524288"}'
+        values: '0+60x100 6059.1+59.1x79'
+      # n7 rcv_app: 90m에 agent 재시작(카운터 리셋), 전부 빠른 이벤트라 비율 0 유지
+      - series: 'netobs_stage_latency_seconds_count{node="n7",stage="rcv_app"}'
+        values: '0+200x90 0+200x89'
+      - series: 'netobs_stage_latency_seconds_bucket{node="n7",stage="rcv_app",le="0.524288"}'
+        values: '0+200x90 0+200x89'
+      # n8 rcv_app: 꼬리 0.8%(0.027/s)로 비율 임계 1% 미만이라 미발화
+      - series: 'netobs_stage_latency_seconds_count{node="n8",stage="rcv_app"}'
+        values: '0+200x180'
+      - series: 'netobs_stage_latency_seconds_bucket{node="n8",stage="rcv_app",le="0.524288"}'
+        values: '0+198.4x180'
+      # n9 rcv_app: 61~121m 유휴(분모 0)라 그 구간에는 비율 시리즈 부재
+      - series: 'netobs_stage_latency_seconds_count{node="n9",stage="rcv_app"}'
+        values: '0+200x60 12000+0x60 12000+200x59'
+      - series: 'netobs_stage_latency_seconds_bucket{node="n9",stage="rcv_app",le="0.524288"}'
+        values: '0+200x60 12000+0x60 12000+200x59'
+      # n10 rcv_app: 101m에 버킷이 count보다 10 더 늘어도(scrape 불일치) 꼬리 발생률은 0으로 clamp
+      - series: 'netobs_stage_latency_seconds_count{node="n10",stage="rcv_app"}'
+        values: '0+200x180'
+      - series: 'netobs_stage_latency_seconds_bucket{node="n10",stage="rcv_app",le="0.524288"}'
+        values: '0+200x100 20210+200x79'
+    alert_rule_test:
+      # 꼬리 비율이 1%를 넘는 시점은 n4가 61m, n1이 62m다. for 10m이면 71m에 n4만, 72m부터 n1도
+      # 발화한다. 70m 미발화가 for 9m 이하를, 71m의 n4 단독 발화가 for 11m 이상을 걸러 낸다
+      - alertname: NetObsHighWaitStageTailRatio
+        eval_time: 70m
+        exp_alerts: []
+      - alertname: NetObsHighWaitStageTailRatio
+        eval_time: 71m
+        exp_alerts:
+          - exp_labels: {severity: warning, component: netobs, node: n4, stage: ack_wait}
+            exp_annotations:
+              summary: "netobs wait stage tail ratio over 1% (node=n4 stage=ack_wait)"
+              description: "10% of ack_wait events on node n4 exceeded the stage bound (rcv_app and connect 0.524288s, ack_wait 1.048576s) over the last 5 minutes and has stayed above 1% for 10 minutes, while the 7-day median of this node and stage stays under 1%. The node-level series includes host traffic."
+      - alertname: NetObsHighWaitStageTailRatio
+        eval_time: 74m
+        exp_alerts:
+          - exp_labels: {severity: warning, component: netobs, node: n1, stage: rcv_app}
+            exp_annotations:
+              summary: "netobs wait stage tail ratio over 1% (node=n1 stage=rcv_app)"
+              description: "3% of rcv_app events on node n1 exceeded the stage bound (rcv_app and connect 0.524288s, ack_wait 1.048576s) over the last 5 minutes and has stayed above 1% for 10 minutes, while the 7-day median of this node and stage stays under 1%. The node-level series includes host traffic."
+          - exp_labels: {severity: warning, component: netobs, node: n4, stage: ack_wait}
+            exp_annotations:
+              summary: "netobs wait stage tail ratio over 1% (node=n4 stage=ack_wait)"
+              description: "10% of ack_wait events on node n4 exceeded the stage bound (rcv_app and connect 0.524288s, ack_wait 1.048576s) over the last 5 minutes and has stayed above 1% for 10 minutes, while the 7-day median of this node and stage stays under 1%. The node-level series includes host traffic."
+      - alertname: NetObsHighWaitStageTailRatio
+        eval_time: 130m
+        exp_alerts:
+          - exp_labels: {severity: warning, component: netobs, node: n1, stage: rcv_app}
+            exp_annotations:
+              summary: "netobs wait stage tail ratio over 1% (node=n1 stage=rcv_app)"
+              description: "3% of rcv_app events on node n1 exceeded the stage bound (rcv_app and connect 0.524288s, ack_wait 1.048576s) over the last 5 minutes and has stayed above 1% for 10 minutes, while the 7-day median of this node and stage stays under 1%. The node-level series includes host traffic."
+          - exp_labels: {severity: warning, component: netobs, node: n4, stage: ack_wait}
+            exp_annotations:
+              summary: "netobs wait stage tail ratio over 1% (node=n4 stage=ack_wait)"
+              description: "10% of ack_wait events on node n4 exceeded the stage bound (rcv_app and connect 0.524288s, ack_wait 1.048576s) over the last 5 minutes and has stayed above 1% for 10 minutes, while the 7-day median of this node and stage stays under 1%. The node-level series includes host traffic."
+          - exp_labels: {severity: warning, component: netobs, node: n6, stage: connect}
+            exp_annotations:
+              summary: "netobs wait stage tail ratio over 1% (node=n6 stage=connect)"
+              description: "1.5% of connect events on node n6 exceeded the stage bound (rcv_app and connect 0.524288s, ack_wait 1.048576s) over the last 5 minutes and has stayed above 1% for 10 minutes, while the 7-day median of this node and stage stays under 1%. The node-level series includes host traffic."
+    promql_expr_test:
+      - expr: round(node:netobs_wait_stage_tail_ratio:5m, 0.0001)
+        eval_time: 120m
+        exp_samples:
+          - {labels: '{node="n1",stage="rcv_app"}', value: 0.03}
+          - {labels: '{node="n2",stage="connect"}', value: 0.5}
+          - {labels: '{node="n3",stage="ack_wait"}', value: 0}
+          - {labels: '{node="n4",stage="ack_wait"}', value: 0.1}
+          - {labels: '{node="n6",stage="connect"}', value: 0.015}
+          - {labels: '{node="n7",stage="rcv_app"}', value: 0}
+          - {labels: '{node="n8",stage="rcv_app"}', value: 0.008}
+          - {labels: '{node="n10",stage="rcv_app"}', value: 0}
+      - expr: node:netobs_wait_stage_tail_ratio:5m{node="n9"}
+        eval_time: 100m
+        exp_samples: []
+      - expr: node:netobs_wait_stage_tail:rate5m{node="n10"}
+        eval_time: 103m
+        exp_samples:
+          - {labels: 'node:netobs_wait_stage_tail:rate5m{node="n10",stage="rcv_app"}', value: 0}
+      - expr: round(node:netobs_wait_stage_tail:rate5m{node="n2"}, 0.0001)
+        eval_time: 120m
+        exp_samples:
+          - {labels: '{node="n2",stage="connect"}', value: 0.005}
+      - expr: max_over_time(node:netobs_wait_stage_tail_ratio:5m{node="n7"}[2h])
+        eval_time: 175m
+        exp_samples:
+          - {labels: '{node="n7",stage="rcv_app"}', value: 0}
+      # 이력 1일 미만이면 7일 중앙값을 산출하지 않는다
+      - expr: node:netobs_wait_stage_tail_ratio:median7d
+        eval_time: 175m
+        exp_samples: []
+
+  # 장기 시나리오: 만성 억제, 이력 1일 가드, baseline 확보 후 발화, 중앙값의 분위수와 창
+  - interval: 1m
+    input_series:
+      # c1 rcv_app: 처음부터 3% 상시라 이력 1일 전에는 발화하고 1일 이후에는 7일 중앙값 3%로 억제
+      - series: 'netobs_stage_latency_seconds_count{node="c1",stage="rcv_app"}'
+        values: '0+200x1560'
+      - series: 'netobs_stage_latency_seconds_bucket{node="c1",stage="rcv_app",le="0.524288"}'
+        values: '0+194x1560'
+      # c2 rcv_app: 1500m까지 정상이고 이후 3%라 중앙값 0으로 억제 없이 발화
+      - series: 'netobs_stage_latency_seconds_count{node="c2",stage="rcv_app"}'
+        values: '0+200x1560'
+      - series: 'netobs_stage_latency_seconds_bucket{node="c2",stage="rcv_app",le="0.524288"}'
+        values: '0+200x1500 300194+194x59'
+      # c3 rcv_app: 이력의 30%(0~450m)만 3%이고 나머지는 정상이다가 1500m부터 5시간 3%. 중앙값이 0이라
+      # 사건 후반(1790m)에도 계속 발화한다. 분위수를 높이거나 창을 1시간으로 줄이면 사건이 스스로를
+      # 억제해 이 단정이 깨진다
+      - series: 'netobs_stage_latency_seconds_count{node="c3",stage="rcv_app"}'
+        values: '0+200x1800'
+      - series: 'netobs_stage_latency_seconds_bucket{node="c3",stage="rcv_app",le="0.524288"}'
+        values: '0+194x450 87500+200x1049 297494+194x299'
+      # c4 rcv_app: 이력의 70%(0~1050m)가 3%이고 1050~1400m만 정상이다가 다시 3%. 중앙값이 3%라
+      # 억제된다. 분위수를 낮추면 중앙값이 0이 되어 이 단정이 깨진다
+      - series: 'netobs_stage_latency_seconds_count{node="c4",stage="rcv_app"}'
+        values: '0+200x1800'
+      - series: 'netobs_stage_latency_seconds_bucket{node="c4",stage="rcv_app",le="0.524288"}'
+        values: '0+194x1050 203900+200x349 273894+194x399'
+    alert_rule_test:
+      - alertname: NetObsHighWaitStageTailRatio
+        eval_time: 1380m
+        exp_alerts:
+          - exp_labels: {severity: warning, component: netobs, node: c1, stage: rcv_app}
+            exp_annotations:
+              summary: "netobs wait stage tail ratio over 1% (node=c1 stage=rcv_app)"
+              description: "3% of rcv_app events on node c1 exceeded the stage bound (rcv_app and connect 0.524288s, ack_wait 1.048576s) over the last 5 minutes and has stayed above 1% for 10 minutes, while the 7-day median of this node and stage stays under 1%. The node-level series includes host traffic."
+      - alertname: NetObsHighWaitStageTailRatio
+        eval_time: 1470m
+        exp_alerts: []
+      - alertname: NetObsHighWaitStageTailRatio
+        eval_time: 1540m
+        exp_alerts:
+          - exp_labels: {severity: warning, component: netobs, node: c2, stage: rcv_app}
+            exp_annotations:
+              summary: "netobs wait stage tail ratio over 1% (node=c2 stage=rcv_app)"
+              description: "3% of rcv_app events on node c2 exceeded the stage bound (rcv_app and connect 0.524288s, ack_wait 1.048576s) over the last 5 minutes and has stayed above 1% for 10 minutes, while the 7-day median of this node and stage stays under 1%. The node-level series includes host traffic."
+          - exp_labels: {severity: warning, component: netobs, node: c3, stage: rcv_app}
+            exp_annotations:
+              summary: "netobs wait stage tail ratio over 1% (node=c3 stage=rcv_app)"
+              description: "3% of rcv_app events on node c3 exceeded the stage bound (rcv_app and connect 0.524288s, ack_wait 1.048576s) over the last 5 minutes and has stayed above 1% for 10 minutes, while the 7-day median of this node and stage stays under 1%. The node-level series includes host traffic."
+      - alertname: NetObsHighWaitStageTailRatio
+        eval_time: 1790m
+        exp_alerts:
+          - exp_labels: {severity: warning, component: netobs, node: c3, stage: rcv_app}
+            exp_annotations:
+              summary: "netobs wait stage tail ratio over 1% (node=c3 stage=rcv_app)"
+              description: "3% of rcv_app events on node c3 exceeded the stage bound (rcv_app and connect 0.524288s, ack_wait 1.048576s) over the last 5 minutes and has stayed above 1% for 10 minutes, while the 7-day median of this node and stage stays under 1%. The node-level series includes host traffic."
+    promql_expr_test:
+      - expr: round(node:netobs_wait_stage_tail_ratio:median7d, 0.0001)
+        eval_time: 1540m
+        exp_samples:
+          - {labels: '{node="c1",stage="rcv_app"}', value: 0.03}
+          - {labels: '{node="c2",stage="rcv_app"}', value: 0}
+          - {labels: '{node="c3",stage="rcv_app"}', value: 0}
+          - {labels: '{node="c4",stage="rcv_app"}', value: 0.03}
+      - expr: round(node:netobs_wait_stage_tail_ratio:median7d{node="c3"}, 0.0001)
+        eval_time: 1790m
+        exp_samples:
+          - {labels: '{node="c3",stage="rcv_app"}', value: 0}
+
+  # 공백 시나리오: 2시간 동안 3% 상시였던 node가 약 27시간 수집 공백 뒤 같은 상태로 돌아온다. 가드 창이
+  # [6d] offset 1d라 공백 전 이력으로 중앙값이 바로 산출되어 억제된다. 가드를 [1h] offset 1d처럼 좁히면
+  # 창이 공백 안에 떨어져 중앙값이 없어지고 만성 상태가 발화한다
+  - interval: 1m
+    input_series:
+      - series: 'netobs_stage_latency_seconds_count{node="g1",stage="rcv_app"}'
+        values: '0+200x120 _x1600 400000+200x60'
+      - series: 'netobs_stage_latency_seconds_bucket{node="g1",stage="rcv_app",le="0.524288"}'
+        values: '0+194x120 _x1600 388000+194x60'
+    alert_rule_test:
+      - alertname: NetObsHighWaitStageTailRatio
+        eval_time: 1760m
+        exp_alerts: []
+    promql_expr_test:
+      - expr: round(node:netobs_wait_stage_tail_ratio:median7d{node="g1"}, 0.0001)
+        eval_time: 1760m
+        exp_samples:
+          - {labels: '{node="g1",stage="rcv_app"}', value: 0.03}
