@@ -71,6 +71,38 @@ func TestEnricher_CgroupScannerFallback(t *testing.T) {
 	}
 }
 
+// TestEnricher_ResolveCgroupScannedIgnoresHints는 ResolveCgroupScanned가 ringbuf 힌트 캐시를 보지 않고
+// 스캐너 테이블로만 귀속하는지 검증한다. 힌트로만 pod에 묶인 호스트 cgroup은 ResolveCgroup에서는
+// 풀리지만 ResolveCgroupScanned에서는 풀리지 않아야 한다.
+func TestEnricher_ResolveCgroupScannedIgnoresHints(t *testing.T) {
+	e := NewEnricher(nil)
+	if _, ok := e.ResolveCgroupScanned(42); ok {
+		t.Fatalf("스캐너 미주입인데 ok=true")
+	}
+
+	pod := kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ns1", PodName: "p1", PodUID: "u1", NodeName: "n1"}
+	const hostCgroup = 7
+	e.rememberCgroupHint(hostCgroup, pod, time.Now())
+	if _, ok := e.ResolveCgroup(hostCgroup); !ok {
+		t.Fatalf("전제 실패: 힌트로 학습한 cgroup이 ResolveCgroup에서 안 풀림")
+	}
+
+	sc := NewCgroupScanner(nil, "n1", "/nonexistent")
+	table := map[uint64]kube.PodIdentity{42: pod}
+	sc.table.Store(&table)
+	e.SetCgroupScanner(sc)
+
+	if id, ok := e.ResolveCgroupScanned(42); !ok || id.PodUID != "u1" {
+		t.Errorf("스캐너 테이블 id=%+v ok=%v want u1", id, ok)
+	}
+	if _, ok := e.ResolveCgroupScanned(hostCgroup); ok {
+		t.Errorf("힌트로만 학습한 cgroup이 ResolveCgroupScanned에서 풀림")
+	}
+	if _, ok := e.ResolveCgroupScanned(0); ok {
+		t.Errorf("cgroup 0인데 ok=true")
+	}
+}
+
 // TestCgroupScanner_NilResolver 는 resolver 미주입 시 scan 이 panic 없이 no-op 인지 검증한다.
 func TestCgroupScanner_NilResolver(t *testing.T) {
 	sc := NewCgroupScanner(nil, "n1", "/nonexistent")

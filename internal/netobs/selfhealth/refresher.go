@@ -72,6 +72,10 @@ type Maps struct {
 	RecvStarts    *cebpf.Map
 	UdpRcvStarts  *cebpf.Map
 	ConnectStarts *cebpf.Map
+	// PodRetrans는 재전송 누적 맵이다. accumulator라 점유율 경보 대상은 아니며 재전송이 있었던
+	// (cgroup, kind)가 얼마나 쌓였는지 보도록 편입한다. live entry evict는 점유율이 아니라 loader의
+	// CPU 수 기반 크기 산정(podRetransMaxEntries)으로 막는다.
+	PodRetrans *cebpf.Map
 }
 
 // NewRefresher 는 production 경로의 refresher 를 만든다. starts 와 pod_bytes 두 map 의 sizer 구성
@@ -101,6 +105,7 @@ func NewRefresher(m Maps) (*Refresher, error) {
 		{"recv_starts", m.RecvStarts},
 		{"connect_starts", m.ConnectStarts},
 		{"udp_rcv_starts", m.UdpRcvStarts},
+		{"pod_retrans", m.PodRetrans},
 	}
 	for _, o := range optional {
 		if o.m == nil {
