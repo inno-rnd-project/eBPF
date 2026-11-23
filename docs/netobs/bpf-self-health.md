@@ -51,5 +51,6 @@ retry 정책은 linear backoff `500ms`, max retries `3`회, 전체 budget `5s` �
 - 영구 실패 식별: `netobs_bpf_program_loaded{symbol="X"} == 0` 가 5분 지속되고 `netobs_bpf_program_attach_total{program="X",result="failure"} > 0` 이 함께 hit 되면 영구 실패. `attach_retry_total` 의 reason 라벨로 분기.
 - transient flap 해석: `netobs_bpf_program_loaded{symbol="X"} == 1` 이지만 `netobs_bpf_program_attach_retry_total{program="X"} > 0` 이면 retry 후 성공한 flap. root cause 추적 필요 하지만 즉시 대응 우선순위 는 낮음.
 - retry budget 소진 후 next step: required program 의 경우 agent 가 fail-close (crash). optional program 의 경우 agent 는 계속 동작 하지만 해당 receive-path / drop-path 메트릭이 부재. 운영자는 본 메트릭 fan-out 가시화 로 어느 워크로드 신호 가 빠졌는지 식별.
-- required vs optional 분기: `tcp_sendmsg` / `tcp_sendmsg_ret` 2 종 만 required 이고 나머지 19종은 optional. required 실패 시 ObsAgentDown alert 가 발화 (agent 자체 crash 라 본 메트릭은 emit 도달 불가).
+- program 라벨 접미 규약: kprobe는 심볼 이름 그대로, kretprobe는 `<symbol>_ret`, raw tracepoint는 `<tracepoint>_tp`를 쓴다. `tcp_retransmit_skb`(kprobe 이벤트)와 `tcp_retransmit_skb_tp`(재전송 세그먼트 카운터)처럼 같은 이름의 kprobe와 tracepoint가 공존해도 라벨이 겹치지 않는다
+- required vs optional 분기: `tcp_sendmsg` / `tcp_sendmsg_ret` 2종만 required이고 나머지는 optional. required 실패 시 ObsAgentDown alert 가 발화 (agent 자체 crash 라 본 메트릭은 emit 도달 불가).
 - fake symbol 시뮬 절차: dev cluster 에서 `NETOBS_BPF_FAKE_ATTACH_SYMBOLS=__netobs_nonexistent_probe` env 를 daemonset 에 patch 후 rollout 하면 fake symbol attach 시도가 자연 실패 해 `attach_total{result="failure"}` 와 `attach_retry_total{reason="symbol_not_found"}` 메트릭이 발화. env unset 후 rollout 으로 시뮬 종료. `test/perf/bpf-self-health/verify.sh` 가 본 시뮬 흐름을 자동화 한다.
