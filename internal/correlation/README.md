@@ -215,6 +215,7 @@ make deploy-correlation-prod
 
 - `correlation_noisy_neighbor_score{victim_namespace, victim_pod, victim_pod_uid, suspect_namespace, suspect_pod, suspect_pod_uid, resource_dimension, rank}`: Pearson 상관계수 최대 절대값. 0 ~ 1 사이.
 - `correlation_noisy_neighbor_lag_seconds{...동일 라벨...}`: 최대 절대값이 잡힌 lag 의 초 단위 환산. 양수면 suspect 가 victim latency 를 선행하는 인과 방향.
+- `correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds{...동일 라벨...}`: suspect나 victim pod가 분석 시점에 `kube_pod_info`에서 사라진 페어에만 emit되는 그 pod의 마지막 확인 시각(unix 초). 값은 사라진 쪽 중 가장 이른 시각이고(창 안에서 확인된 적이 없으면 창 시작) 정상 상태에서는 시리즈가 없다.
 - `correlation_reconcile_duration_seconds`: 마지막 reconcile cycle 의 walltime.
 - `correlation_reconcile_pairs_total`: `Correlate` 산출 페어의 누적 합계.
 - `correlation_reconcile_neighbors_total`: `SelectTopN` 채택 후 emit 된 noisy neighbor 엔트리의 누적 합계.
@@ -306,6 +307,8 @@ kubectl rollout restart deployment -n ebpf-project correlation-exporter
 - Grafana `correlation-overview` 대시보드에서 두 라벨로 drill down 해 lag_seconds 방향 (양수면 suspect 가 victim 을 선행) 을 점검
 - 원본 시계열은 `kubectl port-forward` 로 Prometheus 에 접근해 `pod:<dimension>_score:5m{src_pod="<suspect>"}` 와 victim latency p99 를 같은 1 시간 윈도우로 비교
 - 본 패키지의 1 회성 재현은 `./bin/correlation-debug -window 1h -extra-metric 'pod:<dimension>_score:5m{src_pod="<suspect>"}'` 형태로 수행
+
+사라진 pod가 낀 페어는 이 alert에서 제외된다. 삭제된 pod는 분석 창에 남은 표본으로 30분 안팎 계속 순위에 오르므로, `correlation_noisy_neighbor_gone_pod_last_seen_timestamp_seconds`가 있는 페어는 경보 대상이 아니다. 판정은 `kube_pod_info`의 (namespace, pod)별 마지막 표본이 전체 최신 표본보다 2분 이상 앞서거나 분석 창 안에 아예 없는지로 하므로, kube-state-metrics가 관측 대상 namespace를 모두 수집해야 한다. 같은 판정을 `/api/v1/noisy-neighbor` 항목의 `suspect_gone`과 `victim_gone`으로 확인하고 `exclude_gone=true`로 그런 항목을 뺀 목록을 받는다. kube-state-metrics 조회가 실패하거나 결과가 비거나 2분 넘게 지연되면 판정을 건너뛰어 모든 페어가 경보 대상으로 남는다. 판정은 pod 이름 단위라 같은 이름으로 재생성된 pod(StatefulSet)의 이전 인스턴스는 표시하지 않으며, `/api/v1/gpu-rca`와 `/api/v1/events`는 이 판정을 반영하지 않는다.
 
 #### CorrelationExporterStalled
 
