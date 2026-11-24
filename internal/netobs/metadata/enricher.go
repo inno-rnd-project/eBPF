@@ -237,6 +237,10 @@ func (e *Enricher) lookupCgroupHint(cgroupID uint64, now time.Time) (kube.PodIde
 	return kube.PodIdentity{}, false
 }
 
+// loopbackIfindex는 lo의 ifindex다. 커널이 모든 netns에서 lo를 1번으로 만들기 때문에 pod의 lo와
+// 호스트의 lo가 같은 번호를 쓴다. 힌트 키로 쓰면 pod와 호스트가 섞이므로 학습하지 않는다.
+const loopbackIfindex uint32 = 1
+
 func (e *Enricher) lookupIfindexHint(ifindex uint32, now time.Time) (kube.PodIdentity, bool) {
 	if ifindex == 0 {
 		return kube.PodIdentity{}, false
@@ -271,7 +275,7 @@ func (e *Enricher) rememberIfindexHint(ifindex uint32, id kube.PodIdentity, now 
 	// hostNetwork pod 의 이벤트에 실리는 ifindex 는 전용 veth 가 아니라 노드 전체가 공유하는 host
 	// 인터페이스라, 힌트로 학습하면 kubelet 등 host 프로세스 트래픽까지 이 pod 로 오귀속된다 (#321).
 	// cgroup 힌트는 pod 고유 식별이라 그대로 학습한다.
-	if ifindex == 0 || !id.IsPod() || id.HostNetwork {
+	if ifindex == 0 || ifindex == loopbackIfindex || !id.IsPod() || id.HostNetwork {
 		return
 	}
 

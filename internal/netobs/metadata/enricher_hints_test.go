@@ -190,6 +190,35 @@ func hintStep(e *Enricher, ev types.Event, src, dst kube.PodIdentity, now time.T
 	return src, dst
 }
 
+// TestRuntimeHints_LoopbackIfindexNotShared는 pod가 lo로 보낸 이벤트 뒤에 호스트 프로세스가 lo로 보낸
+// 이벤트가 그 pod로 귀속되지 않는지 검증한다. lo는 모든 netns에서 ifindex 1이라, 힌트로 학습되면
+// 호스트의 loopback 트래픽이 pod가 되고 이어서 호스트 cgroup 힌트까지 학습된다. 스캐너가 없는
+// 구성에서도 같아야 한다.
+func TestRuntimeHints_LoopbackIfindexNotShared(t *testing.T) {
+	for _, withScanner := range []bool{true, false} {
+		e, pod := newHintTestEnricher(withScanner)
+		now := time.Now()
+		unresolved := kube.PodIdentity{IdentityClass: kube.IdentityClassUnresolved}
+
+		hintStep(e, types.Event{Stage: types.StageToDevQ, CgroupID: 0xa1, Ifindex: 1}, pod, unresolved, now)
+		if _, ok := e.runtimeByIfindex[1]; ok {
+			t.Errorf("scanner=%v: loopback ifindex가 힌트로 학습됨", withScanner)
+		}
+		src, _ := hintStep(e, types.Event{Stage: types.StageToDevQ, CgroupID: hintTestHostCgroup, Ifindex: 1}, unresolved, unresolved, now)
+		if src.IsPod() {
+			t.Errorf("scanner=%v: 호스트의 loopback 이벤트가 pod %s로 귀속됨", withScanner, src.PodName)
+		}
+		// 수신 방향의 inbound device가 lo인 경우도 같다.
+		_, dst := hintStep(e, types.Event{Stage: types.StageRcvDemux, CgroupID: hintTestHostCgroup, SkbIif: 1}, unresolved, unresolved, now)
+		if dst.IsPod() {
+			t.Errorf("scanner=%v: 호스트의 loopback 수신 이벤트가 pod %s로 귀속됨", withScanner, dst.PodName)
+		}
+		if _, ok := e.ResolveCgroup(hintTestHostCgroup); ok {
+			t.Errorf("scanner=%v: 호스트 cgroup이 pod로 풀림", withScanner)
+		}
+	}
+}
+
 // TestRuntimeHints_ScannerDisablesHints는 스캐너가 있으면 cgroup·ifindex 힌트를 학습하지도 쓰지도
 // 않는지 검증한다. 호스트 netns의 인터페이스 번호(eth0의 ifindex 2)가 pod로 학습돼 있어도 스캐너가
 // 모르는 cgroup의 이벤트, 곧 호스트 프로세스의 이벤트는 pod가 되지 않아야 한다.
