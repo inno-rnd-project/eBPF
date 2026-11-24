@@ -8,6 +8,7 @@ package podbytes
 
 import (
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,6 +27,8 @@ const errLogMinInterval = time.Minute
 // 본 인터페이스를 만족하며 단위 테스트에서는 가짜 구현으로 대체 가능하다.
 type PodResolver interface {
 	ResolveCgroup(cgroupID uint64) (kube.PodIdentity, bool)
+	// ResolveCgroupScanned는 cgroup 스캐너 테이블로만 푼다. 스캐너가 없으면 항상 miss다.
+	ResolveCgroupScanned(cgroupID uint64) (kube.PodIdentity, bool)
 }
 
 // direction과 layer 라벨 값 매핑. BPF의 enum 값을 사람이 읽는 라벨 문자열로 변환한다.
@@ -74,6 +77,12 @@ type Collector struct {
 	bytesDesc   *prometheus.Desc
 	packetsDesc *prometheus.Desc
 
+	// known은 한 번이라도 스캐너가 pod로 푼 cgroup_id다. 컨테이너가 재시작하면 옛 cgroup이 더는 풀리지
+	// 않는데, 그 누적분을 빼면 pod 합계가 줄어 Prometheus가 counter reset으로 읽는다. 같은 pod의
+	// 다른 cgroup이 살아 있는 동안은 옛 cgroup의 누적분을 합계에 유지한다. mu가 보호한다.
+	mu    sync.Mutex
+	known map[uint64]kube.PodIdentity
+
 	// lastCPUErrLogNs / lastIterErrLogNs는 PossibleCPU / iter.Err 실패를 errLogMinInterval 간격으로
 	// 로그하기 위한 최근 로그 unix nano 타임스탬프다. 무한 throttle 없이 운영자가 silent skip 원인을
 	// 파악할 수 있도록 한다.
@@ -89,6 +98,7 @@ func New(resolver PodResolver, node string, enabled bool) *Collector {
 		resolver: resolver,
 		node:     node,
 		enabled:  enabled,
+		known:    make(map[uint64]kube.PodIdentity),
 		bytesDesc: prometheus.NewDesc(
 			"netobs_pod_bytes_total",
 			"Bytes transferred per source pod by direction (egress/ingress) and observation layer (nic/l4)",
@@ -143,48 +153,71 @@ type aggValue struct {
 	pod     kube.PodIdentity
 }
 
-// mergeEntry는 BPF map iteration의 한 entry를 agg 맵에 합산한다. Collect 본문에서 BPF map iterator
-// 호출과 PERCPU 슬라이스 길이 처리만 떼어내, 합산/Pod 해상/중복 처리 로직을 단위 테스트로 격리해
-// 가드 가능하도록 분리한 헬퍼다. perCPU에는 cilium/ebpf가 LRU_PERCPU_HASH lookup에서 반환한 CPU 수
-// 만큼의 슬롯이 들어오고, 모든 슬롯을 합산해 단일 (cgroup_id, direction, layer) entry의 누적치를
-// 만든다. resolver가 cgroup_id를 Pod로 해상하지 못한 entry는 skip되며, 같은 PodUID로 해상되는 다른
-// cgroup_id entry가 이미 agg에 있으면 동일 (direction, layer, podUID) 키 아래로 합쳐 Prometheus가
-// 동일 라벨 셋 중복 시리즈로 거부하는 상황을 방지한다.
-func mergeEntry(
-	agg map[aggKey]*aggValue,
-	key ebpfx.NetObsNetobsPodBytesKey,
-	perCPU []ebpfx.NetObsNetobsPodBytesValue,
-	resolver PodResolver,
-) {
-	var totalBytes, totalPackets uint64
+// mapEntry는 BPF 맵 iterate 결과 한 건이다. bytes와 packets는 PERCPU 슬롯을 모두 더한 값이다.
+type mapEntry struct {
+	key     ebpfx.NetObsNetobsPodBytesKey
+	bytes   uint64
+	packets uint64
+}
+
+func newMapEntry(key ebpfx.NetObsNetobsPodBytesKey, perCPU []ebpfx.NetObsNetobsPodBytesValue) mapEntry {
+	e := mapEntry{key: key}
 	for _, v := range perCPU {
-		totalBytes += v.Bytes
-		totalPackets += v.Packets
+		e.bytes += v.Bytes
+		e.packets += v.Packets
 	}
+	return e
+}
 
-	pod, ok := resolver.ResolveCgroup(key.CgroupId)
-	if !ok || !pod.IsPod() {
-		return
-	}
-	// PodUID 빈 문자열 entry는 aggKey가 동일 빈 키로 충돌해 서로 다른 Pod의 bytes/packets가
-	// 첫 entry의 라벨 (namespace, podName) 로 새서 나갈 위험이 있다. informer race로 IsPod=true /
-	// PodUID="" 가 가능한 짧은 윈도우가 있어 가드한다. 다음 scrape에서 enricher가 UID를 채우면
-	// 자연 emit된다.
-	if pod.PodUID == "" {
-		return
-	}
-
-	ak := aggKey{direction: key.Direction, layer: key.Layer, podUID: pod.PodUID}
+func addEntry(agg map[aggKey]*aggValue, e mapEntry, pod kube.PodIdentity) {
+	ak := aggKey{direction: e.key.Direction, layer: e.key.Layer, podUID: pod.PodUID}
 	if existing, ok := agg[ak]; ok {
-		existing.bytes += totalBytes
-		existing.packets += totalPackets
+		existing.bytes += e.bytes
+		existing.packets += e.packets
 		return
 	}
-	agg[ak] = &aggValue{
-		bytes:   totalBytes,
-		packets: totalPackets,
-		pod:     pod,
+	agg[ak] = &aggValue{bytes: e.bytes, packets: e.packets, pod: pod}
+}
+
+// aggregate는 entry를 pod 단위로 합산한다. 호출자가 mu를 잡아야 한다. pod로 풀린 entry는 바로 합산하고,
+// 스캐너가 푼 cgroup이면 known에 기억한다. UID가 빈 pod(informer race의 짧은 창)는 서로 다른 pod가 같은
+// 빈 키로 합쳐지므로 풀리지 않은 것으로 본다. 풀리지 않은 entry는 known에 있고 그 pod가 이번 scrape에서
+// 다른 cgroup으로 살아 있음이 확인될 때만 합산한다. 컨테이너가 재시작해도 pod 합계가 줄지 않고, pod가
+// 사라지면 모든 cgroup이 풀리지 않아 시리즈가 감소 없이 사라진다. 스캐너가 없는 구성에서 힌트로만 풀린
+// cgroup은 기억하지 않는다. 힌트는 추론이라 틀릴 수 있고, 기억하면 틀린 귀속이 힌트 만료 뒤에도 남는다.
+func (c *Collector) aggregate(entries []mapEntry) map[aggKey]*aggValue {
+	agg := make(map[aggKey]*aggValue)
+	live := make(map[string]struct{})
+	inMap := make(map[uint64]struct{}, len(entries))
+	var unresolved []mapEntry
+	for _, e := range entries {
+		inMap[e.key.CgroupId] = struct{}{}
+		pod, ok := c.resolver.ResolveCgroup(e.key.CgroupId)
+		if !ok || !pod.IsPod() || pod.PodUID == "" {
+			unresolved = append(unresolved, e)
+			continue
+		}
+		if _, scanned := c.resolver.ResolveCgroupScanned(e.key.CgroupId); scanned {
+			c.known[e.key.CgroupId] = pod
+		}
+		live[pod.PodUID] = struct{}{}
+		addEntry(agg, e, pod)
 	}
+	for _, e := range unresolved {
+		pod, ok := c.known[e.key.CgroupId]
+		if !ok {
+			continue
+		}
+		if _, alive := live[pod.PodUID]; alive {
+			addEntry(agg, e, pod)
+		}
+	}
+	for cg := range c.known {
+		if _, ok := inMap[cg]; !ok {
+			delete(c.known, cg)
+		}
+	}
+	return agg
 }
 
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
@@ -208,11 +241,11 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	var key ebpfx.NetObsNetobsPodBytesKey
 	values := make([]ebpfx.NetObsNetobsPodBytesValue, ncpus)
 
-	agg := make(map[aggKey]*aggValue)
+	var entries []mapEntry
 
 	iter := m.Iterate()
 	for iter.Next(&key, &values) {
-		mergeEntry(agg, key, values, c.resolver)
+		entries = append(entries, newMapEntry(key, values))
 	}
 	// cilium/ebpf 공식 doc: "You must check the result of Err afterwards." 반복 중 ErrIterationAborted
 	// 등으로 조기 종료된 경우 부분 결과를 emit하면 Prometheus가 직전 scrape보다 작은 counter 값을
@@ -223,6 +256,9 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 
+	c.mu.Lock()
+	agg := c.aggregate(entries)
+	c.mu.Unlock()
 	c.emitFromAgg(agg, ch)
 }
 
