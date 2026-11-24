@@ -64,8 +64,29 @@ var (
 
 func init() {
 	// controller-runtime 의 manager 가 노출 하는 metrics endpoint 에 본 메트릭 4 종 을 함께 등록.
-	ctrlmetrics.Registry.MustRegister(ReconcileTotal, ActiveCount, LastRunStatus, ReconcileTimestamp, NamespaceDeniedTotal)
+	ctrlmetrics.Registry.MustRegister(ReconcileTotal, ActiveCount, LastRunStatus, ReconcileTimestamp, NamespaceDeniedTotal, NamespaceRBACAllowed, NamespaceRBACCheckTotal)
 }
+
+// NamespaceRBACAllowed와 NamespaceRBACCheckTotal은 NamespaceRBACChecker의 산출이다. 라벨 이름을
+// namespace가 아니라 allowed_namespace로 둔 것은 PodMonitor가 scrape 대상의 namespace 라벨을 붙이면서
+// 메트릭 자체의 namespace 라벨이 exported_namespace로 밀려나기 때문이다. gauge는 지금 상태를, counter는
+// review 실패처럼 gauge에 남지 않는 결과를 포함한 누계를 보여 준다.
+var (
+	NamespaceRBACAllowed = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "loadscenario_namespace_rbac_allowed",
+			Help: "Latest SelfSubjectAccessReview result for the controller ServiceAccount's pods permission, per INJECTOR_ALLOWED_TARGET_NAMESPACES entry and verb (create, delete, get, list): 1 allowed, 0 denied (no Role/RoleBinding grants it, or the namespace does not exist; runs that spawn in or target the namespace fail with forbidden). Checked at startup and every 10 minutes by every replica. A failed review keeps the previous value. Diagnostic only, it does not gate reconciles.",
+		},
+		[]string{"allowed_namespace", "verb"},
+	)
+	NamespaceRBACCheckTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "loadscenario_namespace_rbac_check_total",
+			Help: "SelfSubjectAccessReview results of the allowed-namespace pods permission check, one per reviewed namespace and verb. result=denied means the allow-list and the namespace Roles disagree; result=error means the review call failed and the check failed open.",
+		},
+		[]string{"result"},
+	)
+)
 
 // NamespaceDeniedTotal 은 #420 의 허용 namespace 게이트 거부 계수다. scope 라벨은 target
 // (spec.targetRef.namespace 거부) / spawn (CR namespace, 즉 부하 pod 생성 위치 거부) 으로

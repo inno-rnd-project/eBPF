@@ -168,6 +168,13 @@ func runControllerMode() int {
 		return 1
 	}
 
+	// 허용 namespace의 RBAC 정합 검사. leader 선출과 무관하게 기동 직후와 주기적으로 돌며, 허용 목록에는
+	// 있는데 Role이 없는 namespace를 gauge와 로그로 드러낸다. 진단용이라 실패해도 기동을 막지 않는다.
+	if err := mgr.Add(&injectorcontroller.NamespaceRBACChecker{Client: k8sClient, Namespaces: cfg.AllowedNamespaces}); err != nil {
+		log.Printf("controller: add rbac check runnable: %v", err)
+		return 1
+	}
+
 	log.Printf("controller: starting manager (leader_election=%t metrics=%s)", cfg.LeaderElection, cfg.MetricsAddr)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		log.Printf("controller: manager exit: %v", err)
