@@ -171,7 +171,7 @@ func main() {
 	go kr.Start(ctx)
 
 	// #228 cgroup id 역매핑 스캐너. TCP 트래픽 없이 UDP 만 쓰는 pod 는 ringbuf 힌트가 학습되지 않아
-	// cgroup 귀속이 실패하므로, informer 의 노드 pod 목록과 host cgroup2 inode 스캔으로 폴백 테이블을
+	// cgroup 귀속이 실패하므로, informer 의 노드 pod 목록과 host cgroup2 inode 스캔으로 역매핑 테이블을
 	// 주기 재구성한다. #297 스캐너는 "cgroup id == 디렉터리 inode" 동일성 (cgroup2 전제) 에 의존해
 	// v1/hybrid 노드에서 조용히 빈 테이블로 degrade 하므로, 시작 시 statfs magic 으로 1 회 검증해
 	// 비활성 사유를 로그와 netobs_cgroup2_available gauge 로 노출하고 스캐너를 기동하지 않는다.

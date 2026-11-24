@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"netobs/internal/kube"
+	"netobs/internal/netobs/types"
 )
 
 // dirIno 는 테스트 헬퍼다. 디렉터리 inode 를 돌려준다.
@@ -49,8 +50,8 @@ func TestPodCgroupInodes(t *testing.T) {
 	}
 }
 
-// TestEnricher_CgroupScannerFallback 는 힌트 캐시 미스 시 스캐너 테이블로 폴백해 귀속이 성립하는지
-// 검증한다. 스캐너가 nil 이거나 테이블 미스면 기존과 동일하게 실패한다.
+// TestEnricher_CgroupScannerFallback은 힌트가 없는 cgroup이 스캐너 테이블로 풀리는지 검증한다.
+// 스캐너가 nil이거나 테이블 미스면 실패한다.
 func TestEnricher_CgroupScannerFallback(t *testing.T) {
 	e := NewEnricher(nil)
 	if _, ok := e.ResolveCgroup(42); ok {
@@ -197,5 +198,36 @@ func TestScanSockets(t *testing.T) {
 	}
 	if gotScanned != 2 {
 		t.Errorf("scanned=%d want 2 (판별 성공: device-plugin 과 web)", gotScanned)
+	}
+}
+
+// TestEnricher_ScannerAuthoritativeOverHints는 스캐너가 있으면 cgroup 귀속이 스캐너 테이블만으로
+// 정해지는지 검증한다. 호스트 프로세스 cgroup이 힌트로 pod에 묶여 있어도 누적 맵 조회와 이벤트 경로
+// 모두 그 힌트를 따르지 않아야 한다. 스캐너가 없으면 종전대로 힌트를 쓴다.
+func TestEnricher_ScannerAuthoritativeOverHints(t *testing.T) {
+	e := NewEnricher(nil)
+	pod := kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ns1", PodName: "p1", PodUID: "u1", NodeName: "n1"}
+	const podCgroup, hostCgroup = 42, 7
+	now := time.Now()
+	e.rememberCgroupHint(hostCgroup, pod, now)
+	if _, ok := e.ResolveCgroup(hostCgroup); !ok {
+		t.Fatalf("스캐너가 없는데 힌트로 학습한 cgroup이 안 풀림")
+	}
+
+	sc := NewCgroupScanner(nil, "n1", "/nonexistent")
+	table := map[uint64]kube.PodIdentity{podCgroup: pod}
+	sc.table.Store(&table)
+	e.SetCgroupScanner(sc)
+
+	if id, ok := e.ResolveCgroup(podCgroup); !ok || id.PodUID != "u1" {
+		t.Errorf("스캐너 테이블 id=%+v ok=%v want u1", id, ok)
+	}
+	if _, ok := e.ResolveCgroup(hostCgroup); ok {
+		t.Errorf("스캐너가 모르는 호스트 cgroup이 힌트로 풀림")
+	}
+	node := kube.PodIdentity{IdentityClass: kube.IdentityClassNode, NodeName: "n1"}
+	src, _ := e.applyRuntimeHints(types.Event{Stage: types.StageSendmsgRet, CgroupID: hostCgroup}, "192.168.1.10", "10.0.0.9", node, kube.PodIdentity{}, now)
+	if !src.IsNode() {
+		t.Errorf("호스트 cgroup 이벤트의 src가 힌트로 pod가 됨: %+v", src)
 	}
 }

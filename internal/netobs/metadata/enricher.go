@@ -50,13 +50,13 @@ type Enricher struct {
 	runtimeSweepEvery time.Duration
 	lastRuntimeSweep  time.Time
 
-	// cgroupScanner 는 #228 의 cgroup id 역매핑 폴백이다. ringbuf 힌트가 학습되지 않은 (TCP 트래픽
-	// 없는 UDP 전용) pod 의 cgroup 귀속을 informer 기반 inode 스캔 테이블로 해석한다. nil 이면 기존
-	// 동작 그대로 힌트 캐시만 쓴다.
+	// cgroupScanner는 #228의 cgroup id 역매핑 스캐너다. 주입되면 cgroup 귀속의 유일한 근거가 되어
+	// cgroup·ifindex 힌트를 학습하지도 조회하지도 않는다. nil이면(cgroup v1/hybrid, kube 메타데이터
+	// 비활성) ringbuf 이벤트로 학습한 힌트로 귀속한다.
 	cgroupScanner *CgroupScanner
 }
 
-// SetCgroupScanner 는 #228 폴백 스캐너를 주입한다. startup 시 1회 호출한다. 메트릭 서버 goroutine 이
+// SetCgroupScanner 는 #228 역매핑 스캐너를 주입한다. startup 시 1회 호출한다. 메트릭 서버 goroutine 이
 // 주입보다 먼저 기동해 그 사이 scrape 가 lookupCgroupHint 로 이 필드를 읽으므로 (#358), 다른 필드와
 // 동일하게 e.mu 로 보호해 동기화 규약을 통일한다.
 func (e *Enricher) SetCgroupScanner(c *CgroupScanner) {
@@ -182,20 +182,17 @@ func (e *Enricher) maybeSweepRuntimeLocked(now time.Time) {
 	e.lastRuntimeSweep = now
 }
 
-// ResolveCgroup은 외부 컴포넌트 (예: podbytes collector) 가 BPF map의 cgroup_id 키를 Pod 정체성으로
-// 풀어쓸 때 사용하는 thread-safe lookup이다. 내부적으로는 lookupCgroupHint를 호출해 동일 runtime 캐시를
-// 공유하므로 event 흐름으로 학습된 cgroup_id 매핑이 즉시 활용된다. 캐시 miss는 (zero, false) 반환이며
-// 호출자가 다음 scrape에서 자연 재시도하는 패턴을 가정한다.
+// ResolveCgroup은 누적 맵 collector(podbytes, flow)가 BPF 맵의 cgroup_id 키를 pod로 풀 때 쓰는
+// thread-safe lookup이다. 스캐너가 있으면 스캐너 테이블만 보고, 스캐너가 없으면(cgroup v1, kube
+// 메타데이터 비활성) ringbuf 이벤트로 학습한 힌트를 본다. miss는 (zero, false)이며 호출자는 다음
+// scrape에서 다시 시도한다.
 func (e *Enricher) ResolveCgroup(cgroupID uint64) (kube.PodIdentity, bool) {
 	return e.lookupCgroupHint(cgroupID, time.Now())
 }
 
-// ResolveCgroupScanned는 cgroup 역매핑 스캐너 테이블만 조회한다. 스캐너는 informer의 pod 목록과
-// kubepods cgroup inode로만 테이블을 만들어 호스트 프로세스 cgroup(system.slice 등)을 pod로 풀지
-// 않는다. ResolveCgroup은 ringbuf 이벤트로 학습한 힌트를 먼저 보는데, 그 힌트는 IP나 ifindex로
-// 추론한 identity에서도 학습되어 호스트 소켓이 pod로 귀속될 수 있다. 소켓 cgroup을 그대로 키로 쓰는
-// 누적 맵(pod_retrans)은 추론이 필요 없으므로 이 메서드로 귀속을 스캐너에 한정한다. 스캐너가
-// 없으면(cgroup v1, kube 메타데이터 비활성) 항상 (zero, false)다.
+// ResolveCgroupScanned는 cgroup 역매핑 스캐너 테이블만 조회한다. ResolveCgroup과 달리 스캐너가
+// 없으면 힌트로 넘어가지 않고 항상 (zero, false)다. 소켓 cgroup을 그대로 키로 쓰는 누적 맵
+// (pod_retrans)이 추론된 귀속을 한 건도 받지 않도록 할 때 쓴다.
 func (e *Enricher) ResolveCgroupScanned(cgroupID uint64) (kube.PodIdentity, bool) {
 	if cgroupID == 0 {
 		return kube.PodIdentity{}, false
@@ -207,6 +204,12 @@ func (e *Enricher) ResolveCgroupScanned(cgroupID uint64) (kube.PodIdentity, bool
 		return kube.PodIdentity{}, false
 	}
 	return scanner.Lookup(cgroupID)
+}
+
+func (e *Enricher) hasCgroupScanner() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.cgroupScanner != nil
 }
 
 func (e *Enricher) lookupCgroupHint(cgroupID uint64, now time.Time) (kube.PodIdentity, bool) {
@@ -221,15 +224,15 @@ func (e *Enricher) lookupCgroupHint(cgroupID uint64, now time.Time) (kube.PodIde
 	scanner := e.cgroupScanner
 	e.mu.RUnlock()
 
+	// 스캐너는 informer의 pod 목록과 kubepods cgroup inode로만 테이블을 만들어 호스트 프로세스
+	// cgroup을 pod로 풀지 않는다. 힌트는 flow 캐시나 ifindex로 추론한 identity에서도 학습되므로, 한
+	// 번 잘못 학습되면 호스트 cgroup의 모든 이벤트와 누적 맵 entry가 그 pod로 귀속된다. 그래서
+	// 스캐너가 있으면 힌트를 보지 않는다. ringbuf 이벤트가 없는 UDP 전용 pod(#228)도 스캐너로 풀린다.
+	if scanner != nil {
+		return scanner.Lookup(cgroupID)
+	}
 	if ok && now.Sub(entry.LastSeen) <= e.runtimeTTL {
 		return entry.ID, true
-	}
-	// #228 힌트 미학습 (TCP 트래픽 없는 UDP 전용 pod) 폴백. 스캐너 테이블은 informer 와 host cgroup
-	// inode 스캔으로 주기 재구성되어 ringbuf 이벤트 없이도 귀속이 성립한다.
-	if scanner != nil {
-		if id, ok := scanner.Lookup(cgroupID); ok {
-			return id, true
-		}
 	}
 	return kube.PodIdentity{}, false
 }
@@ -287,13 +290,20 @@ func (e *Enricher) applyRuntimeHints(ev types.Event, srcIP, dstIP string, src, d
 	// 흐름의 src (송신자) 이고, #65 의 receive path 에서는 BPF 측 src/dst swap 으로 dst (수신자) 가
 	// 된다. 따라서 stage direction 으로 분기해 힌트를 올바른 쪽 endpoint 에 적재해야 외부 peer 가
 	// 송신자인 ingress event 에서 src 가 수신 Pod 로 잘못 덮여써지는 회귀를 피할 수 있다.
+	//
+	// 스캐너가 있으면 ifindex 힌트를 쓰지 않는다. BPF는 모든 이벤트에 소켓이나 현재 태스크의
+	// cgroup_id를 싣고, 스캐너가 그 cgroup을 모르면 호스트 프로세스의 이벤트다. 호스트 netns의
+	// 인터페이스 번호는 pod 패킷이 그 인터페이스를 지날 때도 pod로 학습되므로, ifindex로 넘어가면
+	// 호스트 트래픽이 pod로 귀속된다. 스캐너가 없으면 cgroup_id로 호스트를 가릴 수 없어 종전대로
+	// ifindex를 쓴다.
+	useIfindex := !e.hasCgroupScanner()
 	if types.StageDirection(ev.Stage) == "ingress" {
 		if !dst.IsPod() {
 			if id, ok := e.lookupCgroupHint(ev.CgroupID, now); ok {
 				dst = kube.StrongerIdentity(dst, kube.WithObservedIP(id, dstIP))
 			}
 		}
-		if !dst.IsPod() && ev.Ifindex != 0 {
+		if useIfindex && !dst.IsPod() && ev.Ifindex != 0 {
 			if id, ok := e.lookupIfindexHint(ev.Ifindex, now); ok {
 				dst = kube.StrongerIdentity(dst, kube.WithObservedIP(id, dstIP))
 			}
@@ -304,7 +314,7 @@ func (e *Enricher) applyRuntimeHints(ev types.Event, srcIP, dstIP string, src, d
 				src = kube.StrongerIdentity(src, kube.WithObservedIP(id, srcIP))
 			}
 		}
-		if !src.IsPod() && ev.Ifindex != 0 {
+		if useIfindex && !src.IsPod() && ev.Ifindex != 0 {
 			if id, ok := e.lookupIfindexHint(ev.Ifindex, now); ok {
 				src = kube.StrongerIdentity(src, kube.WithObservedIP(id, srcIP))
 			}
@@ -312,7 +322,7 @@ func (e *Enricher) applyRuntimeHints(ev types.Event, srcIP, dstIP string, src, d
 	}
 	// SkbIif 는 skb 의 inbound device ifindex 라 ingress 에서 의미가 있고 egress 에서는 보통 0 이다.
 	// 두 케이스 모두 dst 측 hint 로만 쓰이며 direction 분기와 무관하게 동작이 일관된다.
-	if !dst.IsPod() && ev.SkbIif != 0 {
+	if useIfindex && !dst.IsPod() && ev.SkbIif != 0 {
 		if id, ok := e.lookupIfindexHint(ev.SkbIif, now); ok {
 			dst = kube.StrongerIdentity(dst, kube.WithObservedIP(id, dstIP))
 		}
@@ -321,6 +331,10 @@ func (e *Enricher) applyRuntimeHints(ev types.Event, srcIP, dstIP string, src, d
 }
 
 func (e *Enricher) rememberRuntimeHints(ev types.Event, src, dst kube.PodIdentity, now time.Time) {
+	// 스캐너가 있으면 힌트를 조회하지 않으므로 학습도 하지 않는다.
+	if e.hasCgroupScanner() {
+		return
+	}
 	switch ev.Stage {
 	case types.StageSendmsgRet:
 		if src.IsPod() {
