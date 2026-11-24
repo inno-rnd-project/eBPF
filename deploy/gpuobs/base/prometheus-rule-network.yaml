@@ -2,7 +2,7 @@
 # 단위 diff / 리뷰 가시성 확보 목적이며 그룹 내용과 평가 semantics 는 분리 전과 동일하다. 구
 # PrometheusRule (netobs-gpuobs-correlation) 은 본 5 리소스로 대체되어 배포 시 1회 수동 삭제가
 # 필요하다.
-# 본 파일: network 도메인 recording rule (stage latency 공통 중간 rule 과 파생, egress, drop flow burst, flow 대역폭).
+# 본 파일: network 도메인 recording rule (stage latency 공통 중간 rule 과 파생, egress, drop flow burst, flow 대역폭, 대기 stage 꼬리 비율).
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -174,3 +174,58 @@ spec:
             sum by(protocol, direction) (
               rate(netobs_flow_bytes_total[5m])
             )
+
+    # netobs-gpuobs.wait-stage-tail.recording 그룹은 대기 stage(ack_wait, rcv_app, connect)의 꼬리 지연
+    # 비율을 node 단위로 산출한다. 이 stage들은 지연 ACK 타이머, 앱 수거 대기, 핸드셰이크 왕복에 좌우되어
+    # 정상 p99가 노드마다 최대 백 배 넘게 다르고 버킷 단위로 2배씩 튀므로, p99 임계 대신 "stage별 경계를 넘은
+    # 이벤트의 비율"을 본다. 경계는 histogram 버킷 경계(ExponentialBuckets(1e-6, 2, 25))에 맞춰 보간
+    # 없이 정확히 센다.
+    #   - rcv_app, connect: 0.524288s. connect는 초기 SYN RTO(1s) 전후의 재전송이 있어야 넘고, rcv_app은
+    #     앱이 수신 버퍼를 0.5초 넘게 가져가지 않아야 넘는다
+    #   - ack_wait: 1.048576s. 지연 ACK 상한(200ms)과 워커 노드의 정상 p99(약 0.4~0.5s)를 넘겨 ACK가
+    #     실제로 보류된 경우만 센다
+    # 입력은 pod 라벨이 없는 netobs_stage_latency_seconds라 workload 귀속과 무관하고 host 트래픽을
+    # 포함한다. to_veth는 전송 간격이라 이상 신호로 약해 제외한다. interval 1m은 7일 중앙값 조회 비용을
+    # 줄이면서 lookback(5m) 안에 표본이 항상 있게 하는 값이다.
+    - name: netobs-gpuobs.wait-stage-tail.recording
+      interval: 1m
+      # #412 rule 산출 시리즈 폭주 backstop. 정상 산출은 rule당 node 수 x 3 stage다.
+      limit: 2000
+      rules:
+        # node:netobs_wait_stage_tail:rate5m
+        # stage별 경계를 넘은 이벤트의 초당 발생률이다. count에서 경계 버킷 누적을 빼며, scrape 사이
+        # 미세한 불일치로 음수가 나오지 않게 0으로 clamp한다.
+        - record: node:netobs_wait_stage_tail:rate5m
+          expr: |
+            clamp_min(
+              sum by (node, stage) (rate(netobs_stage_latency_seconds_count{stage=~"rcv_app|connect"}[5m]))
+              - sum by (node, stage) (rate(netobs_stage_latency_seconds_bucket{stage=~"rcv_app|connect", le="0.524288"}[5m])),
+              0
+            )
+            or
+            clamp_min(
+              sum by (node, stage) (rate(netobs_stage_latency_seconds_count{stage="ack_wait"}[5m]))
+              - sum by (node, stage) (rate(netobs_stage_latency_seconds_bucket{stage="ack_wait", le="1.048576"}[5m])),
+              0
+            )
+
+        # node:netobs_wait_stage_tail_ratio:5m
+        # 전체 이벤트 대비 꼬리 이벤트 비율(0~1)이다. 분모가 0인 유휴 구간은 NaN 대신 시리즈 부재로
+        # 두어 7일 중앙값에 NaN이 섞이지 않게 한다.
+        - record: node:netobs_wait_stage_tail_ratio:5m
+          expr: |
+            node:netobs_wait_stage_tail:rate5m
+            / on (node, stage)
+            (sum by (node, stage) (rate(netobs_stage_latency_seconds_count{stage=~"ack_wait|rcv_app|connect"}[5m])) > 0)
+
+        # node:netobs_wait_stage_tail_ratio:median7d
+        # 같은 node와 stage의 직전 7일 꼬리 비율 중앙값이다. alert가 "평소에도 꼬리가 두꺼운" 만성
+        # 상태를 억제하는 데 쓴다. offset 1h로 진행 중인 사건이 자기 baseline을 끌어올리지 않게 하고,
+        # 1일보다 오래된 표본이 있을 때만 산출해 배포 직후나 새 노드에서 한 시간짜리 이력이 사건을
+        # 만성으로 오판해 덮지 않게 한다. 가드 창을 [6d] offset 1d로 두어 하루 넘는 수집 공백 뒤에도
+        # 그 전 이력이 남아 있으면 바로 산출된다.
+        - record: node:netobs_wait_stage_tail_ratio:median7d
+          expr: |
+            quantile_over_time(0.5, node:netobs_wait_stage_tail_ratio:5m[7d] offset 1h)
+            and on (node, stage)
+            present_over_time(node:netobs_wait_stage_tail_ratio:5m[6d] offset 1d)

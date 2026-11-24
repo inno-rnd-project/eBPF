@@ -67,6 +67,7 @@ cluster 의 이상 신호를 4 단계 (`cluster → node → pod → root cause`
 | Alert | severity | label 키 | variable |
 |---|---|---|---|
 | `NetObsHighStageLatencyP99` | warning | `node`, `src_namespace`, `src_workload`, `stage` | `$node` (직접), `$pod` (src_workload 로부터 추정) |
+| `NetObsHighWaitStageTailRatio` | warning | `node`, `stage` | `$node` (직접), stage는 alert label로 확인. 절차는 `docs/netobs/wait-stage-tail-ratio.md` |
 | `NetObsHighDropRate` | warning | `node`, `drop_category`, `src_namespace`, `src_workload` | `$node` (직접), drop_category 는 dashboard panel 의 legend 로 |
 | `NetObsHighRetransmissionRate` | warning | `node`, `src_namespace`, `src_workload` | `$node` (직접) |
 | `GPUObsThrottleActive` | warning | `node`, `gpu_uuid`, `reason` | `$node` (직접), gpu_uuid 는 panel legend |
