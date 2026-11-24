@@ -45,12 +45,12 @@ spec:
         # 안이라 도달 가능하며, 처리 stage의 실측 baseline p99(최대 약 0.014s) 위로 충분한 여유를
         # 둔다. #442 이후 관측 상한은 16.777216s라 0.524288s를 넘는 latency도 포화 없이 구분되어
         # p99 값 자체가 실제 지연을 반영한다(#462 주석 정정).
-        # stage!~ 매처로 대기/간격/네트워크 stage를 제외한다. to_veth(전송 간격)와 ack_wait(지연 ACK
-        # 타이머, 설계상 최대 200~500ms)와 rcv_app(app pickup 대기)과 connect(핸드셰이크 왕복 RTT)은
-        # 로컬 처리 병목이 아니라 트래픽 패턴·TCP 타이머·앱 스케줄링·네트워크 RTT에 좌우되어 정상
-        # 상태에서도 구조적으로 큰 지연을 보여 #362 실측에서 임계 0.4s 발화를 전부 차지했다(전부
-        # to_veth·ack_wait). 이들을 포함하면 임계 0.4s가 상시 오탐이 되므로 처리 병목만 SLO 대상으로
-        # 남긴다.
+        # stage!~ 매처로 대기/네트워크 stage와 to_veth를 제외한다. ack_wait(지연 ACK 타이머, 설계상
+        # 최대 200~500ms)와 rcv_app(app pickup 대기)과 connect(핸드셰이크 왕복 RTT)은 로컬 처리 병목이
+        # 아니라 TCP 타이머·앱 스케줄링·네트워크 RTT에 좌우되어 정상 상태에서도 구조적으로 큰 지연을
+        # 보인다. #362 실측에서 임계 0.4s 발화는 전부 to_veth·ack_wait였다. 그때의 to_veth 고값은
+        # tcp_sendmsg 반환 뒤의 skb와 짝지어진 값이었고 3.4.8부터는 같은 호출의 sendmsg_ret을 넘지
+        # 않는다. to_veth는 to_devq에 veth 한 홉을 더한 구간이라 제외를 유지한다.
         # stage!~ 는 부정 목록이라 새 latency stage 추가 시 SLO 적합성을 재검토해야 부적합 stage가
         # 자동 포함돼 오탐이 되는 것을 막는다 (현재 retrans·drop·sock_teardown 은 latency histogram 을
         # emit 하지 않아 시리즈 부재로 무해). 제외한 stage(ack_wait·rcv_app·connect)의 실제 비정상은

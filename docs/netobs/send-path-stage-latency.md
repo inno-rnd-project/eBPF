@@ -13,6 +13,14 @@
 | `tcp_transmit_skb` | `__tcp_transmit_skb` (entry/ret pair) | 개별 segment transmit entry. TSO/GSO 활성 시 첫 segment 만 측정 |
 | `to_devq` | `__dev_queue_xmit` (kprobe) | NIC queue 진입 직전 까지의 누적 latency |
 
+## `to_devq`와 `to_veth`의 측정 범위
+
+두 stage는 `tcp_sendmsg` 진입부터 `__dev_queue_xmit`이나 `veth_xmit`에 닿기까지의 경과를 재며, 그 호출이 반환하기 전에 닿은 첫 skb만 잰다. 그래서 값이 같은 호출의 `sendmsg_ret`을 넘지 않는다.
+
+`tcp_sendmsg`가 반환한 뒤에 나가는 skb는 재지 않는다. cwnd나 window에 막혀 softirq에서 뒤늦게 나가는 데이터, 같은 소켓의 ACK와 FIN이 여기에 든다. 이런 skb는 sendmsg 진입 시각과 짝지으면 호출의 송신 지연으로 볼 수 없는 초 단위 값이 되고, socket cookie가 0인 소켓끼리는 cookie 가드로 다른 소켓의 skb를 가려내지 못한다. 반환 뒤 skb가 송신 버퍼에서 기다린 시간은 어느 send stage도 재지 않는다. `tcp_write_xmit` stage와 segment 누적 latency(`netobs_send_path_full_latency_seconds`)는 커널 함수의 실행 시간이라 이 대기를 담지 않고, 송신 버퍼 공간이 날 때까지 `tcp_sendmsg`가 막혀 있던 시간만 `sendmsg_ret`에 들어간다.
+
+NIC layer 바이트 누적(`netobs_pod_bytes_total{layer="nic"}`)은 이 제한과 무관하게 종전대로 반환 뒤의 skb도 센다.
+
 ## 6 stage 명세 와의 차이
 
 이슈 #82 본문 의 6 stage 명세 (`syscall_sendmsg`, `tcp_sendmsg`, `tcp_write_xmit`, `ip_queue_xmit`, `dev_queue_xmit`, `driver tx`) 중 본 PR 에서 측정 가능한 자리는 4 stage 다. 다음 stage 는 본 PR 범위 밖이며 follow-up 으로 분리한다.

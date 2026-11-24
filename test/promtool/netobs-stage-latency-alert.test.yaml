@@ -4,7 +4,7 @@
 # 값을 낼 수 없어 기존 임계 1.0s 는 어떤 부하에서도 도달 불가한 dead alert 였다. 수정 임계 0.4s 는
 # 버킷 경계 안이라 도달 가능하며 상한 확대 후에도 유효하다. 본 테스트의 입력 le (0.524288) 는 2^19 x
 # 1e-6 이라 25단계에서도 유효한 경계다. 또 alert 는 stage!~"to_veth|ack_wait|rcv_app|connect" 로 구조적 고값 stage
-# (전송 간격·지연 ACK 타이머·app pickup 대기·핸드셰이크 RTT) 를 제외해 로컬 처리 병목만 대상으로 한다.
+# (to_veth·지연 ACK 타이머·app pickup 대기·핸드셰이크 RTT) 를 제외해 로컬 처리 병목만 대상으로 한다.
 # rule_files 는 make test-prometheus-rules 가 추출해 마운트하는 gpuobs.yaml.
 rule_files:
   - gpuobs.yaml
@@ -67,7 +67,7 @@ tests:
         eval_time: 10m
         exp_samples: []
 
-  # 제외 stage 오탐 가드: 대기 stage(to_veth) 가 천장 포화 + 높은 event rate 여도 alert 가 발화하지
+  # 제외 stage 오탐 가드: 제외 stage(to_veth) 가 천장 포화 + 높은 event rate 여도 alert 가 발화하지
   # 않아야 한다. stage!~ 매처가 없으면 #362 실측처럼 상시 오탐이 되므로 이를 영구 가드한다.
   - interval: 30s
     input_series:

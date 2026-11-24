@@ -857,7 +857,12 @@ int BPF_KPROBE(handle_veth_xmit, struct sk_buff *skb)
     now = bpf_ktime_get_ns();
     latency_us = (__u32)((now - s->ts_ns) / 1000);
 
-    emit_event(s, NETOBS_STAGE_TO_VETH, 0, 0, latency_us, -1, 0, 0);
+    /* tcp_sendmsg가 반환한 뒤에 온 skb는 그 호출의 송신 지연으로 볼 수 없다. 같은 소켓의 ACK·FIN이나
+     * 뒤늦게 나가는 데이터, 또는 cookie가 0인 소켓끼리 가드를 통과한 무관 skb다. sendmsg 진입부터의
+     * 경과를 지연으로 내면 초 단위 꼬리가 생기므로 이벤트를 내지 않는다. seen 플래그와 stash 삭제는
+     * 그대로 둔다. */
+    if (!s->ret_seen)
+        emit_event(s, NETOBS_STAGE_TO_VETH, 0, 0, latency_us, -1, 0, 0);
     s->seen_veth = 1;
 
     if (s->ret_seen && s->seen_devq)
@@ -900,7 +905,10 @@ int BPF_KPROBE(handle_dev_queue_xmit, struct sk_buff *skb)
     now = bpf_ktime_get_ns();
     latency_us = (__u32)((now - s->ts_ns) / 1000);
 
-    emit_event(s, NETOBS_STAGE_TO_DEVQ, 0, 0, latency_us, -1, 0, 0);
+    /* veth_xmit과 같은 이유로 tcp_sendmsg 반환 뒤에는 지연을 내지 않는다. NIC 바이트 누적은 위에서
+     * 이미 끝났다. */
+    if (!s->ret_seen)
+        emit_event(s, NETOBS_STAGE_TO_DEVQ, 0, 0, latency_us, -1, 0, 0);
     s->seen_devq = 1;
 
     if (s->ret_seen && s->seen_veth)
