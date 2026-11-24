@@ -1,0 +1,105 @@
+# injector-namespace-rbac.test.yaml은 LoadScenarioNamespaceRBACMissing의 동작을 검증한다. 권한이 빠진
+# namespace는 for 15m 뒤 namespace당 한 건으로 발화하고, 10분 재검사에서 풀린 일시적 거부와 롤아웃 중
+# 옛 pod에 남은 값은 발화하지 않으며, 재시작으로 시리즈가 잠깐 비어도 발화가 끊기지 않는다. rule_files는 make test-prometheus-rules가 추출해 마운트하는
+# injector.yaml이다.
+rule_files:
+  - injector.yaml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      # ok: 네 verb 모두 허용이라 미발화
+      - series: 'loadscenario_namespace_rbac_allowed{allowed_namespace="ok",verb="create",pod="p1"}'
+        values: '1x40'
+      - series: 'loadscenario_namespace_rbac_allowed{allowed_namespace="ok",verb="delete",pod="p1"}'
+        values: '1x40'
+      - series: 'loadscenario_namespace_rbac_allowed{allowed_namespace="ok",verb="get",pod="p1"}'
+        values: '1x40'
+      - series: 'loadscenario_namespace_rbac_allowed{allowed_namespace="ok",verb="list",pod="p1"}'
+        values: '1x40'
+      # missing: delete와 list 두 verb가 빠져도 namespace당 한 건
+      - series: 'loadscenario_namespace_rbac_allowed{allowed_namespace="missing",verb="create",pod="p1"}'
+        values: '1x40'
+      - series: 'loadscenario_namespace_rbac_allowed{allowed_namespace="missing",verb="delete",pod="p1"}'
+        values: '0x40'
+      - series: 'loadscenario_namespace_rbac_allowed{allowed_namespace="missing",verb="list",pod="p1"}'
+        values: '0x40'
+      # transient: 10분 재검사에서 풀려 for 15m을 채우지 못한다
+      - series: 'loadscenario_namespace_rbac_allowed{allowed_namespace="transient",verb="create",pod="p1"}'
+        values: '0x10 1x30'
+      # rollout: 옛 pod(p0)에 0이 남아 있어도 새 pod(p1)의 1이 가린다
+      - series: 'loadscenario_namespace_rbac_allowed{allowed_namespace="rollout",verb="create",pod="p0"}'
+        values: '0x40'
+      - series: 'loadscenario_namespace_rbac_allowed{allowed_namespace="rollout",verb="create",pod="p1"}'
+        values: '1x40'
+      # restart: 발화 중 컨트롤러 재시작으로 시리즈가 stale이 된 2분(21~22m)에도 발화를 유지한다.
+      # 단순 공백은 instant 조회의 lookback이 메우므로 실제 재시작처럼 stale marker로 끊는다
+      - series: 'loadscenario_namespace_rbac_allowed{allowed_namespace="restart",verb="create",pod="p1"}'
+        values: '0x20 stale stale 0x17'
+      # late: 20분부터 빠져 35분에 발화
+      - series: 'loadscenario_namespace_rbac_allowed{allowed_namespace="late",verb="get",pod="p1"}'
+        values: '1x19 0x20'
+    alert_rule_test:
+      - alertname: LoadScenarioNamespaceRBACMissing
+        eval_time: 14m
+        exp_alerts: []
+      - alertname: LoadScenarioNamespaceRBACMissing
+        eval_time: 15m
+        exp_alerts:
+          - exp_labels: {severity: warning, component: injector, allowed_namespace: missing}
+            exp_annotations:
+              summary: "loadscenario allowed namespace missing is missing pods RBAC"
+              description: "허용 namespace missing에 workload-injector ServiceAccount의 pods 권한(create, delete, get, list 중 하나 이상)이 15분째 없다. 이 namespace에서 생성하거나 대상으로 삼는 run은 forbidden으로 실패한다. loadscenario_namespace_rbac_allowed의 verb 라벨로 빠진 권한을 확인하고 Role과 RoleBinding을 추가하거나 INJECTOR_ALLOWED_TARGET_NAMESPACES에서 namespace를 뺀다."
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/docs/injector/auto-scenarios.md#loadscenarionamespacerbacmissing"
+          - exp_labels: {severity: warning, component: injector, allowed_namespace: restart}
+            exp_annotations:
+              summary: "loadscenario allowed namespace restart is missing pods RBAC"
+              description: "허용 namespace restart에 workload-injector ServiceAccount의 pods 권한(create, delete, get, list 중 하나 이상)이 15분째 없다. 이 namespace에서 생성하거나 대상으로 삼는 run은 forbidden으로 실패한다. loadscenario_namespace_rbac_allowed의 verb 라벨로 빠진 권한을 확인하고 Role과 RoleBinding을 추가하거나 INJECTOR_ALLOWED_TARGET_NAMESPACES에서 namespace를 뺀다."
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/docs/injector/auto-scenarios.md#loadscenarionamespacerbacmissing"
+      # 시리즈가 빈 구간 한가운데(22m)에도 restart가 발화 중이다
+      - alertname: LoadScenarioNamespaceRBACMissing
+        eval_time: 22m
+        exp_alerts:
+          - exp_labels: {severity: warning, component: injector, allowed_namespace: missing}
+            exp_annotations:
+              summary: "loadscenario allowed namespace missing is missing pods RBAC"
+              description: "허용 namespace missing에 workload-injector ServiceAccount의 pods 권한(create, delete, get, list 중 하나 이상)이 15분째 없다. 이 namespace에서 생성하거나 대상으로 삼는 run은 forbidden으로 실패한다. loadscenario_namespace_rbac_allowed의 verb 라벨로 빠진 권한을 확인하고 Role과 RoleBinding을 추가하거나 INJECTOR_ALLOWED_TARGET_NAMESPACES에서 namespace를 뺀다."
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/docs/injector/auto-scenarios.md#loadscenarionamespacerbacmissing"
+          - exp_labels: {severity: warning, component: injector, allowed_namespace: restart}
+            exp_annotations:
+              summary: "loadscenario allowed namespace restart is missing pods RBAC"
+              description: "허용 namespace restart에 workload-injector ServiceAccount의 pods 권한(create, delete, get, list 중 하나 이상)이 15분째 없다. 이 namespace에서 생성하거나 대상으로 삼는 run은 forbidden으로 실패한다. loadscenario_namespace_rbac_allowed의 verb 라벨로 빠진 권한을 확인하고 Role과 RoleBinding을 추가하거나 INJECTOR_ALLOWED_TARGET_NAMESPACES에서 namespace를 뺀다."
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/docs/injector/auto-scenarios.md#loadscenarionamespacerbacmissing"
+      - alertname: LoadScenarioNamespaceRBACMissing
+        eval_time: 34m
+        exp_alerts:
+          - exp_labels: {severity: warning, component: injector, allowed_namespace: missing}
+            exp_annotations:
+              summary: "loadscenario allowed namespace missing is missing pods RBAC"
+              description: "허용 namespace missing에 workload-injector ServiceAccount의 pods 권한(create, delete, get, list 중 하나 이상)이 15분째 없다. 이 namespace에서 생성하거나 대상으로 삼는 run은 forbidden으로 실패한다. loadscenario_namespace_rbac_allowed의 verb 라벨로 빠진 권한을 확인하고 Role과 RoleBinding을 추가하거나 INJECTOR_ALLOWED_TARGET_NAMESPACES에서 namespace를 뺀다."
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/docs/injector/auto-scenarios.md#loadscenarionamespacerbacmissing"
+          - exp_labels: {severity: warning, component: injector, allowed_namespace: restart}
+            exp_annotations:
+              summary: "loadscenario allowed namespace restart is missing pods RBAC"
+              description: "허용 namespace restart에 workload-injector ServiceAccount의 pods 권한(create, delete, get, list 중 하나 이상)이 15분째 없다. 이 namespace에서 생성하거나 대상으로 삼는 run은 forbidden으로 실패한다. loadscenario_namespace_rbac_allowed의 verb 라벨로 빠진 권한을 확인하고 Role과 RoleBinding을 추가하거나 INJECTOR_ALLOWED_TARGET_NAMESPACES에서 namespace를 뺀다."
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/docs/injector/auto-scenarios.md#loadscenarionamespacerbacmissing"
+      - alertname: LoadScenarioNamespaceRBACMissing
+        eval_time: 35m
+        exp_alerts:
+          - exp_labels: {severity: warning, component: injector, allowed_namespace: late}
+            exp_annotations:
+              summary: "loadscenario allowed namespace late is missing pods RBAC"
+              description: "허용 namespace late에 workload-injector ServiceAccount의 pods 권한(create, delete, get, list 중 하나 이상)이 15분째 없다. 이 namespace에서 생성하거나 대상으로 삼는 run은 forbidden으로 실패한다. loadscenario_namespace_rbac_allowed의 verb 라벨로 빠진 권한을 확인하고 Role과 RoleBinding을 추가하거나 INJECTOR_ALLOWED_TARGET_NAMESPACES에서 namespace를 뺀다."
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/docs/injector/auto-scenarios.md#loadscenarionamespacerbacmissing"
+          - exp_labels: {severity: warning, component: injector, allowed_namespace: missing}
+            exp_annotations:
+              summary: "loadscenario allowed namespace missing is missing pods RBAC"
+              description: "허용 namespace missing에 workload-injector ServiceAccount의 pods 권한(create, delete, get, list 중 하나 이상)이 15분째 없다. 이 namespace에서 생성하거나 대상으로 삼는 run은 forbidden으로 실패한다. loadscenario_namespace_rbac_allowed의 verb 라벨로 빠진 권한을 확인하고 Role과 RoleBinding을 추가하거나 INJECTOR_ALLOWED_TARGET_NAMESPACES에서 namespace를 뺀다."
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/docs/injector/auto-scenarios.md#loadscenarionamespacerbacmissing"
+          - exp_labels: {severity: warning, component: injector, allowed_namespace: restart}
+            exp_annotations:
+              summary: "loadscenario allowed namespace restart is missing pods RBAC"
+              description: "허용 namespace restart에 workload-injector ServiceAccount의 pods 권한(create, delete, get, list 중 하나 이상)이 15분째 없다. 이 namespace에서 생성하거나 대상으로 삼는 run은 forbidden으로 실패한다. loadscenario_namespace_rbac_allowed의 verb 라벨로 빠진 권한을 확인하고 Role과 RoleBinding을 추가하거나 INJECTOR_ALLOWED_TARGET_NAMESPACES에서 namespace를 뺀다."
+              runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/docs/injector/auto-scenarios.md#loadscenarionamespacerbacmissing"

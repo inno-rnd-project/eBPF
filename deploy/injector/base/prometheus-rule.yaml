@@ -106,3 +106,26 @@ spec:
             summary: "loadscenario {{ $labels.namespace }}/{{ $labels.loadscenario }} consecutive failures"
             description: "LoadScenario {{ $labels.namespace }}/{{ $labels.loadscenario }} 의 마지막 run 이 error 결과 로 1 시간 이상 지속 되었다. status.conditions 의 Suspended type 으로 자동 suspend 여부 확인 후 부하 정의 또는 target 상태 를 점검 한다."
             runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/docs/injector/auto-scenarios.md#loadscenarioconsecutivefailures"
+
+        # LoadScenarioNamespaceRBACMissing
+        # INJECTOR_ALLOWED_TARGET_NAMESPACES에는 있는데 컨트롤러 ServiceAccount의 pods 권한(create,
+        # delete, get, list 중 하나 이상)이 없는 namespace를 알린다. 허용 목록 게이트는 통과하고 pod
+        # 생성 시점에야 forbidden으로 실패하는 불일치를 run 전에 드러내는 용도다. 안쪽 max는 롤아웃 중
+        # 옛 pod에 남은 값을 새 pod의 값으로 가리고, 바깥 min은 verb가 여럿 빠져도 namespace당 한 건만
+        # 발화하게 한다. 컨트롤러가 10분마다 재검사하므로 for 15m은 일시적 거부를 한 번 재검사한 뒤
+        # 발화하고, Role을 추가하면 재시작 없이 다음 검사에서 해소된다. last_over_time[5m]은 컨트롤러
+        # 재시작이나 롤아웃으로 시리즈가 잠깐 비는 구간을 메워, 발화 중인 alert가 해소됐다가 15분을
+        # 다시 세는 것을 막는다. 대신 허용 목록에서 뺀 namespace는 최대 5분 더 남는다.
+        - alert: LoadScenarioNamespaceRBACMissing
+          expr: |
+            min by (allowed_namespace) (
+              max by (allowed_namespace, verb) (last_over_time(loadscenario_namespace_rbac_allowed[5m]))
+            ) == 0
+          for: 15m
+          labels:
+            severity: warning
+            component: injector
+          annotations:
+            summary: "loadscenario allowed namespace {{ $labels.allowed_namespace }} is missing pods RBAC"
+            description: "허용 namespace {{ $labels.allowed_namespace }}에 workload-injector ServiceAccount의 pods 권한(create, delete, get, list 중 하나 이상)이 15분째 없다. 이 namespace에서 생성하거나 대상으로 삼는 run은 forbidden으로 실패한다. loadscenario_namespace_rbac_allowed의 verb 라벨로 빠진 권한을 확인하고 Role과 RoleBinding을 추가하거나 INJECTOR_ALLOWED_TARGET_NAMESPACES에서 namespace를 뺀다."
+            runbook_url: "https://github.com/inno-rnd-project/eBPF/blob/main/docs/injector/auto-scenarios.md#loadscenarionamespacerbacmissing"

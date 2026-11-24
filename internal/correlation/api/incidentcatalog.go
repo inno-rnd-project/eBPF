@@ -94,11 +94,12 @@ var incidentCatalog = map[string]incidentInfo{
 	"CorrelationExporterPartialFetch":    {"correlation-exporter 부분 fetch 실패", "correlation-exporter의 일부 Prometheus query fetch가 지속 실패해 산출이 부분 입력으로 진행됨"},
 
 	// injector (부하 주입) 계열
-	"InjectorActive":                  {"워크로드 injector 활성", "{{target_namespace}}/{{target_pod}} 대상으로 워크로드 injector가 활성 중임"},
-	"BlastRadiusHigh":                 {"blast radius 과다", "{{target_namespace}}/{{target_pod}} 주입의 영향 범위가 과다함"},
-	"InjectorStuck":                   {"injector 정체", "{{target_namespace}}/{{target_pod}} 대상 injector가 정체됨"},
-	"LoadScenarioReconcilerStalled":   {"loadscenario 컨트롤러 정체", "loadscenario 컨트롤러가 5분 이상 reconcile하지 않음"},
-	"LoadScenarioConsecutiveFailures": {"loadscenario 연속 실패", "{{namespace}}/{{loadscenario}}가 연속 실패함"},
+	"InjectorActive":                   {"워크로드 injector 활성", "{{target_namespace}}/{{target_pod}} 대상으로 워크로드 injector가 활성 중임"},
+	"BlastRadiusHigh":                  {"blast radius 과다", "{{target_namespace}}/{{target_pod}} 주입의 영향 범위가 과다함"},
+	"InjectorStuck":                    {"injector 정체", "{{target_namespace}}/{{target_pod}} 대상 injector가 정체됨"},
+	"LoadScenarioReconcilerStalled":    {"loadscenario 컨트롤러 정체", "loadscenario 컨트롤러가 5분 이상 reconcile하지 않음"},
+	"LoadScenarioConsecutiveFailures":  {"loadscenario 연속 실패", "{{namespace}}/{{loadscenario}}가 연속 실패함"},
+	"LoadScenarioNamespaceRBACMissing": {"loadscenario 허용 namespace 권한 누락", "허용 namespace {{allowed_namespace}}에 injector의 pod 권한이 없어 run이 forbidden으로 실패함"},
 }
 
 // incidentPlaceholder 는 summary 템플릿의 {{key}} placeholder 를 매칭한다. key 는 파이프로 대안을
