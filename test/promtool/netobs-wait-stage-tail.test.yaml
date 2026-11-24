@@ -6,6 +6,11 @@
 rule_files:
   - gpuobs.yaml
 evaluation_interval: 1m
+# recording 그룹을 alert 그룹보다 먼저 평가하도록 고정한다. 순서를 정하지 않으면 실행마다 달라져 alert가
+# 한 평가만큼 늦은 record를 읽고 발화 시점이 1분 흔들린다.
+group_eval_order:
+  - netobs-gpuobs.wait-stage-tail.recording
+  - netobs-gpuobs.alerts
 tests:
   # 단기 시나리오: 발화, 게이트, stage별 경계, 대상 stage 범위, 카운터 리셋
   - interval: 1m
@@ -64,7 +69,8 @@ tests:
         values: '0+200x100 20210+200x79'
     alert_rule_test:
       # 꼬리 비율이 1%를 넘는 시점은 n4가 61m, n1이 62m다. for 10m이면 71m에 n4만, 72m부터 n1도
-      # 발화한다. 70m 미발화가 for 9m 이하를, 71m의 n4 단독 발화가 for 11m 이상을 걸러 낸다
+      # 발화한다. 70m 미발화가 for 9m 이하를, 71m의 n4 단독 발화가 for 11m 이상을 걸러 낸다. 이 단정은
+      # 위 group_eval_order로 평가 순서가 고정되어 있어야 성립한다
       - alertname: NetObsHighWaitStageTailRatio
         eval_time: 70m
         exp_alerts: []
