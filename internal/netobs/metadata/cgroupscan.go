@@ -1,8 +1,7 @@
-// cgroupscan.go 는 #228 의 cgroup id 역매핑 스캐너다. enricher 의 runtimeByCgroup 힌트는 TCP ringbuf
-// 이벤트 enrichment 의 부산물로만 학습되어 TCP 트래픽 없이 UDP 만 쓰는 pod 는 pod_bytes / flow_bytes
-// 의 cgroup 귀속이 실패한다. 본 스캐너는 informer 의 노드 pod 목록에서 host cgroup2 슬라이스 경로를
-// 계산해 디렉터리 inode (= cgroup id) 를 stat 으로 얻어 역매핑 테이블을 주기 재구성하고, enricher 는
-// 힌트 캐시 미스 시 본 테이블로 폴백한다.
+// cgroupscan.go는 #228의 cgroup id 역매핑 스캐너다. informer의 노드 pod 목록에서 host cgroup2 슬라이스
+// 경로를 계산하고, 디렉터리 inode(= cgroup id)를 stat으로 얻어 역매핑 테이블을 주기적으로 다시 만든다.
+// 스캐너가 있으면 enricher는 이 테이블만으로 cgroup을 pod에 귀속하고 ringbuf 힌트는 쓰지 않는다. 그래서
+// ringbuf 이벤트가 없는 UDP 전용 pod도 풀리고, 테이블에 없는 호스트 프로세스 cgroup은 pod가 되지 않는다.
 package metadata
 
 import (

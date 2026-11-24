@@ -20,8 +20,17 @@ func newPod(uid, ns, name string) kube.PodIdentity {
 }
 
 // fakeResolver는 단위 테스트용 PodResolver다. table에서 cgroup_id 기준 PodIdentity를 반환한다.
+// hintOnly에 든 cgroup_id는 스캐너가 모르고 힌트로만 풀리는 것으로 본다.
 type fakeResolver struct {
-	table map[uint64]kube.PodIdentity
+	table    map[uint64]kube.PodIdentity
+	hintOnly map[uint64]bool
+}
+
+func (f *fakeResolver) ResolveCgroupScanned(cgroupID uint64) (kube.PodIdentity, bool) {
+	if f.hintOnly[cgroupID] {
+		return kube.PodIdentity{}, false
+	}
+	return f.ResolveCgroup(cgroupID)
 }
 
 func (f *fakeResolver) ResolveCgroup(cgroupID uint64) (kube.PodIdentity, bool) {
@@ -108,111 +117,122 @@ func TestCollectorNilMapEmitsNothing(t *testing.T) {
 	}
 }
 
-// TestMergeEntryAggregatesByPodUID는 한 Pod이 여러 cgroup_id로 학습됐을 때 (container 단위, 다중
-// 프로세스 등) 동일 (direction, layer, podUID) 키 아래로 bytes/packets가 합산되어 단일 시리즈로
-// emit되는지 검증한다. 0.3.8 dev 검증에서 본 합산이 누락돼 Prometheus "동일 라벨 셋 중복 시리즈"
-// 오류가 났던 회귀에 대한 가드이며, BPF map mock 없이 합산 로직을 격리해 테스트한다.
-func TestMergeEntryAggregatesByPodUID(t *testing.T) {
-	pod := newPod("uid-1", "ns", "p1")
-	resolver := &fakeResolver{table: map[uint64]kube.PodIdentity{
-		100: pod,
-		200: pod,
-	}}
-	agg := make(map[aggKey]*aggValue)
+func ent(cg uint64, dir, layer uint8, bytes, packets uint64) mapEntry {
+	return mapEntry{key: ebpfx.NetObsNetobsPodBytesKey{CgroupId: cg, Direction: dir, Layer: layer}, bytes: bytes, packets: packets}
+}
 
-	// 같은 PodUID로 해상되는 두 개의 cgroup_id entry를 합산 대상으로 넣는다.
-	mergeEntry(agg, ebpfx.NetObsNetobsPodBytesKey{CgroupId: 100, Direction: 0, Layer: 0},
-		[]ebpfx.NetObsNetobsPodBytesValue{{Bytes: 1000, Packets: 3}, {Bytes: 500, Packets: 2}}, resolver)
-	mergeEntry(agg, ebpfx.NetObsNetobsPodBytesKey{CgroupId: 200, Direction: 0, Layer: 0},
-		[]ebpfx.NetObsNetobsPodBytesValue{{Bytes: 200, Packets: 1}}, resolver)
+// TestNewMapEntrySumsPerCPU는 PERCPU 맵의 CPU별 슬롯이 모두 더해지는지 검증한다.
+func TestNewMapEntrySumsPerCPU(t *testing.T) {
+	key := ebpfx.NetObsNetobsPodBytesKey{CgroupId: 100, Direction: 1, Layer: 0}
+	e := newMapEntry(key, []ebpfx.NetObsNetobsPodBytesValue{{Bytes: 1000, Packets: 3}, {Bytes: 500, Packets: 2}, {}})
+	if e.key != key || e.bytes != 1500 || e.packets != 5 {
+		t.Errorf("entry=%+v want key=%+v bytes=1500 packets=5", e, key)
+	}
+}
+
+// TestAggregateByPodUID는 한 pod의 여러 cgroup_id entry가 (direction, layer, podUID) 키 아래로 합산되어
+// 단일 시리즈가 되는지 검증한다. 합산이 빠지면 Prometheus가 동일 라벨 셋 중복 시리즈로 거부한다.
+func TestAggregateByPodUID(t *testing.T) {
+	pod := newPod("uid-1", "ns", "p1")
+	c := New(&fakeResolver{table: map[uint64]kube.PodIdentity{100: pod, 200: pod}}, "node-a", true)
+
+	agg := c.aggregate([]mapEntry{ent(100, 0, 0, 1500, 5), ent(200, 0, 0, 200, 1)})
 
 	if got := len(agg); got != 1 {
-		t.Fatalf("agg size=%d want 1 (entries should merge into single aggKey)", got)
+		t.Fatalf("agg size=%d want 1", got)
 	}
-	ak := aggKey{direction: 0, layer: 0, podUID: "uid-1"}
-	av, ok := agg[ak]
-	if !ok {
-		t.Fatalf("aggKey %+v missing from agg", ak)
-	}
-	if av.bytes != 1700 || av.packets != 6 {
-		t.Errorf("agg bytes=%d packets=%d want bytes=1700 packets=6", av.bytes, av.packets)
-	}
-	if av.pod.PodName != "p1" {
-		t.Errorf("agg pod.PodName=%q want p1", av.pod.PodName)
+	av := agg[aggKey{direction: 0, layer: 0, podUID: "uid-1"}]
+	if av == nil || av.bytes != 1700 || av.packets != 6 || av.pod.PodName != "p1" {
+		t.Errorf("agg=%+v want bytes=1700 packets=6 pod=p1", av)
 	}
 }
 
-// TestMergeEntrySkipsUnknownCgroup는 enricher 캐시에 학습되지 않은 cgroup_id entry가 agg에 반영되지
-// 않고 조용히 skip되는지 검증한다. event 흐름으로 캐시가 채워지면 다음 scrape에서 자연 emit되므로
-// scrape 자체를 실패시키지 않는다.
-func TestMergeEntrySkipsUnknownCgroup(t *testing.T) {
-	resolver := &fakeResolver{table: map[uint64]kube.PodIdentity{}}
-	agg := make(map[aggKey]*aggValue)
-
-	mergeEntry(agg, ebpfx.NetObsNetobsPodBytesKey{CgroupId: 999, Direction: 0, Layer: 0},
-		[]ebpfx.NetObsNetobsPodBytesValue{{Bytes: 1000, Packets: 1}}, resolver)
-
-	if got := len(agg); got != 0 {
-		t.Errorf("agg size=%d want 0 (unknown cgroup_id must be skipped)", got)
-	}
-}
-
-// TestMergeEntrySkipsEmptyPodUID는 IsPod=true 이지만 PodUID가 빈 문자열인 entry를 skip하는지
-// 검증한다. informer race로 잠시 발생 가능한 케이스이며, 가드 없이 통과시키면 서로 다른 Pod 두 개
-// 이상이 동일 빈 aggKey 아래로 합쳐져 첫 entry의 라벨 (namespace, podName) 로 emit되는 라벨
-// cross-pollination 결함이 생긴다.
-func TestMergeEntrySkipsEmptyPodUID(t *testing.T) {
-	podA := kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ns", PodName: "a"}
-	podB := kube.PodIdentity{IdentityClass: kube.IdentityClassPod, Namespace: "ns", PodName: "b"}
-	resolver := &fakeResolver{table: map[uint64]kube.PodIdentity{
-		100: podA,
-		200: podB,
-	}}
-	agg := make(map[aggKey]*aggValue)
-
-	mergeEntry(agg, ebpfx.NetObsNetobsPodBytesKey{CgroupId: 100, Direction: 0, Layer: 0},
-		[]ebpfx.NetObsNetobsPodBytesValue{{Bytes: 1000, Packets: 1}}, resolver)
-	mergeEntry(agg, ebpfx.NetObsNetobsPodBytesKey{CgroupId: 200, Direction: 0, Layer: 0},
-		[]ebpfx.NetObsNetobsPodBytesValue{{Bytes: 2000, Packets: 2}}, resolver)
-
-	if got := len(agg); got != 0 {
-		t.Errorf("agg size=%d want 0 (empty PodUID must be skipped to prevent label cross-pollination)", got)
-	}
-}
-
-// TestMergeEntrySkipsNonPodIdentity는 resolver가 service/node 등 Pod 이외 IdentityClass를 반환한
-// entry를 skip하는지 검증한다. pod_bytes는 Pod 단위 카운터이므로 비-Pod 정체성은 라벨 채우기가
-// 불가능해 emit하지 않는다.
-func TestMergeEntrySkipsNonPodIdentity(t *testing.T) {
-	resolver := &fakeResolver{table: map[uint64]kube.PodIdentity{
+// TestAggregateSkipsUnresolved는 pod로 풀리지 않는 entry를 버리는지 검증한다. 대상은 스캐너가 모르는
+// cgroup(호스트 프로세스), pod가 아닌 identity, UID가 빈 pod다. UID가 빈 pod 둘을 통과시키면 같은 빈
+// 키로 합쳐져 첫 entry의 라벨로 나간다.
+func TestAggregateSkipsUnresolved(t *testing.T) {
+	c := New(&fakeResolver{table: map[uint64]kube.PodIdentity{
 		100: {IdentityClass: kube.IdentityClassService, Namespace: "default"},
-	}}
-	agg := make(map[aggKey]*aggValue)
+		200: {IdentityClass: kube.IdentityClassPod, Namespace: "ns", PodName: "a"},
+		300: {IdentityClass: kube.IdentityClassPod, Namespace: "ns", PodName: "b"},
+	}}, "node-a", true)
 
-	mergeEntry(agg, ebpfx.NetObsNetobsPodBytesKey{CgroupId: 100, Direction: 0, Layer: 0},
-		[]ebpfx.NetObsNetobsPodBytesValue{{Bytes: 1000, Packets: 1}}, resolver)
+	agg := c.aggregate([]mapEntry{ent(100, 0, 0, 1000, 1), ent(200, 0, 0, 1000, 1), ent(300, 0, 0, 2000, 2), ent(999, 0, 0, 1000, 1)})
 
 	if got := len(agg); got != 0 {
-		t.Errorf("agg size=%d want 0 (non-Pod identity must be skipped)", got)
+		t.Errorf("agg size=%d want 0", got)
+	}
+	if got := len(c.known); got != 0 {
+		t.Errorf("known size=%d want 0", got)
 	}
 }
 
-// TestMergeEntrySeparatesByDirectionAndLayer는 같은 PodUID라도 (direction, layer) 조합이 다르면
-// 별도 aggKey로 분리되어 4개 (egress/ingress × nic/l4) 시리즈가 독립적으로 누적되는지 검증한다.
-func TestMergeEntrySeparatesByDirectionAndLayer(t *testing.T) {
-	pod := newPod("uid-1", "ns", "p1")
-	resolver := &fakeResolver{table: map[uint64]kube.PodIdentity{100: pod}}
-	agg := make(map[aggKey]*aggValue)
+// TestAggregateSeparatesByDirectionAndLayer는 같은 pod라도 (direction, layer) 조합마다 시리즈가
+// 따로 누적되는지 검증한다.
+func TestAggregateSeparatesByDirectionAndLayer(t *testing.T) {
+	c := New(&fakeResolver{table: map[uint64]kube.PodIdentity{100: newPod("uid-1", "ns", "p1")}}, "node-a", true)
 
-	cases := []struct{ dir, layer uint8 }{
-		{0, 0}, {0, 1}, {1, 0}, {1, 1},
-	}
-	for _, c := range cases {
-		mergeEntry(agg, ebpfx.NetObsNetobsPodBytesKey{CgroupId: 100, Direction: c.dir, Layer: c.layer},
-			[]ebpfx.NetObsNetobsPodBytesValue{{Bytes: 100, Packets: 1}}, resolver)
-	}
+	agg := c.aggregate([]mapEntry{ent(100, 0, 0, 100, 1), ent(100, 0, 1, 100, 0), ent(100, 1, 0, 100, 1), ent(100, 1, 1, 100, 0)})
+
 	if got := len(agg); got != 4 {
-		t.Errorf("agg size=%d want 4 (each (direction, layer) must be separate aggKey)", got)
+		t.Errorf("agg size=%d want 4", got)
+	}
+}
+
+// TestAggregateKeepsRestartedContainer는 컨테이너가 재시작해 옛 cgroup이 풀리지 않게 돼도 pod 합계가
+// 줄지 않는지 검증한다. pod가 사라지면 시리즈가 사라지고, 한 번도 풀린 적 없는 cgroup은 pod가 살아
+// 있어도 합산하지 않는다.
+func TestAggregateKeepsRestartedContainer(t *testing.T) {
+	pod := newPod("uid-1", "ns", "p1")
+	resolver := &fakeResolver{table: map[uint64]kube.PodIdentity{1: pod, 2: pod}}
+	c := New(resolver, "node-a", true)
+	ak := aggKey{direction: 0, layer: 1, podUID: "uid-1"}
+	entries := []mapEntry{ent(1, 0, 1, 200, 0), ent(2, 0, 1, 50000, 0), ent(9, 0, 1, 77, 0)}
+
+	if got := c.aggregate(entries)[ak].bytes; got != 50200 {
+		t.Fatalf("bytes=%d want 50200", got)
+	}
+
+	// 컨테이너(cgroup 1) 재시작: 옛 cgroup은 풀리지 않고 새 cgroup 3이 생긴다.
+	delete(resolver.table, 1)
+	resolver.table[3] = pod
+	entries = append(entries, ent(3, 0, 1, 7, 0))
+	if got := c.aggregate(entries)[ak].bytes; got != 50207 {
+		t.Errorf("재시작 뒤 bytes=%d want 50207", got)
+	}
+
+	// pod 삭제: 어떤 cgroup도 풀리지 않으면 시리즈가 사라진다.
+	delete(resolver.table, 2)
+	delete(resolver.table, 3)
+	if got := len(c.aggregate(entries)); got != 0 {
+		t.Errorf("pod 삭제 뒤 agg size=%d want 0", got)
+	}
+
+	// BPF 맵에서 evict된 cgroup은 known에서도 지운다.
+	c.aggregate(entries[1:])
+	if _, ok := c.known[1]; ok {
+		t.Errorf("맵에서 빠진 cgroup 1이 known에 남음")
+	}
+	if _, ok := c.known[2]; !ok {
+		t.Errorf("맵에 남은 cgroup 2가 known에서 지워짐")
+	}
+}
+
+// TestAggregateForgetsHintOnlyCgroup은 스캐너 없이 힌트로만 풀린 cgroup을 기억하지 않는지 검증한다.
+// 힌트가 만료돼 풀리지 않게 되면, pod의 다른 cgroup이 살아 있어도 그 누적분은 합계에서 빠진다.
+func TestAggregateForgetsHintOnlyCgroup(t *testing.T) {
+	pod := newPod("uid-1", "ns", "p1")
+	resolver := &fakeResolver{table: map[uint64]kube.PodIdentity{1: pod, 2: pod}, hintOnly: map[uint64]bool{1: true, 2: true}}
+	c := New(resolver, "node-a", true)
+	ak := aggKey{direction: 0, layer: 1, podUID: "uid-1"}
+	entries := []mapEntry{ent(1, 0, 1, 200, 0), ent(2, 0, 1, 50000, 0)}
+
+	if got := c.aggregate(entries)[ak].bytes; got != 50200 {
+		t.Fatalf("bytes=%d want 50200", got)
+	}
+	delete(resolver.table, 1)
+	if got := c.aggregate(entries)[ak].bytes; got != 50000 {
+		t.Errorf("힌트 만료 뒤 bytes=%d want 50000", got)
 	}
 }
 
