@@ -58,6 +58,25 @@ prod cluster 자동 부하 인가 를 차단 하기 위해 2 layer 가드 가 �
 - Layer 1 (코드): controller 시작 시 와 reconcile 매 호출 시 `CheckClusterLabel(environment=dev)` 호출. dev cluster 가 아니면 cluster 의 어떤 Node 도 `environment=dev` 라벨 을 갖지 않아 fail-fast 처리 되며 reconcile 이 즉시 종료 한다.
 - Layer 2 (배포): injector overlay 자체 가 dev only (`deploy/injector/overlays/dev/` 만 존재, prod 부재). prod cluster 에 운영자 가 의도적 으로 적용 할 수 없는 구조.
 
+## 허용 namespace 추가와 RBAC 검사
+
+controller는 `INJECTOR_ALLOWED_TARGET_NAMESPACES`(comma 구분, 기본 `ebpf-project`, dev overlay는 `ebpf-project,default`)에 있는 namespace에서만 부하 pod를 만들고 대상으로 삼는다. 목록 밖의 namespace는 게이트가 거부하고 `loadscenario_namespace_denied_total{scope}`와 CR의 `Ready` condition(`False`, reason `NamespaceDenied`)으로 알린다.
+
+RBAC는 namespace마다 Role로 준다. 그래서 namespace를 추가할 때는 두 가지를 함께 해야 한다.
+
+- `deploy/injector/base/role.yaml`의 Role과 RoleBinding 쌍을 새 namespace용으로 추가 (dev의 `default`는 `deploy/injector/overlays/dev/role-default.yaml`이 예시)
+- `INJECTOR_ALLOWED_TARGET_NAMESPACES`에 namespace 추가 후 controller 재배포
+
+env만 고치고 Role을 빠뜨리면 게이트는 통과하고 pod 생성 시점에야 forbidden으로 실패한다. controller는 이 불일치를 run 전에 드러내려고, 허용 namespace마다 자기 ServiceAccount의 `pods` 권한(create, delete, get, list)을 SelfSubjectAccessReview로 기동 시와 10분마다 확인한다.
+
+| 신호 | 의미 |
+|---|---|
+| `loadscenario_namespace_rbac_allowed{allowed_namespace, verb}` | 최근 검사 결과. 1은 허용, 0은 거부. review 호출이 실패하면 직전 값을 유지 |
+| `loadscenario_namespace_rbac_check_total{result}` | review 결과 누계. `result`는 `allowed`, `denied`, `error` |
+| 로그 `controller: rbac check ...` | 기동 시 요약 한 줄과, namespace 상태가 바뀔 때마다 한 줄 |
+
+검사는 진단용이다. 거부나 review 실패가 기동, reconcile, readiness를 막지 않으며 LoadScenario status도 바꾸지 않는다. 존재하지 않는 namespace는 Role 누락과 똑같이 거부로 나온다. leader 선출과 무관하게 모든 replica가 검사한다.
+
 ## CRD 첫 배포 절차
 
 ```sh
@@ -148,3 +167,13 @@ spec:
 ### consecutive failures (`LoadScenarioConsecutiveFailures` warning)
 
 `status.consecutiveFailures`가 `spec.maxFailures`에 도달하면 controller가 spec을 바꾸지 않고 `Suspended` condition(reason `MaxFailuresExceeded`)으로 정지를 표현해 다음 run 트리거가 멈춘다. 재개하려면 원인을 해소한 뒤 `status.consecutiveFailures`를 0으로 초기화하거나(`kubectl patch loadscenario/<name> -n ebpf-project --subresource=status --type=merge -p '{"status":{"consecutiveFailures":0}}'`) CR을 다시 생성한다.
+
+### LoadScenarioNamespaceRBACMissing
+
+허용 namespace에 controller ServiceAccount의 `pods` 권한이 15분째 없으면 발화한다(warning). 이 namespace에서 생성하거나 대상으로 삼는 run은 forbidden으로 실패한다.
+
+- 빠진 권한 확인: `loadscenario_namespace_rbac_allowed == 0`의 `allowed_namespace`와 `verb` 라벨, 또는 `kubectl logs -n ebpf-project deployment/workload-injector-controller | grep 'rbac check'`
+- 직접 확인: `kubectl auth can-i create pods -n <namespace> --as=system:serviceaccount:ebpf-project:workload-injector`
+- namespace를 쓸 계획이면 위 "허용 namespace 추가와 RBAC 검사" 절차대로 Role과 RoleBinding 추가. 재시작 없이 다음 검사(최대 10분)에서 해소된다
+- 쓸 계획이 없거나 오타면 `INJECTOR_ALLOWED_TARGET_NAMESPACES`에서 제거
+- `loadscenario_namespace_rbac_check_total{result="error"}`만 늘면 권한 문제가 아니라 review 호출 실패다. API server 도달성과 controller 로그의 `review failed` 줄을 확인한다
