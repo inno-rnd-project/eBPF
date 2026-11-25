@@ -182,8 +182,7 @@ spec:
     # 없이 정확히 센다.
     #   - rcv_app, connect: 0.524288s. connect는 초기 SYN RTO(1s) 전후의 재전송이 있어야 넘고, rcv_app은
     #     앱이 수신 버퍼를 0.5초 넘게 가져가지 않아야 넘는다
-    #   - ack_wait: 1.048576s. 지연 ACK 상한(200ms)과 워커 노드의 정상 p99(약 0.4~0.5s)를 넘겨 ACK가
-    #     실제로 보류된 경우만 센다
+    #   - ack_wait: 1.048576s. 지연 ACK 상한(200ms)을 크게 넘겨 ACK가 실제로 보류된 경우만 센다
     # 입력은 pod 라벨이 없는 netobs_stage_latency_seconds라 workload 귀속과 무관하고 host 트래픽을
     # 포함한다. to_veth는 대기 stage가 아니라 sendmsg 호출 안의 처리 구간이라 제외한다. interval 1m은 7일 중앙값 조회 비용을
     # 줄이면서 lookback(5m) 안에 표본이 항상 있게 하는 값이다.

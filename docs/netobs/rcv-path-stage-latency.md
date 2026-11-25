@@ -17,6 +17,24 @@
 
 `rcv_demux`는 `tcp_v4_do_rcv` 진입 시점에 `ts_l3`를 now로 재설정해 `rcv_established`의 기준점을 매번 갱신한다. early demux로 `tcp_v4_rcv`가 직전에 stash한 경우만 L3 진입부터 demux까지 (`NETOBS_RCV_DEMUX_MAX_NS` 1ms 이내) 를 `rcv_demux` latency로 측정하고, 그 외에는 0이다. `rcv_established`는 do_rcv부터 established까지의 커널 RX 처리 시간을 산정하고 `ts_established`를 갱신하며, `rcv_app`이 그 기준으로 app pickup 대기를 산정한 뒤 `recv_starts` entry를 cleanup한다. `stash_recv_l3`와 `rcv_demux`는 `ts_l3`만 갱신하고 `ts_established`를 보존해, 고트래픽 환경에서 app read 이전 도착한 다음 패킷이 app pickup 측정 기준을 0으로 날리지 않게 한다.
 
+## `ack_wait`의 측정 범위
+
+`ack_wait`는 수신측이 받은 데이터를 ACK하기까지 기다린 시간이다. `tcp_send_ack`(kprobe)에서 내며, 기준점은 `recv_starts`의 `ts_data`다.
+
+- 시작: ACK를 받아야 하는 segment(payload나 FIN)가 `tcp_rcv_established`에 도착한 시각. 기준점이 비어 있거나 받은 데이터가 모두 ACK된 상태(`rcv_nxt == rcv_wup`)일 때 온 segment가 기준점을 잡으므로, 지연 ACK가 여러 segment를 묶어 ACK하면 대개 그중 첫 segment부터 잰다
+- 끝: 그 데이터를 ACK하는 `tcp_send_ack` 호출. 새 데이터를 ACK하지 않는 호출(window update, dup ACK, keepalive 응답)은 값을 내지 않고 기준점만 비운다
+
+payload 없는 순수 ACK는 기준점을 찍지 않는다. 찍으면 유휴 연결에서 상대의 다음 데이터가 올 때까지의 간격이 ACK 대기로 나간다.
+
+한계는 다음과 같다.
+
+- ACK가 송신 데이터에 piggyback되면 `tcp_send_ack`를 거치지 않아 표본이 되지 않는다
+- `tcp_recvmsg` 진입이 `recv_starts` entry를 지운다. 데이터가 도착한 뒤에 시작한 읽기는 기준점을 지우므로 그 뒤에 나가는 ACK가 표본이 되지 않고, 읽은 뒤 ACK 전에 새 segment가 오면 그 segment부터 재서 값이 실제보다 짧게 나온다. 데이터보다 먼저 읽기에 들어가 기다리던 경우는 표본이 된다
+- 커널이 `tcp_send_ack`를 인라인해 부르는 경로는 kprobe를 거치지 않아 표본이 되지 않는다. `tcp_send_delayed_ack`가 지연 ACK를 일찍 보내는 경우와, 6.8 노드에서 `tcp_backlog_ack_defer`가 켜져 `tcp_release_cb`가 ACK를 보내는 경우다. 그래서 커널 버전에 따라 분포가 다를 수 있다
+- `tcp_rcv_established`를 거치지 않는 수신은 기준점을 찍지 않는다. FIN_WAIT1과 FIN_WAIT2에서 받은 FIN이나 데이터, handshake를 끝내는 segment에 실린 데이터가 그렇다. 그 ACK는 남아 있던 이전 기준점과 짝지어져 값이 실제보다 길게 나올 수 있다
+- `recv_starts`의 키는 `skc_cookie`인데 cookie가 아직 할당되지 않은 소켓은 값이 0이라 한 entry를 함께 쓴다. 이런 소켓에서는 다른 소켓의 수신과 읽기가 기준점을 덮어쓰거나 지워 값이 실제와 다르게 나온다. `tcp_rcv_established`를 거친 수신이면 짧게만 나오고, 바로 위 항목의 경로에서는 다른 소켓의 기준점과 짝지어져 길게 나올 수 있다
+- sock_diag(`ss` 등)는 조회한 소켓에 cookie를 할당하므로, 노드에서 실행하면 그 뒤로 해당 소켓의 측정 경로가 달라진다
+
 ## tcp_v4_rcv의 sk 복원
 
 `tcp_v4_rcv`는 socket lookup 이전 단계라 sock 인자가 없다. #141은 `skb->sk` (early demux 결과) 로 sock을 복원해 `socket_cookie`를 얻는다. established 연결은 early demux로 `skb->sk`가 채워져 있어 `ts_l3` stash가 가능하고, 신규 SYN이나 listen socket처럼 `skb->sk`가 null인 케이스는 stash를 skip한다. `ts_l3`가 부재하면 `rcv_demux`와 `rcv_established`가 `latency_us=0`으로 자연 fallback한다.
