@@ -4,7 +4,7 @@
 
 ## 왜 p99 임계가 아니라 꼬리 비율인가
 
-대기 stage의 지연은 로컬 처리 병목이 아니라 지연 ACK 타이머, 앱의 수신 버퍼 수거 주기, 핸드셰이크 왕복에 좌우된다. 그래서 정상 상태의 p99가 노드마다 최대 백 배 넘게 다르고(`rcv_app` 1.6ms~0.25s, `connect` 0.25~4ms, `ack_wait` 0.08~0.5s), histogram 버킷이 2배 간격이라 p99가 버킷 단위로 튄다. 절대 p99 임계는 상시 오탐이 되고, 자기 baseline 대비 배수나 z-score는 ms 단위 baseline에서 조치할 것이 없는 장시간 발화를 만든다.
+대기 stage의 지연은 로컬 처리 병목이 아니라 지연 ACK 타이머, 앱의 수신 버퍼 수거 주기, 핸드셰이크 왕복에 좌우된다. 그래서 정상 상태의 p99가 노드마다 최대 백 배 넘게 다르고(`rcv_app` 1.6ms~0.25s, `connect` 0.25~4ms), histogram 버킷이 2배 간격이라 p99가 버킷 단위로 튄다. 절대 p99 임계는 상시 오탐이 되고, 자기 baseline 대비 배수나 z-score는 ms 단위 baseline에서 조치할 것이 없는 장시간 발화를 만든다.
 
 이 alert는 "stage별 경계를 넘은 이벤트의 비율"을 본다. 경계가 버킷 경계와 같아 보간 없이 정확히 세며, 경계마다 뜻이 분명하다.
 
@@ -12,7 +12,7 @@
 |---|---|---|
 | `connect` | 0.524288s | 초기 SYN 재전송 타이머(1s) 전후의 SYN 또는 SYN-ACK 재전송이 있었다 |
 | `rcv_app` | 0.524288s | 수신 앱이 데이터를 0.5초 넘게 가져가지 않았다 |
-| `ack_wait` | 1.048576s | 지연 ACK 상한(200ms)과 워커 노드의 정상 p99(약 0.4~0.5s)를 넘겨 ACK가 실제로 보류됐다 |
+| `ack_wait` | 1.048576s | 지연 ACK 상한(200ms)을 크게 넘겨 ACK가 실제로 보류됐다 |
 
 `to_veth`는 대기 stage가 아니라 `tcp_sendmsg` 호출 안의 처리 구간이라 대상에서 뺐다([측정 범위](send-path-stage-latency.md)).
 
@@ -38,6 +38,8 @@ alert 조건은 다음 세 가지가 10분 동안 이어지는 것이다.
 
 - 10-26 gpu `ack_wait` 36분: Prometheus 장애 복구 직후
 - 11-12 worker1 `connect` 13분: grafana의 SYN 재시도
+
+3.4.8까지의 `ack_wait`는 payload 없는 순수 ACK도 기준점으로 삼아, 유휴 연결의 데이터 간격이 초 단위 꼬리로 섞일 수 있었다. 2026-11-24 gpu의 `ack_wait` 발화가 이 경우였고 3.4.9에서 기준점을 고쳤다([측정 범위](rcv-path-stage-latency.md)). 7일 중앙값 억제는 3.4.9 배포 뒤의 표본이 창의 과반이 될 때까지 gpu `ack_wait`에 남는다.
 
 그 밖에는 gpu `connect` 7분(netem으로 손실을 건 실험)이 가장 길었고, 나머지 9개 node와 stage 조합은 조건을 한 번도 만족하지 않았다. `for: 10m`은 node API의 지속성 게이트(`ALERT_STATUS_MIN_HOLD` 기본 10m)와 같아, 발화 시점에 `node/{node}`와 `node-map`의 상태가 함께 바뀐다.
 

@@ -143,9 +143,10 @@ struct {
 struct netobs_recv_state {
     __u64 ts_l3;
     __u64 ts_established;
-    /* #197 첫 미-ACK 데이터 수신 시각. tcp_rcv_established 가 (0 일 때만) stamp 하고 tcp_send_ack 가
-     * ACK 송신 시점 과의 차분 을 "수신측 ACK 대기" latency 로 채택 후 0 으로 리셋 한다. 0 은 미상관 (직전
-     * ACK 이후 신규 데이터 없음 / standalone ACK) 을 뜻해 spurious 0 sample emit 을 막는 데도 쓰인다. */
+    /* #197 ACK 안 된 첫 데이터의 수신 시각. tcp_rcv_established가 ACK를 받아야 하는 segment(payload나
+     * FIN)를 받을 때, 값이 비었거나 받은 데이터가 모두 ACK된 상태면 찍는다. tcp_send_ack가 새 데이터를
+     * ACK하면 그 시점과의 차분을 수신측 ACK 대기로 내고 0으로 비운다. 0은 기준점이 없다는 뜻이고 이때는
+     * 값을 내지 않는다. */
     __u64 ts_data;
 };
 
@@ -1111,6 +1112,28 @@ static __always_inline void stash_recv_l3(struct sk_buff *skb)
     }
 }
 
+/* rcv_skb_has_payload는 수신 segment가 ACK를 받아야 하는 데이터(payload나 FIN)를 싣고 있는지 본다.
+ * tcp_rcv_established는 payload 없는 순수 ACK에도 호출된다. tcp_v4_rcv와 tcp_v6_rcv가 seq와 end_seq를
+ * cb에 채운 뒤라 이 시점에 읽을 수 있다. */
+static __always_inline int rcv_skb_has_payload(struct sk_buff *skb)
+{
+    struct tcp_skb_cb *tcb;
+
+    if (!skb)
+        return 0;
+    tcb = (void *)skb + bpf_core_field_offset(struct sk_buff, cb);
+    return BPF_CORE_READ(tcb, end_seq) != BPF_CORE_READ(tcb, seq);
+}
+
+/* rcv_all_acked는 받은 데이터가 모두 ACK된 상태인지 본다. rcv_wup는 마지막으로 보낸 segment가 알린
+ * rcv_nxt이고, 데이터에 piggyback된 ACK도 갱신한다. */
+static __always_inline int rcv_all_acked(struct sock *sk)
+{
+    struct tcp_sock *tp = (struct tcp_sock *)sk;
+
+    return BPF_CORE_READ(tp, rcv_nxt) == BPF_CORE_READ(tp, rcv_wup);
+}
+
 /* emit_rcv_event 는 receive path 의 sock 기반 stage 진입 시점에 호출되어 5-tuple 과 cgroup_id 를
  * netobs_start_info 로 채워 ringbuf 에 emit 한다. #141 부터 socket_cookie 기준 recv_starts 맵 으로
  * stage 별 누적 latency 를 산정해 latency_us 로 함께 emit 한다. RCV_DEMUX 와 RCV_ESTABLISHED 는
@@ -1193,13 +1216,16 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
         }
         if (st) {
             st->ts_established = now;
-            /* #197 직전 ACK 이후 첫 데이터 수신 시각 을 기준점 으로 기록 해, 지연 ACK 가 여러 세그먼트 를
-             * 누적 ACK 할 때 "첫 미-ACK 데이터 → ACK 송신" 대기 를 측정 한다. tcp_send_ack 가 채택 후 0 으로
-             * 리셋 하므로 다음 데이터 수신 이 다시 기준점 이 된다. 양방향 흐름 에서 ACK 가 데이터 에 piggyback
-             * 되어 tcp_send_ack 를 안 타면 기준점 이 리셋 되지 않는데, 이때 기준점 이 stale (>10s) 해진 소켓 의
-             * 후속 계측 이 영구 누락 되지 않도록 0 또는 stale 일 때 모두 현재 시각 으로 재기록 한다 (monotonic
-             * 역행 now < ts_data 도 방어적 재기록). */
-            if (!st->ts_data || now < st->ts_data || (now - st->ts_data) >= NETOBS_RCV_STALE_NS)
+            /* #197 지연 ACK가 여러 segment를 묶어 ACK할 때 첫 미ACK 데이터부터 ACK 송신까지를 재도록
+             * 기준점을 찍는다. 기준점은 ACK를 받아야 하는 segment만 찍는다. 순수 ACK가 찍으면 유휴
+             * 연결에서 상대의 다음 데이터가 올 때까지의 간격이 ACK 대기로 나간다. 받은 데이터가 모두
+             * ACK된 상태에서 온 segment는 새 미ACK 구간의 첫 데이터이므로 남아 있던 기준점을 버리고 다시
+             * 찍는다. ACK가 송신 데이터에 piggyback되어 tcp_send_ack를 거치지 않은 경우가 여기서
+             * 정리된다. kprobe 진입 시점에는 rcv_nxt가 이 segment만큼 전진하기 전이다. stale(10s 이상)한
+             * 값과 monotonic 역행도 다시 찍는다. */
+            if (rcv_skb_has_payload(skb) &&
+                (!st->ts_data || rcv_all_acked(sk) || now < st->ts_data ||
+                 (now - st->ts_data) >= NETOBS_RCV_STALE_NS))
                 st->ts_data = now;
         }
     } else if (stage == NETOBS_STAGE_ACK_WAIT) {
@@ -1207,7 +1233,15 @@ static __always_inline void emit_rcv_event(struct sock *sk, struct sk_buff *skb,
          * (recv_starts entry 부재 / 직전 ACK 이후 신규 데이터 없음) 이거나 stale (>10s) 이면 histogram 에
          * spurious 0 sample 을 넣지 않도록 emit 을 skip 한다 (rcv_nic 미상관 skip 과 동일 논리). 채택 시 ts_data
          * 를 0 으로 리셋 해 다음 데이터 수신 이 새 기준점 이 되게 한다. */
-        if (!st || !st->ts_data || now <= st->ts_data || (now - st->ts_data) >= NETOBS_RCV_STALE_NS)
+        if (!st)
+            return;
+        /* 새 데이터를 ACK하지 않는 송신(window update, dup ACK, keepalive 응답)은 ACK 대기의 끝이
+         * 아니다. 기준점을 비우고 내지 않는다. tcp_send_ack 진입 시점에는 rcv_wup가 갱신되기 전이다. */
+        if (rcv_all_acked(sk)) {
+            st->ts_data = 0;
+            return;
+        }
+        if (!st->ts_data || now <= st->ts_data || (now - st->ts_data) >= NETOBS_RCV_STALE_NS)
             return;
         latency_us = (__u32)((now - st->ts_data) / 1000);
         st->ts_data = 0;
